@@ -729,11 +729,9 @@ function claimsForPluginActionScope(
           ? browserRemoteResourceKey(pluginId, args, requestId)
           : scope.kind === 'controller'
             ? `controller-system:${claim.resource}`
-            : claim.resource === 'workspace'
-              ? `workspace:${scope.checkoutId}`
-              : claim.resource === 'git-refs'
-                ? `git-refs:${scope.scopeKey}`
-                : `repo-state:${scope.scopeKey}`,
+            : claim.resource === 'git-refs'
+              ? `git-refs:${scope.scopeKey}`
+              : `repo-state:${scope.scopeKey}`,
     mode: claim.mode,
   }));
   if (pluginId === 'ios' && ['build', 'xcode_test', 'smoke_review', 'agent_device_prepare'].includes(action.actionId)) {

@@ -269,7 +269,7 @@ export function listConflictingResourceLeases(controllerHome: string, resourceKe
 // while observing current Process claims. Neither path can pass both checks
 // while the other has a physical writer in flight.
 function repositorySourceResourceKey(resourceKey: string): boolean {
-  return /^(?:workspace:|workspace-read:|path:|git-index:|git-head:|git-ref:|git-refs:|repo-content:)/.test(
+  return /^(?:path:|git-index:|git-head:|git-ref:|git-refs:|repo-content:)/.test(
     resourceKey,
   );
 }
@@ -349,7 +349,7 @@ export function withRepositoryMutationExclusion<T>(
   // Preserve checkout placement from the exact resource keys so successor
   // session recovery does not mistake local source writers for "unscoped".
   const scopedClaims = mutationClaims.map((claim) => {
-    const checkoutFromKey = /^(?:path|workspace|git-index|git-head):([^:]+)/.exec(claim.resourceKey)?.[1];
+    const checkoutFromKey = /^(?:path|git-index|git-head):([^:]+)/.exec(claim.resourceKey)?.[1];
     if (claim.checkoutId && checkoutFromKey && claim.checkoutId !== checkoutFromKey) {
       throw new Error('LEASE_CHECKOUT_SCOPE_MISMATCH');
     }

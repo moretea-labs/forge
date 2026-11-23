@@ -1193,10 +1193,7 @@ export function iosPhysicalDeviceCapabilities(): AssistantPluginCapability[] {
 
 export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
   const stateClaim = [{ resource: 'repo-state' as const, mode: 'write' as const }];
-  const mutationClaims = [
-    { resource: 'workspace' as const, mode: 'write' as const },
-    { resource: 'repo-state' as const, mode: 'write' as const },
-  ];
+  const mutationClaims = [{ resource: 'repo-state' as const, mode: 'write' as const }];
   const interactionProperty = { interaction_id: { type: 'string' } };
   const actions: AssistantPluginActionDescriptor[] = [
     {

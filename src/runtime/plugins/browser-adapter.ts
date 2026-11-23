@@ -4624,7 +4624,7 @@ async function executeBrowserPluginActionInternal(
             adoptedProduct = normalizedNativeProduct;
             adoptedRef = { windowId: nativeWindowId, tabId: nativeTabId };
           }
-          const adopted = await reattachMacOsBrowserOwnedPage(adoptedProduct, adoptedRef, timeout);
+          const adopted = await reattachMacOsBrowserOwnedPage(adoptedProduct, adoptedRef, timeout, { refreshMetadata: true });
           const metadata = adopted.attachment.metadata;
           const pageUrl = normalizedExplicitNativeAdoptionUrl(metadata.url);
           const requestedUrl = normalizedExplicitNativeAdoptionUrl(url);

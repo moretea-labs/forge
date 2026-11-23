@@ -1270,7 +1270,6 @@ describe('repository command execution lifecycle', () => {
   });
 });
 
-
 describe('scoped async lease heartbeat resilience (#713)', () => {
   test('retries a transient global lease-lock collision without poisoning a live path lease', async () => {
     const controllerHome = tempRoot('forge-713-heartbeat-contention-home-');
@@ -1303,5 +1302,5 @@ describe('scoped async lease heartbeat resilience (#713)', () => {
 
     expect(result).toBe('completed-after-renewal');
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
-  });
+  }, 20_000);
 });

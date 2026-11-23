@@ -119,11 +119,9 @@ function selectedPathMutationClaims(
   paths: string[],
   action: 'commit' | 'restore',
 ): ResourceClaimSpec[] {
-  const sourceClaims: ResourceClaimSpec[] = paths.map((path) => {
+  const sourceClaims: ResourceClaimSpec[] = paths.flatMap((path): ResourceClaimSpec[] => {
     const normalized = normalizeClaimPath(path);
-    return normalized
-      ? { resourceKey: `path:${repository.activeCheckoutId}:${normalized}`, mode: 'write' }
-      : { resourceKey: `workspace:${repository.activeCheckoutId}`, mode: 'write' };
+    return normalized ? [{ resourceKey: `path:${repository.activeCheckoutId}:${normalized}`, mode: 'write' }] : [];
   });
   return [
     ...sourceClaims,

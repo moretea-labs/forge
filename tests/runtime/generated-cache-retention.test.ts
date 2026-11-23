@@ -208,7 +208,7 @@ describe('generated repository cache retention', () => {
       processCommands: [], maxRemovals: 8,
     });
     expect(report.removedPaths).toContain('integrations/note-editor/.build/arm64-apple-macosx/debug');
-    expect(report.removedPaths).toContain('apps/desktop/src-tauri/target/debug');
+    expect(report.removedPaths).toContain('apps/desktop-native/bridge/target/debug');
     expect(report.removedPaths).toContain('apps/site/.next/cache');
     expect(existsSync(join(nextOutput, 'BUILD_ID'))).toBe(true);
     expect(existsSync(join(swift, 'Package.swift'))).toBe(true);

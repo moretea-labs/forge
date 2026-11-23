@@ -438,7 +438,7 @@ function cleanIntegratedWorktree(root: string, canonicalRoot: string): boolean {
 function generatedToolchainCandidates(root: string, budget: { remaining: number }, round: number): Candidate[] {
   const found: Candidate[] = [];
   const projectRoots = [root];
-  // Discover bounded project roots, including apps/desktop/src-tauri and
+  // Discover bounded project roots, including apps/desktop-native/bridge and
   // integrations/<package>. Never follow symlinks, node_modules or worktrees.
   for (const namespace of ['apps', 'integrations', 'packages']) {
     const parents = directChildDirectories(join(root, namespace), () => true, budget, round);

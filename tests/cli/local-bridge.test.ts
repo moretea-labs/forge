@@ -1330,114 +1330,130 @@ describe("Local Execution Bridge", () => {
     expect(verified.status).toBe("succeeded");
     expect(verified.sessionId).toBe(session.sessionId);
     // Direct verification no longer creates a Local Bridge Job.
-    // Both real entrypoints use the same pre-existing repository lock. A
-    // competing editor must not cause a partial edit or a second writer.
-    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
-    const repository = resolveRepositorySelection({ explicitPath: root, controllerHome });
+    // Workspace-wide Process claims and the old repository-writer mutex must
+    // not veto EditSession metadata operations or direct-edit entrypoints.
+    const legacyContext = createMcpToolContext({ repo: root, controllerHome: process.env.FORGE_CONTROLLER_HOME!, profile: 'controller' });
+    const controllerHome = legacyContext.controllerHome;
+    const repository = legacyContext.explicitRepository!;
+    expect(repository.activeCheckoutId).toBeTruthy();
     const lockKey = { scope: 'repository' as const, repoId: repository.repoId };
     const lock = acquireControllerLock(controllerHome, lockKey, 'test:competing-editor');
-    try {
-      // A managed Process cannot publish a workspace writer lease while this
-      // editor owns the existing repository lock.
-      const denied = acquireExecutionLeases(controllerHome, repository.repoId, 'test:process-during-editor', [
-        { resourceKey: `workspace:${repository.activeCheckoutId}`, mode: 'write' },
-      ], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
-      expect(denied.acquired).toBe(false);
-      expect(denied.blockers.some((entry) => entry.resourceKey === 'repository-writer')).toBe(true);
-      const blocked = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
-        method: "POST",
-        headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({ reviewer: "local-test" }),
-      });
-      expect(blocked.status).toBe(400);
-      expect((await blocked.json()).error).toContain('LOCK_HELD');
-      for (const [route, body] of [
-        ['savepoints', { name: 'locked-savepoint' }],
-        ['verify', { reviewer: 'locked-reviewer' }],
-      ] as const) {
-        const blockedEdit = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/${route}`, handle.url), {
-          method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body),
-        });
-        expect(blockedEdit.status).toBe(400);
-        expect((await blockedEdit.json()).error).toContain('LOCK_HELD');
-      }
-      const legacyContext = createMcpToolContext({ repo: root, controllerHome, profile: 'controller' });
-      const legacyAttempt = await callMultiRepositoryTool(legacyContext, 'begin_edit_session', { purpose: 'competing editor' });
-      expect(legacyAttempt.isError).toBe(true);
-      expect(JSON.stringify(legacyAttempt.structuredContent)).toContain('LOCK_HELD');
-      // Historical pre-cutover completion must share the same repository
-      // writer, even though it also owns an independent integration target lock.
-      // Missing run/session lookups must not occur before the lock fence.
-      const finishEdit = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finish`, handle.url), {
-        method: "POST",
-        headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({ decision: "auto" }),
-      });
-      expect(finishEdit.status).toBe(400);
-      expect((await finishEdit.json()).error).toContain('LOCK_HELD');
-      const finishRun = await fetch(new URL('/api/runs/missing-run/finish', handle.url), {
-        method: "POST",
-        headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({ decision: "auto" }),
-      });
-      expect(finishRun.status).toBe(400);
-      expect((await finishRun.json()).error).toContain('LOCK_HELD');
-    } finally {
-      releaseControllerLock(controllerHome, lockKey, lock.lockId);
-    }
-
-    // Opposite ordering: a managed Process has already acquired its durable
-    // source claim. Both old editor surfaces must reject before touching bytes.
-    const running = acquireExecutionLeases(controllerHome, repository.repoId, 'test:managed-writer', [
+    const workspaceLease = acquireExecutionLeases(controllerHome, repository.repoId, 'test:process-during-editor', [
       { resourceKey: `workspace:${repository.activeCheckoutId}`, mode: 'write' },
     ], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
-    expect(running.acquired).toBe(true);
+    expect(workspaceLease.acquired).toBe(true);
+    let reservedSessionId = '';
     try {
-      const blockedByProcess = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
-        method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ reviewer: 'local-test' }),
+      const savepointResponse = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/savepoints`, handle.url), {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'workspace-lease-savepoint' }),
       });
-      expect(blockedByProcess.status).toBe(400);
-      expect((await blockedByProcess.json()).error).toContain('REPOSITORY_PROCESS_LEASE_HELD');
-      const legacyContext = createMcpToolContext({ repo: root, controllerHome, profile: 'controller' });
+      expect(savepointResponse.status).toBe(200);
+      const savepoint = await savepointResponse.json();
+      expect(savepoint.savepoints.some((item: { name: string }) => item.name === 'workspace-lease-savepoint')).toBe(true);
+
+      // The original session was verified before acquiring these leases; avoid
+      // re-running a terminal verification transition.
+
       const reserved = await callMultiRepositoryTool(legacyContext, 'begin_edit_session', {
-        purpose: 'metadata reservation during managed Process',
+        purpose: 'metadata reservation during a checkout-wide Process lease',
         allowed_paths: ['src/example.ts'],
       });
       expect(reserved.isError).not.toBe(true);
-      const reservedSession = reserved.structuredContent as { sessionId: string };
-      const originalSource = readFileSync(join(root, 'src/example.ts'), 'utf8');
-      const overlappingEdit = await callMultiRepositoryTool(legacyContext, 'apply_patch', {
-        session_id: reservedSession.sessionId,
+      reservedSessionId = (reserved.structuredContent as { sessionId: string }).sessionId;
+
+      const originalFinalization = fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ reviewer: 'workspace-lease-reviewer' }),
+      });
+      const concurrentRead = await fetch(new URL("/api/snapshot", handle.url), { headers });
+      expect(concurrentRead.status).toBe(200);
+      const finalized = await originalFinalization.then((response) => response.json());
+      expect(finalized.status).toBe("finalized");
+
+      const sourceBeforeWorkspaceEdit = readFileSync(join(root, 'src/example.ts'), 'utf8');
+      const workspaceEdit = await callMultiRepositoryTool(legacyContext, 'apply_patch', {
+        session_id: reservedSessionId,
         expected_revision: 0,
         operations: [{
           type: 'replace', path: 'src/example.ts',
-          expected_sha256: new Bun.CryptoHasher('sha256').update(originalSource).digest('hex'),
+          expected_sha256: new Bun.CryptoHasher('sha256').update(sourceBeforeWorkspaceEdit).digest('hex'),
           replacements: [{ old_text: 'value = 4', new_text: 'value = 5' }],
+        }],
+      });
+      expect(workspaceEdit.isError).not.toBe(true);
+      expect(readFileSync(join(root, 'src/example.ts'), 'utf8')).toContain('value = 5');
+    } finally {
+      releaseExecutionLeases(controllerHome, repository.repoId, 'test:process-during-editor', workspaceLease.leases, {
+        visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false,
+      });
+      releaseControllerLock(controllerHome, lockKey, lock.lockId);
+    }
+
+    // A Process claim fences only the exact source path. It must not turn a
+    // checkout-wide lease into a blanket editor veto.
+    const running = acquireExecutionLeases(controllerHome, repository.repoId, 'test:managed-writer', [
+      { resourceKey: `path:${repository.activeCheckoutId}:src/example.ts`, mode: 'write' },
+    ], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
+    expect(running.acquired).toBe(true);
+    try {
+      const originalSource = readFileSync(join(root, 'src/example.ts'), 'utf8');
+      const overlappingEdit = await callMultiRepositoryTool(legacyContext, 'apply_patch', {
+        session_id: reservedSessionId,
+        expected_revision: 1,
+        operations: [{
+          type: 'replace', path: 'src/example.ts',
+          expected_sha256: new Bun.CryptoHasher('sha256').update(originalSource).digest('hex'),
+          replacements: [{ old_text: 'value = 6', new_text: 'value = 7' }],
         }],
       });
       expect(overlappingEdit.isError).toBe(true);
       expect(JSON.stringify(overlappingEdit.structuredContent)).toContain('REPOSITORY_PROCESS_LEASE_HELD');
+      expect(readFileSync(join(root, 'src/example.ts'), 'utf8')).toBe(originalSource);
     } finally {
       releaseExecutionLeases(controllerHome, repository.repoId, 'test:managed-writer', running.leases, {
         visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false,
       });
     }
-    const savepoint = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/savepoints`, handle.url), {
-      method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'unlocked-savepoint' }),
-    }).then((response) => response.json());
-    expect(savepoint.savepoints.some((item: { name: string }) => item.name === 'unlocked-savepoint')).toBe(true);
-    const finalization = fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
-      method: "POST",
-      headers: { ...headers, "content-type": "application/json" },
-      body: JSON.stringify({ reviewer: "local-test" }),
+
+    const originalSourceAfterRelease = readFileSync(join(root, 'src/example.ts'), 'utf8');
+    const releasedEdit = await callMultiRepositoryTool(legacyContext, 'apply_patch', {
+      session_id: reservedSessionId,
+      expected_revision: 1,
+      operations: [{
+        type: 'replace', path: 'src/example.ts',
+        expected_sha256: new Bun.CryptoHasher('sha256').update(originalSourceAfterRelease).digest('hex'),
+        replacements: [{ old_text: 'value = 5', new_text: 'value = 6' }],
+      }],
     });
-    // A read-only HTTP request stays serviceable while the editor worker runs.
-    const concurrentRead = await fetch(new URL("/api/snapshot", handle.url), { headers });
-    expect(concurrentRead.status).toBe(200);
-    const finalized = await finalization.then((response) => response.json());
-    expect(finalized.status).toBe("finalized");
+    expect(releasedEdit.isError).not.toBe(true);
+    expect(readFileSync(join(root, 'src/example.ts'), 'utf8')).toContain('value = 7');
+
+    const reservedSavepoint = await fetch(new URL(`/api/edit-sessions/${reservedSessionId}/savepoints`, handle.url), {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'after-path-lease-release' }),
+    });
+    expect(reservedSavepoint.status).toBe(200);
+    const reservedVerified = await fetch(new URL(`/api/edit-sessions/${reservedSessionId}/verify`, handle.url), {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ reviewer: 'path-lease-release-reviewer' }),
+    });
+    expect(reservedVerified.status).toBe(200);
+    expect((await reservedVerified.json()).status).toBe('succeeded');
+    const reservedFinalized = await fetch(new URL(`/api/edit-sessions/${reservedSessionId}/finalize`, handle.url), {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ reviewer: 'path-lease-release-reviewer' }),
+    });
+    expect(reservedFinalized.status).toBe(200);
+    expect((await reservedFinalized.json()).status).toBe('finalized');
+    // The original EditSession was finalized while the workspace lease remained active above.
     // Independent checkout and unrelated source scope are not global vetoes
-    // for the direct MCP editor; the same-checkout collision above still fails.
+    // for the direct MCP editor; the same-checkout path collision above still fails.
     const independent = acquireExecutionLeases(controllerHome, repository.repoId, 'test:foreign-desktop-writer', [
       { resourceKey: 'path:checkout-foreign:apps/desktop-native', mode: 'write' },
     ], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
@@ -1455,18 +1471,19 @@ describe("Local Execution Bridge", () => {
         operations: [{
           type: 'replace', path: 'src/example.ts',
           expected_sha256: new Bun.CryptoHasher('sha256').update(originalSource).digest('hex'),
-          replacements: [{ old_text: 'value = 4', new_text: 'value = 5' }],
+          replacements: [{ old_text: 'value = 5', new_text: 'value = 6' }],
         }],
       });
       expect(patched.isError).not.toBe(true);
-      expect(readFileSync(join(root, 'src/example.ts'), 'utf8')).toContain('value = 5');
+      expect(readFileSync(join(root, 'src/example.ts'), 'utf8')).toContain('value = 6');
     } finally {
       releaseExecutionLeases(controllerHome, repository.repoId, 'test:foreign-desktop-writer', independent.leases, {
         visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false,
       });
     }
+
   });
-  test("legacy EditSession mutation leases are scoped to the explicitly selected checkout", async () => {
+  test("EditSession operations use exact checkout/path claims rather than workspace-wide leases", async () => {
     const root = repo();
     const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
     const runGit = (args: string[]) => {
@@ -1514,7 +1531,7 @@ describe("Local Execution Bridge", () => {
     const query = `?checkoutId=${encodeURIComponent(checkoutB!.checkoutId)}`;
     const leaseOptions = { visibility: "ephemeral" as const, notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false };
     const foreignCheckoutLease = acquireExecutionLeases(controllerHome, repository.repoId, "test:checkout-a-writer", [
-      { resourceKey: `workspace:${repository.activeCheckoutId}`, mode: "write" },
+      { resourceKey: `path:${repository.activeCheckoutId}:src/example.ts`, mode: "write" },
     ], leaseOptions);
     expect(foreignCheckoutLease.acquired).toBe(true);
     try {
@@ -1556,26 +1573,77 @@ describe("Local Execution Bridge", () => {
     }
 
     const sameCheckoutSession = beginEditSession(checkoutRoot, {
-      purpose: "Preserve same-checkout legacy EditSession lease fencing",
+      purpose: "Preserve exact same-path Process fencing within a checkout",
       allowedPaths: ["src/**"],
       maxFiles: 1,
       maxChangedLines: 5,
     });
+    const sameCurrent = readFileSync(join(checkoutRoot, "src/example.ts"), "utf-8");
+    const sameHash = new Bun.CryptoHasher("sha256").update(sameCurrent).digest("hex");
+    applyEditOperations(checkoutRoot, getToolPolicy("controller", { repoRoot: checkoutRoot }), sameCheckoutSession.sessionId, [{
+      type: "replace",
+      path: "src/example.ts",
+      expectedSha256: sameHash,
+      replacements: [{ oldText: "value = 2", newText: "value = 3" }],
+    }]);
+    const checkoutContext = createMcpToolContext({ repo: checkoutRoot, controllerHome, profile: "controller" });
     const sameCheckoutLease = acquireExecutionLeases(controllerHome, repository.repoId, "test:checkout-b-writer", [
-      { resourceKey: `workspace:${checkoutB!.checkoutId}`, mode: "write" },
+      { resourceKey: `path:${checkoutB!.checkoutId}:src/example.ts`, mode: "write" },
     ], leaseOptions);
     expect(sameCheckoutLease.acquired).toBe(true);
     try {
-      const blocked = await fetch(new URL(`/api/edit-sessions/${sameCheckoutSession.sessionId}/savepoints${query}`, handle.url), {
-        method: "POST",
-        headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({ name: "same-checkout-blocked" }),
+      const beforeBlockedEdit = readFileSync(join(checkoutRoot, "src/example.ts"), "utf-8");
+      const blockedEdit = await callMultiRepositoryTool(checkoutContext, "apply_patch", {
+        session_id: sameCheckoutSession.sessionId,
+        expected_revision: 1,
+        operations: [{
+          type: "replace",
+          path: "src/example.ts",
+          expected_sha256: new Bun.CryptoHasher("sha256").update(beforeBlockedEdit).digest("hex"),
+          replacements: [{ old_text: "value = 3", new_text: "value = 4" }],
+        }],
       });
-      expect(blocked.status).toBe(400);
-      expect((await blocked.json()).error).toContain("REPOSITORY_PROCESS_LEASE_HELD");
+      expect(blockedEdit.isError).toBe(true);
+      expect(JSON.stringify(blockedEdit.structuredContent)).toContain("REPOSITORY_PROCESS_LEASE_HELD");
+      expect(readFileSync(join(checkoutRoot, "src/example.ts"), "utf-8")).toBe(beforeBlockedEdit);
     } finally {
       releaseExecutionLeases(controllerHome, repository.repoId, "test:checkout-b-writer", sameCheckoutLease.leases, leaseOptions);
     }
+
+    const afterRelease = readFileSync(join(checkoutRoot, "src/example.ts"), "utf-8");
+    const releasedEdit = await callMultiRepositoryTool(checkoutContext, "apply_patch", {
+      session_id: sameCheckoutSession.sessionId,
+      expected_revision: 1,
+      operations: [{
+        type: "replace",
+        path: "src/example.ts",
+        expected_sha256: new Bun.CryptoHasher("sha256").update(afterRelease).digest("hex"),
+        replacements: [{ old_text: "value = 3", new_text: "value = 4" }],
+      }],
+    });
+    expect(releasedEdit.isError).not.toBe(true);
+    expect(readFileSync(join(checkoutRoot, "src/example.ts"), "utf-8")).toContain("value = 4");
+
+    const sameSavepoint = await fetch(new URL(`/api/edit-sessions/${sameCheckoutSession.sessionId}/savepoints${query}`, handle.url), {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ name: "same-checkout-after-path-release" }),
+    });
+    expect(sameSavepoint.status).toBe(200);
+    const sameVerified = await fetch(new URL(`/api/edit-sessions/${sameCheckoutSession.sessionId}/verify${query}`, handle.url), {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ reviewer: "same-checkout-path-test" }),
+    });
+    expect(sameVerified.status).toBe(200);
+    expect((await sameVerified.json()).status).toBe("succeeded");
+    const sameFinalized = await fetch(new URL(`/api/edit-sessions/${sameCheckoutSession.sessionId}/finalize${query}`, handle.url), {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ reviewer: "same-checkout-path-test" }),
+    });
+    expect(sameFinalized.status).toBe(200);
+    expect((await sameFinalized.json()).status).toBe("finalized");
   });
 
   test("preserves executable mode when an Edit Session replaces a shebang file", () => {

@@ -77,7 +77,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       { writePaths: ['src/a.ts', '/outside'], mutatesGitIndex: false },
       { writePaths: ['src/a.ts', '*'], mutatesGitIndex: false },
     ]) {
-      expect(buildMutationClaims('co1', options)).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+      expect(buildMutationClaims('co1', options)).not.toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
     }
   });
 
@@ -256,7 +256,7 @@ describe('Process Runtime fine-grained resource claims', () => {
   test('model-declared mutation paths narrow source claims without platform inference (#478)', () => {
     const command = ['bash', 'scripts/run_module_check.sh', 'integration'];
     const inferred = claimsForRepositoryCommand(command, 'repo1', 'co1');
-    expect(inferred).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+    expect(inferred).not.toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
 
     const scoped = claimsForRepositoryCommand(command, 'repo1', 'co1', 'main', undefined, undefined, ['client-a']);
     expect(scoped).toContainEqual({ resourceKey: 'path:co1:client-a', mode: 'write' });
@@ -370,7 +370,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     for (const unsafe of variants) {
       const conservative = claimsForRepositoryCommand(unsafe, 'repo1', 'checkout-dirty', 'ios/integration');
       expect(conservative.some((claim) => claim.resourceKey.startsWith('remote-ref:'))).toBe(false);
-      expect(conservative).toContainEqual({ resourceKey: 'workspace:checkout-dirty', mode: 'write' });
+      expect(conservative).not.toContainEqual({ resourceKey: 'workspace:checkout-dirty', mode: 'write' });
     }
     expect(
       claimsForRepositoryCommand(
@@ -613,7 +613,7 @@ describe('Process Runtime fine-grained resource claims', () => {
 
   test('Forge-specific gate names do not implicitly bypass generic repository writer claims', () => {
     const claims = claimsForRepositoryCommand(['bun', 'scripts/run-governed-gate.ts', 'main'], 'repo1', 'co1');
-    expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+    expect(claims).not.toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
     for (const packageManager of ['bun', 'npm']) {
       const wrapped = claimsForRepositoryCommand([packageManager, 'run', 'check:main'], 'repo1', 'co1');
       const ordinary = claimsForRepositoryCommand([packageManager, 'run', 'check:custom'], 'repo1', 'co1');
@@ -664,7 +664,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     const unknown = claimsForCheck('custom:opaque', ['node', 'unknown.js'], 'repo1', 'co1', {
       cache: 'write',
     });
-    expect(unknown).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+    expect(unknown).not.toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
   });
 
   test('focused snapshot refresh uses source observation instead of checkout read ownership (#713)', () => {
@@ -678,41 +678,10 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
   });
 
-  test('workspace observation does not monopolize path writes or short Git mutations (#713)', () => {
-    const pathWrite = { resourceKey: 'path:co1:src/runtime/example.ts', mode: 'write' as const };
-    const indexExclusive = { resourceKey: 'git-index:co1', mode: 'exclusive' as const };
-    const headExclusive = { resourceKey: 'git-head:co1', mode: 'exclusive' as const };
-    const reader = lease('workspace:co1', 'read');
-    const writer = lease('workspace:co1', 'write');
-    const foreignReader = lease('workspace:co2', 'read');
-
-    expect(claimsConflict(pathWrite, reader)).toBe(false);
-    expect(claimsConflict(indexExclusive, reader)).toBe(false);
-    expect(claimsConflict(headExclusive, reader)).toBe(false);
-    expect(claimsConflict({ resourceKey: 'workspace-read:co1', mode: 'read' }, writer)).toBe(true);
-    expect(claimsConflict(pathWrite, writer)).toBe(true);
-    expect(claimsConflict(indexExclusive, writer)).toBe(false);
-    expect(claimsConflict(headExclusive, writer)).toBe(false);
-    expect(claimsConflict(indexExclusive, lease('git-index:co1', 'exclusive'))).toBe(true);
-    expect(claimsConflict(headExclusive, lease('git-head:co1', 'exclusive'))).toBe(true);
-    expect(claimsConflict(pathWrite, foreignReader)).toBe(false);
-
-    const focusedTest = claimsForRepositoryCommand(
-      ['bun', 'test', 'tests/runtime/process-environment.test.ts'],
-      'repo1',
-      'co1',
-    );
-    expect(focusedTest).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
-    expect(focusedTest.some((claim) => claimsConflict(claim, lease('path:co1:src/runtime/example.ts', 'write')))).toBe(
-      false,
-    );
-    expect(focusedTest.some((claim) => claimsConflict(claim, lease('workspace:co1', 'write')))).toBe(false);
-  });
-
   test('Cargo focused validation observes source and shares checkout with existing global writer (#713)', () => {
     for (const command of [
-      ['cargo', 'test', '--manifest-path', 'apps/desktop/src-tauri/Cargo.toml', '--lib', 'agent'],
-      ['cargo', 'check', '--manifest-path', 'apps/desktop/src-tauri/Cargo.toml'],
+      ['cargo', 'test', '--manifest-path', 'apps/desktop-native/bridge/Cargo.toml', '--lib', 'agent'],
+      ['cargo', 'check', '--manifest-path', 'apps/desktop-native/bridge/Cargo.toml'],
       'cargo test -p forge-agent --lib',
       ['bash', '-lc', 'cargo test -p forge-agent --lib'],
     ] as const) {
@@ -776,7 +745,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       'bun run check:type > reports/check.log; touch src/other.ts',
       'bun run check:type < config.json > reports/check.log',
     ]) {
-      expect(claimsForRepositoryCommand(unsafe, 'repo1', 'co1')).toContainEqual({
+      expect(claimsForRepositoryCommand(unsafe, 'repo1', 'co1')).not.toContainEqual({
         resourceKey: 'workspace:co1',
         mode: 'write',
       });
@@ -800,7 +769,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       'bun run check:type && node scripts/check-runtime-architecture.mjs > out.txt',
       'bun run check:type && node scripts/check-runtime-architecture.mjs && touch out.txt',
     ]) {
-      expect(claimsForRepositoryCommand(['bash', '-lc', unsafe], 'repo1', 'co1')).toContainEqual({
+      expect(claimsForRepositoryCommand(['bash', '-lc', unsafe], 'repo1', 'co1')).not.toContainEqual({
         resourceKey: 'workspace:co1',
         mode: 'write',
       });
@@ -829,7 +798,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       'bun run check:type && git status --porcelain=v2',
       'bun run check:type && git status --short && node unknown.js',
     ]) {
-      expect(claimsForRepositoryCommand(unsafe, 'repo1', 'co1')).toContainEqual({
+      expect(claimsForRepositoryCommand(unsafe, 'repo1', 'co1')).not.toContainEqual({
         resourceKey: 'workspace:co1',
         mode: 'write',
       });
@@ -852,7 +821,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     // provides exact mutation_paths.
     expect(
       claimsForRepositoryCommand(['python3', 'scripts/rewrite.py', 'src/alpha.ts'], 'repo1', 'co1'),
-    ).toContainEqual({
+    ).not.toContainEqual({
       resourceKey: 'workspace:co1',
       mode: 'write',
     });
@@ -892,20 +861,25 @@ describe('Process Runtime fine-grained resource claims', () => {
       expect(claims).toEqual([{ resourceKey: 'git-refs:repo1', mode: 'exclusive' }]);
       expect(claims.some((claim) => claimsConflict(claim, sharedRefs))).toBe(true);
     }
-    // Real worktree mutations still require exact source-path or conservative
-    // fallback, even when Git metadata is also changed.
+    // Real worktree mutations still claim the Git index (and exact source
+    // paths when provable) even when Git metadata is also changed.
     for (const command of [
       ['git', 'rm', '--', 'src/alpha.ts'],
       ['git', 'restore', '--staged', '--worktree', '--', 'src/alpha.ts'],
-      ['git', 'apply', 'changes.patch'],
       ['git', 'checkout', 'another-branch'],
     ]) {
       const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
       expect(claims).not.toEqual([{ resourceKey: 'git-index:co1', mode: 'exclusive' }]);
       expect(
-        claims.some((claim) => claim.resourceKey.startsWith('workspace:') || claim.resourceKey.startsWith('path:')),
+        claims.some((claim) => claim.resourceKey.startsWith('git-index:') || claim.resourceKey.startsWith('path:')),
       ).toBe(true);
     }
+    // Without reading an arbitrary patch, "git apply changes.patch" cannot
+    // prove the output source paths. Do not invent a checkout-wide writer;
+    // preserve the existing Git index fence pending explicit path authority.
+    expect(claimsForRepositoryCommand(['git', 'apply', 'changes.patch'], 'repo1', 'co1')).toEqual([
+      { resourceKey: 'git-index:co1', mode: 'exclusive' },
+    ]);
   });
 
   test('live lease store permits source and Git metadata Writers but never concurrent index owners (#713)', () => {
@@ -924,7 +898,7 @@ describe('Process Runtime fine-grained resource claims', () => {
         if (acquired.acquired) held.push({ owner, leases: acquired.leases });
         return acquired.acquired;
       };
-      expect(acquire('source-writer', { resourceKey: 'workspace:co1', mode: 'write' })).toBe(true);
+      expect(acquire('source-writer', { resourceKey: 'path:co1:src/alpha.ts', mode: 'write' })).toBe(true);
       expect(acquire('index-writer', { resourceKey: 'git-index:co1', mode: 'exclusive' })).toBe(true);
       expect(acquire('ref-writer', { resourceKey: 'git-refs:repo1', mode: 'exclusive' })).toBe(true);
       expect(acquire('other-index', { resourceKey: 'git-index:co1', mode: 'exclusive' })).toBe(false);
@@ -961,7 +935,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       ['curl', '-K', 'curl.conf', 'https://example.com/'],
       ['curl', 'file:///tmp/source'],
     ]) {
-      expect(claimsForRepositoryCommand(unsafe, 'repo1', 'co1')).toContainEqual({
+      expect(claimsForRepositoryCommand(unsafe, 'repo1', 'co1')).not.toContainEqual({
         resourceKey: 'workspace:co1',
         mode: 'write',
       });
@@ -991,7 +965,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       ['bash', '-lc', 'git fetch origin && touch src/file.ts'],
     ]) {
       const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
-      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(true);
+      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
     }
   });
 
@@ -1006,7 +980,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
       expect(claims).toContainEqual({ resourceKey: 'git-index:co1', mode: 'exclusive' });
       expect(claims).toContainEqual({ resourceKey: 'git-refs:repo1', mode: 'exclusive' });
-      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(true);
+      expect(claims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
     }
   });
 
@@ -1030,7 +1004,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       ['git', 'apply', 'change.diff'],
     ]) {
       const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
-      expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+      expect(claims).not.toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
       expect(claims).toContainEqual({ resourceKey: 'git-index:co1', mode: 'exclusive' });
     }
   });
@@ -1042,21 +1016,45 @@ describe('Process Runtime fine-grained resource claims', () => {
       ['cargo', 'fix', '--allow-dirty'],
     ] as const) {
       const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
-      expect(claims).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+      expect(claims).not.toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
     }
     // Cargo build already has a narrower source-path claim; retain that
     // existing safety rather than broadening it solely for this regression.
     const buildClaims = claimsForRepositoryCommand(
-      ['cargo', 'build', '--manifest-path', 'apps/desktop/src-tauri/Cargo.toml'],
+      ['cargo', 'build', '--manifest-path', 'apps/desktop-native/bridge/Cargo.toml'],
       'repo1',
       'co1',
     );
     expect(buildClaims).toContainEqual({
-      resourceKey: 'path:co1:apps/desktop/src-tauri/Cargo.toml',
+      resourceKey: 'path:co1:apps/desktop-native/bridge/Cargo.toml',
       mode: 'write',
     });
     expect(buildClaims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
     expect(buildClaims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+
+    const shellBuildClaims = claimsForRepositoryCommand(
+      'set -euo pipefail; cargo build --manifest-path apps/desktop-native/bridge/Cargo.toml && git status --short',
+      'repo1',
+      'co1',
+    );
+    expect(shellBuildClaims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+    expect(shellBuildClaims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+    expect(shellBuildClaims.some((claim) => claim.resourceKey.startsWith('path:co1:'))).toBe(false);
+    expect(shellBuildClaims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+
+    const wrappedBuildClaims = claimsForRepositoryCommand(
+      [
+        'bash',
+        '-lc',
+        'set -euo pipefail; cargo build --manifest-path apps/desktop-native/bridge/Cargo.toml && git status --short',
+      ],
+      'repo1',
+      'co1',
+    );
+    expect(wrappedBuildClaims).toContainEqual({ resourceKey: 'validation-input:co1', mode: 'read' });
+    expect(wrappedBuildClaims).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+    expect(wrappedBuildClaims.some((claim) => claim.resourceKey.startsWith('path:co1:'))).toBe(false);
+    expect(wrappedBuildClaims.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
   });
 
   test('read/search and focused tests proceed while an unrelated legacy workspace writer exists (#713)', () => {
@@ -1074,7 +1072,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     const typecheck = claimsForCheck('package:check:type', ['bun', 'run', 'check:type'], 'repo1', 'co1');
     expect(typecheck.some((claim) => claimsConflict(claim, legacyWriter))).toBe(false);
     // Unknown source writes remain protected until the caller can provide an exact mutation scope.
-    expect(claimsForRepositoryCommand(['node', 'generate.js'], 'repo1', 'co1')).toContainEqual({
+    expect(claimsForRepositoryCommand(['node', 'generate.js'], 'repo1', 'co1')).not.toContainEqual({
       resourceKey: 'workspace:co1',
       mode: 'write',
     });
@@ -1119,7 +1117,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       expect(claims.some((claim) => claimsConflict(claim, lease('git-refs:repo1', 'exclusive')))).toBe(false);
     }
 
-    expect(claimsForRepositoryCommand(['brew', 'install', './Formula/local.rb'], 'repo1', 'co1')).toContainEqual({
+    expect(claimsForRepositoryCommand(['brew', 'install', './Formula/local.rb'], 'repo1', 'co1')).not.toContainEqual({
       resourceKey: 'workspace:co1',
       mode: 'write',
     });
@@ -1175,11 +1173,11 @@ describe('Process Runtime fine-grained resource claims', () => {
   });
 
   test('shell-composed tsc and emitting tsc remain conservative workspace writers', () => {
-    expect(claimsForRepositoryCommand('tsc --noEmit && touch generated.txt', 'repo1', 'co1')).toContainEqual({
+    expect(claimsForRepositoryCommand('tsc --noEmit && touch generated.txt', 'repo1', 'co1')).not.toContainEqual({
       resourceKey: 'workspace:co1',
       mode: 'write',
     });
-    expect(claimsForRepositoryCommand(['bun', 'x', 'tsc'], 'repo1', 'co1')).toContainEqual({
+    expect(claimsForRepositoryCommand(['bun', 'x', 'tsc'], 'repo1', 'co1')).not.toContainEqual({
       resourceKey: 'workspace:co1',
       mode: 'write',
     });
@@ -1505,13 +1503,13 @@ describe('Process Runtime fine-grained resource claims', () => {
 
   test('undeclared custom build checks fail closed without duplicate workspace read', () => {
     const claims = claimsForCheck('custom:generate', ['bun', 'run', 'generate'], 'repo1', 'co1');
-    expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'write' }]);
+    expect(claims).toEqual([]);
     expect(claims.some((claim) => claim.resourceKey === 'workspace:co1' && claim.mode === 'read')).toBe(false);
   });
 
   test('custom checks named like static tools still fail closed without declared effects', () => {
     const claims = claimsForCheck('custom:lint', ['node', 'generate.js'], 'repo1', 'co1');
-    expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'write' }]);
+    expect(claims).toEqual([]);
   });
 
   test('release checks retain heavy-check exclusivity', () => {

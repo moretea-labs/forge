@@ -114,7 +114,7 @@ if (swiftFiles.length > 0) {
 if (rustFiles.length > 0) {
   // The desktop crate declares edition 2021. Raw rustfmt otherwise defaults to
   // Rust 2015 and rejects valid async syntax on Linux CI.
-  const legacyDesktopMain = 'apps/desktop/src-tauri/src/main.rs';
+  const legacyDesktopMain = 'apps/desktop-native/bridge/src/main.rs';
   const strictRustFiles = rustFiles.filter((path) => path !== legacyDesktopMain);
   if (strictRustFiles.length > 0) {
     runTool('Rust formatting', 'rustfmt', [

@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { createServer, type Server } from 'http';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { describeFailure } from '../../../packages/protocols/failure';
-import { ControllerLockContentionError, withControllerLock } from '../../effects/controller-locks';
+import { ControllerLockContentionError, withControllerLock, withControllerLockAsync } from '../../effects/controller-locks';
 import {
   cancelAgentJob,
   getAgentJob,
@@ -2553,21 +2553,25 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
       // Verification persists EditSession evidence and may run blocking checks.
       // The existing worker keeps those checks off the Local Bridge event loop.
       const repository = requestRepositorySelection(request, options, controllerHome);
-      const verified = await withRepositoryMutationExclusionAsync(
+      // Verification persists session evidence, but it must not hold a checkout-wide
+      // ControllerLock while checks run. Serialize only transitions for this session;
+      // source drift is detected by the EditSession's own before/after fingerprints.
+      const sessionId = request.params.sessionId;
+      const verified = await withControllerLockAsync(
         controllerHome,
-        repository.repoId,
-        'local_bridge:verify_edit_session',
+        { scope: 'run', repoId: repository.repoId, runId: `edit-session-${sessionId}` },
+        `local_bridge:verify_edit_session:${sessionId}`,
         () =>
           runEditSessionMutationInWorker({
             kind: 'verify',
             repoRoot: repository.canonicalRoot,
-            sessionId: request.params.sessionId,
+            sessionId,
             checkIds: Array.isArray(request.body?.checkIds) ? request.body.checkIds.map(String) : undefined,
             reviewer: queryString(request.body?.reviewer) ?? 'local-controller-human',
             note: queryString(request.body?.note),
           }),
         undefined,
-        [],
+        0,
       );
       response.status(200).json({
         accepted: true,
@@ -2584,21 +2588,24 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
   app.post('/api/edit-sessions/:sessionId/finalize', async (request, response) => {
     try {
       const repository = requestRepositorySelection(request, options, controllerHome);
+      // Finalization is a metadata transition after exact session hashes are
+      // revalidated. It needs same-session serialization, not checkout ownership.
+      const sessionId = request.params.sessionId;
       response.json(
-        await withRepositoryMutationExclusionAsync(
+        await withControllerLockAsync(
           controllerHome,
-          repository.repoId,
-          'local_bridge:finalize_edit_session',
+          { scope: 'run', repoId: repository.repoId, runId: `edit-session-${sessionId}` },
+          `local_bridge:finalize_edit_session:${sessionId}`,
           () =>
             runEditSessionMutationInWorker({
               kind: 'finalize',
               repoRoot: repository.canonicalRoot,
-              sessionId: request.params.sessionId,
+              sessionId,
               reviewer: queryString(request.body?.reviewer) ?? 'local-controller-human',
               note: queryString(request.body?.note),
             }),
           undefined,
-          [],
+          0,
         ),
       );
     } catch (error) {

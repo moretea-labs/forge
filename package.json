@@ -87,7 +87,7 @@
   },
   "scripts": {
     "check:design": "npx -y @google/design.md@0.4.0 lint DESIGN.md",
-    "check:desktop-client": "npm --prefix apps/desktop run check",
+    "check:desktop-client": "cargo check --manifest-path apps/desktop-native/bridge/Cargo.toml && swift build --package-path apps/desktop-native",
     "benchmark:controller-hotpath": "bun scripts/benchmark-controller-hotpath.ts",
     "benchmark:computer-hotpath": "bun scripts/benchmark-computer-hotpath.ts",
     "benchmark:thin-harness-mcp-e2e": "bun scripts/benchmark-thin-harness-mcp-e2e.ts --json",
@@ -106,7 +106,7 @@
     "check:bootstrap-files": "bun test tests/bootstrap-files.test.ts",
     "test": "bun scripts/test-governance.ts affected",
     "test:browser-live": "bun tests/live/browser-native-silent.e2e.ts",
-    "test:desktop-native": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --bin forge-desktop && bun test ./apps/desktop/tests/agent-context.test.ts && bun test ./tests/runtime/desktop-native-cognition.test.ts",
+    "test:desktop-native": "cargo test --manifest-path apps/desktop-native/bridge/Cargo.toml --bin forge-desktop && bun test ./tests/runtime/desktop-native-cognition.test.ts",
     "test:core": "bun scripts/test-governance.ts core",
     "test:integration": "bun scripts/test-governance.ts integration",
     "test:infrastructure": "bun scripts/test-governance.ts infrastructure",

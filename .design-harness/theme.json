@@ -1,30 +1,52 @@
 {
   "schemaVersion": 1,
   "meta": {
-    "name": "Forge Glass Day",
-    "version": "0.2.0"
+    "name": "Forge Glass",
+    "version": "0.3.0"
   },
   "color": {
     "canvas": "#FFFFFF",
-    "canvasRaised": "#FAFAFB",
+    "canvasRaised": "#F8F9FB",
     "surface": "#FFFFFF",
-    "surfaceMuted": "#F5F6F8",
-    "surfaceGlass": "rgba(255,255,255,.84)",
-    "sidebarGlass": "rgba(240,241,243,.70)",
-    "popoverGlass": "rgba(253,253,253,.97)",
-    "border": "#E7E8EB",
-    "borderStrong": "#D7D9DE",
-    "textPrimary": "#252930",
-    "textSecondary": "#6C737D",
-    "textTertiary": "#9298A1",
-    "accent": "#6856B4",
-    "accentSoft": "rgba(104,86,180,.10)",
-    "focus": "#6856B4",
-    "hover": "rgba(36,43,55,.05)",
-    "success": "#397958",
-    "warning": "#A16B2D",
-    "danger": "#AD5553",
-    "composerGlass": "rgba(248,249,251,.85)"
+    "surfaceMuted": "#F3F4F7",
+    "surfaceGlass": "rgba(255,255,255,.88)",
+    "sidebarGlass": "rgba(238,240,243,.82)",
+    "popoverGlass": "rgba(254,254,255,.98)",
+    "border": "#EAEBEE",
+    "borderStrong": "#D5D7DC",
+    "textPrimary": "#1E2228",
+    "textSecondary": "#62686F",
+    "textTertiary": "#959BA3",
+    "accent": "#5B4EAA",
+    "accentSoft": "rgba(91,78,170,.09)",
+    "focus": "#5B4EAA",
+    "hover": "rgba(30,34,40,.05)",
+    "success": "#35775A",
+    "warning": "#9A6428",
+    "danger": "#A84E4D",
+    "composerGlass": "rgba(246,248,250,.92)"
+  },
+  "colorDark": {
+    "canvas": "#141518",
+    "canvasRaised": "#1C1E22",
+    "surface": "#1E2126",
+    "surfaceMuted": "#252830",
+    "surfaceGlass": "rgba(30,33,38,.92)",
+    "sidebarGlass": "rgba(20,22,27,.85)",
+    "popoverGlass": "rgba(28,31,36,.98)",
+    "border": "#2E3038",
+    "borderStrong": "#3A3D47",
+    "textPrimary": "#E8EAF0",
+    "textSecondary": "#8E94A0",
+    "textTertiary": "#5E646E",
+    "accent": "#8878D6",
+    "accentSoft": "rgba(136,120,214,.12)",
+    "focus": "#8878D6",
+    "hover": "rgba(255,255,255,.055)",
+    "success": "#4A9970",
+    "warning": "#C0803A",
+    "danger": "#C26260",
+    "composerGlass": "rgba(26,28,34,.95)"
   },
   "spacing": {
     "xxs": 2,
@@ -37,25 +59,25 @@
     "xxxl": 48
   },
   "radius": {
-    "sm": 8,
-    "control": 12,
-    "surface": 20,
+    "sm": 6,
+    "control": 10,
+    "surface": 14,
     "pill": 999
   },
   "shadow": {
-    "popover": "0 14px 32px rgba(25,35,50,.11), 0 2px 6px rgba(25,35,50,.035)",
-    "composer": "0 5px 24px rgba(30,38,50,.06), 0 1px 3px rgba(30,38,50,.045)"
+    "popover": "0 12px 36px rgba(20,30,46,.12), 0 2px 6px rgba(20,30,46,.04)",
+    "composer": "0 4px 20px rgba(24,32,44,.07), 0 1px 3px rgba(24,32,44,.04)"
   },
   "typography": {
     "title": {
-      "size": 21,
-      "lineHeight": 29,
-      "weight": 635
+      "size": 20,
+      "lineHeight": 28,
+      "weight": 630
     },
     "section": {
-      "size": 15,
-      "lineHeight": 21,
-      "weight": 620
+      "size": 14,
+      "lineHeight": 20,
+      "weight": 610
     },
     "body": {
       "size": 13,

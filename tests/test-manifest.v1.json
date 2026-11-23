@@ -675,6 +675,10 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
+    "tests/runtime/retired-work-plan-compat.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/repository-command-lifecycle.test.ts": {
       "module": "repository",
       "resource": "git-worktree"

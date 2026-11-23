@@ -60,7 +60,7 @@ forbid(
 // The desktop native Agent local harness must execute tools through the
 // protocol-neutral dispatchers, never through the MCP adapter surface.
 forbid(
-  'apps/desktop/src-tauri/resources/forge-local-tool.mjs',
+  'apps/desktop-native/bridge/resources/forge-local-tool.mjs',
   /adapters\/mcp/,
   'local Agent harness must not import the MCP adapter execution owner',
 );

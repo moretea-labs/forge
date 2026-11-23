@@ -5,7 +5,7 @@ export type AssistantPluginHealthState = 'ready' | 'disabled' | 'degraded' | 'er
 export type AssistantPluginActionRisk = 'readonly' | 'workspace_write' | 'remote_write' | 'destructive';
 export type AssistantPluginActionConfirmation = 'none' | 'authorization' | 'strong_confirmation';
 export type AssistantPluginForegroundEffect = 'none' | 'possible' | 'required';
-export type AssistantPluginResource = 'repo-state' | 'workspace' | 'remote' | 'git-refs' | 'provider-state';
+export type AssistantPluginResource = 'repo-state' | 'remote' | 'git-refs' | 'provider-state';
 
 export interface AssistantPluginAuthorizationTarget {
   /** Stable provider resource class, for example ios-physical-device. */

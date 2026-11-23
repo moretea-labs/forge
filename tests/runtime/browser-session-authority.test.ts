@@ -650,6 +650,97 @@ describe('browser session compatibility on Computer target authority', () => {
     })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE' });
   });
 
+  test('explicit Chrome adoption refreshes cached exact-tab URL before matching', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeControllerPluginConfig(controllerHome, 'browser', {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+
+    const separator = String.fromCharCode(30);
+    const placeholderUrl = 'https://chatgpt.com/c/local-chatgpt%3Aplaceholder';
+    const actualUrl = 'https://chatgpt.com/';
+    let currentUrl = placeholderUrl;
+    let metadataReads = 0;
+    const scripts: string[] = [];
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        scripts.push(script);
+        metadataReads += 1;
+        return [
+          'false', currentUrl, 'ChatGPT', '0', '0', '1200', '800', '7', '9', 'false', 'false',
+        ].join(separator);
+      },
+    });
+
+    const ref = { windowId: '7', tabId: '9' };
+    const cached = await reattachMacOsBrowserOwnedPage('chrome', ref, 1_000);
+    expect(cached.page.url()).toBe(placeholderUrl);
+
+    // The exact same native tab now reports its real URL. Explicit adoption
+    // must refresh this metadata instead of trusting the warm cached snapshot.
+    currentUrl = actualUrl;
+    const explicit = await executeBrowserPluginAction({
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      actionId: 'create_session',
+      requestId: 'native-adoption-refresh-cached-url',
+      args: {
+        url: actualUrl,
+        session_id: 'native-adoption-refresh-cached-url',
+        native_browser_product: 'chrome',
+        native_window_id: ref.windowId,
+        native_tab_id: ref.tabId,
+      },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+
+    expect((explicit.session as { url?: string }).url).toBe(actualUrl);
+    expect(cached.page.url()).toBe(actualUrl);
+    expect(explicit.navigation).toMatchObject({ url: actualUrl });
+    expect(explicit.browserConnection).toMatchObject({
+      provider: 'macos-apple-events',
+      tab: { windowId: ref.windowId, tabId: ref.tabId, ownership: 'user_owned' },
+    });
+    expect(metadataReads).toBeGreaterThanOrEqual(2);
+    expect(scripts.every((script) => script.includes('URL of targetTab as text'))).toBe(true);
+    expect(scripts.some((script) => script.includes('set URL of targetTab'))).toBe(false);
+
+    // Refreshing metadata does not weaken URL matching: a different live URL
+    // on the same exact tab remains a terminal adoption mismatch.
+    currentUrl = 'https://example.com/unrelated';
+    await expect(executeBrowserPluginAction({
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      actionId: 'create_session',
+      requestId: 'native-adoption-rejects-refreshed-unrelated-url',
+      args: {
+        url: actualUrl,
+        session_id: 'native-adoption-rejects-refreshed-unrelated-url',
+        native_browser_product: 'chrome',
+        native_window_id: ref.windowId,
+        native_tab_id: ref.tabId,
+      },
+      origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH' });
+    expect(metadataReads).toBeGreaterThanOrEqual(3);
+    expect(scripts.some((script) => script.includes('set URL of targetTab'))).toBe(false);
+  });
+
   test('Computer fresh sessions never adopt an unrelated user-owned native tab by URL', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(repoA, { recursive: true });

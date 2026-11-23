@@ -33,14 +33,14 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 swift test --package-path apps/desktop-native
 swift build -c release --package-path apps/desktop-native
-cargo build --release --manifest-path apps/desktop/src-tauri/Cargo.toml
+cargo build --release --manifest-path apps/desktop-native/bridge/Cargo.toml
 
 mkdir -p "$TMP/Contents/MacOS" "$TMP/Contents/Resources"
 
 cp apps/desktop-native/.build/out/Products/Release/ForgeNative "$TMP/Contents/MacOS/Forge"
-cp apps/desktop/src-tauri/target/release/forge-desktop "$TMP/Contents/MacOS/forge-desktop"
-cp apps/desktop/src-tauri/icons/icon.icns "$TMP/Contents/Resources/icon.icns"
-cp apps/desktop/src-tauri/resources/forge-local-tool.mjs "$TMP/Contents/Resources/forge-local-tool.mjs"
+cp apps/desktop-native/bridge/target/release/forge-desktop "$TMP/Contents/MacOS/forge-desktop"
+cp apps/desktop-native/bridge/icons/icon.icns "$TMP/Contents/Resources/icon.icns"
+cp apps/desktop-native/bridge/resources/forge-local-tool.mjs "$TMP/Contents/Resources/forge-local-tool.mjs"
 
 cat > "$TMP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -123,8 +123,8 @@ rm -rf "$APP"
 mkdir -p "$HOME/Applications"
 mv "$TMP" "$APP"
 
-rm -rf apps/desktop/src-tauri/target/release/bundle/macos/ForgeCSSStartupProbe.app
-rm -rf apps/desktop/src-tauri/target/release/bundle/macos/ForgeBootstrapProbe.app
+rm -rf apps/desktop-native/bridge/target/release/bundle/macos/ForgeCSSStartupProbe.app
+rm -rf apps/desktop-native/bridge/target/release/bundle/macos/ForgeBootstrapProbe.app
 
 open "$APP"
 

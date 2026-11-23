@@ -1255,6 +1255,9 @@ async fn create_plan(
     if !has_repository_or_project_scope(repo_id.as_ref(), project_id.as_ref()) {
         return Err("FORGE_DESKTOP_PLAN_CREATE_SCOPE_REQUIRED".to_string());
     }
+    if project_id.as_deref().is_none_or(|value| value.trim().is_empty()) {
+        return Err("FORGE_NATIVE_BRIDGE_projectId_REQUIRED".to_string());
+    }
     if plan_id.trim().is_empty() || objective.trim().is_empty() {
         return Err("FORGE_DESKTOP_PLAN_CREATE_ARGUMENT_REQUIRED".to_string());
     }
@@ -1297,6 +1300,9 @@ async fn revise_plan(
 ) -> Result<Value, String> {
     if !has_repository_or_project_scope(repo_id.as_ref(), project_id.as_ref()) {
         return Err("FORGE_DESKTOP_PLAN_REVISE_SCOPE_REQUIRED".to_string());
+    }
+    if project_id.as_deref().is_none_or(|value| value.trim().is_empty()) {
+        return Err("FORGE_NATIVE_BRIDGE_projectId_REQUIRED".to_string());
     }
     if plan_id.trim().is_empty() || expected_revision == 0 || objective.trim().is_empty() {
         return Err("FORGE_DESKTOP_PLAN_REVISE_ARGUMENT_INVALID".to_string());
@@ -5097,10 +5103,12 @@ mod tests {
                         json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}).to_string(),
                         json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}).to_string(),
                         json!({"type":"message_delta","usage":{"output_tokens":1}}).to_string(),
+                        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}).to_string(),
                         json!({"type":"message_stop"}).to_string()
                     ],
                     _ => vec![
                         json!({"choices":[{"delta":{"content":"OK"}}]}).to_string(),
+                        json!({"choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(),
                         "[DONE]".to_string()
                     ]
                 };
@@ -5874,6 +5882,7 @@ mod tests {
         let mut openai = StreamedModelRound::default();
         openai.consume("openai", &json!({"choices":[{"delta":{"content":"done"}}]}).to_string(), &host, "usage-openai").unwrap();
         openai.consume("openai", &json!({"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7}}).to_string(), &host, "usage-openai").unwrap();
+        openai.consume("openai", &json!({"choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(), &host, "usage-openai").unwrap();
         openai.consume("openai", "[DONE]", &host, "usage-openai").unwrap();
         let mut openai_totals = LocalTokenTotals::default();
         openai_totals.observe(&openai.finish("openai").unwrap(), "openai");
@@ -5883,6 +5892,7 @@ mod tests {
         anthropic.consume("anthropic", &json!({"type":"message_start","message":{"usage":{"input_tokens":23,"output_tokens":0}}}).to_string(), &host, "usage-anthropic").unwrap();
         anthropic.consume("anthropic", &json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}).to_string(), &host, "usage-anthropic").unwrap();
         anthropic.consume("anthropic", &json!({"type":"message_delta","usage":{"output_tokens":12}}).to_string(), &host, "usage-anthropic").unwrap();
+        anthropic.consume("anthropic", &json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}).to_string(), &host, "usage-anthropic").unwrap();
         anthropic.consume("anthropic", &json!({"type":"message_stop"}).to_string(), &host, "usage-anthropic").unwrap();
         let mut anthropic_totals = LocalTokenTotals::default();
         anthropic_totals.observe(&anthropic.finish("anthropic").unwrap(), "anthropic");
@@ -5900,6 +5910,7 @@ mod tests {
 
         let mut incomplete = StreamedModelRound::default();
         incomplete.consume("anthropic", &json!({"type":"message_start","message":{"usage":{"input_tokens":23}}}).to_string(), &host, "usage-incomplete").unwrap();
+        incomplete.consume("anthropic", &json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}).to_string(), &host, "usage-incomplete").unwrap();
         incomplete.consume("anthropic", &json!({"type":"message_stop"}).to_string(), &host, "usage-incomplete").unwrap();
         let mut incomplete_totals = LocalTokenTotals::default();
         incomplete_totals.observe(&incomplete.finish("anthropic").unwrap(), "anthropic");

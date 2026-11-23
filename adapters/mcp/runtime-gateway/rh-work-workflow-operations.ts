@@ -23,12 +23,24 @@ import {
 import {
   executeRegisteredWorkflow,
   observeAndReconcileRegisteredWorkflow,
+  reconcileRegisteredWorkflow,
 } from '../../../src/runtime/workflows/runtime';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { result } from './result-adapter';
 
 type RepositorySelection = Parameters<typeof selectRepositoryCheckout>[0];
+
+function reconcileWorkflowWithProcessFallback(input: Parameters<typeof observeAndReconcileRegisteredWorkflow>[0]) {
+  return observeAndReconcileRegisteredWorkflow(input).catch((error: unknown) => {
+    if (error instanceof Error && error.message === 'WORKFLOW_RECONCILIATION_CAPABILITY_REQUIRED') {
+      // Script steps are reconciled from their original canonical Process receipt;
+      // they do not need (and must not invent) an external capability observation.
+      return reconcileRegisteredWorkflow(input);
+    }
+    throw error;
+  });
+}
 
 /**
  * Dedicated Workflow dispatch retained under the compatibility rh_work namespace.
@@ -143,7 +155,7 @@ export async function callRhWorkWorkflowOperation(
     if (operation === 'workflow_reconcile') {
       const reconciliationRequestId = String(args.workflow_reconciliation_request_id ?? '').trim();
       if (!reconciliationRequestId) throw new Error('WORKFLOW_RECONCILIATION_REQUEST_ID_REQUIRED');
-      const reconciled = await observeAndReconcileRegisteredWorkflow({ ...base, reconciliationRequestId });
+      const reconciled = await reconcileWorkflowWithProcessFallback({ ...base, reconciliationRequestId });
       if (reconciled.status === 'running') {
         const resumed = await executeRegisteredWorkflow(base);
         return result(

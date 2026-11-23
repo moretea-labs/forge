@@ -183,11 +183,8 @@ function capabilities(): AssistantPluginCapability[] {
 }
 
 function actions(): AssistantPluginActionDescriptor[] {
-  const readClaims = [{ resource: 'workspace' as const, mode: 'read' as const }];
-  const writeClaims = [
-    { resource: 'workspace' as const, mode: 'write' as const },
-    { resource: 'repo-state' as const, mode: 'write' as const },
-  ];
+  const readClaims: Array<{ resource: 'repo-state'; mode: 'read' }> = [];
+  const writeClaims = [{ resource: 'repo-state' as const, mode: 'write' as const }];
   const providerMutationClaims = [{ resource: 'provider-state' as const, mode: 'write' as const }];
   const providerReadClaims = [{ resource: 'provider-state' as const, mode: 'read' as const }];
   return [

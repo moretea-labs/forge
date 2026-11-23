@@ -1285,6 +1285,10 @@ export class MacOsAppleEventsPage {
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) this.timeoutMs = Math.trunc(timeoutMs);
   }
 
+  async refreshMetadataForIdentityCheck(): Promise<void> {
+    await this.refreshMetadata();
+  }
+
   attachmentSnapshot(): MacOsBrowserAttachment {
     return {
       metadata: { ...this.metadata, bounds: { ...this.metadata.bounds } },
@@ -2117,6 +2121,7 @@ export async function reattachMacOsBrowserOwnedPage(
   product: MacOsBrowserProduct,
   ref: MacOsBrowserTabRef,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+  options: { refreshMetadata?: boolean } = {},
 ): Promise<{ page: MacOsAppleEventsPage; attachment: MacOsBrowserAttachment }> {
   const cacheKey = nativePageHandleKey(product, ref);
   const cached = warmNativePageHandles.get(cacheKey);
@@ -2125,6 +2130,9 @@ export async function reattachMacOsBrowserOwnedPage(
   // actions or adopting another tab. Healthy warm handles retain the fast path.
   if (cached && cached.url().trim().toLowerCase() !== 'about:blank' && cached.url().trim() !== '') {
     cached.updateTimeout(timeoutMs);
+    // Explicit adoption must validate the live URL from this exact native tab,
+    // not a warm cached metadata snapshot.
+    if (options.refreshMetadata) await cached.refreshMetadataForIdentityCheck();
     // Refresh insertion order so bounded eviction behaves as a small LRU.
     warmNativePageHandles.delete(cacheKey);
     warmNativePageHandles.set(cacheKey, cached);

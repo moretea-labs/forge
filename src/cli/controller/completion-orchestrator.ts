@@ -1620,7 +1620,10 @@ function withLegacyCompletionWrite<T>(
       operation,
       undefined,
       cutover.checkoutId
-        ? [{ resourceKey: `workspace:${cutover.checkoutId}`, mode: 'write' as const }]
+        ? [
+            { resourceKey: `git-index:${cutover.checkoutId}`, mode: 'write' as const },
+            { resourceKey: `git-refs:${cutover.repoId}`, mode: 'write' as const },
+          ]
         : undefined,
     ),
     30 * 60_000,

@@ -62,7 +62,7 @@ import {
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,
 } from '../../execution/process-runtime/command-facade';
-import { claimPathWrite } from '../../execution/process-runtime/resource-claims';
+import { claimPathWrites } from '../../execution/process-runtime/resource-claims';
 import { classifyRepositoryCommand } from '../../../core/repository-command/classification';
 import { normalizeRepositoryCommand } from '../../../core/repository-command/normalization';
 import { readRepositoryRange } from '../../repositories/inspector';
@@ -820,8 +820,8 @@ export async function callRepositoryTool(
           args.validation_only === true
             ? []
             : patchPaths.length > 0
-              ? patchPaths.map((path) => claimPathWrite(path, repository.activeCheckoutId, repository.repoId))
-              : undefined;
+              ? claimPathWrites(patchPaths, repository.activeCheckoutId, repository.repoId)
+              : [];
         const applied = withRepositoryMutationExclusion(
           controllerHome,
           repository.repoId,

@@ -418,6 +418,18 @@ export function shellCommandHasUnsafeConstructs(command: string): { unsafe: bool
 }
 
 /**
+ * Unwrap a fixed shell wrapper only when it owns the entire shell command.
+ * Outer compositions, redirections, and unsafe constructs retain the conservative path;
+ * the extracted script is classified independently for its own effects.
+ */
+function fixedShellWrapperScript(command: string): string | undefined {
+  const segments = shellSegments(command);
+  if (segments.length !== 1 || hasRepositoryOutputRedirection(command)) return undefined;
+  if (shellCommandHasUnsafeConstructs(command).unsafe || /[\r\n]/.test(command)) return undefined;
+  return fixedShellWrapperCommand(shellWordsPreservingQuotes(segments[0]!));
+}
+
+/**
  * Safe fixed shell combinations: every segment is readonly or a known local
  * validation command, joined only by && or ; (not pipes that mix side effects).
  * Example: `bun test tests/a.test.ts && bun run check:type`
@@ -427,6 +439,8 @@ export function isSafeFixedShellCombination(command: string): boolean {
   if (!normalized) return false;
   if (shellCommandHasUnsafeConstructs(normalized).unsafe) return false;
   if (hasRepositoryOutputRedirection(normalized)) return false;
+  const wrapped = fixedShellWrapperScript(normalized);
+  if (wrapped !== undefined) return isSafeFixedShellCombination(wrapped);
   // Reject bare pipes that feed dynamic interpreters
   if (/\|\s*(?:sh|bash|zsh|python|node|perl|ruby)\b/i.test(normalized)) return false;
   const segments = shellSegments(normalized);
@@ -439,6 +453,8 @@ export function isSafeFixedShellCombination(command: string): boolean {
  * among segments (readonly if all readonly, else workspace_write for validation).
  */
 export function classifySafeShellCombination(command: string): RepositoryCommandClassification | undefined {
+  const wrapped = fixedShellWrapperScript(command);
+  if (wrapped !== undefined) return classifySafeShellCombination(wrapped);
   if (!isSafeFixedShellCombination(command)) return undefined;
   const segments = shellSegments(command);
   const allReadonly = segments.every(isReadOnlySegment);
@@ -495,10 +511,15 @@ export function classifyRepositoryCommandReplay(
       reasons: ['remote or destructive commands require outcome review after execution starts'],
     };
   }
-  const shellParts = canonical.kind === 'shell' ? shellSegments(canonical.shellCommand!) : [];
+  const rawShellCommand = canonical.kind === 'shell' ? canonical.shellCommand! : undefined;
+  const effectiveShellCommand = rawShellCommand === undefined
+    ? undefined
+    : fixedShellWrapperScript(rawShellCommand) ?? rawShellCommand;
+  const shellParts = effectiveShellCommand === undefined ? [] : shellSegments(effectiveShellCommand);
   const validationOnly = canonical.kind === 'argv'
     ? isReplaySafeValidationWords([canonical.executable!, ...(canonical.args ?? [])])
-    : !hasRepositoryOutputRedirection(canonical.shellCommand!)
+    : effectiveShellCommand !== undefined
+      && !hasRepositoryOutputRedirection(effectiveShellCommand)
       && !shellParts.some(isSedInPlaceSegment)
       && shellParts.length > 0
       && shellParts.every((segment) => isReadOnlySegment(segment) || isReplaySafeValidationSegment(segment));
@@ -627,6 +648,8 @@ function classifyShellCommand(
   defaultBranch?: string,
 ): RepositoryCommandClassification {
   const normalized = command.trim();
+  const wrapped = fixedShellWrapperScript(normalized);
+  if (wrapped !== undefined) return classifyShellCommand(wrapped, defaultBranch);
   const reasons: string[] = [];
 
   // Reject unsafe constructs early (background, eval, download|sh, substitution).

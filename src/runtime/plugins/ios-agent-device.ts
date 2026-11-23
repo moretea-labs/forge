@@ -2321,10 +2321,7 @@ export function iosAgentDeviceCapabilities(): AssistantPluginCapability[] {
 
 export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
   const read = [{ resource: 'repo-state' as const, mode: 'write' as const }];
-  const write = [
-    { resource: 'workspace' as const, mode: 'write' as const },
-    { resource: 'repo-state' as const, mode: 'write' as const },
-  ];
+  const write = [{ resource: 'repo-state' as const, mode: 'write' as const }];
   const interactionProperty = { interaction_id: { type: 'string' } };
   const actions: AssistantPluginActionDescriptor[] = [
     {

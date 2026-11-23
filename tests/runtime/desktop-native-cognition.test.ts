@@ -17,7 +17,7 @@ afterEach(() => {
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 const sourceRoot = resolve(import.meta.dir, '../..');
-const script = join(sourceRoot, 'apps/desktop/src-tauri/resources/forge-local-tool.mjs');
+const script = join(sourceRoot, 'apps/desktop-native/bridge/resources/forge-local-tool.mjs');
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'forge-native-cognitive-'));

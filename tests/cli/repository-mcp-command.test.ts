@@ -449,9 +449,10 @@ describe('repository MCP command tools', () => {
     expect(rhContext?.description).toContain('model chooses');
     expect(rhContext?.description).not.toContain('fallback-only');
     expect(rhWork?.description).toContain('optional durable Requirement/Plan semantic context');
-    expect(rhWork?.description).toContain('Work / WorkHandle / WorkContract are fully retired');
+    expect(rhWork?.description).not.toContain('WorkHandle');
+    expect(rhWork?.description).not.toContain('WorkContract');
     expect(rhWork?.description).toContain('Ordinary execution and validation use direct domain capabilities');
-    expect(rhWork?.description).toContain('have no create, mutate, or read surface');
+
     expect(command?.description).toContain('Single terminal entry');
     expect(repositoryToolDefinitions.some((tool) => tool.name === 'repository_command_execute')).toBe(false);
     const operationTypes = (tool: (typeof repositoryToolDefinitions)[number] | undefined): string[] | undefined => {

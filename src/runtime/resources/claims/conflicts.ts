@@ -4,20 +4,12 @@ import type { ExecutionLease } from '../leases/types';
 /**
  * Resource claim conflict model.
  *
- * Workspace is one resource key per checkout:
- *   workspace:<checkoutId>  mode=read|write|exclusive
+ * There is no checkout-wide writer (#713). Source ownership is exact
+ * path:<checkoutId>:<relative>; Git index/HEAD/refs, build caches and devices
+ * are separate physical resources claimed only by operations that touch them.
  *
  * Same-key policy: multiple reads may share; any write/exclusive conflicts
  * with other modes on that exact resource (see claimsConflict).
- *
- * Cross-key policy (#713): workspace observation (mode=read) does not
- * monopolize same-checkout path writes or short git-index/git-head mutations.
- * Workspace write/exclusive fences source paths, not independent Git index/ref
- * metadata. Git operations must explicitly claim index/refs when mutated (#713).
- * Prefer validation-input:<checkout> for governed gates.
- *
- * Legacy keys:
- *   workspace-read:<checkoutId>  → treated as workspace:<checkoutId> mode=read
  */
 
 /** One canonical simulator device identity across Process, Plugin and Lease owners.
@@ -34,11 +26,7 @@ export function iosSimulatorResourceKey(udid?: unknown): string {
 }
 
 function normalizeResourceKey(key: string): string {
-  const trimmed = key.trim();
-  if (trimmed.startsWith('workspace-read:')) {
-    return `workspace:${trimmed.slice('workspace-read:'.length)}`;
-  }
-  return trimmed;
+  return key.trim();
 }
 
 function pathValue(key: string): string | undefined {
@@ -61,11 +49,6 @@ function pathCheckoutId(key: string): string | undefined {
     return parts[0];
   }
   return undefined;
-}
-
-function workspaceCheckoutId(key: string): string | undefined {
-  const normalized = normalizeResourceKey(key);
-  return normalized.startsWith('workspace:') ? normalized.slice('workspace:'.length) : undefined;
 }
 
 function isGitRefKey(key: string): boolean {
@@ -115,10 +98,8 @@ export function pathOverlaps(left: string, right: string): boolean {
 }
 
 /**
- * Resource key overlap for mutation ownership.
- * workspace:<checkoutId> conflicts with same-checkout source paths and with
- * unscoped legacy paths. The Git index, HEAD and refs are distinct physical
- * resources; commands that mutate them claim them explicitly (#713).
+ * Resource key overlap for mutation ownership. Source paths overlap by path;
+ * the Git index, HEAD and refs are distinct physical resources (#713).
  *
  * Note: same-key overlap is true even when modes differ; mode policy lives in
  * claimsConflict (read+read allowed).
@@ -138,7 +119,7 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
 
   // A single exact remote ref is independent from different review refs,
   // while opaque Git pushes and repo-wide remote mutations stay exclusive.
-  // Do not add workspace/index ownership: deleting a remote ref does not edit
+  // Do not add index ownership: deleting a remote ref does not edit
   // another Checkout's source tree.
   const leftRemoteRef = scopedRemoteRef(left);
   const rightRemoteRef = scopedRemoteRef(right);
@@ -180,7 +161,6 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
     return (
       right === 'repo-content:*' ||
       right.startsWith('path:') ||
-      right.startsWith('workspace:') ||
       isGitRefKey(right) ||
       right.startsWith('git-index:') ||
       right.startsWith('git-head:')
@@ -189,25 +169,10 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
   if (right === 'repo-content:*') {
     return (
       left.startsWith('path:') ||
-      left.startsWith('workspace:') ||
       isGitRefKey(left) ||
       left.startsWith('git-index:') ||
       left.startsWith('git-head:')
     );
-  }
-
-  const leftWs = workspaceCheckoutId(left);
-  const rightWs = workspaceCheckoutId(right);
-  if (leftWs && rightWs) return leftWs === rightWs;
-
-  // workspace vs path (checkout-scoped or legacy unscoped)
-  if (leftWs && right.startsWith('path:')) {
-    const pathCheckout = pathCheckoutId(right);
-    return pathCheckout === undefined || pathCheckout === leftWs;
-  }
-  if (rightWs && left.startsWith('path:')) {
-    const pathCheckout = pathCheckoutId(left);
-    return pathCheckout === undefined || pathCheckout === rightWs;
   }
 
   const leftPath = pathValue(left);
@@ -228,29 +193,6 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
   return false;
 }
 
-/**
- * True when checkout observation (workspace:read) encounters a source-path
- * mutation. Read observation cannot serialize unrelated model edits (#713).
- */
-function workspaceObservationAllowsCheckoutMutation(
-  leftKey: string,
-  leftMode: ResourceClaimSpec['mode'],
-  rightKey: string,
-  rightMode: ResourceClaimSpec['mode'],
-): boolean {
-  const leftWs = workspaceCheckoutId(leftKey);
-  const rightWs = workspaceCheckoutId(rightKey);
-  if (leftWs && leftMode === 'read' && rightKey.startsWith('path:')) {
-    const pathCheckout = pathCheckoutId(rightKey);
-    return pathCheckout === undefined || pathCheckout === leftWs;
-  }
-  if (rightWs && rightMode === 'read' && leftKey.startsWith('path:')) {
-    const pathCheckout = pathCheckoutId(leftKey);
-    return pathCheckout === undefined || pathCheckout === rightWs;
-  }
-  return false;
-}
-
 export function resourceClaimsConflict(
   left: Pick<ResourceClaimSpec, 'resourceKey' | 'mode'>,
   right: Pick<ResourceClaimSpec, 'resourceKey' | 'mode'>,
@@ -267,9 +209,6 @@ export function resourceClaimsConflict(
     return nonReleaseMode !== 'read';
   }
   if (!resourceKeysOverlap(leftKey, rightKey)) return false;
-  if (workspaceObservationAllowsCheckoutMutation(leftKey, left.mode, rightKey, right.mode)) {
-    return false;
-  }
   // Read + read may share; any write/exclusive conflicts.
   return left.mode !== 'read' || right.mode !== 'read';
 }
@@ -282,9 +221,9 @@ export function normalizeClaims(
   claims: ResourceClaimSpec[],
   options: { readOnly?: boolean } = {},
 ): ResourceClaimSpec[] {
-  if (claims.length === 0) {
-    return options.readOnly ? [] : [{ resourceKey: 'repo-content:*', mode: 'write' }];
-  }
+  // No claims means no shared resource. There is no implicit repository-wide
+  // writer for commands whose effect scope is unknown (#713).
+  if (claims.length === 0) return [];
   const map = new Map<string, ResourceClaimSpec>();
   for (const claim of claims) {
     const key = normalizeResourceKey(claim.resourceKey);

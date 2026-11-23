@@ -123,18 +123,14 @@ export function normalizeMutationOwnerIdentity(input: {
   };
 }
 
-export function checkoutMutationResourceKey(checkoutId: string): string {
-  return `workspace:${checkoutId}`;
-}
-
 export function buildMutationClaims(checkoutId: string, options: MutationOwnershipOptions = {}): ResourceClaimSpec[] {
   const declaredPaths = options.writePaths ?? [];
   const normalizedPaths = declaredPaths.map((path) => normalizeClaimPath(path));
-  // Never claim narrow ownership unless every source path is safely bounded.
-  const scoped = normalizedPaths.length > 0 && normalizedPaths.every((path): path is string => Boolean(path));
-  const claims: ResourceClaimSpec[] = scoped
-    ? (normalizedPaths as string[]).map((path) => ({ resourceKey: `path:${checkoutId}:${path}`, mode: 'write' }))
-    : [{ resourceKey: `workspace:${checkoutId}`, mode: 'write' }];
+  // Exact source paths only. Undeclared or unprovable paths take no
+  // checkout-wide writer; the model reconciles against latest source (#713).
+  const claims: ResourceClaimSpec[] = normalizedPaths
+    .filter((path): path is string => Boolean(path))
+    .map((path) => ({ resourceKey: `path:${checkoutId}:${path}`, mode: 'write' }));
   const mutatesIndex = options.mutatesGitIndex !== false;
   if (mutatesIndex) {
     claims.push({ resourceKey: `git-index:${checkoutId}`, mode: 'write' });
@@ -195,7 +191,7 @@ function gateFromLeases(
   ttlMs: number,
   ownerIdentity: ExecutionLeaseOwnerIdentity,
 ): CheckoutMutationGate {
-  const primary = leases.find((lease) => lease.resourceKey === `workspace:${checkoutId}`) ?? leases[0]!;
+  const primary = leases[0]!;
   const fencingTokens: Record<string, number> = {};
   for (const lease of leases) {
     fencingTokens[lease.leaseId] = lease.fencingToken;
@@ -243,13 +239,18 @@ export async function acquireCheckoutMutationGate(input: {
   const ttlMs = Math.max(MIN_TTL_MS, Math.min(input.ttlMs ?? DEFAULT_TTL_MS, MAX_TTL_MS));
   const startedAt = performance.now();
   const ownerIdentity = normalizeMutationOwnerIdentity(input);
-  const claims = buildMutationClaims(input.checkoutId, input.ownership).map((claim) => ({
+  const ownerJobId =
+    input.owner.startsWith('fast:') || input.owner.startsWith('JOB-') ? input.owner : `fast:${input.owner}`;
+  const exactClaims = buildMutationClaims(input.checkoutId, input.ownership);
+  // Writer identity is attribution, not a monopoly: an edit without exact
+  // claims holds only its own owner-scoped lease for fencing/renewal (#713).
+  const claims = (
+    exactClaims.length > 0 ? exactClaims : [{ resourceKey: `writer:${input.checkoutId}:${ownerJobId}`, mode: 'write' as const }]
+  ).map((claim) => ({
     ...claim,
     repoId: input.repoId,
     checkoutId: input.checkoutId,
   }));
-  const ownerJobId =
-    input.owner.startsWith('fast:') || input.owner.startsWith('JOB-') ? input.owner : `fast:${input.owner}`;
 
   const result = acquireExecutionLeases(input.controllerHome, input.repoId, ownerJobId, claims, {
     ...EPHEMERAL_OPTS,

@@ -41,7 +41,7 @@ function registration(overrides: Partial<ExternalPluginRegistrationInput> = {}):
     ],
     actions: [
       { actionId: 'desktop_status', title: 'Desktop status', description: 'Read status.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 2_000, cancellable: true, idempotent: true, scopes: ['desktop.observe'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
-      { actionId: 'desktop_press', title: 'Desktop press', description: 'Press one element.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 10_000, cancellable: true, idempotent: false, scopes: ['desktop.interact'], resourceClaims: [{ resource: 'workspace', mode: 'write' }], argumentsSchema: { type: 'object' } },
+      { actionId: 'desktop_press', title: 'Desktop press', description: 'Press one element.', readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 10_000, cancellable: true, idempotent: false, scopes: ['desktop.interact'], resourceClaims: [{ resource: 'repo-state', mode: 'write' }], argumentsSchema: { type: 'object' } },
     ],
     ...overrides,
   };

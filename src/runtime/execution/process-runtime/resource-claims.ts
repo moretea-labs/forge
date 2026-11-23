@@ -53,12 +53,11 @@ export function claimValidationObservation(checkoutId?: string, repoId?: string)
   return { resourceKey: `validation-input:${checkoutScope(checkoutId, repoId)}`, mode: 'read' };
 }
 
-export function claimPathWrite(path: string, checkoutId?: string, repoId?: string): ResourceClaimSpec {
+export function claimPathWrite(path: string, checkoutId?: string, repoId?: string): ResourceClaimSpec | undefined {
   const normalized = normalizeClaimPath(path);
-  if (!normalized) {
-    // Unsafe / ambiguous path → escalate to whole-checkout workspace write.
-    return claimWorkspaceWrite(checkoutId, repoId);
-  }
+  // An unprovable path takes no source ownership. Concurrent edits are
+  // reconciled by the model against the latest source (#713).
+  if (!normalized) return undefined;
   return { resourceKey: `path:${checkoutScope(checkoutId, repoId)}:${normalized}`, mode: 'write' };
 }
 
@@ -94,8 +93,9 @@ export function claimRelease(_repoId: string): ResourceClaimSpec {
   return { resourceKey: 'release:runtime-authority', mode: 'exclusive' };
 }
 
-export function claimWorkspaceWrite(checkoutId?: string, repoId?: string): ResourceClaimSpec {
-  return { resourceKey: `workspace:${checkoutScope(checkoutId, repoId)}`, mode: 'write' };
+/** Exact source-path claims for every provable path; unprovable paths take none. */
+export function claimPathWrites(paths: readonly string[], checkoutId?: string, repoId?: string): ResourceClaimSpec[] {
+  return paths.flatMap((path) => claimPathWrite(path, checkoutId, repoId) ?? []);
 }
 
 export function claimHeavyCheck(repoId: string): ResourceClaimSpec {
@@ -559,13 +559,12 @@ function claimsForDeclaredCheckEffects(
 ): ResourceClaimSpec[] {
   const claims: ResourceClaimSpec[] = [];
   const hasDeclaredField = Object.keys(effects).length > 0;
-  if (!hasDeclaredField) return [claimWorkspaceWrite(checkoutId, repoId)];
+  if (!hasDeclaredField) return [];
 
-  // Only undeclared output scope needs checkout exclusion. Reading source
-  // never grants ownership, even when no read paths are listed (#713).
-  if (effects.reads === undefined && effects.writes === undefined) claims.push(claimWorkspaceWrite(checkoutId, repoId));
-  else if (effects.reads && effects.reads.length > 0) claims.push(claimValidationObservation(checkoutId, repoId));
-  for (const path of effects.writes ?? []) claims.push(claimPathWrite(path, checkoutId, repoId));
+  // Reading source never grants ownership, and undeclared output scope takes
+  // no checkout-wide writer (#713).
+  if (effects.reads && effects.reads.length > 0) claims.push(claimValidationObservation(checkoutId, repoId));
+  claims.push(...claimPathWrites(effects.writes ?? [], checkoutId, repoId));
 
   if (effects.cache === 'read') claims.push(claimBuildCacheRead(repoId));
   if (effects.cache === 'write') claims.push(claimBuildCacheWrite(repoId));
@@ -574,7 +573,7 @@ function claimsForDeclaredCheckEffects(
   if (effects.git === 'index') claims.push(claimGitIndex(checkoutId, repoId));
   if (effects.git === 'refs') claims.push(claimGitRefs(repoId));
   if (effects.git === 'write')
-    claims.push(claimWorkspaceWrite(checkoutId, repoId), claimGitIndex(checkoutId, repoId), claimGitRefs(repoId));
+    claims.push(claimGitIndex(checkoutId, repoId), claimGitRefs(repoId));
   // A generic network bit has no concrete endpoint/provider identity. Checks
   // that need serialization must name the real shared target in hostServices.
   for (const service of effects.hostServices ?? []) claims.push(claimHostService(service, 'write'));
@@ -760,7 +759,7 @@ function scopedValidationLogOutput(
   return normalizeClaims([
     claimValidationObservation(checkoutId, repoId),
     claimBuildCacheWrite(repoId),
-    claimPathWrite(output, checkoutId, repoId),
+    claimPathWrite(output, checkoutId, repoId)!,
   ]);
 }
 
@@ -1098,8 +1097,8 @@ function repositoryCommandClaims(
   const metadataOnly = gitMetadataOnlyClaims(command, repoId, checkoutId);
   if (metadataOnly) return metadataOnly;
   if (classification.risk === 'destructive') {
+    // Destructive effects are gated by policy, not by a checkout-wide writer.
     return [
-      claimWorkspaceWrite(checkoutId, repoId),
       claimGitIndex(checkoutId, repoId),
       claimGitRefs(repoId),
       ...(looksLikeBuildOrTest(command) ? [claimBuildCacheWrite(repoId)] : []),
@@ -1115,7 +1114,7 @@ function repositoryCommandClaims(
   if (focused) {
     if (!focusedTestRequestsWorkspaceMutation(command)) return [claimValidationObservation(checkoutId, repoId)];
     const claims: ResourceClaimSpec[] = [claimValidationObservation(checkoutId, repoId)];
-    for (const path of extractLikelyPaths(command).slice(0, 16)) claims.push(claimPathWrite(path, checkoutId, repoId));
+    claims.push(...claimPathWrites(extractLikelyPaths(command).slice(0, 16), checkoutId, repoId));
     return normalizeClaims(claims);
   }
   // Explicit Xcode derived-data identity already models cache narrowly.
@@ -1128,19 +1127,16 @@ function repositoryCommandClaims(
       canonical.kind === 'shell'
         ? canonical.shellCommand
         : fixedShellWrapperCommand([canonical.executable!, ...(canonical.args ?? [])]);
-    // A verified all-readonly composition has no file output. A shell wrapper's
-    // script text is never a path to claim as a checkout writer.
-    const paths =
-      pureValidation && validationShell && shellSegments(validationShell).some(isKnownReadOnlyArchitectureCheck)
-        ? []
-        : extractLikelyPaths(command);
+    // A shell-composed pure validation has no source output; its script text
+    // must not be mistaken for paths. Structured argv keeps exact path claims.
+    const paths = pureValidation && validationShell !== undefined ? [] : extractLikelyPaths(command);
     if (paths.length === 0) {
       // Opaque build/test observes source and may write shared build cache only.
       // Do not take a checkout-wide writer as the Agent admission gate (#713).
       return normalizeClaims([claimValidationObservation(checkoutId, repoId), ...cacheClaims]);
     }
     const claims: ResourceClaimSpec[] = [claimValidationObservation(checkoutId, repoId), ...cacheClaims];
-    for (const path of paths.slice(0, 16)) claims.push(claimPathWrite(path, checkoutId, repoId));
+    claims.push(...claimPathWrites(paths.slice(0, 16), checkoutId, repoId));
     return normalizeClaims(claims);
   }
 
@@ -1153,10 +1149,10 @@ function repositoryCommandClaims(
       if (gitPaths) {
         return normalizeClaims([
           claimGitIndex(checkoutId, repoId),
-          ...gitPaths.map((path) => claimPathWrite(path, checkoutId, repoId)),
+          ...claimPathWrites(gitPaths, checkoutId, repoId),
         ]);
       }
-      return [claimGitIndex(checkoutId, repoId), claimWorkspaceWrite(checkoutId, repoId)];
+      return [claimGitIndex(checkoutId, repoId)];
     }
     if (sub === 'commit' || sub === 'merge' || sub === 'rebase' || sub === 'cherry-pick' || sub === 'revert') {
       // Index/ref atomicity is the real fence. A path-scoped commit must not
@@ -1165,20 +1161,17 @@ function repositoryCommandClaims(
     }
     if (sub === 'checkout' || sub === 'switch') {
       // Switching the worktree updates the index and refs as well as source.
-      return [claimWorkspaceWrite(checkoutId, repoId), claimGitIndex(checkoutId, repoId), claimGitRefs(repoId)];
+      return [claimGitIndex(checkoutId, repoId), claimGitRefs(repoId)];
     }
-    // Unknown Git subcommands may update index/refs; keep their *physical*
-    // atomic coordination even though workspace no longer implies Git ownership.
-    return [claimWorkspaceWrite(checkoutId, repoId), claimGitIndex(checkoutId, repoId), claimGitRefs(repoId)];
+    // Unknown Git subcommands may update index/refs; keep their physical
+    // atomic coordination only.
+    return [claimGitIndex(checkoutId, repoId), claimGitRefs(repoId)];
   }
 
-  // Opaque mutating commands keep the conservative checkout fence. Prefer
-  // declared mutation_paths / exact Git path claims above so ordinary Agent
-  // work does not inherit this fallback as a global admission lock (#713).
-  // Composed/unsafe build-like shells still serialize the shared build cache.
-  return looksLikeBuildOrTest(command)
-    ? normalizeClaims([claimWorkspaceWrite(checkoutId, repoId), claimBuildCacheWrite(repoId)])
-    : [claimWorkspaceWrite(checkoutId, repoId)];
+  // Opaque mutating commands take no checkout-wide writer (#713). Declared
+  // mutation_paths become exact path claims above; build-like shells still
+  // serialize the real shared build cache.
+  return looksLikeBuildOrTest(command) ? [claimBuildCacheWrite(repoId)] : [];
 }
 
 /** One native build at a time per host, using the existing Lease owner. */
@@ -1215,16 +1208,11 @@ export function claimsForRepositoryCommand(
     // The model/caller owns semantic scope. Forge only turns the declared
     // repository-relative write scope into mechanical claims and preserves
     // independently provable Git/device/exact-cache claims.
-    const declaredSourceClaims = declaredMutationPaths.map((path) => claimPathWrite(path, checkoutId, repoId));
+    const declaredSourceClaims = claimPathWrites(declaredMutationPaths, checkoutId, repoId);
     const mechanicalClaims = inferredClaims.filter((claim) => {
       const key = claim.resourceKey;
       if (key === `build-cache:${repoId}`) return false;
-      return (
-        !key.startsWith('workspace:') &&
-        !key.startsWith('workspace-read:') &&
-        !key.startsWith('path:') &&
-        key !== 'repo-content:*'
-      );
+      return !key.startsWith('path:');
     });
     return normalizeClaims([...mechanicalClaims, ...declaredSourceClaims, ...nativeBuildClaims]);
   }
@@ -1257,7 +1245,7 @@ export function claimsForCheck(
       ? [claimValidationObservation(checkoutId, repoId), claimBuildCacheWrite(repoId)]
       : command && command.length > 0
         ? claimsForRepositoryCommand(command, repoId, checkoutId)
-        : [claimWorkspaceWrite(checkoutId, repoId)];
+        : [];
   // Heavy-check is an additional cross-check serialization fence, not a
   // substitute for the resources the check actually reads or writes.
   const liveAuthorityClaims = executionAuthority === 'live_controller_home' ? [claimRelease(repoId)] : [];

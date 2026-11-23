@@ -956,8 +956,7 @@ function cleanupManagedWorktreeDependencyCopies(
       }
       if (
         activeLeases.some(
-          (lease) =>
-            lease.checkoutId === checkout.checkoutId || lease.resourceKey === `workspace:${checkout.checkoutId}`,
+          (lease) => lease.checkoutId === checkout.checkoutId,
         )
       ) {
         skip('dependency_active_owner');
