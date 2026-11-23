@@ -2625,6 +2625,8 @@ export function finalizeEditSession(
     reviewer?: string;
     note?: string;
     approvalConfirmed?: boolean;
+    controllerHome?: string;
+    leaseOwnerJobId?: string;
     binding?: EditSessionBinding;
   } = {},
 ): EditSession {
@@ -2644,6 +2646,8 @@ export function finalizeEditSession(
     if (baseRevisionChanged) {
       session = adoptEditSessionSuccessorHead(repoRoot, session.sessionId, {
         binding: input.binding,
+        controllerHome: input.controllerHome,
+        leaseOwnerJobId: input.leaseOwnerJobId,
         expectedRevision: session.currentRevision,
         reviewer: input.reviewer,
         note: 'Verified non-conflicting successor HEAD before finalization.',

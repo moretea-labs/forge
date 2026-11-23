@@ -2447,11 +2447,16 @@ forbidBetween(
 );
 requireText('src/runtime/control-plane/execution/session-store.ts', 'lastValidatedAt: now');
 requireText('src/runtime/control-plane/execution/session-repository-binding.ts', 'currentPermissionSnapshotVersion');
-requireText('src/runtime/control-plane/execution/session-store.ts', '_retiredWorkFocus');
+// Work focus scrubbing is complete: no activeWorkId field remains to strip.
 forbid(
   'src/runtime/control-plane/execution/session-store.ts',
   /activeWorkId\?:\s*string/,
   'ExecutionSession must not restore Work focus as current authority',
+);
+forbid(
+  'src/runtime/control-plane/execution/session-store.ts',
+  /_retiredWorkFocus/,
+  'Legacy Work-focus scrubbing must stay deleted after physical Work retirement',
 );
 requireText(
   'adapters/mcp/runtime-gateway/execution-tools.ts',
@@ -2801,12 +2806,9 @@ forbid(
   /callRhWorkSemanticOperation|callRhWorkListProjection|namespace: 'work_contract'/,
   'retired Work cannot be read by the rh_work carrier',
 );
-requireText('src/runtime/control-plane/persistence/retired-work-purge.ts', 'export const RETIRED_WORK_NAMESPACES');
-requireText(
-  'src/runtime/control-plane/persistence/retired-work-purge.ts',
-  "const WORK_REPLICA_NAMESPACE = 'semantic_sync_replica';",
-);
-requireText('src/runtime/control-plane/persistence/retired-work-purge.ts', 'journalWorkReferences(db, true)');
+// Offline Work purge completed and the purge tool itself is deleted; keep it gone.
+requireMissing('src/runtime/control-plane/persistence/retired-work-purge.ts');
+requireMissing('tests/runtime/retired-work-purge.test.ts');
 forbid(
   'src/runtime/control-plane/persistence/sqlite-store.ts',
   /'execution_work_validation_index'/,

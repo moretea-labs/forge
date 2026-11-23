@@ -1012,11 +1012,22 @@ describe('MCP canonical Runtime proxy routing', () => {
         process: { processId, completed: false, status: 'running' },
       });
 
-      const waited = await second.client.callTool({
+      // process_wait attach is transport-capped (~5s). A still-running durable
+      // Process returns continue_independent_work; one later dependency-boundary
+      // reattach is allowed. Do not treat attach budget as Process timeout.
+      let waited = await second.client.callTool({
         name: 'process_wait',
         arguments: { repo_id: repository.repoId, process_id: processId, timeout_ms: 10_000 },
       });
       expect(waited.isError).not.toBe(true);
+      const firstWait = waited.structuredContent as { synchronization?: string };
+      if (firstWait.synchronization === 'continue_independent_work') {
+        waited = await second.client.callTool({
+          name: 'process_wait',
+          arguments: { repo_id: repository.repoId, process_id: processId, timeout_ms: 10_000 },
+        });
+        expect(waited.isError).not.toBe(true);
+      }
       expect(waited.structuredContent).toMatchObject({
         synchronization: 'terminal_result_available',
         process: { processId, completed: true, ok: true },

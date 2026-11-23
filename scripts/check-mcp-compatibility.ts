@@ -124,7 +124,10 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // read surface. Refresh the exact schema fingerprint.
 // 2026-11-22 #483 follow-up: remove advertised work_id fields from rh_context /
 // rh_work input schemas (additionalProperties remains false). Refresh fingerprint.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'a28156e7fa4fb40e';
+// 2026-11-23: origin/main drifted past the prior preferred schema fence after
+// Work-retirement schema cleanup; refresh the exact fingerprint so Connector
+// snapshots invalidate without relaxing the frozen public-contract assertion.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '0a5519a420ce2594';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

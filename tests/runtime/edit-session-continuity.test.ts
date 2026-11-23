@@ -389,7 +389,7 @@ test('unrelated dirty status permits an exact patch continuation and finalizatio
   expect(readFileSync(join(fx.repoRoot, 'unrelated.txt'), 'utf8')).toBe('uncommitted foreign edit\n');
 });
 
-test('auto-finalization refuses a foreign overlapping path lease on successor HEAD', () => {
+test('auto-finalization refuses foreign path leases on successor HEAD but accepts the owning lease', () => {
   const fx = fixture();
   const binding = durableBinding();
   const session = beginEditSession(fx.repoRoot, {
@@ -418,7 +418,7 @@ test('auto-finalization refuses a foreign overlapping path lease on successor HE
   const held = acquireExecutionLeases(
     fx.controllerHome,
     fx.repository.repoId,
-    'foreign-session',
+    'path-owner',
     [
       {
         resourceKey: `path:${session.checkoutId}:source.ts`,
@@ -434,7 +434,16 @@ test('auto-finalization refuses a foreign overlapping path lease on successor HE
     'EDIT_SESSION_SUCCESSOR_HEAD_ACTIVE_LEASE',
   );
   expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('dirty');
-  expect(releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'foreign-session')).toBe(1);
+  // Passing the exact path-owner lease id must not treat self as a foreign
+  // Writer; finalization adopts the unrelated successor HEAD and completes.
+  expect(
+    finalizeEditSession(fx.repoRoot, session.sessionId, {
+      binding,
+      controllerHome: fx.controllerHome,
+      leaseOwnerJobId: 'path-owner',
+    }).status,
+  ).toBe('finalized');
+  expect(releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'path-owner')).toBe(1);
 });
 
 test('continues the same EditSession after exact integrated after-images and rejects unsafe overlap', () => {

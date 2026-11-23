@@ -183,7 +183,7 @@ function editSourceClaims(ctx: McpToolContext, paths: Iterable<string>): Resourc
 function withLegacyEditMutation<T>(
   ctx: McpToolContext,
   operation: string,
-  mutate: () => T,
+  mutate: (leaseOwnerJobId?: string) => T,
   claims?: ResourceClaimSpec[],
 ): T {
   const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
@@ -1166,13 +1166,14 @@ export async function callMcpTool(
           session = withLegacyEditMutation(
             ctx,
             name,
-            () =>
+            (leaseOwnerJobId) =>
               applyEditOperations(ctx.repoRoot, ctx.policy, current.sessionId, operations, {
                 expectedRevision:
                   typeof args.expected_revision === 'number' ? Math.trunc(args.expected_revision) : undefined,
                 maxBatchOperations: PREFERRED_EDIT_PATCH_BATCH_OPERATIONS,
                 // Reuse the canonical descendant/after-image/path/Lease proof.
                 allowSuccessorHeadAdoption: typeof args.expected_revision === 'number',
+                leaseOwnerJobId,
                 controllerHome: ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot),
                 binding: {
                   repoId: identity.repoId,
@@ -1297,14 +1298,17 @@ export async function callMcpTool(
           return errorResult('TOOL_DISABLED', 'finalize_edit_session requires the controller profile');
         const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
         const identity = editExecutionIdentity(ctx);
+        const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
         const session = withLegacyEditMutation(
           ctx,
           name,
-          () =>
+          (leaseOwnerJobId) =>
             finalizeEditSession(ctx.repoRoot, current.sessionId, {
               reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
               note: typeof args.note === 'string' ? args.note : undefined,
               approvalConfirmed: args.confirm_authorization === true,
+              controllerHome,
+              leaseOwnerJobId,
               binding: {
                 repoId: identity.repoId,
                 checkoutId: identity.checkoutId,
