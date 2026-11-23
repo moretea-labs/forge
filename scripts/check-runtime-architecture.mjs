@@ -3264,9 +3264,12 @@ requireText('src/runtime/plugins/computer-registration.ts', 'return executeIosPh
 requireText('scripts/smoke-ios-physical-device.ts', "pluginId: 'computer'");
 requireText('scripts/smoke-ios-physical-device.ts', 'artifact?.sha256 !== screenshotSha256');
 requireText('scripts/smoke-ios-physical-device.ts', 'semanticPriceVerified: false');
-requireText(
+// Formatter-stable: the two readiness fields must stay adjacent in the same
+// physical status projection, independent of line wrapping (#713, 0dcb3c1d9).
+requireMatch(
   'src/runtime/plugins/computer-registration.ts',
-  'observationReady: physicalReady, inputReady: physicalInputReady',
+  /observationReady:\s*physicalReady,\s*inputReady:\s*physicalInputReady/,
+  'contain adjacent "observationReady: physicalReady" and "inputReady: physicalInputReady"',
 );
 requireText(
   'src/runtime/plugins/computer-registration.ts',
