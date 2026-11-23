@@ -276,6 +276,10 @@ describe('iOS development simulator reliability', () => {
       platform: () => 'darwin',
       runCommand: (command, args) => {
         commands.push([command, ...args]);
+        if (command === '/usr/sbin/sysctl' && args[1] === 'hw.logicalcpu')
+          return result(command, args, { stdout: '10\n' });
+        if (command === '/usr/sbin/sysctl' && args[1] === 'vm.loadavg')
+          return result(command, args, { stdout: '{ 6.0 6.0 6.0 }' });
         if (command === 'xcrun' && args[1] === 'list')
           return result(command, args, {
             stdout: JSON.stringify({
@@ -296,6 +300,67 @@ describe('iOS development simulator reliability', () => {
     expect(commands.filter((argv) => argv[2] === 'boot')).toHaveLength(1);
     expect(commands.filter((argv) => argv[2] === 'bootstatus')).toHaveLength(1);
     expect(commands.filter((argv) => argv[2] === 'shutdown')).toHaveLength(0);
+  });
+
+  test('idle 10-core Mac may boot a third independently owned Simulator without evicting others', () => {
+    const commands: string[][] = [];
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (command === '/usr/sbin/sysctl')
+          return result(command, args, { stdout: args[1] === 'hw.logicalcpu' ? '10' : '{ 2.0 2.5 3.0 }' });
+        if (command === '/usr/bin/memory_pressure')
+          return result(command, args, { stdout: 'System-wide memory free percentage: 45%' });
+        if (command === 'xcrun' && args[1] === 'list')
+          return result(command, args, {
+            stdout: JSON.stringify({ devices: {
+              'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+                { name: 'Avela', udid: 'D1', state: 'Booted' },
+                { name: 'Shenbaobao', udid: 'D2', state: 'Booted' },
+                { name: 'TempoVela', udid: 'D3', state: 'Shutdown' },
+              ],
+            } }),
+          });
+        return result(command, args);
+      },
+    });
+    const admitted = iosSimulatorBoot({ udid: 'D3', openSimulator: false });
+    expect(admitted.ready).toBe(true);
+    expect('ownership' in admitted ? admitted.ownership : undefined).toBe('started_by_work');
+    expect(commands.filter((cmd) => cmd[1] === 'simctl' && cmd[2] === 'boot')).toHaveLength(1);
+    expect(commands.some((cmd) => cmd[2] === 'shutdown')).toBe(false);
+  });
+
+  test('critical CPU pressure blocks only new Simulator boot, not warm reuse', () => {
+    const commands: string[][] = [];
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (command === '/usr/sbin/sysctl')
+          return result(command, args, { stdout: args[1] === 'hw.logicalcpu' ? '10' : '{ 18.0 13.0 10.0 }' });
+        if (command === '/usr/bin/memory_pressure')
+          return result(command, args, { stdout: 'System-wide memory free percentage: 44%' });
+        if (command === 'xcrun' && args[1] === 'list')
+          return result(command, args, {
+            stdout: JSON.stringify({ devices: {
+              'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+                { name: 'Existing', udid: 'D1', state: 'Booted' },
+                { name: 'New', udid: 'D2', state: 'Shutdown' },
+              ],
+            } }),
+          });
+        return result(command, args);
+      },
+    });
+    const denied = iosSimulatorBoot({ udid: 'D2', openSimulator: false });
+    expect(denied.ready).toBe(false);
+    expect('error' in denied ? denied.error?.code : undefined).toBe('IOS_SIMULATOR_CAPACITY_REACHED');
+    expect('maxBootedDevices' in denied ? denied.maxBootedDevices : undefined).toBe(0);
+    const reused = iosSimulatorBoot({ udid: 'D1', openSimulator: false });
+    expect(reused.ready).toBe(true);
+    expect(commands.filter((cmd) => cmd[1] === 'simctl' && cmd[2] === 'boot')).toHaveLength(0);
   });
 
   test('unknown inventory or device state fails closed without starting any Simulator', () => {

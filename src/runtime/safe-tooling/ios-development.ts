@@ -369,8 +369,39 @@ export function iosSchemesList(repository: RepositoryRecord, input: { workspace?
   return value;
 }
 
-/** Reuse warm devices; Forge's existing host Simulator Lease serializes concurrent plugin admissions. */
-const MAX_BOOTED_IOS_SIMULATORS = 2;
+/** Adaptive *cold boot* admission only. Already-booted Simulators keep running.
+ * A missing host probe is conservative; it never grants a new third slot.
+ * The host-service Simulator lease still serializes admission races.
+ */
+function iosSimulatorBootCapacity() {
+  const cpuProbe = runCommand('/usr/sbin/sysctl', ['-n', 'hw.logicalcpu'], { timeoutMs: 2_000 });
+  const loadProbe = runCommand('/usr/sbin/sysctl', ['-n', 'vm.loadavg'], { timeoutMs: 2_000 });
+  const memoryProbe = runCommand('/usr/bin/memory_pressure', ['-Q'], { timeoutMs: 3_000 });
+  const cores = Number.parseInt(cpuProbe.stdout.trim(), 10);
+  const loadMatch = loadProbe.stdout.match(/[\d.]+/);
+  const load = Number(loadMatch?.[0]);
+  const memoryMatch = memoryProbe.stdout.match(/System-wide memory free percentage:\s*([\d.]+)\s*%/);
+  const memoryFree = memoryMatch ? Number(memoryMatch[1]) : undefined;
+  if (!cpuProbe.ok || !loadProbe.ok || !Number.isFinite(cores) || cores < 1
+    || !Number.isFinite(load) || load < 0) {
+    return { maxBooted: 1, reason: 'host_probe_unavailable', logicalCpus: 0, loadRatio: null, memoryFree };
+  }
+  const ratio = load / cores;
+  let maxBooted: number;
+  if (ratio >= 1.15 || (memoryFree !== undefined && memoryFree < 12)) {
+    maxBooted = 0;
+  } else if (ratio >= 0.85 || (memoryFree !== undefined && memoryFree < 23)) {
+    maxBooted = 1;
+  } else if (ratio >= 0.55 || (memoryFree !== undefined && memoryFree < 32)) {
+    maxBooted = 2;
+  } else {
+    maxBooted = Math.min(3, Math.max(1, Math.floor(cores / 3)));
+  }
+  return { maxBooted, reason: 'measured_host_pressure', logicalCpus: cores,
+    loadRatio: Number(ratio.toFixed(3)), memoryFree };
+}
+
+
 
 export function iosSimulatorBoot(input: { udid: string; openSimulator?: boolean; timeoutMs?: number }) {
   const unsupported = assertDarwin();
@@ -403,13 +434,17 @@ export function iosSimulatorBoot(input: { udid: string; openSimulator?: boolean;
     }
     const bootedDevices = devices.filter((device) => device.state === 'Booted')
       .map((device) => ({ udid: device.udid, name: device.name }));
-    if (bootedDevices.length >= MAX_BOOTED_IOS_SIMULATORS) {
+    const host = iosSimulatorBootCapacity();
+    if (bootedDevices.length >= host.maxBooted) {
       return {
         ready: false, booted: false, udid, alreadyBooted: false,
-        maxBootedDevices: MAX_BOOTED_IOS_SIMULATORS, bootedDevices,
+        maxBootedDevices: host.maxBooted, bootedDevices, hostPressure: host,
         error: {
           code: 'IOS_SIMULATOR_CAPACITY_REACHED',
-          message: 'Two iOS Simulators are already booted; reuse an available booted device or explicitly shut down an idle owner before starting ' + udid + '.',
+          message: 'Measured host Simulator cold-boot capacity ' + host.maxBooted
+            + ' reached (currently ' + bootedDevices.length + ' booted). '
+            + 'Keep other owners running; retry after CPU/memory pressure falls, '
+            + 'reuse an authorized warm device, or explicitly release an idle owner.',
         },
       };
     }
