@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   benchmarkHostPressureSnapshot,
+  parseDarwinVmmapSummary,
   runMcpConcurrentBatches,
   timingLedgerServerDuration,
 } from '../../scripts/benchmark-mcp-transport';
@@ -182,6 +183,28 @@ describe('MCP transport latency benchmark', () => {
     expect(host.totalMemoryBytes).toBeGreaterThan(0);
     expect(host.availableMemoryBytes).toBeGreaterThanOrEqual(0);
     expect(Number.isFinite(Date.parse(host.observedAt))).toBe(true);
+  });
+
+  test('parses vmmap IOAccelerator swap and count without recording VM addresses', () => {
+    const summary = [
+      'Physical footprint:         32.2G',
+      'IOAccelerator             601d2400000-601da4000000 [ 128.0M  0K  0K  64.0M]',
+      'IOAccelerator (reserved)           6.5G       0K       0K       0K       0K       0K       0K        1',
+      'IOAccelerator                     57.4G    101.7M    87.5M    31.4G       0K       0K       0K      576',
+      'TOTAL                            523.6G  522.8M  300.8M  31.8G  0K  32K  8576K  3275',
+    ].join('\n');
+    const snapshot = parseDarwinVmmapSummary(summary, 25604, '2026-11-24T00:00:00.000Z');
+    expect(snapshot).toEqual({
+      observedAt: '2026-11-24T00:00:00.000Z',
+      pid: 25604,
+      physicalFootprintBytes: Math.round(32.2 * 1024 ** 3),
+      ioAcceleratorVirtualBytes: Math.round(57.4 * 1024 ** 3),
+      ioAcceleratorResidentBytes: Math.round(101.7 * 1024 ** 2),
+      ioAcceleratorSwappedBytes: Math.round(31.4 * 1024 ** 3),
+      ioAcceleratorRegionCount: 576,
+    });
+    expect(JSON.stringify(snapshot)).not.toContain('601d2400000');
+    expect(() => parseDarwinVmmapSummary('Physical footprint: 32G', 25604, '')).toThrow('MCP_VMMAP_SUMMARY_INCOMPLETE');
   });
 
   test('rejects malformed samples', () => {

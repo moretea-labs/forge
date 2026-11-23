@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { execFileSync } from 'child_process';
 import { readFileSync } from 'fs';
 import { cpus, freemem, loadavg, totalmem } from 'os';
 import { performance } from 'perf_hooks';
@@ -29,6 +30,62 @@ export function benchmarkHostPressureSnapshot(): {
     availableMemoryBytes: freemem(),
     totalMemoryBytes: totalmem(),
   };
+}
+
+export interface DarwinRuntimeMemorySnapshot {
+  observedAt: string;
+  pid: number;
+  physicalFootprintBytes: number;
+  ioAcceleratorVirtualBytes: number;
+  ioAcceleratorResidentBytes: number;
+  ioAcceleratorSwappedBytes: number;
+  ioAcceleratorRegionCount: number;
+}
+
+function vmmapQuantityBytes(quantity: string): number {
+  const match = /^(\d+(?:\.\d+)?)([KMGT]?)$/.exec(quantity);
+  if (!match) throw new Error('MCP_VMMAP_INVALID_QUANTITY');
+  const scale = { '': 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 };
+  return Math.round(Number(match[1]) * scale[match[2] as keyof typeof scale]);
+}
+
+/**
+ * Only parses vmmap's aggregate counters. No map addresses or process contents
+ * are retained in the benchmark report. In particular, IOAccelerator swap is
+ * NOT by itself proof of a leak.
+ */
+export function parseDarwinVmmapSummary(text: string, pid: number, observedAt: string): DarwinRuntimeMemorySnapshot {
+  const physical = /^Physical footprint:\s+(\d+(?:\.\d+)?[KMGT]?)/m.exec(text);
+  const ioLine = text.split(/\r?\n/).find((line) => /^IOAccelerator\s+\d+(?:\.\d+)?[KMGT]?\s/.test(line));
+  if (!physical || !ioLine) throw new Error('MCP_VMMAP_SUMMARY_INCOMPLETE');
+  const columns = ioLine.trim().split(/\s+/);
+  const count = Number(columns.at(-1));
+  if (columns.length < 9 || !Number.isSafeInteger(count) || count < 0) {
+    throw new Error('MCP_VMMAP_SUMMARY_INCOMPLETE');
+  }
+  return {
+    observedAt,
+    pid,
+    physicalFootprintBytes: vmmapQuantityBytes(physical[1]!),
+    ioAcceleratorVirtualBytes: vmmapQuantityBytes(columns[1]!),
+    ioAcceleratorResidentBytes: vmmapQuantityBytes(columns[2]!),
+    ioAcceleratorSwappedBytes: vmmapQuantityBytes(columns[4]!),
+    ioAcceleratorRegionCount: count,
+  };
+}
+
+/** Explicit Mac-only bounded inspection; never invoked for ordinary benchmarks. */
+function optionalDarwinRuntimeMemorySnapshot(pid: number | undefined): DarwinRuntimeMemorySnapshot | undefined {
+  if (pid === undefined) return undefined;
+  if (process.platform !== 'darwin') throw new Error('MCP_VMMAP_MAC_ONLY');
+  const observedAt = new Date().toISOString();
+  const output = execFileSync('/usr/bin/vmmap', ['-summary', String(pid)], {
+    encoding: 'utf8',
+    timeout: 15_000,
+    maxBuffer: 4 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  return parseDarwinVmmapSummary(output, pid, observedAt);
 }
 
 function option(name: string): string | undefined {
@@ -279,15 +336,22 @@ async function probe(): Promise<ProbeResult> {
 
 if (import.meta.main) {
   const input = option('--input');
+  const runtimePid = process.argv.includes('--runtime-pid') ? Number(option('--runtime-pid')) : undefined;
+  if (runtimePid !== undefined && (!Number.isSafeInteger(runtimePid) || runtimePid < 1)) {
+    throw new Error('--runtime-pid requires a positive integer process id');
+  }
+  const memoryAtStart = input ? undefined : optionalDarwinRuntimeMemorySnapshot(runtimePid);
   const hostAtStart = input ? undefined : benchmarkHostPressureSnapshot();
   const measurement: ProbeResult = input ? { samples: readSamples(input), failures: [], batches: [] } : await probe();
   const hostAtFinish = input ? undefined : benchmarkHostPressureSnapshot();
+  const memoryAtFinish = input ? undefined : optionalDarwinRuntimeMemorySnapshot(runtimePid);
   const report = aggregateMcpTransportLatencySamples(measurement.samples);
   console.log(
     JSON.stringify(
       {
         generatedAt: new Date().toISOString(),
         ...(hostAtStart && hostAtFinish ? { benchmarkHostPressure: { start: hostAtStart, finish: hostAtFinish } } : {}),
+        ...(memoryAtStart && memoryAtFinish ? { runtimeMemory: { start: memoryAtStart, finish: memoryAtFinish } } : {}),
         ...report,
         attemptCount: measurement.samples.length + measurement.failures.length,
         successCount: measurement.samples.length,
