@@ -5870,6 +5870,10 @@ export interface ReleaseSessionCandidateVerificationDependencies {
     dependencies?: PrimaryRuntimeRecoveryDependencies,
   ) => Promise<PrimaryRuntimeRestartResult>;
   observeCandidateRuntime?: typeof observeRuntimeStatus;
+  /** Test seam: install Candidate B's isolated service. */
+  installCandidateService?: (session: ReleaseSession, runCommand: CommandRunner) => Promise<void>;
+  /** Test seam: initial whole-Runtime verification of the freshly booted Candidate B. */
+  verifyCandidateAfterStart?: typeof verifyPrimaryRuntimeAfterStart;
 }
 
 async function failBootedReleaseSessionCandidateCanary(
@@ -6123,6 +6127,44 @@ export async function verifyBootedReleaseSessionCandidateCanaries(
   return committed.value;
 }
 
+async function failReleaseSessionCandidateBoot(
+  config: RecoveryConfig,
+  initial: ReleaseSession,
+  detail: string,
+  runCommand: CommandRunner,
+): Promise<ConfiguredRuntimeActivationResult> {
+  let session = initial;
+  const retirement = await stopReleaseSessionCandidateService(session, runCommand);
+  const terminalDetail = retirement.ok
+    ? detail
+    : `${detail}; Candidate B retirement failed: ${retirement.detail}`;
+  try {
+    const latest = readReleaseSession(config.controllerHome, session.sessionId) ?? session;
+    session = latest;
+    if (retirement.ok && !['failed', 'rolled_back', 'known_good'].includes(latest.phase)) {
+      session = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId: latest.sessionId,
+        expectedRevision: latest.revision,
+        phase: 'failed',
+        receipts: [{ id: 'candidate_failed', kind: 'candidate_canary', summary: terminalDetail.slice(0, 500) }],
+      });
+    }
+    if (retirement.ok && ['failed', 'rolled_back'].includes(session.phase)) {
+      cleanupRetiredCandidateLane(config, session);
+    }
+  } catch {
+    /* preserve original Candidate B failure */
+  }
+  audit(config, 'release_session_candidate_failed', {
+    sessionId: session.sessionId,
+    detail,
+    candidateRetired: retirement.ok,
+    candidateRetirementDetail: retirement.detail,
+  });
+  return { ok: false, attempted: true, detail: terminalDetail, releaseSession: session };
+}
+
 export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
   config: RecoveryConfig,
   sessionId: string,
@@ -6228,23 +6270,96 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
           runtimeReleaseTreeSha256(dirname(candidateRelease.manifestPath)) !== candidateRelease.treeSha256
         )
           throw new Error('RELEASE_SESSION_CANDIDATE_IDENTITY_MISMATCH');
-        await installReleaseSessionCandidateService(session, runCommand);
+        // Installing and booting Candidate B is isolated work. Only validation and the
+        // frozen session snapshot happen under the Stable A lock; the boot itself runs
+        // under Candidate B's own lock and commits back with a Stable A/session CAS.
+        return { bootContext: { session, candidateConfig, runCommand } };
+      } catch (error) {
+        return failReleaseSessionCandidateBoot(
+          config,
+          session,
+          error instanceof Error ? error.message : String(error),
+          runCommand,
+        );
+      }
+    },
+  );
+  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  if ('continueCandidateCanary' in locked.value && locked.value.continueCandidateCanary === true) {
+    return verifyBootedReleaseSessionCandidateCanaries(config, sessionId, requestId, dependencies);
+  }
+  const bootContext = 'bootContext' in locked.value ? locked.value.bootContext : undefined;
+  if (!bootContext) return locked.value;
 
-        let initialVerify = await verifyPrimaryRuntimeAfterStart({
-          config: candidateConfig,
-          timeoutMs: RELEASE_SESSION_CANDIDATE_VERIFY_TIMEOUT_MS,
-          now: Date.now,
-          wait: sleep,
-          verifyLocal: verifyLocalRuntime,
-          observeLocal: observePrimaryRuntimeActivationReadiness,
-        });
-        if (!initialVerify.ok)
-          throw new Error(`RELEASE_SESSION_CANDIDATE_BOOT_UNVERIFIED: ${initialVerify.runtime.reasonCodes.join(',')}`);
-        assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
-        session = advanceReleaseSession({
+  const { session: frozenSession, candidateConfig, runCommand } = bootContext;
+  const bootIntent: RecoveryLockIntent = {
+    action: 'release_session_candidate_boot',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  };
+
+  // Serialize the long install/boot/verify only inside Candidate B's own
+  // ControllerHome so unrelated Stable A Recovery mutations are not blocked.
+  const bootAttempt = await withLock(candidateConfig, bootIntent, async () => {
+    try {
+      await (dependencies.installCandidateService ?? installReleaseSessionCandidateService)(frozenSession, runCommand);
+      const initialVerify = await (dependencies.verifyCandidateAfterStart ?? verifyPrimaryRuntimeAfterStart)({
+        config: candidateConfig,
+        timeoutMs: RELEASE_SESSION_CANDIDATE_VERIFY_TIMEOUT_MS,
+        now: Date.now,
+        wait: sleep,
+        verifyLocal: verifyLocalRuntime,
+        observeLocal: observePrimaryRuntimeActivationReadiness,
+      });
+      if (!initialVerify.ok) {
+        return {
+          ok: false as const,
+          detail: `RELEASE_SESSION_CANDIDATE_BOOT_UNVERIFIED: ${initialVerify.runtime.reasonCodes.join(',')}`,
+        };
+      }
+      return { ok: true as const };
+    } catch (error) {
+      return { ok: false as const, detail: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  if (!bootAttempt.acquired) {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: 'Candidate B boot already in progress: ' + recoveryBusyDetail(bootAttempt.owner),
+      releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? frozenSession,
+    };
+  }
+  const bootOutcome = bootAttempt.value;
+
+  const commitBootedCandidate = () =>
+    withLock(config, bootIntent, async () => {
+      const latest = readReleaseSession(config.controllerHome, sessionId);
+      if (!latest || latest.revision !== frozenSession.revision || latest.phase !== frozenSession.phase) {
+        // The ReleaseSession moved while Candidate B booted outside the Stable A lock.
+        // Never commit over it; retire Candidate B only when the session is gone or terminal.
+        const retire = !latest || releaseSessionCandidateIsRetired(latest);
+        const retirement = retire ? await stopReleaseSessionCandidateService(latest ?? frozenSession, runCommand) : undefined;
+        if (latest && retirement?.ok) cleanupRetiredCandidateLane(config, latest);
+        return {
+          ok: false as const,
+          attempted: true,
+          detail:
+            'RELEASE_SESSION_CANDIDATE_BOOT_COMPLETION_STALE: ' +
+            (latest ? latest.phase + '@' + latest.revision : 'session disappeared') +
+            (retirement && !retirement.ok ? '; Candidate B retirement failed: ' + retirement.detail : ''),
+          ...(latest ? { releaseSession: latest } : {}),
+        };
+      }
+      if (!bootOutcome.ok) {
+        return failReleaseSessionCandidateBoot(config, latest, bootOutcome.detail, runCommand);
+      }
+      try {
+        assertStableReleaseSessionIdentityCurrent(config, latest.stableRelease);
+        const booted = advanceReleaseSession({
           controllerHome: config.controllerHome,
           sessionId,
-          expectedRevision: session.revision,
+          expectedRevision: latest.revision,
           phase: 'candidate_booted',
           receipts: [
             {
@@ -6255,54 +6370,45 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
             },
           ],
         });
-
         return {
           ok: true as const,
           attempted: true,
           detail:
-            'Candidate B booted in isolation and persisted candidate_booted; restart/MCP/Scheduler/Controller canaries continue outside Stable A lock',
-          releaseSession: session,
+            'Candidate B booted in isolation under its own lock and committed candidate_booted with an exact Stable A/session CAS; restart/MCP/Scheduler/Controller canaries continue outside Stable A lock',
+          releaseSession: booted,
           continueCandidateCanary: true as const,
         };
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        const retirement = await stopReleaseSessionCandidateService(session, runCommand);
-        const terminalDetail = retirement.ok
-          ? detail
-          : `${detail}; Candidate B retirement failed: ${retirement.detail}`;
-        try {
-          const latest = readReleaseSession(config.controllerHome, sessionId) ?? session;
-          session = latest;
-          if (retirement.ok && !['failed', 'rolled_back', 'known_good'].includes(latest.phase)) {
-            session = advanceReleaseSession({
-              controllerHome: config.controllerHome,
-              sessionId,
-              expectedRevision: latest.revision,
-              phase: 'failed',
-              receipts: [{ id: 'candidate_failed', kind: 'candidate_canary', summary: terminalDetail.slice(0, 500) }],
-            });
-          }
-          if (retirement.ok && ['failed', 'rolled_back'].includes(session.phase)) {
-            cleanupRetiredCandidateLane(config, session);
-          }
-        } catch {
-          /* preserve original Candidate B failure */
-        }
-        audit(config, 'release_session_candidate_failed', {
-          sessionId,
-          detail,
-          candidateRetired: retirement.ok,
-          candidateRetirementDetail: retirement.detail,
-        });
-        return { ok: false as const, attempted: true, detail: terminalDetail, releaseSession: session };
+        return failReleaseSessionCandidateBoot(
+          config,
+          latest,
+          error instanceof Error ? error.message : String(error),
+          runCommand,
+        );
       }
-    },
-  );
-  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
-  if ('continueCandidateCanary' in locked.value && locked.value.continueCandidateCanary === true) {
+    });
+
+  let committed = await commitBootedCandidate();
+  const commitDeadline = Date.now() + RELEASE_SESSION_BUILD_COMMIT_LOCK_WAIT_MS;
+  while (!committed.acquired && Date.now() < commitDeadline) {
+    await sleep(250);
+    committed = await commitBootedCandidate();
+  }
+  if (!committed.acquired) {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail:
+        'Candidate B booted; Stable A commit lock remained busy after bounded wait: ' +
+        recoveryBusyDetail(committed.owner),
+      releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? frozenSession,
+    };
+  }
+  if ('continueCandidateCanary' in committed.value && committed.value.continueCandidateCanary === true) {
     return verifyBootedReleaseSessionCandidateCanaries(config, sessionId, requestId, dependencies);
   }
-  return locked.value;
+  return committed.value;
 }
 
 function releaseSessionHasAcceptanceTimeoutPolicy(session: Pick<ReleaseSession, 'receipts'>): boolean {
