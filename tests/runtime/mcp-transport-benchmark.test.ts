@@ -2,10 +2,15 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { runMcpConcurrentBatches, timingLedgerServerDuration } from '../../scripts/benchmark-mcp-transport';
+import {
+  benchmarkHostPressureSnapshot,
+  runMcpConcurrentBatches,
+  timingLedgerServerDuration,
+} from '../../scripts/benchmark-mcp-transport';
 import {
   aggregateMcpTransportLatencySamples,
   extractForgeServerDuration,
+  extractForgeGatewayPhaseTimings,
   mcpServerStartSpreadMs,
   normalizeMcpTransportLatencySample,
 } from '../../src/runtime/diagnostics/mcp-transport-benchmark';
@@ -128,6 +133,55 @@ describe('MCP transport latency benchmark', () => {
     expect(mcpServerStartSpreadMs([...samples].reverse())).toBe(1100);
     expect(mcpServerStartSpreadMs([{ serverStartedAt: '2026-11-24T00:00:01.200Z' }])).toBeUndefined();
     expect(mcpServerStartSpreadMs([{ serverStartedAt: 'invalid' }, {}])).toBeUndefined();
+  });
+
+  test('preserves only bounded numeric Gateway timings and aggregates per phase', () => {
+    const response = {
+      structuredContent: {
+        responseMeta: {
+          gatewayProxyTimingMs: {
+            gatewayProxyLaneWaitMs: 152,
+            gatewayProxyReturnMs: 900,
+            gatewayProxyCallMs: -5,
+            irrelevantMetadata: 42,
+          },
+        },
+      },
+    };
+    expect(extractForgeGatewayPhaseTimings(response)).toEqual({
+      gatewayProxyLaneWaitMs: 152,
+      gatewayProxyReturnMs: 900,
+    });
+    expect(extractForgeGatewayPhaseTimings({ structuredContent: { responseMeta: {} } })).toBeUndefined();
+    const group = aggregateMcpTransportLatencySamples([
+      {
+        label: 'mac-gateway',
+        tool: 'rh_status',
+        clientTotalMs: 1200,
+        serverDurationMs: 1050,
+        gatewayProxyTimingMs: response.structuredContent.responseMeta.gatewayProxyTimingMs,
+      },
+      {
+        label: 'mac-gateway',
+        tool: 'rh_status',
+        clientTotalMs: 400,
+        serverDurationMs: 300,
+        gatewayProxyTimingMs: { gatewayProxyLaneWaitMs: 4, gatewayProxyReturnMs: 80 },
+      },
+    ]).groups[0]!;
+    expect(group.gatewayProxyTimingMs?.gatewayProxyLaneWaitMs.p50).toBe(4);
+    expect(group.gatewayProxyTimingMs?.gatewayProxyLaneWaitMs.p95).toBe(152);
+    expect(group.gatewayProxyTimingMs?.gatewayProxyReturnMs.p95).toBe(900);
+    expect(group.gatewayProxyTimingMs?.gatewayProxyCallMs).toBeUndefined();
+  });
+
+  test('records benchmark-host pressure without requiring remote clock alignment', () => {
+    const host = benchmarkHostPressureSnapshot();
+    expect(host.cpuCores).toBeGreaterThan(0);
+    expect(host.loadAvg1).toBeGreaterThanOrEqual(0);
+    expect(host.totalMemoryBytes).toBeGreaterThan(0);
+    expect(host.availableMemoryBytes).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(Date.parse(host.observedAt))).toBe(true);
   });
 
   test('rejects malformed samples', () => {

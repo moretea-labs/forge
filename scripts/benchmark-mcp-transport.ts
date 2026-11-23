@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { readFileSync } from 'fs';
+import { cpus, freemem, loadavg, totalmem } from 'os';
 import { performance } from 'perf_hooks';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { readMcpServiceBearerToken } from '../adapters/mcp/auth';
@@ -7,10 +8,28 @@ import { resolveRepoPreferredControllerHome } from '../src/effects/controller-ho
 import {
   aggregateMcpTransportLatencySamples,
   extractForgeServerDuration,
+  extractForgeGatewayPhaseTimings,
   normalizeMcpTransportLatencySample,
   mcpServerStartSpreadMs,
   type McpTransportLatencySample,
 } from '../src/runtime/diagnostics/mcp-transport-benchmark';
+
+/** Benchmark-host context only, not remote Mac load when parsing an imported report. */
+export function benchmarkHostPressureSnapshot(): {
+  observedAt: string;
+  cpuCores: number;
+  loadAvg1: number;
+  availableMemoryBytes: number;
+  totalMemoryBytes: number;
+} {
+  return {
+    observedAt: new Date().toISOString(),
+    cpuCores: cpus().length,
+    loadAvg1: loadavg()[0] ?? 0,
+    availableMemoryBytes: freemem(),
+    totalMemoryBytes: totalmem(),
+  };
+}
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -221,6 +240,7 @@ async function probe(): Promise<ProbeResult> {
           continue;
         }
         successCount += 1;
+        const gatewayProxyTimingMs = extractForgeGatewayPhaseTimings(response);
         samples.push({
           label,
           tool,
@@ -233,6 +253,7 @@ async function probe(): Promise<ProbeResult> {
           ...(typeof meta.serverStartedAt === 'string' ? { serverStartedAt: meta.serverStartedAt } : {}),
           clientTotalMs: totalMs,
           serverDurationMs,
+          ...(gatewayProxyTimingMs ? { gatewayProxyTimingMs } : {}),
           ...(typeof meta.traceId === 'string' ? { traceId: meta.traceId } : {}),
           ...(typeof meta.requestId === 'string' ? { requestId: meta.requestId } : {}),
           observedAt: new Date().toISOString(),
@@ -258,12 +279,15 @@ async function probe(): Promise<ProbeResult> {
 
 if (import.meta.main) {
   const input = option('--input');
+  const hostAtStart = input ? undefined : benchmarkHostPressureSnapshot();
   const measurement: ProbeResult = input ? { samples: readSamples(input), failures: [], batches: [] } : await probe();
+  const hostAtFinish = input ? undefined : benchmarkHostPressureSnapshot();
   const report = aggregateMcpTransportLatencySamples(measurement.samples);
   console.log(
     JSON.stringify(
       {
         generatedAt: new Date().toISOString(),
+        ...(hostAtStart && hostAtFinish ? { benchmarkHostPressure: { start: hostAtStart, finish: hostAtFinish } } : {}),
         ...report,
         attemptCount: measurement.samples.length + measurement.failures.length,
         successCount: measurement.samples.length,

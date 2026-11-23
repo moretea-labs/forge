@@ -6,6 +6,7 @@ export interface McpTransportLatencySample {
   timingScope?: McpTransportTimingScope;
   clientTotalMs: number;
   serverDurationMs: number;
+  gatewayProxyTimingMs?: Record<string, number>;
   concurrency?: number;
   batchIndex?: number;
   batchClientTotalMs?: number;
@@ -31,6 +32,7 @@ export interface McpTransportLatencyGroup {
   sampleCount: number;
   clientTotalMs: McpTransportLatencyStats;
   serverDurationMs: McpTransportLatencyStats;
+  gatewayProxyTimingMs?: Record<string, McpTransportLatencyStats>;
   externalResidualMs: McpTransportLatencyStats;
   externalSharePct: McpTransportLatencyStats;
   serverExceedsClientCount: number;
@@ -63,6 +65,36 @@ function stats(values: number[]): McpTransportLatencyStats {
 
 function validDuration(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+const GATEWAY_PHASE_NAMES = [
+  'gatewayProxyResolveMs',
+  'gatewayProxyLaneWaitMs',
+  'gatewayProxyHandoffWaitMs',
+  'gatewayProxyConnectMs',
+  'gatewayProxyCallMs',
+  'gatewayProxyCanonicalDispatchLagMs',
+  'gatewayProxyCanonicalDurationMs',
+  'gatewayProxyReturnMs',
+] as const;
+
+function readGatewayPhaseTimings(value: unknown): Record<string, number> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const phases: Record<string, number> = {};
+  for (const name of GATEWAY_PHASE_NAMES) {
+    if (validDuration(record[name])) phases[name] = record[name];
+  }
+  return Object.keys(phases).length > 0 ? phases : undefined;
+}
+
+export function extractForgeGatewayPhaseTimings(result: unknown): Record<string, number> | undefined {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return undefined;
+  const structured = (result as Record<string, unknown>).structuredContent;
+  if (!structured || typeof structured !== 'object' || Array.isArray(structured)) return undefined;
+  const meta = (structured as Record<string, unknown>).responseMeta;
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return undefined;
+  return readGatewayPhaseTimings((meta as Record<string, unknown>).gatewayProxyTimingMs);
 }
 
 export function normalizeMcpTransportLatencySample(value: unknown): McpTransportLatencySample {
@@ -102,12 +134,14 @@ export function normalizeMcpTransportLatencySample(value: unknown): McpTransport
       throw new Error(`MCP_TRANSPORT_SAMPLE_INVALID: ${key} must be an ISO timestamp`);
     }
   }
+  const gatewayProxyTimingMs = readGatewayPhaseTimings(record.gatewayProxyTimingMs);
   return {
     label,
     tool,
     timingScope,
     clientTotalMs: record.clientTotalMs,
     serverDurationMs: record.serverDurationMs,
+    ...(gatewayProxyTimingMs ? { gatewayProxyTimingMs } : {}),
     concurrency,
     ...(batchIndex !== undefined ? { batchIndex: batchIndex as number } : {}),
     ...(record.batchClientTotalMs !== undefined ? { batchClientTotalMs: record.batchClientTotalMs as number } : {}),
@@ -164,6 +198,14 @@ export function aggregateMcpTransportLatencySamples(values: unknown[]): McpTrans
       const share = entries.map((_sample, index) =>
         client[index]! > 0 ? (residual[index]! / client[index]!) * 100 : 0,
       );
+      const gatewayPhases: Record<string, McpTransportLatencyStats> = {};
+      for (const key of GATEWAY_PHASE_NAMES) {
+        const values = entries.flatMap((sample) => {
+          const value = sample.gatewayProxyTimingMs?.[key];
+          return value === undefined ? [] : [value];
+        });
+        if (values.length > 0) gatewayPhases[key] = stats(values);
+      }
       return {
         label: entries[0]!.label,
         tool: entries[0]!.tool,
@@ -172,6 +214,7 @@ export function aggregateMcpTransportLatencySamples(values: unknown[]): McpTrans
         sampleCount: entries.length,
         clientTotalMs: stats(client),
         serverDurationMs: stats(server),
+        ...(Object.keys(gatewayPhases).length > 0 ? { gatewayProxyTimingMs: gatewayPhases } : {}),
         externalResidualMs: stats(residual),
         externalSharePct: stats(share),
         serverExceedsClientCount: entries.filter((sample) => sample.serverDurationMs > sample.clientTotalMs).length,
