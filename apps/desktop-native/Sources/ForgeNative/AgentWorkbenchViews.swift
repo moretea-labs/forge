@@ -133,29 +133,39 @@ struct AgentPane: View {
 
     private var agentWorkspaceStatusColor: Color {
         if model.busy || model.zenRefinementActive { return .orange }
+        if !model.checkoutIsAvailable { return .orange }
         if model.selectedProviderReady { return .green }
         return ForgePalette.secondary
     }
 
+    /// Window title prefers workspace scope; the selected thread already lives in the list.
     private var agentToolbarTitle: some View {
-        VStack(alignment:.leading,spacing:0) {
-            Text(model.thread?.title ?? "新会话")
-                .font(.system(size:12.5,weight:.semibold))
+        HStack(spacing:8) {
+            Text(agentScopeLabel.isEmpty ? (model.thread?.title ?? "新会话") : agentScopeLabel)
+                .font(.system(size:12,weight:.medium))
+                .foregroundStyle(ForgePalette.ink)
                 .lineLimit(1)
-                .truncationMode(.tail)
-            if !agentScopeLabel.isEmpty {
-                Text(agentScopeLabel)
-                    .font(.system(size:10))
-                    .foregroundStyle(ForgePalette.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                .truncationMode(.middle)
+            Button { Task { await model.refresh() } } label: {
+                HStack(spacing:5) {
+                    Circle().fill(agentWorkspaceStatusColor).frame(width:5,height:5)
+                    Text(model.agentWorkspaceStatusLabel)
+                        .font(.system(size:10.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .lineLimit(1)
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help("\(model.agentWorkspaceStatusDetail)\n点击刷新会话状态和模型服务")
+            .accessibilityLabel("Agent 状态")
+            .accessibilityValue(model.agentWorkspaceStatusLabel)
+            .accessibilityIdentifier("agent.workspace-refresh")
         }
-        .frame(maxWidth:360,alignment:.leading)
+        .frame(maxWidth:520,alignment:.leading)
         .padding(.leading,4)
         .help(agentScopeLabel.isEmpty ? model.agentWorkspaceStatusDetail : agentScopeLabel)
-        .accessibilityElement(children:.combine)
-        .accessibilityAddTraits(.isHeader)
+        .accessibilityElement(children:.contain)
         .accessibilityIdentifier("agent.workspace-scope")
     }
 
@@ -221,30 +231,19 @@ struct AgentPane: View {
 
     @ViewBuilder
     private var agentToolbarActions: some View {
-        HStack(spacing:8) {
-            workspaceChangesControl
-            workspaceFilesControl
-            additionalAgentTools
-            Spacer(minLength:8)
-            Button { Task { await model.refresh() } } label: {
-                HStack(spacing:5) {
-                    Circle().fill(agentWorkspaceStatusColor).frame(width:5,height:5)
-                    Text(model.agentWorkspaceStatusLabel)
-                        .font(.system(size:10.5,weight:.medium))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .lineLimit(1)
-                }
-                .contentShape(Rectangle())
+        // When the right pane is open, its tab strip owns Changes/Files.
+        // Keep only the openers in the conversation column to avoid duplicate chrome.
+        if !workSurfaceVisible {
+            HStack(spacing:6) {
+                workspaceChangesControl
+                workspaceFilesControl
+                additionalAgentTools
+                Spacer(minLength:0)
             }
-            .buttonStyle(.plain)
-            .help("\(model.agentWorkspaceStatusDetail)\n点击刷新会话状态和模型服务")
-            .accessibilityLabel("Agent 状态")
-            .accessibilityValue(model.agentWorkspaceStatusLabel)
-            .accessibilityIdentifier("agent.workspace-refresh")
+            .frame(maxWidth:.infinity,alignment:.leading)
+            .accessibilityElement(children:.contain)
+            .accessibilityIdentifier("agent.workspace-context")
         }
-        .frame(maxWidth:.infinity,alignment:.leading)
-        .accessibilityElement(children:.contain)
-        .accessibilityIdentifier("agent.workspace-context")
     }
 
     private var workspaceReviewFileCount: Int {
@@ -360,24 +359,26 @@ struct AgentPane: View {
                 ZStack {
                     // Keep the composer and transcript mounted during review.
                     VStack(spacing:0) {
-                        agentToolbarActions
-                            .frame(maxWidth:.infinity,alignment:.leading)
-                            .padding(.horizontal,14)
-                            .frame(height:34)
+                        if !workSurfaceVisible {
+                            agentToolbarActions
+                                .frame(maxWidth:.infinity,alignment:.leading)
+                                .padding(.horizontal,14)
+                                .frame(height:30)
+                        }
                         ScrollViewReader { reader in
                 ScrollView {
-                    LazyVStack(alignment:.leading,spacing:18) {
+                    LazyVStack(alignment:.leading,spacing:16) {
                         if model.thread?.messages.isEmpty != false {
-                            VStack(spacing:14) {
-                                VStack(spacing:6) {
+                            VStack(spacing:12) {
+                                VStack(spacing:5) {
                                     Text("今天想完成什么？")
-                                        .font(.system(size:20,weight:.semibold)).tracking(-0.3)
+                                        .font(.system(size:18,weight:.semibold)).tracking(-0.25)
                                     Text(agentEmptyStateDescription)
                                         .font(.system(size:12))
                                         .foregroundStyle(ForgePalette.secondary)
                                         .multilineTextAlignment(.center)
                                         .lineSpacing(3)
-                                        .frame(maxWidth:440)
+                                        .frame(maxWidth:420)
                                 }
                                 if model.isProjectOnlyConversation {
                                     if model.agentSendBlockReason == nil {
@@ -418,7 +419,8 @@ struct AgentPane: View {
                                     }
                                 }
                             }
-                            .frame(maxWidth:.infinity,minHeight:420)
+                            .frame(maxWidth:.infinity,minHeight:260)
+                            .padding(.top,36)
                         }
                         ForEach(model.thread?.messages ?? []) { message in
                             if message.role == "user" {
@@ -1294,7 +1296,8 @@ struct AgentPane: View {
                           ? "arrow.down.right.and.arrow.up.left"
                           : "arrow.up.left.and.arrow.down.right")
                         .font(.system(size:11,weight:.medium))
-                        .frame(width:26,height:26)
+                        .foregroundStyle(ForgePalette.secondary)
+                        .frame(width:24,height:24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1305,7 +1308,8 @@ struct AgentPane: View {
                 } label: {
                     Image(systemName:"xmark")
                         .font(.system(size:10,weight:.semibold))
-                        .frame(width:26,height:26)
+                        .foregroundStyle(ForgePalette.secondary)
+                        .frame(width:24,height:24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1314,7 +1318,12 @@ struct AgentPane: View {
                 .accessibilityIdentifier("agent.work-surface.close")
             }
             .padding(.horizontal,10)
-            .frame(height:34)
+            .frame(height:32)
+            .overlay(alignment:.bottom) {
+                Rectangle()
+                    .fill(ForgePalette.hairline)
+                    .frame(height:0.5)
+            }
 
             ZStack {
                 AgentChangesPane(model:model)
@@ -1728,21 +1737,21 @@ struct AgentPane: View {
     }
 
     private func quickControlLabel(_ title:String,systemImage:String) -> some View {
-        HStack(spacing:5) {
+        HStack(spacing:4) {
             Image(systemName:systemImage)
                 .font(.system(size:9,weight:.medium))
                 .foregroundStyle(ForgePalette.secondary)
             Text(title)
                 .font(.system(size:10.5,weight:.medium))
-                .foregroundStyle(ForgePalette.ink)
+                .foregroundStyle(ForgePalette.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Image(systemName:"chevron.down")
-                .font(.system(size:6.5,weight:.bold))
+                .font(.system(size:6,weight:.bold))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal,5)
-        .frame(height:27)
+        .padding(.horizontal,4)
+        .frame(height:24)
         .contentShape(Rectangle())
     }
 

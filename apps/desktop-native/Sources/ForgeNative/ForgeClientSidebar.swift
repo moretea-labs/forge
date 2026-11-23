@@ -46,7 +46,7 @@ enum ForgeSidebarDestination: String, CaseIterable {
     case .agent: return "会话"
     case .projects: return "项目"
     case .workbench: return "看板"
-    case .automations: return "自动任务"
+    case .automations: return "任务"
     case .resources: return "资源"
     case .analytics: return "统计"
     case .settings: return "设置"

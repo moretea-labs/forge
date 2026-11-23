@@ -150,18 +150,26 @@ struct AgentAssetsDashboard: View {
       let chosen = items.first(where: { $0.id == focusedResourceId })
 
       VStack(spacing: 0) {
-        resourceToolbar(count: items.count, compact: geometry.size.width < 640)
+        let hasQuery = !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !items.isEmpty || hasQuery {
+          resourceToolbar(count: items.count, compact: geometry.size.width < 640)
+        }
 
         if items.isEmpty {
-          VStack(spacing: 10) {
-            Image(systemName: "square.stack.3d.up")
-              .font(.system(size: 27, weight: .light))
+          VStack(spacing: 8) {
+            Image(systemName: "paperclip")
+              .font(.system(size: 20, weight: .light))
               .foregroundStyle(.tertiary)
-            Text(
-              searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? "暂无资源" : "没有匹配的资源"
-            )
-            .font(.system(size: 13, weight: .medium))
+            Text(hasQuery ? "没有匹配的资源" : "暂无附件")
+              .font(.system(size: 12, weight: .medium))
+              .foregroundStyle(ForgePalette.secondary)
+            if !hasQuery {
+              Text("发送消息时添加的文件与图片会出现在这里")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 220)
+            }
           }
           .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if compact, let chosen {

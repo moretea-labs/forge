@@ -10,6 +10,7 @@ Scope: native macOS Client window architecture, layout, navigation, typography, 
 - **2B dual primary surfaces.** 会话 and 看板 remain peer destinations via the icon rail; Zen is not merged into the Agent right pane. 项目 is a first-class list-column mode for repository/project selection.
 - **Browser deferred.** Never show Browser as an active enabled control until a separate authorized pane exists.
 - **Cursor density.** Prefer quieter chrome: denser thread rows, icon-first conversation tools, flatter composer, list-header New Chat (`sidebar.thread.new`), and right-pane tab strip instead of a dropdown title.
+- **No duplicate chrome.** When the right pane is open, Changes/Files live only in its tab strip; the conversation column does not repeat those openers. Window title shows workspace scope + honest status color (orange when checkout unavailable), not a second copy of the selected thread title.
 
 ## 1. Overall layout
 
@@ -31,8 +32,8 @@ Default visible columns: icon rail + list + main. Opening Changes/Files from the
 ## 2. Toolbar ownership
 
 - **Window toolbar:** global navigation chrome: sidebar toggle, session title and `project › repo › branch` context, plus back when available. Agent-specific Changes/Files/More actions do not live here.
-- **Middle conversation toolbar (Agent main):** icon-first Changes / Files / More plus quiet Provider status. Stable action identifiers are `agent.changes`, `agent.files`, and `agent.tools.more`. This is the primary entry for session tools.
-- **Right pane:** tab strip switches Changes | Files while open; maximize and close stay as plain icon buttons. Browser remains deferred and disabled.
+- **Middle conversation toolbar (Agent main):** icon-first Changes / Files / More when the right pane is closed. Stable action identifiers are `agent.changes`, `agent.files`, and `agent.tools.more`. Hidden while the right pane is open.
+- **Right pane:** tab strip is the only Changes | Files switcher while open; maximize and close stay as plain icon buttons. Empty Files pane omits search chrome until there is something to filter. Browser remains deferred and disabled.
 - **List header (会话):** New Chat, Search, Inbox — New Chat uses `sidebar.thread.new`.
 - **Window toolbar, other pages and 看板:** sidebar toggle, back, Project › repository breadcrumb, page refresh.
 - **Composer:** provider/model/attachments/voice/send; single quiet shadow; remains mounted while the right pane replaces its presentation at compact widths.

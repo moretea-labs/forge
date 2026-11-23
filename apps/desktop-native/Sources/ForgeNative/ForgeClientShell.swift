@@ -324,7 +324,7 @@ struct ForgeWorkspaceView: View {
             projectSwitcher
                 .padding(.horizontal,10)
                 .padding(.top,8)
-                .padding(.bottom,2)
+                .padding(.bottom,4)
 
             // Keep contextual panes mounted across destination changes so
             // conversation search, thread scroll, and Zen state survive.
@@ -468,9 +468,9 @@ struct ForgeWorkspaceView: View {
 
     private var sidebar: some View {
         VStack(alignment:.leading,spacing:0) {
-            HStack(spacing:4) {
+            HStack(spacing:2) {
                 Text("会话")
-                    .font(.system(size:11,weight:.semibold))
+                    .font(.system(size:10.5,weight:.semibold))
                     .foregroundStyle(ForgePalette.secondary)
                     .lineLimit(1)
                 Spacer(minLength:0)
@@ -481,8 +481,9 @@ struct ForgeWorkspaceView: View {
                     model.newThread()
                 } label: {
                     Image(systemName:"square.and.pencil")
-                        .font(.system(size:12,weight:.medium))
-                        .frame(width:26,height:26)
+                        .font(.system(size:11.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .frame(width:24,height:24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -493,8 +494,9 @@ struct ForgeWorkspaceView: View {
 
                 Button { model.toggleConversationSearch() } label: {
                     Image(systemName:model.showSearch ? "xmark" : "magnifyingglass")
-                        .font(.system(size:12,weight:.medium))
-                        .frame(width:26,height:26)
+                        .font(.system(size:11.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .frame(width:24,height:24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -508,8 +510,9 @@ struct ForgeWorkspaceView: View {
                 } label: {
                     ZStack(alignment:.topTrailing) {
                         Image(systemName:"tray")
-                            .font(.system(size:12,weight:.medium))
-                            .frame(width:26,height:26)
+                            .font(.system(size:11.5,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .frame(width:24,height:24)
                         if !model.relevantUserRequests.isEmpty {
                             let visibleCount = model.relevantUserRequests.count
                             let exactCount = model.userRequestsTotalCount
@@ -519,7 +522,7 @@ struct ForgeWorkspaceView: View {
                                 .padding(.horizontal,3).frame(minWidth:13,minHeight:13)
                                 .background(Capsule().fill(ForgePalette.accent))
                                 .foregroundStyle(Color.white)
-                                .offset(x:3,y:1)
+                                .offset(x:2,y:0)
                         }
                     }
                     .contentShape(Rectangle())
@@ -533,9 +536,9 @@ struct ForgeWorkspaceView: View {
                     inboxPanel
                 }
             }
-            .padding(.leading,12).padding(.trailing,8)
-            .frame(height:30)
-            .padding(.top,8).padding(.bottom,2)
+            .padding(.leading,10).padding(.trailing,6)
+            .frame(height:26)
+            .padding(.top,2).padding(.bottom,2)
 
             if model.showSearch {
                 HStack(spacing:7) {
@@ -1205,29 +1208,41 @@ struct ForgeWorkspaceView: View {
             projectPickerShown.toggle()
             if !projectPickerShown { projectSearch = "" }
         } label: {
-            HStack(spacing:9) {
+            HStack(spacing:6) {
                 Image(systemName:"folder.fill")
                     .symbolRenderingMode(.hierarchical)
-                    .font(.system(size:13))
+                    .font(.system(size:11,weight:.medium))
                     .foregroundStyle(ForgePalette.secondary)
-                    .frame(width:20)
-                VStack(alignment:.leading,spacing:2) {
-                    Text(model.project?.label ?? "选择代码工作区")
-                        .font(.system(size:12,weight:.semibold))
+                Text(model.project?.label ?? "选择代码工作区")
+                    .font(.system(size:11.5,weight:.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let branch = model.checkoutBranch, model.project != nil {
+                    Text(branch)
+                        .font(.system(size:10.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
-                    Text(projectSwitcherSummary)
-                        .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
-                        .lineLimit(1)
+                        .padding(.horizontal,6)
+                        .frame(height:18)
+                        .background(ForgePalette.softFill,in:Capsule())
                 }
-                Spacer()
-                Image(systemName:"chevron.up.chevron.down").font(.system(size:10))
+                Spacer(minLength:4)
+                Image(systemName:"chevron.up.chevron.down")
+                    .font(.system(size:9,weight:.semibold))
+                    .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal,9).frame(height:42)
-            .contentShape(Rectangle())
+            .padding(.horizontal,8)
+            .frame(height:28)
+            .background(ForgePalette.softFill.opacity(0.55),
+                        in:RoundedRectangle(cornerRadius:7,style:.continuous))
+            .contentShape(RoundedRectangle(cornerRadius:7,style:.continuous))
         }
         .buttonStyle(.plain)
-        .help("代码仓库与 checkout；产品项目和任务在工作台管理")
+        .help(model.project == nil
+              ? "选择代码仓库与 checkout"
+              : "\(model.project?.label ?? "") · \(projectSwitcherSummary)")
         .accessibilityLabel("代码工作区：\(model.project?.label ?? "未选择")")
+        .accessibilityValue(projectSwitcherSummary)
         .popover(isPresented:$projectPickerShown,arrowEdge:.trailing) {
             projectPicker
         }
