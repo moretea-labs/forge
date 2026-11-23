@@ -6,6 +6,7 @@ import { runMcpConcurrentBatches, timingLedgerServerDuration } from '../../scrip
 import {
   aggregateMcpTransportLatencySamples,
   extractForgeServerDuration,
+  mcpServerStartSpreadMs,
   normalizeMcpTransportLatencySample,
 } from '../../src/runtime/diagnostics/mcp-transport-benchmark';
 
@@ -115,6 +116,18 @@ describe('MCP transport latency benchmark', () => {
 
   test('rejects invalid concurrent batch inputs', async () => {
     await expect(runMcpConcurrentBatches(2, 0, async () => 1)).rejects.toThrow('MCP_TRANSPORT_BATCH_INVALID');
+  });
+
+  test('server ingress spread is independent of client clock skew and response order', () => {
+    const samples = [
+      { serverStartedAt: '2026-11-24T00:00:00.650Z' },
+      { serverStartedAt: '2026-11-24T00:00:00.100Z' },
+      { serverStartedAt: '2026-11-24T00:00:01.200Z' },
+    ];
+    expect(mcpServerStartSpreadMs(samples)).toBe(1100);
+    expect(mcpServerStartSpreadMs([...samples].reverse())).toBe(1100);
+    expect(mcpServerStartSpreadMs([{ serverStartedAt: '2026-11-24T00:00:01.200Z' }])).toBeUndefined();
+    expect(mcpServerStartSpreadMs([{ serverStartedAt: 'invalid' }, {}])).toBeUndefined();
   });
 
   test('rejects malformed samples', () => {

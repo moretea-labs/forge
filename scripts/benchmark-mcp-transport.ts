@@ -8,6 +8,7 @@ import {
   aggregateMcpTransportLatencySamples,
   extractForgeServerDuration,
   normalizeMcpTransportLatencySample,
+  mcpServerStartSpreadMs,
   type McpTransportLatencySample,
 } from '../src/runtime/diagnostics/mcp-transport-benchmark';
 
@@ -114,6 +115,7 @@ interface ProbeResult {
     successCount: number;
     failureCount: number;
     clientBatchTotalMs: number;
+    serverStartSpreadMs?: number;
   }>;
 }
 
@@ -236,12 +238,16 @@ async function probe(): Promise<ProbeResult> {
           observedAt: new Date().toISOString(),
         });
       }
+      const serverStartSpreadMs = mcpServerStartSpreadMs(
+        samples.filter((sample) => sample.batchIndex === batch.batchIndex),
+      );
       batchSummaries.push({
         batchIndex: batch.batchIndex,
         attemptCount: batch.outcomes.length,
         successCount,
         failureCount: batch.outcomes.length - successCount,
         clientBatchTotalMs: batch.clientBatchTotalMs,
+        ...(serverStartSpreadMs === undefined ? {} : { serverStartSpreadMs }),
       });
     }
   } finally {
@@ -264,7 +270,7 @@ if (import.meta.main) {
         failureCount: measurement.failures.length,
         batches: measurement.batches,
         failures: measurement.failures,
-        samples: measurement.samples,
+        ...(process.argv.includes('--summary-only') ? {} : { samples: measurement.samples }),
       },
       null,
       2,

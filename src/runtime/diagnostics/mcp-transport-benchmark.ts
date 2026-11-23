@@ -132,6 +132,21 @@ export function extractForgeServerDuration(result: unknown): number | undefined 
   return validDuration(duration) ? duration : undefined;
 }
 
+/**
+ * Server ingress spread uses server timestamps only, so it does not require
+ * synchronization between the caller's clock and the Forge host clock.
+ * Undefined means fewer than two valid server timestamps are available.
+ */
+export function mcpServerStartSpreadMs(
+  samples: Pick<McpTransportLatencySample, 'serverStartedAt'>[],
+): number | undefined {
+  const starts = samples
+    .map((sample) => (sample.serverStartedAt === undefined ? Number.NaN : Date.parse(sample.serverStartedAt)))
+    .filter((value) => Number.isFinite(value));
+  if (starts.length < 2) return undefined;
+  return round(Math.max(...starts) - Math.min(...starts));
+}
+
 export function aggregateMcpTransportLatencySamples(values: unknown[]): McpTransportLatencyReport {
   const samples = values.map(normalizeMcpTransportLatencySample);
   const grouped = new Map<string, McpTransportLatencySample[]>();
