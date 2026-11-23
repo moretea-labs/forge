@@ -33,6 +33,7 @@ import {
   releaseExecutionLeases,
 } from '../../src/runtime/resources/leases/store';
 import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery/maintenance-executor';
+import { listControllerWorklogEvents } from '../../src/runtime/evidence/controller-worklog';
 
 const roots: string[] = [];
 
@@ -2189,10 +2190,13 @@ test('legacy EditSessions retire as superseded metadata only when their original
     controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
   })).toMatchObject({ safe: true, reason: 'EDIT_SESSION_LEGACY_SUPERSEDED_METADATA_ONLY' });
   const cleaned = cleanupEditSession(fx.repoRoot, session.sessionId, {
-    controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+    controllerHome: fx.controllerHome, repoId: fx.repository.repoId, reviewer: 'runtime-maintenance',
   });
   expect(cleaned.status).toBe('superseded');
   expect(cleaned.verifiedAt).toBeUndefined();
+  expect(listControllerWorklogEvents(fx.repoRoot, { editSessionId: session.sessionId }).filter(
+    (event) => event.action === 'edit_session_superseded',
+  )).toHaveLength(0);
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
 });
 

@@ -1088,16 +1088,21 @@ function markEditSessionSuperseded(
   session.supersededPaths = paths;
   session.updatedAt = session.supersededAt;
   writeSession(repoRoot, session);
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: 'edit',
-    action: 'edit_session_superseded',
-    summary: `${session.purpose}: superseded by newer changes in ${paths.length} file(s)`,
-    actor: session.reviewer,
-    issueId: session.issueId,
-    taskId: session.taskId,
-    editSessionId: session.sessionId,
-    details: { files: paths, note: session.reviewNote },
-  });
+  // Explicit maintenance already has a bounded Process/maintenance receipt.
+  // Emitting an additional worklog row per retired historical session would
+  // turn one-time metadata reconciliation into unbounded audit growth (#713).
+  if (session.reviewer !== 'runtime-maintenance') {
+    tryAppendControllerWorklogEvent(repoRoot, {
+      category: 'edit',
+      action: 'edit_session_superseded',
+      summary: `${session.purpose}: superseded by newer changes in ${paths.length} file(s)`,
+      actor: session.reviewer,
+      issueId: session.issueId,
+      taskId: session.taskId,
+      editSessionId: session.sessionId,
+      details: { files: paths, note: session.reviewNote },
+    });
+  }
   return session;
 }
 
@@ -1399,23 +1404,25 @@ export function cleanupEditSession(
       inspection.reason +
       (input.note?.trim() ? ' ' + input.note.trim() : '');
     writeSession(repoRoot, reconciled);
-    tryAppendControllerWorklogEvent(repoRoot, {
-      category: 'edit',
-      action: 'edit_session_reconciled_unverified',
-      summary: reconciled.purpose + ': integrated bytes retained; checks remain UNVERIFIED',
-      actor: reconciled.reviewer,
-      issueId: reconciled.issueId,
-      taskId: reconciled.taskId,
-      editSessionId: reconciled.sessionId,
-      details: {
-        head: gitRevision(repoRoot),
-        files: sessionTrackedPaths(reconciled),
-        unverifiedChecks: inspection.unverifiedChecks,
-        approvalRequired: reconciled.assurance?.approvalRequired ?? false,
-        currentLeaseObservation: 'none_at_reconciliation',
-        historicalLeaseDisposition: 'unknown',
-      },
-    });
+    if (reconciled.reviewer !== 'runtime-maintenance') {
+      tryAppendControllerWorklogEvent(repoRoot, {
+        category: 'edit',
+        action: 'edit_session_reconciled_unverified',
+        summary: reconciled.purpose + ': integrated bytes retained; checks remain UNVERIFIED',
+        actor: reconciled.reviewer,
+        issueId: reconciled.issueId,
+        taskId: reconciled.taskId,
+        editSessionId: reconciled.sessionId,
+        details: {
+          head: gitRevision(repoRoot),
+          files: sessionTrackedPaths(reconciled),
+          unverifiedChecks: inspection.unverifiedChecks,
+          approvalRequired: reconciled.assurance?.approvalRequired ?? false,
+          currentLeaseObservation: 'none_at_reconciliation',
+          historicalLeaseDisposition: 'unknown',
+        },
+      });
+    }
     return reconciled;
   }
   throw new Error(`edit session cannot be cleaned up from ${reconciled.status}`);
