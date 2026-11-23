@@ -134,6 +134,9 @@ struct ForgeWorkspaceView: View {
         .navigationSplitViewStyle(.balanced)
         .toolbar {
             ToolbarItem(placement:.principal) {
+                // Agent supplies its own title (thread + scope) in the
+                // navigation slot; other pages keep the breadcrumb.
+                if model.zenMode || model.page != .agent {
                 HStack(spacing:7) {
                     Text(model.semanticProject?.displayName ?? "Forge")
                         .font(.system(size:12,weight:.medium))
@@ -149,6 +152,7 @@ struct ForgeWorkspaceView: View {
                 }
                 .frame(maxWidth:550)
                 .accessibilityIdentifier("forge.toolbar.context")
+                }
             }
             ToolbarItemGroup(placement:.automatic) {
                 unifiedWindowToolbarActions
@@ -237,49 +241,26 @@ struct ForgeWorkspaceView: View {
         return Button {
             openSidebarDestination(destination)
         } label: {
-            Image(systemName:destination.symbol)
-                .font(.system(size:14,weight:selected ? .semibold : .regular))
-                .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                .frame(width:36,height:32)
-                .background(selected ? ForgePalette.selectionStrong : .clear,
-                            in:RoundedRectangle(cornerRadius:9,style:.continuous))
-                .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
+            VStack(spacing:2) {
+                Image(systemName:destination.symbol)
+                    .font(.system(size:14,weight:selected ? .semibold : .regular))
+                    .frame(height:16)
+                Text(destination.title)
+                    .font(.system(size:9,weight:selected ? .semibold : .regular))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+            .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
+            .background(selected ? ForgePalette.selection : .clear,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+            .forgeHoverFill(cornerRadius:8)
         }
         .buttonStyle(.plain)
         .help(destination.title)
         .accessibilityLabel(destination.title)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
         .accessibilityIdentifier("forge.nav.\(destination.rawValue)")
-    }
-
-    private var sidebarSecondaryDestinationMenu: some View {
-        let selected = ![ForgeSidebarDestination.agent,.projects,.workbench]
-            .contains(activeSidebarDestination)
-        return Menu {
-            ForEach([ForgeSidebarDestination.automations,.resources,.analytics,.settings],id:\.self) { destination in
-                Button {
-                    openSidebarDestination(destination)
-                } label: {
-                    if activeSidebarDestination == destination {
-                        Label(destination.title,systemImage:"checkmark")
-                    } else {
-                        Label(destination.title,systemImage:destination.symbol)
-                    }
-                }
-            }
-        } label: {
-            Image(systemName:selected ? activeSidebarDestination.symbol : "ellipsis")
-                .font(.system(size:14,weight:selected ? .semibold : .regular))
-                .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                .frame(width:36,height:32)
-                .background(selected ? ForgePalette.selectionStrong : .clear,
-                            in:RoundedRectangle(cornerRadius:9,style:.continuous))
-                .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
-        }
-        .menuStyle(.borderlessButton)
-        .help("更多")
-        .accessibilityLabel("更多导航")
-        .accessibilityIdentifier("forge.nav.more")
     }
 
     private func utilitySidebarButton(_ title:String,icon:String,page:NativePage) -> some View {
@@ -308,6 +289,10 @@ struct ForgeWorkspaceView: View {
                 utilitySidebarButton("文件与图片",icon:"photo.on.rectangle",page:.assets)
                 utilitySidebarButton("知识库",icon:"books.vertical",page:.knowledge)
             } else if activeSidebarDestination == .settings {
+                Text("设置").font(.system(size:11,weight:.semibold))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .padding(.leading,11).padding(.top,10).padding(.bottom,2)
+                utilitySidebarButton("模型与运行时",icon:"cpu",page:.settings)
                 utilitySidebarButton("项目插件",icon:"puzzlepiece",page:.plugins)
             }
         }
@@ -316,14 +301,18 @@ struct ForgeWorkspaceView: View {
     }
 
     private var iconRail: some View {
-        VStack(spacing:6) {
+        VStack(spacing:4) {
             ForEach(ForgeSidebarDestination.primaryRail, id: \.self) { destination in
                 sidebarDestinationButton(destination)
             }
+            Color.clear.frame(height:6)
+            ForEach(ForgeSidebarDestination.toolRail, id: \.self) { destination in
+                sidebarDestinationButton(destination)
+            }
             Spacer(minLength:0)
-            sidebarSecondaryDestinationMenu
+            sidebarDestinationButton(.settings)
         }
-        .padding(.vertical,10)
+        .padding(.vertical,8)
         .frame(width:ForgeClientDesign.Shell.iconRailWidth)
         .frame(maxHeight:.infinity)
         .accessibilityElement(children:.contain)
@@ -360,33 +349,19 @@ struct ForgeWorkspaceView: View {
                 }
 
                 VStack(alignment:.leading,spacing:0) {
-                    if activeSidebarDestination == .resources
-                        || activeSidebarDestination == .settings {
-                        contextualSidebar
-                    }
-                    if activeSidebarDestination == .agent
-                        || activeSidebarDestination == .automations
-                        || activeSidebarDestination == .resources
-                        || activeSidebarDestination == .analytics
-                        || activeSidebarDestination == .settings {
+                    // Utility destinations show their own section nav, not the
+                    // conversation list (which belongs to 会话 only).
+                    if activeSidebarDestination == .agent {
                         sidebar
+                    } else if activeSidebarDestination != .projects
+                                && activeSidebarDestination != .workbench {
+                        contextualSidebar
+                        Spacer(minLength:0)
                     }
                 }
-                .opacity(activeSidebarDestination == .agent
-                         || activeSidebarDestination == .automations
-                         || activeSidebarDestination == .resources
-                         || activeSidebarDestination == .analytics
-                         || activeSidebarDestination == .settings ? 1 : 0)
-                .allowsHitTesting(activeSidebarDestination == .agent
-                                  || activeSidebarDestination == .automations
-                                  || activeSidebarDestination == .resources
-                                  || activeSidebarDestination == .analytics
-                                  || activeSidebarDestination == .settings)
-                .accessibilityHidden(!(activeSidebarDestination == .agent
-                                       || activeSidebarDestination == .automations
-                                       || activeSidebarDestination == .resources
-                                       || activeSidebarDestination == .analytics
-                                       || activeSidebarDestination == .settings))
+                .opacity(activeSidebarDestination == .projects || activeSidebarDestination == .workbench ? 0 : 1)
+                .allowsHitTesting(!(activeSidebarDestination == .projects || activeSidebarDestination == .workbench))
+                .accessibilityHidden(activeSidebarDestination == .projects || activeSidebarDestination == .workbench)
             }
             .frame(maxWidth:.infinity,maxHeight:.infinity)
         }
@@ -397,7 +372,6 @@ struct ForgeWorkspaceView: View {
         // Column 1: icon rail. Column 2: sessions / projects / board list.
         HStack(spacing:0) {
             iconRail
-            Divider()
             listColumn
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
@@ -494,17 +468,33 @@ struct ForgeWorkspaceView: View {
 
     private var sidebar: some View {
         VStack(alignment:.leading,spacing:0) {
-            HStack(spacing:6) {
+            HStack(spacing:4) {
                 Text("会话")
                     .font(.system(size:11,weight:.semibold))
                     .foregroundStyle(ForgePalette.secondary)
                     .lineLimit(1)
                 Spacer(minLength:0)
 
+                Button {
+                    guard !model.zenRefinementActive else { return }
+                    model.show(.agent)
+                    model.newThread()
+                } label: {
+                    Image(systemName:"square.and.pencil")
+                        .font(.system(size:12,weight:.medium))
+                        .frame(width:26,height:26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(model.busy || model.zenRefinementActive)
+                .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "新会话 (⌘N)")
+                .accessibilityLabel("新会话")
+                .accessibilityIdentifier("sidebar.thread.new")
+
                 Button { model.toggleConversationSearch() } label: {
                     Image(systemName:model.showSearch ? "xmark" : "magnifyingglass")
-                        .font(.system(size:12.5,weight:.medium))
-                        .frame(width:28,height:30)
+                        .font(.system(size:12,weight:.medium))
+                        .frame(width:26,height:26)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -518,8 +508,8 @@ struct ForgeWorkspaceView: View {
                 } label: {
                     ZStack(alignment:.topTrailing) {
                         Image(systemName:"tray")
-                            .font(.system(size:12.5,weight:.medium))
-                            .frame(width:28,height:30)
+                            .font(.system(size:12,weight:.medium))
+                            .frame(width:26,height:26)
                         if !model.relevantUserRequests.isEmpty {
                             let visibleCount = model.relevantUserRequests.count
                             let exactCount = model.userRequestsTotalCount
@@ -543,9 +533,9 @@ struct ForgeWorkspaceView: View {
                     inboxPanel
                 }
             }
-            .padding(.leading,19).padding(.trailing,12)
+            .padding(.leading,12).padding(.trailing,8)
             .frame(height:30)
-            .padding(.top,10).padding(.bottom,2)
+            .padding(.top,8).padding(.bottom,2)
 
             if model.showSearch {
                 HStack(spacing:7) {
@@ -865,21 +855,11 @@ struct ForgeWorkspaceView: View {
                 if model.page != .agent { model.show(.agent) }
                 if model.showSearch { model.toggleConversationSearch() }
             } label: {
-                HStack(spacing:7) {
-                    VStack(alignment:.leading,spacing:1) {
-                        Text(thread.title)
-                            .font(.system(size:12,weight:selected ? .medium : .regular))
-                            .lineLimit(1)
-                        if let checkoutLabel, selected {
-                            Text(checkoutLabel)
-                                .font(.system(size:9.5,weight:.medium))
-                                .foregroundStyle(ForgePalette.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                    }
-                    .frame(maxWidth:.infinity,alignment:.leading)
-                    Spacer(minLength:0)
+                HStack(spacing:6) {
+                    Text(thread.title)
+                        .font(.system(size:12,weight:selected ? .medium : .regular))
+                        .lineLimit(1)
+                        .frame(maxWidth:.infinity,alignment:.leading)
                     if thread.hasUnsentContent {
                         Text("草稿")
                             .font(.system(size:10,weight:.medium))
@@ -933,11 +913,11 @@ struct ForgeWorkspaceView: View {
                 deleteConfirmation(thread)
             }
         }
-        .padding(.leading,9).padding(.trailing,5)
-        .frame(height:checkoutLabel == nil || !selected ? 30 : 40)
+        .padding(.leading,8).padding(.trailing,4)
+        .frame(height:ForgeClientDesign.Shell.threadRowHeight)
         .background(selected ? ForgePalette.selection : (hovered ? ForgePalette.softFill : .clear),
-                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
-        .contentShape(RoundedRectangle(cornerRadius:7,style:.continuous))
+                    in:RoundedRectangle(cornerRadius:6,style:.continuous))
+        .contentShape(RoundedRectangle(cornerRadius:6,style:.continuous))
         .onHover { inside in
             if inside {
                 hoveredThreadId = thread.id

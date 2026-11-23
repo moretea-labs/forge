@@ -272,7 +272,7 @@ struct AgentAssetsDashboard: View {
       Image(systemName: "line.3.horizontal.decrease")
         .frame(width: 28, height: 28)
     }
-    .menuStyle(.borderlessButton)
+    .menuStyle(.borderlessButton).menuIndicator(.hidden)
     .fixedSize()
     .help("筛选资源")
     .accessibilityLabel("筛选资源")
@@ -312,7 +312,7 @@ struct AgentAssetsDashboard: View {
       .font(.system(size: 11))
       .lineLimit(1)
     }
-    .menuStyle(.borderlessButton)
+    .menuStyle(.borderlessButton).menuIndicator(.hidden)
     .frame(maxWidth: 155)
     .accessibilityLabel("代码仓库筛选")
     .accessibilityIdentifier("agent.assets.project-filter")

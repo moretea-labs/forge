@@ -48,7 +48,7 @@ struct ZenReadOnlyReviewPane: View {
             }
             if reviewing != nil {
                 Button("取消审查") { cancelReview() }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.forgeText)
             }
         }
         .frame(maxWidth:.infinity,alignment:.leading)

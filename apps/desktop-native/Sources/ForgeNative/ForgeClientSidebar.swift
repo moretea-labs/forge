@@ -37,7 +37,7 @@ struct ProjectCheckoutChoice: Identifiable {
 }
 
 /// Primary rail destinations for the four-column shell.
-/// 会话 / 项目 / 看板 are first-class; utilities stay under More.
+/// 会话 / 项目 / 看板 are first-class; tool destinations stay visible in-rail.
 enum ForgeSidebarDestination: String, CaseIterable {
   case agent, projects, workbench, automations, resources, analytics, settings
 
@@ -67,6 +67,8 @@ enum ForgeSidebarDestination: String, CaseIterable {
 
   /// Primary icon-rail entries (会话 / 项目 / 看板).
   static var primaryRail: [ForgeSidebarDestination] { [.agent, .projects, .workbench] }
+  /// Tool destinations shown directly in the rail (never collapsed into a menu).
+  static var toolRail: [ForgeSidebarDestination] { [.automations, .resources, .analytics] }
 
   static func resolve(zenMode: Bool, page: NativePage) -> Self {
     if zenMode { return .workbench }

@@ -15,6 +15,7 @@ struct ForgeNativeApp: App {
             ForgeWorkspaceView(model: workspace)
                 .frame(minWidth:860,minHeight:570)
                 .tint(ForgePalette.accent)
+                .navigationTitle("")
                 .task { await workspace.refresh() }
         }
         .defaultSize(width:1260,height:790)

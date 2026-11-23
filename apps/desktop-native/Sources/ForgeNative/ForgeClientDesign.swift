@@ -20,9 +20,47 @@ enum ForgePalette {
   static let softFill = Color.primary.opacity(0.045)
   static let composer = Color(nsColor: .controlBackgroundColor).opacity(0.95)
   /// Near-invisible edge for floating surfaces (composer, popovers).
-  static let hairline = Color.primary.opacity(0.08)
+  static let hairline = Color.primary.opacity(0.10)
+  static let primaryHairlineFocused = Color.primary.opacity(0.22)
   /// Tonal side panel: separates by value, not by a rule.
   static let sidePanel = Color.primary.opacity(0.025)
+}
+
+/// Quiet hover feedback for plain list/starter buttons (not toolbar/rail chrome).
+struct ForgeHoverFill: ViewModifier {
+  var cornerRadius: CGFloat = 8
+  @State private var hovering = false
+  func body(content: Content) -> some View {
+    content
+      .background(hovering ? ForgePalette.softFill : .clear,
+                  in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+      .onHover { hovering = $0 }
+      .animation(.easeOut(duration: 0.12), value: hovering)
+  }
+}
+
+extension View {
+  func forgeHoverFill(cornerRadius: CGFloat = 8) -> some View {
+    modifier(ForgeHoverFill(cornerRadius: cornerRadius))
+  }
+}
+
+/// The only secondary-action style: plain accent text, hover tint, no bezel/card.
+struct ForgeTextButtonStyle: ButtonStyle {
+  @Environment(\.isEnabled) private var isEnabled
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.system(size: 12, weight: .medium))
+      .foregroundStyle(isEnabled ? Color(nsColor: .controlAccentColor) : ForgePalette.secondary.opacity(0.55))
+      .padding(.horizontal, 8).padding(.vertical, 4)
+      .forgeHoverFill(cornerRadius: 6)
+      .opacity(configuration.isPressed ? 0.6 : 1)
+      .contentShape(Rectangle())
+  }
+}
+
+extension ButtonStyle where Self == ForgeTextButtonStyle {
+  static var forgeText: ForgeTextButtonStyle { ForgeTextButtonStyle() }
 }
 
 /// Shared native form vocabulary: semantic system colors, no parallel theme engine.
@@ -42,18 +80,19 @@ enum ForgeClientDesign {
     static let identifier: Font = .system(size: 11, design: .monospaced)
   }
   enum Shell {
-    /// Narrow left icon rail (会话 / 项目 / 看板).
+    /// Narrow left activity rail (会话 / 项目 / 看板), Cursor-like density.
     static let iconRailWidth: CGFloat = 52
     static let listMin: CGFloat = 200
-    static let listIdeal: CGFloat = 240
+    static let listIdeal: CGFloat = 236
     static let listMax: CGFloat = 280
     static let sidebarMin: CGFloat = iconRailWidth + listMin
     static let sidebarIdeal: CGFloat = iconRailWidth + listIdeal
     static let sidebarMax: CGFloat = iconRailWidth + listMax
     static let workSurfaceMin: CGFloat = 360
     /// Centered reading column shared by transcript and composer (Cursor/Claude style).
-    static let readingColumn: CGFloat = 780
-    static let destinationRowHeight: CGFloat = 31
+    static let readingColumn: CGFloat = 760
+    static let destinationRowHeight: CGFloat = 42
+    static let threadRowHeight: CGFloat = 28
     static let sessionTitle: Font = .system(size: 13.5, weight: .semibold)
     static let body: Font = .system(size: 12.5)
     static let supporting: Font = .system(size: 11)

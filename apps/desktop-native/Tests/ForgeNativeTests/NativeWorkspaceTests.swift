@@ -4,6 +4,13 @@ import XCTest
 @testable import ForgeNative
 
 final class NativeWorkspaceTests: XCTestCase {
+  func testAgentWorkSurfaceSideBySideThresholdFitsFourColumnWindow() {
+    XCTAssertTrue(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 958))
+    XCTAssertTrue(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 840))
+    XCTAssertFalse(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 839))
+    XCTAssertFalse(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 780))
+  }
+
   @MainActor
   func testColdStartDefaultsToAgentAndPreservesDraftAcrossWorkbenchRoundTrip() {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

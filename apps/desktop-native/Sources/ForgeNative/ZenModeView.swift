@@ -572,7 +572,7 @@ struct ZenWorkspacePane: View {
                         } label: {
                             Label("审阅提案",systemImage:"doc.text.magnifyingglass")
                         }
-                        .menuStyle(.borderlessButton)
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden)
                         .disabled(model.selectedProjectId == nil || model.busy)
                         .accessibilityIdentifier("zen.proposal.open")
                     } else {
@@ -596,7 +596,7 @@ struct ZenWorkspacePane: View {
                     } label: {
                         Image(systemName:"plus").frame(width:28,height:28)
                     }
-                    .menuStyle(.borderlessButton)
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden)
                     .fixedSize()
                     .disabled(model.selectedProjectId == nil)
                     .help("新建任务")
@@ -875,7 +875,7 @@ struct ZenWorkspacePane: View {
                             Label(requirementSortOrder.title,systemImage:"arrow.up.arrow.down")
                                 .font(.system(size:11))
                         }
-                        .menuStyle(.borderlessButton)
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden)
                         .help("按默认顺序、优先级或名称排列任务")
                         .accessibilityLabel("排序：\(requirementSortOrder.title)")
                         .accessibilityIdentifier("zen.board.sort")
@@ -904,7 +904,7 @@ struct ZenWorkspacePane: View {
                     } label: {
                         Label(boardMode == "forge" ? "需求视图" : "GitHub Project",systemImage:"chevron.down")
                     }
-                    .menuStyle(.borderlessButton)
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden)
                     .frame(width:130)
                 }
                 .padding(.horizontal,24).padding(.bottom,10)
@@ -2499,7 +2499,7 @@ private struct ZenTreeCanvas: View {
             } label: {
                 Image(systemName:"ellipsis").frame(width:27,height:26)
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.borderlessButton).menuIndicator(.hidden)
             .fixedSize()
             .simultaneousGesture(TapGesture().onEnded {
                 onSelect(item)
@@ -2826,7 +2826,7 @@ private struct ZenReviewSheet: View {
                     dismiss()
                     onStart(instruction,provider.isEmpty ? nil : provider)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.forgeText)
                 .disabled(model.zenRefinementActive)
                 .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "在只读 Agent 中审查")
             }
@@ -3197,7 +3197,7 @@ struct ZenProjectDirectorySheet: View {
                                 .frame(width:28,height:28)
                                 .contentShape(Rectangle())
                         }
-                        .menuStyle(.borderlessButton)
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden)
                         .fixedSize()
                         .disabled(saving || model.busy)
                         .accessibilityLabel("\(project.displayName) 的操作")
@@ -3378,7 +3378,7 @@ struct ZenProjectDetailPane: View {
                                     } label: {
                                         Label("打开任务列表",systemImage:"arrow.right")
                                     }
-                                    .menuStyle(.borderlessButton)
+                                    .menuStyle(.borderlessButton).menuIndicator(.hidden)
                                     .fixedSize()
                                     .disabled(model.busy)
                                     .accessibilityIdentifier("zen.projects.detail.open-tasks")

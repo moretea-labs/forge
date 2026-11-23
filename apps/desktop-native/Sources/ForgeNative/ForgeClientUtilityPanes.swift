@@ -155,7 +155,7 @@ struct RecordsPane: View {
             }
         }
         .padding(.horizontal,12).padding(.vertical,10)
-        .overlay(alignment:.bottom) { Divider() }
+        
         .accessibilityIdentifier("planning.project.overview")
     }
 
@@ -1471,13 +1471,13 @@ struct RecordsPane: View {
                     }
                     if status?.authorized == true {
                         Button("重新配置") { beginAutopilotApproval(requirement) }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.forgeText)
                             .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending
                                       || outcomeUnknown || status?.hasPendingProcessRecovery == true)
                         Button("撤销授权",role:.destructive) {
                             runAutopilotAction(requirement.requirementId,"revoke")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.forgeText)
                         .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending
                                   || outcomeUnknown || status?.hasPendingProcessRecovery == true)
                     }
@@ -1737,7 +1737,7 @@ struct RecordsPane: View {
                     } label: {
                         Label("新建会话",systemImage:"plus.bubble")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.forgeText)
                     .disabled(model.busy)
 
                     Menu {
@@ -1750,7 +1750,7 @@ struct RecordsPane: View {
                         Image(systemName:"ellipsis")
                             .frame(width:24,height:24)
                     }
-                    .menuStyle(.borderlessButton)
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden)
                     .fixedSize()
                 }
 
@@ -1850,7 +1850,7 @@ struct RecordsPane: View {
                     } label: {
                         Label("新建会话",systemImage:"plus.bubble")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.forgeText)
                     .disabled(model.busy)
 
                     Menu {
@@ -1863,7 +1863,7 @@ struct RecordsPane: View {
                         Image(systemName:"ellipsis")
                             .frame(width:24,height:24)
                     }
-                    .menuStyle(.borderlessButton)
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden)
                     .fixedSize()
                 }
 
@@ -2058,7 +2058,7 @@ struct SchedulePane: View {
                     VStack(alignment:.leading,spacing:0) {
                         ForEach(Array(model.schedules.enumerated()),id:\.element.id) { index,item in
                             scheduleRow(item)
-                            if index < model.schedules.count - 1 { Divider() }
+                            
                         }
                     }
                 }
@@ -2132,7 +2132,7 @@ struct SchedulePane: View {
                 } label: {
                     Image(systemName:"ellipsis").frame(width:26,height:26)
                 }
-                .menuStyle(.borderlessButton).fixedSize()
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .disabled(model.schedulesLoading)
                 .accessibilityIdentifier("schedule.\(item.scheduleId).actions")
             }
@@ -2243,7 +2243,7 @@ struct PluginsPane: View {
                         }
                     }
                     .padding(.vertical,8)
-                    .overlay(alignment:.bottom) { Divider() }
+                    
                 }
                 if let error = model.error, model.repoId != nil {
                     HStack(alignment:.firstTextBaseline,spacing:9) {
@@ -2275,7 +2275,7 @@ struct PluginsPane: View {
                                 .padding(.bottom,6)
                             ForEach(Array(visiblePlugins.enumerated()),id:\.element.id) { index,item in
                                 pluginRow(item)
-                                if index < visiblePlugins.count - 1 { Divider() }
+                                
                             }
                         }
                     }
@@ -2480,7 +2480,7 @@ struct PluginSettingsSection: View {
                                 Button(item.installedVersion == item.version ? "已安装" : (item.installedVersion == nil ? "安装" : "更新")) {
                                     pendingInstallation = item
                                 }
-                                .buttonStyle(.bordered)
+                                .buttonStyle(.forgeText)
                                 .controlSize(.small)
                                 .disabled(model.pluginManagementLoading || !item.compatible || item.installedVersion == item.version)
                                 .accessibilityIdentifier("settings.plugins.\(item.pluginId).install")
@@ -2491,7 +2491,7 @@ struct PluginSettingsSection: View {
                             }
                         }
                         .padding(.vertical,9)
-                        if index < model.pluginManagement.count - 1 { Divider() }
+                        
                     }
                 }
             }
@@ -2579,7 +2579,7 @@ struct PluginSettingsSection: View {
                 .accessibilityIdentifier("settings.plugins.authorization.\(item.grantId).revoke")
         }
         .padding(.vertical,6)
-        .overlay(alignment:.bottom) { Divider().opacity(0.55) }
+        
     }
 
     private func authorizationRiskLabel(_ value:String) -> String {
@@ -2712,7 +2712,7 @@ struct RuntimeSettingsSection: View {
                     model.error = "复制失败，请手动选择命令。"
                 }
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.forgeText)
         }
     }
 
@@ -2727,7 +2727,7 @@ struct RuntimeSettingsSection: View {
                     .buttonStyle(.plain).disabled(model.runtimeLoading)
                     .accessibilityIdentifier("runtime.refresh")
                 Button("诊断") { Task { await model.diagnoseRuntime() } }
-                    .buttonStyle(.bordered).disabled(model.runtimeLoading)
+                    .buttonStyle(.forgeText).disabled(model.runtimeLoading)
                     .accessibilityIdentifier("runtime.diagnose")
             }
             Text(model.runtimeDescription)
@@ -2756,7 +2756,7 @@ struct RuntimeSettingsSection: View {
                     Button(model.connectionStatus?.repairLabel ?? "重新连接") {
                         Task { await model.repairControllerConnection() }
                     }
-                    .buttonStyle(.bordered).disabled(model.connectionLoading)
+                    .buttonStyle(.forgeText).disabled(model.connectionLoading)
                     .accessibilityIdentifier("connection.repair")
                 }
             }
@@ -3080,7 +3080,7 @@ struct KnowledgePane: View {
                         } label: {
                             Label("复制",systemImage:"doc.on.doc")
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.forgeText)
                         .accessibilityIdentifier("knowledge.copy.\(memory.id)")
                     }
 
@@ -3274,7 +3274,7 @@ struct KnowledgeAuthoringSheet: View {
                     .font(.body)
                     .frame(minHeight: 150)
                     .padding(6)
-                    .border(Color.secondary.opacity(0.18))
+                    .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
                     .accessibilityIdentifier("knowledge.add.summary")
                 Text("记忆用于相关任务的主动召回，不会覆盖当前指令或授权。")
                     .font(.caption)
@@ -3389,7 +3389,8 @@ struct SettingsPane: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment:.leading,spacing:18) {
+            VStack(alignment:.leading,spacing:36) {
+                Text("设置").font(.system(size:22,weight:.semibold)).tracking(-0.3)
                 VStack(alignment:.leading,spacing:12) {
                     HStack(spacing:9) {
                         Circle().fill(model.selectedProviderReady ? Color.green : Color.orange)
@@ -3419,7 +3420,7 @@ struct SettingsPane: View {
                 VStack(alignment:.leading,spacing:14) {
                     HStack {
                         VStack(alignment:.leading,spacing:4) {
-                            Text("模型与 API").font(.system(size:17,weight:.semibold))
+                            Text("模型与 API").font(.system(size:15,weight:.semibold))
                             Text("保存 API 配置后，可直接测试模型连接。")
                                 .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                         }
@@ -3443,8 +3444,11 @@ struct SettingsPane: View {
                             }
                         } label: {
                             Label("添加模型服务",systemImage:"plus")
+                                .font(.system(size:12,weight:.medium))
+                                .foregroundStyle(Color(nsColor:.controlAccentColor))
                         }
-                        .menuStyle(.borderlessButton)
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                        .fixedSize()
                         .accessibilityIdentifier("settings.profile.add")
                     }
 
@@ -3474,8 +3478,9 @@ struct SettingsPane: View {
                     } else {
                         VStack(alignment:.leading,spacing:16) {
                             // One content column rather than a second fixed sidebar.
+                            if profiles.count > 1 {
                             ScrollView(.horizontal) {
-                                HStack(spacing:6) {
+                                HStack(spacing:18) {
                                     ForEach(profiles) { profile in
                                         let selected=selectedProfileId == profile.id
                                         Button {
@@ -3493,10 +3498,8 @@ struct SettingsPane: View {
                                                 }
                                             }
                                             .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                                            .padding(.horizontal,12).frame(height:30)
-                                            .background(selected ? ForgePalette.selectionStrong : Color.clear,
-                                                        in:Capsule())
-                                            .contentShape(Capsule())
+                                            .padding(.horizontal,2).frame(height:26)
+                                            .contentShape(Rectangle())
                                         }
                                         .buttonStyle(.plain)
                                         .accessibilityAddTraits(selected ? [.isSelected] : [])
@@ -3507,6 +3510,7 @@ struct SettingsPane: View {
                             }
                             .scrollIndicators(.hidden)
                             .accessibilityIdentifier("settings.profile.selector")
+                            }
 
                             if let index=selectedProfileIndex {
                                 HStack {
@@ -3531,7 +3535,7 @@ struct SettingsPane: View {
                                         Image(systemName:"ellipsis")
                                             .frame(width:28,height:28)
                                     }
-                                    .menuStyle(.borderlessButton)
+                                    .menuStyle(.borderlessButton).menuIndicator(.hidden)
                                 }
                                 providerEditor(index:index)
                             }
@@ -3575,8 +3579,8 @@ struct SettingsPane: View {
 
                 RuntimeSettingsSection(model:model)
             }
-            .padding(26)
-            .frame(maxWidth:960,alignment:.leading)
+            .padding(.horizontal,40).padding(.vertical,32)
+            .frame(maxWidth:760,alignment:.leading)
             .frame(maxWidth:.infinity,alignment:.center)
         }
         .task(id:settingsSignature) {
@@ -3652,7 +3656,7 @@ struct SettingsPane: View {
                 }
                 HStack(spacing:10) {
                     Button("从剪贴板粘贴并授权") { importCredential(index:index) }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.forgeText)
                         .accessibilityIdentifier("settings.credential.import")
                         .disabled(saving || model.settingsLoading || endpoint.isEmpty)
                     if let credential=selectedCredential(index:index) {
@@ -3681,7 +3685,7 @@ struct SettingsPane: View {
                 Button(testingProfileId == profiles[index].id ? "验证中…" : "测试连接") {
                     testConnection(profiles[index])
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.forgeText)
                 .disabled(testingProfileId != nil || saving || model.settingsLoading || !profileReady(profiles[index]))
                 .accessibilityIdentifier("settings.profile.test-connection")
                 if testingProfileId == profiles[index].id {
@@ -3874,14 +3878,19 @@ struct SettingsPane: View {
 
     @ViewBuilder
     private func settingsField<Content:View>(_ label:String,@ViewBuilder content:() -> Content) -> some View {
-        VStack(alignment:.leading,spacing:6) {
-            Text(label).font(.system(size:11,weight:.medium))
+        // Label-left form row; the field itself carries no box or card.
+        HStack(alignment:.firstTextBaseline,spacing:12) {
+            Text(label).font(.system(size:11.5))
                 .foregroundStyle(ForgePalette.secondary)
+                .frame(width:82,alignment:.leading)
             content()
-                .padding(.horizontal,11).frame(height:36)
-                .frame(maxWidth:.infinity,alignment:.leading)
-                .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                .padding(.vertical,5)
+                .frame(maxWidth:420,alignment:.leading)
+                .overlay(alignment:.bottom) {
+                    Rectangle().fill(ForgePalette.hairline).frame(height:1)
+                }
         }
+        .frame(minHeight:30)
     }
 
     private func settingMeta(_ label:String,_ value:String) -> some View {
