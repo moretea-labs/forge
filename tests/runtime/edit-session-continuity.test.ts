@@ -2196,7 +2196,7 @@ test('legacy EditSessions retire as superseded metadata only when their original
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
 });
 
-test('recent legacy sessions and sessions with any active repository lease remain protected', () => {
+test('recent legacy sessions and overlapping or unknown leases remain protected, unrelated claims do not block', () => {
   const fx = fixture();
   const session = beginEditSession(fx.repoRoot, {
     purpose: 'Legacy source lease protection',
@@ -2234,13 +2234,28 @@ test('recent legacy sessions and sessions with any active repository lease remai
   );
   expect(held.acquired).toBe(true);
   try {
+    expect(inspect()).toMatchObject({ safe: true });
+    expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('dirty');
+  } finally {
+    releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'unrelated-current-writer');
+  }
+
+  const overlapping = acquireExecutionLeases(
+    fx.controllerHome,
+    fx.repository.repoId,
+    'overlapping-current-writer',
+    [{ resourceKey: 'path:checkout-runtime-continuity:source.ts', mode: 'write' }],
+    { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+  );
+  expect(overlapping.acquired).toBe(true);
+  try {
     expect(inspect()).toMatchObject({ safe: false, reason: 'EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE' });
     expect(() => cleanupEditSession(fx.repoRoot, session.sessionId, {
       controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
     })).toThrow('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
     expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('dirty');
   } finally {
-    releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'unrelated-current-writer');
+    releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'overlapping-current-writer');
   }
   expect(inspect().safe).toBe(true);
 });

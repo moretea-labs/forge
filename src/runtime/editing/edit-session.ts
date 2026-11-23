@@ -1216,10 +1216,31 @@ export function inspectIntegratedEditSession(
       return reject('EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE');
     if (currentHashMismatches(repoRoot, session).length === 0)
       return reject('EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED');
-    // No checkout identity exists for old records, so even an unrelated active
-    // repository lease conservatively blocks their retirement.
-    if (listActiveLeases(input.controllerHome, input.repoId).length > 0)
-      return reject('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
+    // A legacy session has no checkout identity, so compare only its tracked
+    // paths against each scoped lease. Other writers' unrelated paths, builds,
+    // validation inputs and retired checkout-wide workspace claims are not
+    // source ownership (#713). Unknown/unscoped owners still fail closed.
+    const trackedPaths = sessionTrackedPaths(session);
+    const conflictingLease = listActiveLeases(input.controllerHome, input.repoId).find((lease) => {
+      // An exact scoped path key remains authoritative even for pre-migration
+      // leases whose optional checkoutId column was never populated.
+      const scopedPath = /^path:([^:]+):(.+)$/.exec(lease.resourceKey);
+      if (scopedPath) {
+        const statedCheckout = lease.checkoutId ?? lease.ownerIdentity?.checkoutId;
+        if (statedCheckout && statedCheckout !== 'unscoped' && statedCheckout !== scopedPath[1])
+          return true;
+        return trackedPaths.some((path) =>
+          claimsConflict({ resourceKey: `path:${scopedPath[1]}:${path}`, mode: 'write' }, lease),
+        );
+      }
+      const leaseCheckoutId = lease.checkoutId ?? lease.ownerIdentity?.checkoutId;
+      if (!leaseCheckoutId || leaseCheckoutId === 'unscoped') return true;
+      if (lease.resourceKey.startsWith('workspace:')) return false;
+      return trackedPaths.some((path) =>
+        claimsConflict({ resourceKey: `path:${leaseCheckoutId}:${path}`, mode: 'write' }, lease),
+      );
+    });
+    if (conflictingLease) return reject('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
     return {
       safe: true,
       reason: 'EDIT_SESSION_LEGACY_SUPERSEDED_METADATA_ONLY',
