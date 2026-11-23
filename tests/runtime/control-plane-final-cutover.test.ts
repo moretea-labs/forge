@@ -280,6 +280,41 @@ describe('final SQLite control-plane cutover', () => {
     });
   });
 
+  test('SQLite maintenance removes retired WorkHandle namespaces without touching current semantic authority', () => {
+    withHome((controllerHome) => {
+      let retiredHandle = writeControlPlaneRecord(controllerHome, {
+        namespace: 'execution_work_handle', scope: 'repo-retired', key: 'handle-a', schemaVersion: 1,
+        value: { state: 'running' }, expectedRevision: null,
+      });
+      retiredHandle = writeControlPlaneRecord(controllerHome, {
+        namespace: 'execution_work_handle', scope: 'repo-retired', key: 'handle-a', schemaVersion: 1,
+        value: { state: 'completed' }, expectedRevision: retiredHandle.revision,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'work_semantic_revision', scope: 'repo-retired', key: 'work-a:r1', schemaVersion: 1,
+        value: { goal: 'retired snapshot' }, expectedRevision: null,
+      });
+      const requirement = writeControlPlaneRecord(controllerHome, {
+        namespace: 'requirement', scope: 'controller', key: 'req-live', schemaVersion: 1,
+        value: { title: 'live semantic authority' }, expectedRevision: null,
+      });
+
+      const report = maintainControlPlaneDatabase(controllerHome, {
+        allowVacuum: false,
+        minimumReclaimableBytes: Number.MAX_SAFE_INTEGER,
+      });
+      expect(report.prunedRetiredRecordRows).toBe(2);
+      expect(report.prunedRetiredAuditRows).toBe(3);
+      expect(readControlPlaneRecord(controllerHome, 'execution_work_handle', 'repo-retired', 'handle-a')).toBeUndefined();
+      expect(readControlPlaneRecord(controllerHome, 'work_semantic_revision', 'repo-retired', 'work-a:r1')).toBeUndefined();
+      expect(readControlPlaneRecord(controllerHome, 'requirement', 'controller', 'req-live')).toMatchObject({
+        revision: requirement.revision,
+        value: { title: 'live semantic authority' },
+      });
+      expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+    });
+  });
+
   test('SQLite maintenance bounds rebuildable and retired Work history while preserving live semantic history', () => {
     withHome((controllerHome) => {
       const namespace = 'computer_interaction_target_index';

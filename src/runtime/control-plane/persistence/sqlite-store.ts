@@ -127,6 +127,14 @@ export const REBUILDABLE_AUDIT_NAMESPACES = [
 /** Current-record namespaces whose historical revision chain may be bounded. */
 export const REBUILDABLE_RECORD_AUDIT_NAMESPACES = [
   'computer_interaction_target_index',
+  // The target row is the live interaction authority. Repeated observations and
+  // lease refreshes are mechanical state transitions, not permanent semantic
+  // history; retain only a bounded recent audit tail.
+  'computer_interaction_target',
+  // Work is retired as a development/progress authority (#483). The remaining
+  // current contract row is compatibility state, so intermediate audit
+  // revisions must not grow without bound.
+  'work_contract',
   // One recovery-index row can accumulate 10^4–10^5 revisions; handle indexes
   // re-record on every process observation. Bound their audit tails like other
   // rebuildable locators so maintenance can converge DB size (#377).
@@ -137,6 +145,17 @@ export const REBUILDABLE_RECORD_AUDIT_NAMESPACES = [
   'process_invocation_binding',
   'process_check_execution_binding',
 ] as const;
+
+/**
+ * Global namespaces removed from the current Forge runtime. They are not
+ * compatibility authorities: keeping their rows would preserve the retired
+ * Work/WorkHandle ledger that #483 explicitly removed.
+ */
+export const RETIRED_CONTROL_PLANE_NAMESPACES = [
+  'execution_work_handle',
+  'work_semantic_revision',
+] as const;
+const RETIRED_NAMESPACE_AUDIT_MAX_ROWS_PER_PASS = 20_000;
 
 export interface PruneOrphanedAuditOptions {
   /** Delete only orphaned history older than this age. A negative value is test-only. */
@@ -194,6 +213,10 @@ export interface ControlPlaneDatabaseMaintenanceReport {
   prunedAuditRows?: number;
   /** Current-record rebuildable audit rows removed before compaction. */
   prunedCurrentAuditRows?: number;
+  /** Current rows removed from globally retired namespaces. */
+  prunedRetiredRecordRows?: number;
+  /** Audit rows removed from globally retired namespaces. */
+  prunedRetiredAuditRows?: number;
   skippedReason?: 'database_missing' | 'below_threshold' | 'vacuum_disabled' | 'database_busy';
 }
 
@@ -1647,9 +1670,102 @@ function pruneRebuildableRecordAuditRows(
 }
 
 /**
- * Physical SQLite maintenance only. Domain lifecycles own row deletion; this
- * boundary never decides semantic terminality or removes canonical records.
- * PASSIVE checkpointing is non-blocking, and VACUUM is attempted only when
+ * Remove storage for globally retired namespaces without turning cleanup into a
+ * generic semantic-deletion API. Current rows go first so partial audit pruning
+ * can never make a still-authoritative record fail continuity inspection.
+ */
+function pruneRetiredControlPlaneNamespaces(
+  database: SqliteDatabase,
+  maxAuditRows = RETIRED_NAMESPACE_AUDIT_MAX_ROWS_PER_PASS,
+): { recordRows: number; auditRows: number } {
+  const namespaces = [...RETIRED_CONTROL_PLANE_NAMESPACES];
+  if (namespaces.length === 0) return { recordRows: 0, auditRows: 0 };
+  const placeholders = namespaces.map(() => '?').join(',');
+  const hasRetiredRecords = withSqliteStatement(
+    database,
+    `SELECT 1 AS present FROM control_plane_records WHERE namespace IN (${placeholders}) LIMIT 1`,
+    (statement) => statement.get(...namespaces),
+  );
+  const hasRetiredAudit = withSqliteStatement(
+    database,
+    `SELECT 1 AS present FROM control_plane_audit WHERE namespace IN (${placeholders}) LIMIT 1`,
+    (statement) => statement.get(...namespaces),
+  );
+  if (!hasRetiredRecords && !hasRetiredAudit) return { recordRows: 0, auditRows: 0 };
+  let recordRows = 0;
+
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    withSqliteStatement(
+      database,
+      `DELETE FROM control_plane_records WHERE namespace IN (${placeholders})`,
+      (statement) => statement.run(...namespaces),
+    );
+    recordRows = Number(
+      withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0,
+    );
+    if (tableExists(database, AUDIT_FLOOR_TABLE)) {
+      withSqliteStatement(
+        database,
+        `DELETE FROM ${AUDIT_FLOOR_TABLE} WHERE namespace IN (${placeholders})`,
+        (statement) => statement.run(...namespaces),
+      );
+    }
+    database.exec('COMMIT');
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK');
+    } catch {
+      /* preserve the original error */
+    }
+    throw error;
+  }
+
+  const boundedMaxRows = Math.max(1, Math.min(Math.trunc(maxAuditRows), 100_000));
+  const rows = withSqliteStatement(
+    database,
+    `
+      SELECT event_id
+      FROM control_plane_audit
+      WHERE namespace IN (${placeholders})
+      ORDER BY event_id ASC
+      LIMIT ?
+    `,
+    (statement) => statement.all(...namespaces, boundedMaxRows),
+  ) as Array<{ event_id: number }>;
+  let auditRows = 0;
+  for (let offset = 0; offset < rows.length; offset += AUDIT_RETENTION_CHUNK_ROWS) {
+    const ids = rows.slice(offset, offset + AUDIT_RETENTION_CHUNK_ROWS).map((row) => row.event_id);
+    if (ids.length === 0) continue;
+    const idPlaceholders = ids.map(() => '?').join(',');
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      withSqliteStatement(
+        database,
+        `DELETE FROM control_plane_audit WHERE event_id IN (${idPlaceholders})`,
+        (statement) => statement.run(...ids),
+      );
+      auditRows += Number(
+        withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0,
+      );
+      database.exec('COMMIT');
+    } catch (error) {
+      try {
+        database.exec('ROLLBACK');
+      } catch {
+        /* preserve the original error */
+      }
+      throw error;
+    }
+  }
+  return { recordRows, auditRows };
+}
+
+/**
+ * SQLite lifecycle maintenance. Domain lifecycles own canonical row deletion;
+ * this boundary only removes namespaces already declared globally retired and
+ * bounds explicitly rebuildable audit history. PASSIVE checkpointing is
+ * non-blocking, and VACUUM is attempted only when
  * already-reclaimable free pages exceed both configured thresholds. A live
  * writer causes a fail-closed busy skip instead of lock stealing or corruption
  * recovery.
@@ -1696,6 +1812,18 @@ export function maintainControlPlaneDatabase(
   try {
     database.exec('PRAGMA busy_timeout = 0; PRAGMA foreign_keys = ON;');
     assertSupportedSchema(database, path, true);
+    try {
+      const retired = pruneRetiredControlPlaneNamespaces(database);
+      report.prunedRetiredRecordRows = retired.recordRows;
+      report.prunedRetiredAuditRows = retired.auditRows;
+    } catch (error) {
+      const busy = sqliteBusyError(path, error);
+      if (busy) {
+        report.skippedReason = 'database_busy';
+        return report;
+      }
+      throw error;
+    }
     if (options.pruneOrphanedAudit) {
       try {
         report.prunedAuditRows = pruneOrphanedAuditRows(database, options.pruneOrphanedAudit);
