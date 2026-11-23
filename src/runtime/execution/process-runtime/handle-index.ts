@@ -18,9 +18,9 @@ import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/
 import { repositoryControllerRoot, workspaceScopeRoot } from '../../../effects/controller-home';
 import {
   deleteControlPlaneRecord,
-  listControlPlaneRecords,
   mutateControlPlaneRecord,
   readControlPlaneRecord,
+  scanControlPlaneRecordsWithMaintenanceCursor,
 } from '../../control-plane/persistence/sqlite-store';
 
 export const PROCESS_HANDLE_INDEX_NAMESPACE = 'process_handle_index';
@@ -206,11 +206,11 @@ export function gcOrphanedProcessHandleIndexEntries(
   const olderThanMs = Math.max(0, Math.trunc(options.olderThanMs));
   const maxRows = Math.max(1, Math.min(Math.trunc(options.maxRows ?? 500), 5_000));
   const cutoffMs = (options.nowMs ?? Date.now()) - olderThanMs;
-  const records = listControlPlaneRecords<ProcessHandleIndexEntry>(controllerHome, {
+  const records = scanControlPlaneRecordsWithMaintenanceCursor<ProcessHandleIndexEntry>(controllerHome, {
     namespace: PROCESS_HANDLE_INDEX_NAMESPACE,
-    scope: PROCESS_HANDLE_INDEX_SCOPE,
+    cursorName: 'process_handle_index_gc',
     limit: maxRows,
-  });
+  }).filter((record) => record.scope === PROCESS_HANDLE_INDEX_SCOPE);
   let examined = 0;
   let removed = 0;
   for (const record of records) {
