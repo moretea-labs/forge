@@ -1,10 +1,21 @@
 import { Command } from 'commander';
-import { createMobileIntentDevice, listMobileIntentDevices, rotateMobileIntentDevice } from '../local-bridge/mobile-intents';
+import {
+  createMobileIntentDevice,
+  listMobileIntentDevices,
+  rotateMobileIntentDevice,
+} from '../local-bridge/mobile-intents';
 import { storeAgentMailWatchCredentialHandoff } from '../local-bridge/agentmail-keychain-handoff';
 import { executeRepositoryCommand } from '../../runtime/repositories/command-executor';
+import { claimsForRepositoryCommand } from '../../runtime/execution/process-runtime/resource-claims';
+import type { ResourceClaimSpec } from '../../runtime/execution/jobs/types';
+import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
+import { resolve } from 'path';
 import { bindRepositoryEntities } from '../../runtime/repositories/entity-migration';
 import { withControllerLock } from '../../effects/controller-locks';
-import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../../runtime/repositories/local-project-onboarding';
+import {
+  bootstrapLocalProject,
+  diagnoseLatestLocalProjectSource,
+} from '../../runtime/repositories/local-project-onboarding';
 import {
   disableRepository,
   focusRepository,
@@ -22,7 +33,12 @@ import {
 import { ensureRepositoryRuntimeStorage } from '../../runtime/repositories/runtime-storage';
 import type { RepositoryRecord } from '../../core/repository/types';
 import { buildControllerWorkbench } from '../../runtime/repositories/workbench';
-import { createUmbrellaIssue, getUmbrellaIssue, listUmbrellaIssues, updateUmbrellaTask } from '../repositories/umbrella';
+import {
+  createUmbrellaIssue,
+  getUmbrellaIssue,
+  listUmbrellaIssues,
+  updateUmbrellaTask,
+} from '../repositories/umbrella';
 
 function output(value: unknown, json: boolean): void {
   if (json) console.log(JSON.stringify(value, null, 2));
@@ -30,9 +46,28 @@ function output(value: unknown, json: boolean): void {
 }
 
 function common(command: Command): Command {
-  return command
-    .option('--controller-home <path>', 'Controller global data directory')
-    .option('--json', 'Output JSON');
+  return command.option('--controller-home <path>', 'Controller global data directory').option('--json', 'Output JSON');
+}
+
+/**
+ * Exact resource claims for one CLI repository command, identical to the MCP
+ * execute_command authority (#713). Readonly/validation commands observe only;
+ * Git index/refs, build caches and declared paths are fenced individually.
+ * There is no repository-wide writer for the whole command lifetime.
+ */
+export function cliRepositoryCommandClaims(
+  repository: RepositoryRecord,
+  command: string,
+  cwd?: string,
+): ResourceClaimSpec[] {
+  return claimsForRepositoryCommand(
+    command,
+    repository.repoId,
+    repository.activeCheckoutId,
+    repository.defaultBranch,
+    repository.canonicalRoot,
+    resolve(repository.canonicalRoot, cwd ?? '.'),
+  );
 }
 
 function initializeRepository(repository: RepositoryRecord, controllerHome?: string) {
@@ -44,260 +79,426 @@ function initializeRepository(repository: RepositoryRecord, controllerHome?: str
 export function buildRepositoryCommand(): Command {
   const command = new Command('repo').description('Register and inspect repositories managed by the global Controller');
 
-  common(command.command('agentmail-watch-device')
-    .description('Issue the single AgentMail Watch credential or rotate it into this Mac\'s Keychain handoff')
-    .argument('<repo-id>', 'Exact registered repository whose Local Bridge will receive the events')
-    .requiredOption('--confirm-authorization', 'Explicitly authorize issuing or rotating the scoped device secret')
-    .option('--rotate-existing', 'Rotate the existing agentmail-mac-watch credential in place and store it in macOS Keychain'))
-    .action((repoId: string, opts: { controllerHome?: string; json?: boolean; rotateExisting?: boolean }) => {
-      const repository = resolveRepositorySelection({
-        repoId,
-        controllerHome: opts.controllerHome,
-        allowSoleRepository: false,
-      });
-      const credential = withControllerLock(
-        opts.controllerHome ?? '',
-        { scope: 'repository', repoId: repository.repoId },
-        'cli:agentmail-watch-device',
-        () => {
-          if (opts.rotateExisting) {
-            const matchingDevices = listMobileIntentDevices(repository.canonicalRoot).devices.filter((device) =>
-              device.name === 'AgentMail Mac Watch'
-              || device.deviceId === 'agentmail-mac-watch'
-              || device.deviceId.startsWith('agentmail-mac-watch-'),
-            );
-            if (matchingDevices.length !== 1) {
-              throw new Error(`AGENTMAIL_WATCH_DEVICE_ROTATION_REQUIRES_ONE_DEVICE: found ${matchingDevices.length}`);
-            }
-            const existing = matchingDevices[0]!;
-            if (
-              existing.deviceId !== 'agentmail-mac-watch'
-              || existing.name !== 'AgentMail Mac Watch'
-              || existing.revokedAt
-              || existing.rateLimitPerMinute !== 12
-              || existing.scopes.length !== 1
-              || existing.scopes[0] !== 'workflow:agentmail.mail-watch-event:execute'
-            ) {
-              throw new Error('AGENTMAIL_WATCH_DEVICE_CONFIGURATION_MISMATCH: refusing to rotate a different device or scope');
-            }
-            return rotateMobileIntentDevice(
-              repository.canonicalRoot,
-              existing.deviceId,
-              (token) => storeAgentMailWatchCredentialHandoff(existing.deviceId, token),
-            );
-          }
-          const existing = listMobileIntentDevices(repository.canonicalRoot).devices.find((device) =>
-            device.name === 'AgentMail Mac Watch'
-            || device.deviceId === 'agentmail-mac-watch'
-            || device.deviceId.startsWith('agentmail-mac-watch-'),
+  common(
+    command
+      .command('agentmail-watch-device')
+      .description("Issue the single AgentMail Watch credential or rotate it into this Mac's Keychain handoff")
+      .argument('<repo-id>', 'Exact registered repository whose Local Bridge will receive the events')
+      .requiredOption('--confirm-authorization', 'Explicitly authorize issuing or rotating the scoped device secret')
+      .option(
+        '--rotate-existing',
+        'Rotate the existing agentmail-mac-watch credential in place and store it in macOS Keychain',
+      ),
+  ).action((repoId: string, opts: { controllerHome?: string; json?: boolean; rotateExisting?: boolean }) => {
+    const repository = resolveRepositorySelection({
+      repoId,
+      controllerHome: opts.controllerHome,
+      allowSoleRepository: false,
+    });
+    const credential = withControllerLock(
+      opts.controllerHome ?? '',
+      { scope: 'repository', repoId: repository.repoId },
+      'cli:agentmail-watch-device',
+      () => {
+        if (opts.rotateExisting) {
+          const matchingDevices = listMobileIntentDevices(repository.canonicalRoot).devices.filter(
+            (device) =>
+              device.name === 'AgentMail Mac Watch' ||
+              device.deviceId === 'agentmail-mac-watch' ||
+              device.deviceId.startsWith('agentmail-mac-watch-'),
           );
-          if (existing) {
-            throw new Error(`AGENTMAIL_WATCH_DEVICE_ALREADY_EXISTS: ${existing.deviceId}; refusing to issue a second credential`);
+          if (matchingDevices.length !== 1) {
+            throw new Error(`AGENTMAIL_WATCH_DEVICE_ROTATION_REQUIRES_ONE_DEVICE: found ${matchingDevices.length}`);
           }
-          return createMobileIntentDevice(repository.canonicalRoot, {
-            name: 'AgentMail Mac Watch',
-            deviceId: 'agentmail-mac-watch',
-            scopes: ['workflow:agentmail.mail-watch-event:execute'],
-            rateLimitPerMinute: 12,
-          });
-        },
-      );
-      output(credential, opts.json === true);
-    });
+          const existing = matchingDevices[0]!;
+          if (
+            existing.deviceId !== 'agentmail-mac-watch' ||
+            existing.name !== 'AgentMail Mac Watch' ||
+            existing.revokedAt ||
+            existing.rateLimitPerMinute !== 12 ||
+            existing.scopes.length !== 1 ||
+            existing.scopes[0] !== 'workflow:agentmail.mail-watch-event:execute'
+          ) {
+            throw new Error(
+              'AGENTMAIL_WATCH_DEVICE_CONFIGURATION_MISMATCH: refusing to rotate a different device or scope',
+            );
+          }
+          return rotateMobileIntentDevice(repository.canonicalRoot, existing.deviceId, (token) =>
+            storeAgentMailWatchCredentialHandoff(existing.deviceId, token),
+          );
+        }
+        const existing = listMobileIntentDevices(repository.canonicalRoot).devices.find(
+          (device) =>
+            device.name === 'AgentMail Mac Watch' ||
+            device.deviceId === 'agentmail-mac-watch' ||
+            device.deviceId.startsWith('agentmail-mac-watch-'),
+        );
+        if (existing) {
+          throw new Error(
+            `AGENTMAIL_WATCH_DEVICE_ALREADY_EXISTS: ${existing.deviceId}; refusing to issue a second credential`,
+          );
+        }
+        return createMobileIntentDevice(repository.canonicalRoot, {
+          name: 'AgentMail Mac Watch',
+          deviceId: 'agentmail-mac-watch',
+          scopes: ['workflow:agentmail.mail-watch-event:execute'],
+          rateLimitPerMinute: 12,
+        });
+      },
+    );
+    output(credential, opts.json === true);
+  });
 
-  common(command.command('register')
-    .description('Register a Git repository without relying on the Controller startup directory')
-    .argument('<path>', 'Repository checkout path')
-    .option('--name <display-name>', 'Display name')
-    .option('--remote <url>', 'Override remote URL')
-    .option('--default-branch <branch>', 'Override default branch'))
-    .action((path: string, opts: { controllerHome?: string; name?: string; remote?: string; defaultBranch?: string; json?: boolean }) => {
-      const repository = registerRepository({ path, controllerHome: opts.controllerHome, displayName: opts.name, remoteUrl: opts.remote, defaultBranch: opts.defaultBranch });
-      output(initializeRepository(repository, opts.controllerHome), opts.json === true);
-    });
-
-  common(command.command('diagnose-local')
-    .description('Read-only diagnosis for picking the latest local project source tree among sibling directories')
-    .argument('<path>', 'Absolute local project path')
-    .option('--repo-id <repo-id>', 'Registered repository to diagnose instead of the path'))
-    .action((path: string, opts: { controllerHome?: string; repoId?: string; json?: boolean }) => {
-      output(diagnoseLatestLocalProjectSource({ path, repoId: opts.repoId, controllerHome: opts.controllerHome }), opts.json === true);
-    });
-
-  common(command.command('bootstrap-local')
-    .description('Safely initialize and optionally register a trusted non-Git local project directory')
-    .argument('<path>', 'Absolute local project path')
-    .option('--name <display-name>', 'Display name')
-    .option('--default-branch <branch>', 'Default branch when Git is initialized')
-    .option('--mode <mode>', 'Bootstrap mode: init_git_only, init_git_and_register, replace_registration')
-    .option('--replace-registered-repo-id <repo-id>', 'Reuse an existing repoId when replacing a stale registration')
-    .requiredOption('--confirm-authorization', 'Required confirmation for local project bootstrap'))
-    .action((path: string, opts: {
-      controllerHome?: string;
-      name?: string;
-      defaultBranch?: string;
-      mode?: 'init_git_only' | 'init_git_and_register' | 'replace_registration';
-      replaceRegisteredRepoId?: string;
-      confirmAuthorization?: boolean;
-      json?: boolean;
-    }) => {
-      output(bootstrapLocalProject({
+  common(
+    command
+      .command('register')
+      .description('Register a Git repository without relying on the Controller startup directory')
+      .argument('<path>', 'Repository checkout path')
+      .option('--name <display-name>', 'Display name')
+      .option('--remote <url>', 'Override remote URL')
+      .option('--default-branch <branch>', 'Override default branch'),
+  ).action(
+    (
+      path: string,
+      opts: { controllerHome?: string; name?: string; remote?: string; defaultBranch?: string; json?: boolean },
+    ) => {
+      const repository = registerRepository({
         path,
         controllerHome: opts.controllerHome,
         displayName: opts.name,
+        remoteUrl: opts.remote,
         defaultBranch: opts.defaultBranch,
-        mode: opts.mode,
-        replaceRegisteredRepoId: opts.replaceRegisteredRepoId,
-        confirmAuthorization: opts.confirmAuthorization === true,
-      }), opts.json === true);
-    });
+      });
+      output(initializeRepository(repository, opts.controllerHome), opts.json === true);
+    },
+  );
 
-  common(command.command('list').description('List registered repositories')
-    .option('--all', 'Include removed audit records'))
-    .action((opts: { controllerHome?: string; all?: boolean; json?: boolean }) => {
-      const repositories = listRepositories(opts.controllerHome, { includeRemoved: opts.all === true });
-      output({ repositories: repositories.map(repositorySummary), focus: getRepositoryFocus(opts.controllerHome) }, opts.json === true);
-    });
+  common(
+    command
+      .command('diagnose-local')
+      .description('Read-only diagnosis for picking the latest local project source tree among sibling directories')
+      .argument('<path>', 'Absolute local project path')
+      .option('--repo-id <repo-id>', 'Registered repository to diagnose instead of the path'),
+  ).action((path: string, opts: { controllerHome?: string; repoId?: string; json?: boolean }) => {
+    output(
+      diagnoseLatestLocalProjectSource({ path, repoId: opts.repoId, controllerHome: opts.controllerHome }),
+      opts.json === true,
+    );
+  });
 
-  common(command.command('inspect').description('Inspect one repository')
-    .argument('<repo-id>', 'Stable repository ID'))
-    .action((repoId: string, opts: { controllerHome?: string; json?: boolean }) => {
-      output(getRepository(repoId, opts.controllerHome, { includeRemoved: true }), opts.json === true);
-    });
+  common(
+    command
+      .command('bootstrap-local')
+      .description('Safely initialize and optionally register a trusted non-Git local project directory')
+      .argument('<path>', 'Absolute local project path')
+      .option('--name <display-name>', 'Display name')
+      .option('--default-branch <branch>', 'Default branch when Git is initialized')
+      .option('--mode <mode>', 'Bootstrap mode: init_git_only, init_git_and_register, replace_registration')
+      .option('--replace-registered-repo-id <repo-id>', 'Reuse an existing repoId when replacing a stale registration')
+      .requiredOption('--confirm-authorization', 'Required confirmation for local project bootstrap'),
+  ).action(
+    (
+      path: string,
+      opts: {
+        controllerHome?: string;
+        name?: string;
+        defaultBranch?: string;
+        mode?: 'init_git_only' | 'init_git_and_register' | 'replace_registration';
+        replaceRegisteredRepoId?: string;
+        confirmAuthorization?: boolean;
+        json?: boolean;
+      },
+    ) => {
+      output(
+        bootstrapLocalProject({
+          path,
+          controllerHome: opts.controllerHome,
+          displayName: opts.name,
+          defaultBranch: opts.defaultBranch,
+          mode: opts.mode,
+          replaceRegisteredRepoId: opts.replaceRegisteredRepoId,
+          confirmAuthorization: opts.confirmAuthorization === true,
+        }),
+        opts.json === true,
+      );
+    },
+  );
 
-  common(command.command('validate').description('Validate checkout identity, runtime storage, and legacy entities')
-    .argument('<repo-id>', 'Stable repository ID'))
-    .action((repoId: string, opts: { controllerHome?: string; json?: boolean }) => {
-      const repository = getRepository(repoId, opts.controllerHome, { includeRemoved: true });
-      const validation = validateRepository(repoId, opts.controllerHome);
-      if (opts.json === true) {
-        output({ validation, ...initializeRepository(repository, opts.controllerHome) }, true);
-        return;
-      }
-      // The default validation view is bounded even when the repository has
-      // thousands of historical checkout records. Full audit data is opt-in.
-      output({
+  common(
+    command
+      .command('list')
+      .description('List registered repositories')
+      .option('--all', 'Include removed audit records'),
+  ).action((opts: { controllerHome?: string; all?: boolean; json?: boolean }) => {
+    const repositories = listRepositories(opts.controllerHome, { includeRemoved: opts.all === true });
+    output(
+      { repositories: repositories.map(repositorySummary), focus: getRepositoryFocus(opts.controllerHome) },
+      opts.json === true,
+    );
+  });
+
+  common(
+    command.command('inspect').description('Inspect one repository').argument('<repo-id>', 'Stable repository ID'),
+  ).action((repoId: string, opts: { controllerHome?: string; json?: boolean }) => {
+    output(getRepository(repoId, opts.controllerHome, { includeRemoved: true }), opts.json === true);
+  });
+
+  common(
+    command
+      .command('validate')
+      .description('Validate checkout identity, runtime storage, and legacy entities')
+      .argument('<repo-id>', 'Stable repository ID'),
+  ).action((repoId: string, opts: { controllerHome?: string; json?: boolean }) => {
+    const repository = getRepository(repoId, opts.controllerHome, { includeRemoved: true });
+    const validation = validateRepository(repoId, opts.controllerHome);
+    if (opts.json === true) {
+      output({ validation, ...initializeRepository(repository, opts.controllerHome) }, true);
+      return;
+    }
+    // The default validation view is bounded even when the repository has
+    // thousands of historical checkout records. Full audit data is opt-in.
+    output(
+      {
         validation,
         repository: repositorySummary(repository),
         checkouts: {
           total: repository.checkouts.length,
-          active: repository.checkouts.filter((checkout) => !checkout.lifecycle || checkout.lifecycle === 'active').length,
+          active: repository.checkouts.filter((checkout) => !checkout.lifecycle || checkout.lifecycle === 'active')
+            .length,
           archived: repository.checkouts.filter((checkout) => checkout.lifecycle === 'archived').length,
           removed: repository.checkouts.filter((checkout) => checkout.lifecycle === 'removed').length,
         },
-      }, false);
-    });
+      },
+      false,
+    );
+  });
 
-  common(command.command('command')
-    .description('Preview or confirm one repository-scoped local command with Git snapshots and audit evidence')
-    .argument('<repo-id>', 'Stable repository ID')
-    .requiredOption('--cmd <command>', 'Command to inspect or execute inside the selected repository')
-    .option('--checkout-id <checkout-id>', 'Select a registered checkout')
-    .option('--cwd <path>', 'Repository-relative working directory', '.')
-    .option('--confirm-token <token>', 'Confirm the exact plan returned by the latest preview')
-    .option('--dry-run', 'Classify and preview without executing')
-    .option('--timeout-ms <milliseconds>', 'Execution timeout', (value) => Number.parseInt(value, 10))
-    .option('--max-output-bytes <bytes>', 'Maximum captured output', (value) => Number.parseInt(value, 10)))
-    .action((repoId: string, opts: {
-      controllerHome?: string;
-      checkoutId?: string;
-      cmd: string;
-      cwd?: string;
-      confirmToken?: string;
-      dryRun?: boolean;
-      timeoutMs?: number;
-      maxOutputBytes?: number;
-      json?: boolean;
-    }) => {
+  common(
+    command
+      .command('command')
+      .description('Preview or confirm one repository-scoped local command with Git snapshots and audit evidence')
+      .argument('<repo-id>', 'Stable repository ID')
+      .requiredOption('--cmd <command>', 'Command to inspect or execute inside the selected repository')
+      .option('--checkout-id <checkout-id>', 'Select a registered checkout')
+      .option('--cwd <path>', 'Repository-relative working directory', '.')
+      .option('--confirm-token <token>', 'Confirm the exact plan returned by the latest preview')
+      .option('--dry-run', 'Classify and preview without executing')
+      .option('--timeout-ms <milliseconds>', 'Execution timeout', (value) => Number.parseInt(value, 10))
+      .option('--max-output-bytes <bytes>', 'Maximum captured output', (value) => Number.parseInt(value, 10)),
+  ).action(
+    (
+      repoId: string,
+      opts: {
+        controllerHome?: string;
+        checkoutId?: string;
+        cmd: string;
+        cwd?: string;
+        confirmToken?: string;
+        dryRun?: boolean;
+        timeoutMs?: number;
+        maxOutputBytes?: number;
+        json?: boolean;
+      },
+    ) => {
       const repository = resolveRepositorySelection({
         repoId,
         checkoutId: opts.checkoutId,
         controllerHome: opts.controllerHome,
         allowSoleRepository: false,
       });
-      const result = withControllerLock(
-        opts.controllerHome ?? '',
-        { scope: 'repository', repoId: repository.repoId },
+      const controllerHome = opts.controllerHome ?? '';
+      // Previously the whole command (up to ~16 minutes) held the repository
+      // ControllerLock, which made every concurrent Process source-write lease
+      // fail with `repository-writer`. Fence only the exact resources (#713);
+      // a dry-run preview touches nothing and takes no claim.
+      const claims = opts.dryRun === true ? [] : cliRepositoryCommandClaims(repository, opts.cmd, opts.cwd);
+      const result = withRepositoryMutationExclusion(
+        controllerHome,
+        repository.repoId,
         'cli:repo-command',
-        () => executeRepositoryCommand(opts.controllerHome ?? '', repository, {
-          command: opts.cmd,
-          cwd: opts.cwd,
-          authorization: opts.confirmToken ? 'confirmed_plan' : undefined,
-          approvalToken: opts.confirmToken,
-          dryRun: opts.dryRun === true,
-          timeoutMs: opts.timeoutMs,
-          maxOutputBytes: opts.maxOutputBytes,
-        }),
+        () =>
+          executeRepositoryCommand(controllerHome, repository, {
+            command: opts.cmd,
+            cwd: opts.cwd,
+            authorization: opts.confirmToken ? 'confirmed_plan' : undefined,
+            approvalToken: opts.confirmToken,
+            dryRun: opts.dryRun === true,
+            timeoutMs: opts.timeoutMs,
+            maxOutputBytes: opts.maxOutputBytes,
+          }),
         Math.min(Math.max(Math.trunc(opts.timeoutMs ?? 120000) + 30000, 60000), 960000),
+        claims,
       );
       output(result, opts.json === true);
       if (result.status === 'approval_required') process.exitCode = 3;
       else if (result.status === 'executed' && result.ok === false) process.exitCode = 1;
-    });
+    },
+  );
 
-  common(command.command('update').description('Update repository metadata')
-    .argument('<repo-id>', 'Stable repository ID')
-    .option('--name <display-name>', 'Display name')
-    .option('--default-branch <branch>', 'Default branch')
-    .option('--enable', 'Enable repository'))
-    .action((repoId: string, opts: { controllerHome?: string; name?: string; defaultBranch?: string; enable?: boolean; json?: boolean }) => {
-      output(updateRepository(repoId, { displayName: opts.name, defaultBranch: opts.defaultBranch, enabled: opts.enable === true ? true : undefined }, opts.controllerHome), opts.json === true);
-    });
+  common(
+    command
+      .command('update')
+      .description('Update repository metadata')
+      .argument('<repo-id>', 'Stable repository ID')
+      .option('--name <display-name>', 'Display name')
+      .option('--default-branch <branch>', 'Default branch')
+      .option('--enable', 'Enable repository'),
+  ).action(
+    (
+      repoId: string,
+      opts: { controllerHome?: string; name?: string; defaultBranch?: string; enable?: boolean; json?: boolean },
+    ) => {
+      output(
+        updateRepository(
+          repoId,
+          {
+            displayName: opts.name,
+            defaultBranch: opts.defaultBranch,
+            enabled: opts.enable === true ? true : undefined,
+          },
+          opts.controllerHome,
+        ),
+        opts.json === true,
+      );
+    },
+  );
 
-  common(command.command('refresh').description('Refresh Git, remote metadata, runtime storage, and legacy ownership')
-    .argument('<repo-id>', 'Stable repository ID'))
-    .action((repoId: string, opts: { controllerHome?: string; json?: boolean }) => {
-      const repository = refreshRepository(repoId, opts.controllerHome);
-      output(initializeRepository(repository, opts.controllerHome), opts.json === true);
-    });
+  common(
+    command
+      .command('refresh')
+      .description('Refresh Git, remote metadata, runtime storage, and legacy ownership')
+      .argument('<repo-id>', 'Stable repository ID'),
+  ).action((repoId: string, opts: { controllerHome?: string; json?: boolean }) => {
+    const repository = refreshRepository(repoId, opts.controllerHome);
+    output(initializeRepository(repository, opts.controllerHome), opts.json === true);
+  });
 
-  common(command.command('disable').description('Disable new execution while retaining history')
-    .argument('<repo-id>', 'Stable repository ID'))
-    .action((repoId: string, opts: { controllerHome?: string; json?: boolean }) => output(disableRepository(repoId, opts.controllerHome), opts.json === true));
+  common(
+    command
+      .command('disable')
+      .description('Disable new execution while retaining history')
+      .argument('<repo-id>', 'Stable repository ID'),
+  ).action((repoId: string, opts: { controllerHome?: string; json?: boolean }) =>
+    output(disableRepository(repoId, opts.controllerHome), opts.json === true),
+  );
 
-  common(command.command('remove').description('Soft-remove a repository while retaining Controller audit state')
-    .argument('<repo-id>', 'Stable repository ID'))
-    .action((repoId: string, opts: { controllerHome?: string; json?: boolean }) => output(removeRepository(repoId, opts.controllerHome), opts.json === true));
+  common(
+    command
+      .command('remove')
+      .description('Soft-remove a repository while retaining Controller audit state')
+      .argument('<repo-id>', 'Stable repository ID'),
+  ).action((repoId: string, opts: { controllerHome?: string; json?: boolean }) =>
+    output(removeRepository(repoId, opts.controllerHome), opts.json === true),
+  );
 
-  common(command.command('focus').description('Set an interactive UI preference; never used as an execution security boundary')
-    .argument('[repo-id]', 'Stable repository ID; omit to clear focus'))
-    .action((repoId: string | undefined, opts: { controllerHome?: string; json?: boolean }) => output(focusRepository(repoId, opts.controllerHome), opts.json === true));
+  common(
+    command
+      .command('focus')
+      .description('Set an interactive UI preference; never used as an execution security boundary')
+      .argument('[repo-id]', 'Stable repository ID; omit to clear focus'),
+  ).action((repoId: string | undefined, opts: { controllerHome?: string; json?: boolean }) =>
+    output(focusRepository(repoId, opts.controllerHome), opts.json === true),
+  );
 
-  common(command.command('workbench').description('Show global or repository-scoped Workbench state')
-    .option('--repo-id <repo-id>', 'Filter to one repository')
-    .option('--all', 'Include disabled and removed audit records'))
-    .action((opts: { controllerHome?: string; repoId?: string; all?: boolean; json?: boolean }) => {
-      output(buildControllerWorkbench(opts.controllerHome ?? '', { repoId: opts.repoId, includeRemoved: opts.all === true }), opts.json === true);
-    });
+  common(
+    command
+      .command('workbench')
+      .description('Show global or repository-scoped Workbench state')
+      .option('--repo-id <repo-id>', 'Filter to one repository')
+      .option('--all', 'Include disabled and removed audit records'),
+  ).action((opts: { controllerHome?: string; repoId?: string; all?: boolean; json?: boolean }) => {
+    output(
+      buildControllerWorkbench(opts.controllerHome ?? '', { repoId: opts.repoId, includeRemoved: opts.all === true }),
+      opts.json === true,
+    );
+  });
 
-  const umbrella = command.command('umbrella').description('Coordinate a multi-repository work item while keeping every executable Task repository-local');
-  common(umbrella.command('list')).action((opts: { controllerHome?: string; json?: boolean }) => output(listUmbrellaIssues(opts.controllerHome), opts.json === true));
-  common(umbrella.command('inspect').argument('<umbrella-id>')).action((id: string, opts: { controllerHome?: string; json?: boolean }) => output(getUmbrellaIssue(id, opts.controllerHome), opts.json === true));
-  common(umbrella.command('create')
-    .argument('<umbrella-id>')
-    .requiredOption('--title <title>')
-    .option('--summary <summary>')
-    .requiredOption('--task <repoId:taskId:title...>', 'Repeat for each repository task', (value, previous: string[]) => [...previous, value], []))
-    .action((id: string, opts: { controllerHome?: string; title: string; summary?: string; task: string[]; json?: boolean }) => {
+  const umbrella = command
+    .command('umbrella')
+    .description('Coordinate a multi-repository work item while keeping every executable Task repository-local');
+  common(umbrella.command('list')).action((opts: { controllerHome?: string; json?: boolean }) =>
+    output(listUmbrellaIssues(opts.controllerHome), opts.json === true),
+  );
+  common(umbrella.command('inspect').argument('<umbrella-id>')).action(
+    (id: string, opts: { controllerHome?: string; json?: boolean }) =>
+      output(getUmbrellaIssue(id, opts.controllerHome), opts.json === true),
+  );
+  common(
+    umbrella
+      .command('create')
+      .argument('<umbrella-id>')
+      .requiredOption('--title <title>')
+      .option('--summary <summary>')
+      .requiredOption(
+        '--task <repoId:taskId:title...>',
+        'Repeat for each repository task',
+        (value, previous: string[]) => [...previous, value],
+        [],
+      ),
+  ).action(
+    (
+      id: string,
+      opts: { controllerHome?: string; title: string; summary?: string; task: string[]; json?: boolean },
+    ) => {
       const tasks = opts.task.map((value) => {
         const [repoId, taskId, ...title] = value.split(':');
         if (!repoId || !taskId || title.length === 0) throw new Error(`invalid --task value: ${value}`);
         return { repoId, taskId, title: title.join(':') };
       });
-      output(createUmbrellaIssue({ controllerHome: opts.controllerHome, umbrellaId: id, title: opts.title, summary: opts.summary, tasks }), opts.json === true);
-    });
-  common(umbrella.command('update-task')
-    .argument('<umbrella-id>')
-    .requiredOption('--repo-id <repo-id>')
-    .requiredOption('--task-id <task-id>')
-    .requiredOption('--status <status>')
-    .option('--run-id <run-id>')
-    .option('--commit <sha>')
-    .option('--rollback-ref <ref>')
-    .option('--error <message>'))
-    .action((id: string, opts: { controllerHome?: string; repoId: string; taskId: string; status: any; runId?: string; commit?: string; rollbackRef?: string; error?: string; json?: boolean }) => {
-      output(updateUmbrellaTask({ controllerHome: opts.controllerHome, umbrellaId: id, repoId: opts.repoId, taskId: opts.taskId, status: opts.status, runId: opts.runId, commitSha: opts.commit, rollbackRef: opts.rollbackRef, error: opts.error }), opts.json === true);
-    });
+      output(
+        createUmbrellaIssue({
+          controllerHome: opts.controllerHome,
+          umbrellaId: id,
+          title: opts.title,
+          summary: opts.summary,
+          tasks,
+        }),
+        opts.json === true,
+      );
+    },
+  );
+  common(
+    umbrella
+      .command('update-task')
+      .argument('<umbrella-id>')
+      .requiredOption('--repo-id <repo-id>')
+      .requiredOption('--task-id <task-id>')
+      .requiredOption('--status <status>')
+      .option('--run-id <run-id>')
+      .option('--commit <sha>')
+      .option('--rollback-ref <ref>')
+      .option('--error <message>'),
+  ).action(
+    (
+      id: string,
+      opts: {
+        controllerHome?: string;
+        repoId: string;
+        taskId: string;
+        status: any;
+        runId?: string;
+        commit?: string;
+        rollbackRef?: string;
+        error?: string;
+        json?: boolean;
+      },
+    ) => {
+      output(
+        updateUmbrellaTask({
+          controllerHome: opts.controllerHome,
+          umbrellaId: id,
+          repoId: opts.repoId,
+          taskId: opts.taskId,
+          status: opts.status,
+          runId: opts.runId,
+          commitSha: opts.commit,
+          rollbackRef: opts.rollbackRef,
+          error: opts.error,
+        }),
+        opts.json === true,
+      );
+    },
+  );
 
   return command;
 }
