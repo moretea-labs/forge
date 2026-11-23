@@ -12,11 +12,19 @@ import {
 } from './semantic-admission';
 import {
   listControlPlaneRecords,
+  listControlPlaneRecordsWithinTransaction,
   readControlPlaneRecord,
   readControlPlaneRecordWithinTransaction,
+  withControlPlaneReadDatabase,
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
+  type SqliteDatabase,
 } from '../persistence/sqlite-store';
+import {
+  applySemanticInverseChange,
+  createSemanticInverseChange,
+  type SemanticInverseChangeRecord,
+} from '../persistence/semantic-change';
 import {
   currentRequirementSemanticRevision,
   readRequirement,
@@ -263,6 +271,63 @@ function planRevisionRecordKey(planId: string, revision: number): string {
   return `${sanitizeFileComponent(planId)}:r${revision}`;
 }
 
+const PLAN_SEMANTIC_REVISION_NAMESPACE = 'plan_semantic_revision';
+const PLAN_SEMANTIC_CHANGE_NAMESPACE = 'plan_semantic_change';
+
+function normalizePlanSemanticRevisionRecord(record: PlanSemanticRevisionRecord): PlanSemanticRevisionRecord {
+  return {
+    ...record,
+    semanticScope:
+      record.semanticScope ??
+      (record.requirementId
+        ? { schemaVersion: 1, kind: 'requirement', id: record.requirementId }
+        : { schemaVersion: 1, kind: 'plan', id: record.planId }),
+  };
+}
+
+function planSemanticRevisionRecordFromView(
+  view: PlanSemanticView,
+  recordedAt: string,
+): PlanSemanticRevisionRecord {
+  return { schemaVersion: 1, ...view, recordedAt };
+}
+
+function reconstructPlanSemanticRevisionWithinTransaction(
+  database: SqliteDatabase,
+  scope: string,
+  planId: string,
+  targetRevision: number,
+): PlanSemanticRevisionRecord | undefined {
+  const archived = readControlPlaneRecordWithinTransaction<PlanSemanticRevisionRecord>(
+    database,
+    PLAN_SEMANTIC_REVISION_NAMESPACE,
+    scope,
+    planRevisionRecordKey(planId, targetRevision),
+  )?.value;
+  if (archived) return normalizePlanSemanticRevisionRecord(archived);
+
+  const current = readControlPlaneRecordWithinTransaction<PlanContract>(
+    database, 'plan_contract', scope, planId,
+  );
+  if (!current) return undefined;
+  const currentRevision = currentPlanSemanticRevision(current.value);
+  if (targetRevision >= currentRevision) return undefined;
+
+  let view = planSemanticView(current.value);
+  for (let revision = currentRevision - 1; revision >= targetRevision; revision -= 1) {
+    const change = readControlPlaneRecordWithinTransaction<SemanticInverseChangeRecord>(
+      database, PLAN_SEMANTIC_CHANGE_NAMESPACE, scope, planRevisionRecordKey(planId, revision),
+    )?.value;
+    if (!change || change.revision !== revision || change.nextRevision !== revision + 1) return undefined;
+    view = applySemanticInverseChange(
+      view as unknown as Record<string, unknown>,
+      change,
+    ) as unknown as PlanSemanticView;
+    if (revision === targetRevision) return planSemanticRevisionRecordFromView(view, change.recordedAt);
+  }
+  return undefined;
+}
+
 function normalizeStep(step: CreatePlanContractInput['steps'][number]): PlanStep {
   return {
     id: sanitizeFileComponent(step.id).slice(0, 120),
@@ -410,22 +475,10 @@ export function getPlanSemanticRevisionRecord(
 ): PlanSemanticRevisionRecord | undefined {
   if (!Number.isInteger(revision) || revision < 1) return undefined;
   const normalizedPlanId = sanitizeFileComponent(planId);
-  const record = readControlPlaneRecord<PlanSemanticRevisionRecord>(
-    options.controllerHome,
-    'plan_semantic_revision',
-    requirePlanContractStoreScopeKey(options),
-    planRevisionRecordKey(normalizedPlanId, revision),
-  )?.value;
-  return record
-    ? {
-        ...record,
-        semanticScope:
-          record.semanticScope ??
-          (record.requirementId
-            ? { schemaVersion: 1, kind: 'requirement', id: record.requirementId }
-            : { schemaVersion: 1, kind: 'plan', id: record.planId }),
-      }
-    : undefined;
+  const scope = requirePlanContractStoreScopeKey(options);
+  return withControlPlaneReadDatabase(options.controllerHome, (database) =>
+    reconstructPlanSemanticRevisionWithinTransaction(database, scope, normalizedPlanId, revision),
+  );
 }
 
 export function listPlanSemanticRevisionRecords(
@@ -433,25 +486,52 @@ export function listPlanSemanticRevisionRecords(
   planId?: string,
 ): PlanSemanticRevisionRecord[] {
   const normalizedPlanId = planId ? sanitizeFileComponent(planId) : undefined;
-  return listControlPlaneRecords<PlanSemanticRevisionRecord>(options.controllerHome, {
-    namespace: 'plan_semantic_revision',
-    scope: requirePlanContractStoreScopeKey(options),
-    limit: 5_000,
-  })
-    .map((record) => record.value)
-    .filter((record) => !normalizedPlanId || record.planId === normalizedPlanId)
-    .map(
-      (record) =>
-        ({
-          ...record,
-          semanticScope:
-            record.semanticScope ??
-            (record.requirementId
-              ? { schemaVersion: 1, kind: 'requirement', id: record.requirementId }
-              : { schemaVersion: 1, kind: 'plan', id: record.planId }),
-        }) as PlanSemanticRevisionRecord,
-    )
-    .sort((left, right) => right.revision - left.revision);
+  const scope = requirePlanContractStoreScopeKey(options);
+  return withControlPlaneReadDatabase(options.controllerHome, (database) => {
+    if (normalizedPlanId) {
+      const current = readControlPlaneRecordWithinTransaction<PlanContract>(
+        database, 'plan_contract', scope, normalizedPlanId,
+      );
+      const latestArchivedRevision = (current ? currentPlanSemanticRevision(current.value) : 1) - 1;
+      const revisions: PlanSemanticRevisionRecord[] = [];
+      for (let revision = latestArchivedRevision; revision >= 1 && revisions.length < 5_000; revision -= 1) {
+        const archived = reconstructPlanSemanticRevisionWithinTransaction(
+          database, scope, normalizedPlanId, revision,
+        );
+        if (archived) revisions.push(archived);
+      }
+      if (revisions.length > 0 || current) return revisions;
+    }
+
+    const byIdentity = new Map<string, PlanSemanticRevisionRecord>();
+    for (const record of listControlPlaneRecordsWithinTransaction<PlanSemanticRevisionRecord>(database, {
+      namespace: PLAN_SEMANTIC_REVISION_NAMESPACE,
+      scope,
+      limit: 5_000,
+    })) {
+      const normalized = normalizePlanSemanticRevisionRecord(record.value);
+      if (!normalizedPlanId || normalized.planId === normalizedPlanId) {
+        byIdentity.set(normalized.planId + ':r' + normalized.revision, normalized);
+      }
+    }
+    if (!normalizedPlanId) {
+      for (const current of listControlPlaneRecordsWithinTransaction<PlanContract>(database, {
+        namespace: 'plan_contract',
+        scope,
+        limit: 5_000,
+      })) {
+        const plan = current.value;
+        for (let revision = currentPlanSemanticRevision(plan) - 1; revision >= 1 && byIdentity.size < 5_000; revision -= 1) {
+          const archived = reconstructPlanSemanticRevisionWithinTransaction(database, scope, plan.planId, revision);
+          if (archived) byIdentity.set(archived.planId + ':r' + archived.revision, archived);
+        }
+        if (byIdentity.size >= 5_000) break;
+      }
+    }
+    return [...byIdentity.values()].sort(
+      (left, right) => right.revision - left.revision || left.planId.localeCompare(right.planId),
+    );
+  });
 }
 
 function planRevisionRecord(
@@ -814,22 +894,32 @@ function repairDraftPlanContractUnlocked(
         `PLAN_REVISION_CONFLICT:${current.planId}:expected=${previousSemantic.revision}:actual=${actualSemanticRevision}`,
       );
     }
-    const semanticRevisionKey = `${current.planId}:r${previousSemantic.revision}`;
+    const semanticRevisionKey = planRevisionRecordKey(current.planId, previousSemantic.revision);
     if (
-      !readControlPlaneRecordWithinTransaction<PlanSemanticRevisionRecord>(
+      !readControlPlaneRecordWithinTransaction<SemanticInverseChangeRecord>(
         database,
-        'plan_semantic_revision',
+        PLAN_SEMANTIC_CHANGE_NAMESPACE,
         scope,
         semanticRevisionKey,
       )
     ) {
+      const nextSemantic = planSemanticView(repaired);
+      const change = createSemanticInverseChange(
+        previousSemantic as unknown as Record<string, unknown>,
+        nextSemantic as unknown as Record<string, unknown>,
+        {
+          revision: previousSemantic.revision,
+          nextRevision: nextSemantic.revision,
+          recordedAt: at,
+        },
+      );
       writeControlPlaneRecordWithinTransaction(database, {
-        namespace: 'plan_semantic_revision',
+        namespace: PLAN_SEMANTIC_CHANGE_NAMESPACE,
         scope,
         key: semanticRevisionKey,
         schemaVersion: 1,
-        value: { schemaVersion: 1, ...previousSemantic, recordedAt: at },
-        action: 'plan_semantic_revision_archived',
+        value: change,
+        action: 'plan_semantic_change_recorded',
         expectedRevision: null,
       });
     }
@@ -1165,22 +1255,28 @@ export function revisePlanSemanticContext(
       }
       const at = nowIso(options);
       const { previous, next } = applyRevision(currentRecord.value, at);
-      const semanticRevisionKey = `${planId}:r${previous.revision}`;
+      const semanticRevisionKey = planRevisionRecordKey(planId, previous.revision);
       if (
-        !readControlPlaneRecordWithinTransaction<PlanSemanticRevisionRecord>(
+        !readControlPlaneRecordWithinTransaction<SemanticInverseChangeRecord>(
           database,
-          'plan_semantic_revision',
+          PLAN_SEMANTIC_CHANGE_NAMESPACE,
           scope,
           semanticRevisionKey,
         )
       ) {
+        const nextSemantic = planSemanticView(next);
+        const change = createSemanticInverseChange(
+          previous as unknown as Record<string, unknown>,
+          nextSemantic as unknown as Record<string, unknown>,
+          { revision: previous.revision, nextRevision: nextSemantic.revision, recordedAt: at },
+        );
         writeControlPlaneRecordWithinTransaction(database, {
-          namespace: 'plan_semantic_revision',
+          namespace: PLAN_SEMANTIC_CHANGE_NAMESPACE,
           scope,
           key: semanticRevisionKey,
           schemaVersion: 1,
-          value: { schemaVersion: 1, ...previous, recordedAt: at },
-          action: 'plan_semantic_revision_archived',
+          value: change,
+          action: 'plan_semantic_change_recorded',
           expectedRevision: null,
         });
       }

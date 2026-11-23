@@ -5,6 +5,7 @@ import {
   backupControlPlaneDatabase,
   restoreControlPlaneDatabase,
   withControlPlaneTransaction,
+  readControlPlaneRecord,
   writeControlPlaneRecord,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
@@ -413,6 +414,15 @@ test('task detail reads its latest revisions even when other Requirements own th
     { requirementId: 'req-z-history', revision: 2, title: 'First task edit' },
     { requirementId: 'req-z-history', revision: 1, title: 'Original user task' },
   ]);
+  expect(readControlPlaneRecord(home, 'requirement_revision', 'controller', 'req-z-history:r1')).toBeUndefined();
+  expect(readControlPlaneRecord(home, 'requirement_revision', 'controller', 'req-z-history:r2')).toBeUndefined();
+  const change = readControlPlaneRecord<Record<string, unknown>>(
+    home, 'requirement_change', 'controller', 'req-z-history:r2',
+  )?.value;
+  expect(change).toMatchObject({ revision: 2, nextRevision: 3 });
+  expect(JSON.stringify(change).length).toBeLessThan(
+    JSON.stringify(listRequirementRevisionRecords(options, 'req-z-history', 1)[0]).length,
+  );
 });
 
 test('Project root Requirement uniqueness and parent hierarchy are atomic and separate from dependencies', () => {

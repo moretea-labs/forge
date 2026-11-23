@@ -19,6 +19,7 @@ import {
   reviseRequirementSemantic,
   updateRequirement,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { readControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -259,6 +260,16 @@ describe('Goal authority convergence', () => {
     expect(listPlanSemanticRevisionRecords(planOptions, planId)).toMatchObject([
       { revision: 1, sourceBasisRevision: 'source-a', goal: 'Original plan goal' },
     ]);
+    expect(readControlPlaneRecord(
+      controllerHome, 'plan_semantic_revision', repoId, planId + ':r1',
+    )).toBeUndefined();
+    const planChange = readControlPlaneRecord<Record<string, unknown>>(
+      controllerHome, 'plan_semantic_change', repoId, planId + ':r1',
+    )?.value;
+    expect(planChange).toMatchObject({ revision: 1, nextRevision: 2 });
+    expect(JSON.stringify(planChange).length).toBeLessThan(
+      JSON.stringify(listPlanSemanticRevisionRecords(planOptions, planId)[0]).length,
+    );
     const revisedAfterAnotherSemanticRevision = revisePlanSemanticContext(planOptions, planId, {
       expectedRevision: 2,
       goal: 'Semantic revision after mechanical approval',

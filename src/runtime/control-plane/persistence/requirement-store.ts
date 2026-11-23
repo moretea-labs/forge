@@ -11,6 +11,11 @@ import {
   type ControlPlaneRecord,
   type SqliteDatabase,
 } from './sqlite-store';
+import {
+  applySemanticInverseChange,
+  createSemanticInverseChange,
+  type SemanticInverseChangeRecord,
+} from './semantic-change';
 import { createHash } from 'node:crypto';
 import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATE_TRANSITIONS, type RequirementPriority, type RequirementState } from '../../../../packages/kernel/goal/api/index';
 import type { ProjectIdentity, ProjectPlacement, ScopeRef } from '../../../../packages/kernel/identity/api/index';
@@ -145,6 +150,7 @@ export interface ReviseRequirementSemanticInput {
 
 const NAMESPACE = 'requirement';
 const REVISION_NAMESPACE = 'requirement_revision';
+const CHANGE_NAMESPACE = 'requirement_change';
 const SCOPE = 'controller';
 const SCHEMA_VERSION = 1;
 
@@ -356,6 +362,52 @@ function requirementRevisionKey(requirementId: string, revision: number): string
   return `${id(requirementId)}:r${revision}`;
 }
 
+function normalizeRequirementRevisionRecord(record: RequirementRevisionRecord): RequirementRevisionRecord {
+  return {
+    ...record,
+    semanticScope: record.semanticScope ?? { schemaVersion: 1, kind: 'requirement', id: record.requirementId },
+    dependsOnRequirementIds: [...(record.dependsOnRequirementIds ?? [])],
+    legacyAliases: [...(record.legacyAliases ?? [])],
+  };
+}
+
+function requirementRevisionRecordFromView(
+  view: RequirementSemanticView,
+  recordedAt: string,
+): RequirementRevisionRecord {
+  return { schemaVersion: 1, ...view, recordedAt };
+}
+
+function reconstructRequirementRevisionWithinTransaction(
+  database: SqliteDatabase,
+  requirementId: string,
+  targetRevision: number,
+): RequirementRevisionRecord | undefined {
+  const archived = readControlPlaneRecordWithinTransaction<RequirementRevisionRecord>(
+    database, REVISION_NAMESPACE, SCOPE, requirementRevisionKey(requirementId, targetRevision),
+  )?.value;
+  if (archived) return normalizeRequirementRevisionRecord(archived);
+
+  const current = readControlPlaneRecordWithinTransaction<Requirement>(database, NAMESPACE, SCOPE, requirementId);
+  if (!current) return undefined;
+  const currentRevision = currentRequirementSemanticRevision(current.value);
+  if (targetRevision >= currentRevision) return undefined;
+
+  let view = requirementSemanticView(current.value);
+  for (let revision = currentRevision - 1; revision >= targetRevision; revision -= 1) {
+    const change = readControlPlaneRecordWithinTransaction<SemanticInverseChangeRecord>(
+      database, CHANGE_NAMESPACE, SCOPE, requirementRevisionKey(requirementId, revision),
+    )?.value;
+    if (!change || change.revision !== revision || change.nextRevision !== revision + 1) return undefined;
+    view = applySemanticInverseChange(
+      view as unknown as Record<string, unknown>,
+      change,
+    ) as unknown as RequirementSemanticView;
+    if (revision === targetRevision) return requirementRevisionRecordFromView(view, change.recordedAt);
+  }
+  return undefined;
+}
+
 export function isLegacyMachineRequirementWait(requirement: Pick<Requirement, 'state' | 'attentionSummary'>): boolean {
   return requirement.state === 'waiting_for_user'
     && /^Work .+ delivered machine-valid evidence \(.+\); ChatGPT\/user semantic acceptance is still required\.$/.test(requirement.attentionSummary ?? '');
@@ -444,14 +496,10 @@ export function getRequirementRevisionRecord(
   revision: number,
 ): RequirementRevisionRecord | undefined {
   if (!Number.isInteger(revision) || revision < 1) return undefined;
-  const record = readControlPlaneRecord<RequirementRevisionRecord>(
-    options.controllerHome, REVISION_NAMESPACE, SCOPE, requirementRevisionKey(requirementId, revision),
-  )?.value;
-  return record ? {
-    ...record,
-    semanticScope: record.semanticScope ?? { schemaVersion: 1, kind: 'requirement', id: record.requirementId },
-    dependsOnRequirementIds: [...(record.dependsOnRequirementIds ?? [])],
-  } : undefined;
+  const normalizedId = id(requirementId);
+  return withControlPlaneReadDatabase(options.controllerHome, (database) =>
+    reconstructRequirementRevisionWithinTransaction(database, normalizedId, revision),
+  );
 }
 
 export function listRequirementRevisionRecords(
@@ -467,22 +515,16 @@ export function listRequirementRevisionRecords(
         const latestArchivedRevision = (current?.value.semanticRevision ?? 1) - 1;
         const revisions: RequirementRevisionRecord[] = [];
         for (let revision = latestArchivedRevision; revision >= 1 && revisions.length < boundedLimit; revision--) {
-          const archived = readControlPlaneRecordWithinTransaction<RequirementRevisionRecord>(
-            database, REVISION_NAMESPACE, SCOPE, requirementRevisionKey(normalizedId, revision),
-          );
-          if (archived) revisions.push(archived.value);
+          const archived = reconstructRequirementRevisionWithinTransaction(database, normalizedId, revision);
+          if (archived) revisions.push(archived);
         }
         return revisions;
       })
     : listControlPlaneRecords<RequirementRevisionRecord>(options.controllerHome, {
         namespace: REVISION_NAMESPACE, scope: SCOPE, limit: boundedLimit,
       }).map((record) => record.value);
-  return records.map((record) => ({
-    ...record,
-    semanticScope: record.semanticScope ?? ({ schemaVersion: 1, kind: 'requirement', id: record.requirementId } as const),
-    dependsOnRequirementIds: [...(record.dependsOnRequirementIds ?? [])],
-    legacyAliases: [...(record.legacyAliases ?? [])],
-  })).sort((left, right) => right.revision - left.revision);
+  return records.map(normalizeRequirementRevisionRecord)
+    .sort((left, right) => right.revision - left.revision);
 }
 
 export function listRequirementActivityEvents(
@@ -602,13 +644,6 @@ export function reviseRequirementSemantic(
     }
     const at = nowIso(options);
     const revisionKey = requirementRevisionKey(requirementId, semanticRevision);
-    if (!readControlPlaneRecordWithinTransaction<RequirementRevisionRecord>(database, REVISION_NAMESPACE, SCOPE, revisionKey)) {
-      const archived: RequirementRevisionRecord = { schemaVersion: 1, ...requirementSemanticView(current.value), recordedAt: at };
-      writeControlPlaneRecordWithinTransaction(database, {
-        namespace: REVISION_NAMESPACE, scope: SCOPE, key: revisionKey, schemaVersion: 1,
-        value: archived, action: 'requirement_semantic_revision_archived', expectedRevision: null,
-      });
-    }
     const remainingWork = input.remainingWork === undefined ? [...(current.value.remainingWork ?? [])] : bounded(input.remainingWork, 50);
     const acceptedEvidenceRefs = input.acceptedEvidenceRefs === undefined
       ? [...(current.value.acceptedEvidenceRefs ?? [])]
@@ -645,6 +680,21 @@ export function reviseRequirementSemantic(
       revision: current.value.revision + 1,
       updatedAt: at,
     };
+    if (!readControlPlaneRecordWithinTransaction<SemanticInverseChangeRecord>(
+      database, CHANGE_NAMESPACE, SCOPE, revisionKey,
+    )) {
+      const previousView = requirementSemanticView(current.value);
+      const nextView = requirementSemanticView(updated);
+      const change = createSemanticInverseChange(
+        previousView as unknown as Record<string, unknown>,
+        nextView as unknown as Record<string, unknown>,
+        { revision: semanticRevision, nextRevision: semanticRevision + 1, recordedAt: at },
+      );
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: CHANGE_NAMESPACE, scope: SCOPE, key: revisionKey, schemaVersion: 1,
+        value: change, action: 'requirement_semantic_change_recorded', expectedRevision: null,
+      });
+    }
     const written = writeControlPlaneRecordWithinTransaction(database, {
       namespace: NAMESPACE, scope: SCOPE, key: requirementId, schemaVersion: SCHEMA_VERSION,
       value: updated, action: 'requirement_semantic_revised', expectedRevision: current.revision,
