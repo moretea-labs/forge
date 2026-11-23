@@ -1,5 +1,6 @@
 import { applySafePatch } from '../../src/runtime/repositories/safe-patch';
 import { applyConsoleSafePatch } from '../../src/cli/local-bridge/facade-api';
+import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -1556,6 +1557,89 @@ describe('repository MCP command tools', () => {
         await cleanupWorkspace([workspace, controllerHome, repoRoot]);
         rmSync(workspace, { recursive: true, force: true });
       }
+    }
+  });
+
+  test('Console safe patch fences exact paths only: unrelated Process writer proceeds, overlap is refused (#713)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'forge-console-safe-patch-claims-'));
+    const controllerHome = join(workspace, 'caller-home');
+    const repoRoot = join(workspace, 'repo');
+    const priorHome = process.env.FORGE_CONTROLLER_HOME;
+    process.env.FORGE_CONTROLLER_HOME = join(workspace, 'ambient-home');
+    const effects = {
+      visibility: 'ephemeral',
+      notifyScheduler: false,
+      invalidateProjection: false,
+      emitRuntimeEvent: false,
+    } as const;
+    try {
+      mkdirSync(repoRoot);
+      git(repoRoot, ['init', '-b', 'main']);
+      git(repoRoot, ['config', 'user.name', 'Forge Test']);
+      git(repoRoot, ['config', 'user.email', 'forge-test@example.com']);
+      writeFileSync(join(repoRoot, 'app.txt'), 'before\n');
+      writeFileSync(join(repoRoot, 'other.txt'), 'other\n');
+      git(repoRoot, ['add', 'app.txt', 'other.txt']);
+      git(repoRoot, ['commit', '-m', 'init']);
+      const repository = registerRepository({ path: repoRoot, controllerHome });
+      const pathKey = (path: string) => `path:${repository.activeCheckoutId}:${path}`;
+
+      const unrelated = acquireExecutionLeases(
+        controllerHome,
+        repository.repoId,
+        'test:unrelated-writer',
+        [{ resourceKey: pathKey('other.txt'), mode: 'write' }],
+        effects,
+      );
+      expect(unrelated.acquired).toBe(true);
+      try {
+        applyConsoleSafePatch(
+          { repository, controllerHome },
+          {
+            operations: [
+              { type: 'replace', path: 'app.txt', replacements: [{ old_text: 'before', new_text: 'after' }] },
+            ],
+          },
+        );
+        expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
+      } finally {
+        releaseExecutionLeases(controllerHome, repository.repoId, 'test:unrelated-writer', unrelated.leases, effects);
+      }
+
+      const overlapping = acquireExecutionLeases(
+        controllerHome,
+        repository.repoId,
+        'test:overlapping-writer',
+        [{ resourceKey: pathKey('app.txt'), mode: 'write' }],
+        effects,
+      );
+      expect(overlapping.acquired).toBe(true);
+      try {
+        expect(() =>
+          applyConsoleSafePatch(
+            { repository, controllerHome },
+            {
+              operations: [
+                { type: 'replace', path: 'app.txt', replacements: [{ old_text: 'after', new_text: 'clobbered' }] },
+              ],
+            },
+          ),
+        ).toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+        expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
+      } finally {
+        releaseExecutionLeases(
+          controllerHome,
+          repository.repoId,
+          'test:overlapping-writer',
+          overlapping.leases,
+          effects,
+        );
+      }
+    } finally {
+      if (priorHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = priorHome;
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 

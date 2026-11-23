@@ -43,7 +43,9 @@ import {
 import { resolveHandoffItem } from '../../runtime/control-plane/facade/handoff-inbox-store';
 import { buildRuntimeMaintenanceStatus } from '../../runtime/recovery';
 import { applySafePatch } from '../../runtime/repositories/safe-patch';
-import { withControllerLock } from '../../effects/controller-locks';
+import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
+import { claimPathWrites } from '../../runtime/execution/process-runtime/resource-claims';
+import { extractPatchPaths } from '../../runtime/execution/thin-harness/execution-router';
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from '../../../adapters/mcp/auth';
 import {
   buildLocalConnectorStatusForRepo,
@@ -1197,13 +1199,22 @@ export function applyConsoleSafePatch(
     sessionId?: string;
   },
 ): Record<string, unknown> {
-  const applied = withControllerLock(
+  // Same exact-path claims as the MCP safe-patch entry (#713): a Console edit
+  // fences only the files it writes and no longer holds the repository-wide
+  // ControllerLock, which vetoed every concurrent Process source write lease.
+  const mutationClaims = claimPathWrites(
+    extractPatchPaths(input.operations),
+    ctx.repository.activeCheckoutId,
+    ctx.repository.repoId,
+  );
+  const applied = withRepositoryMutationExclusion(
     ctx.controllerHome,
-    { scope: 'repository', repoId: ctx.repository.repoId },
+    ctx.repository.repoId,
     'console:safe_patch_apply',
-    () =>
+    (leaseOwnerJobId) =>
       applySafePatch(ctx.repository, {
         controllerHome: ctx.controllerHome,
+        leaseOwnerJobId,
         sessionId: input.sessionId,
         purpose: input.purpose ?? 'Console interactive edit',
         operations: input.operations,
@@ -1212,6 +1223,7 @@ export function applyConsoleSafePatch(
         recoverStaleSession: true,
       }),
     60_000,
+    mutationClaims,
   );
   const changedFiles = [...new Set((applied.appliedChunks ?? []).flatMap((chunk) => chunk.paths ?? []))];
   const ok = applied.status === 'applied';
