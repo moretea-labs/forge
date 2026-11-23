@@ -1312,7 +1312,7 @@ test('integrated legacy missing check records explicitly UNVERIFIED without clai
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
 });
 
-test('metadata-only reconciliation rejects live lease and leaves dirty session unchanged', () => {
+test('metadata-only reconciliation rejects an overlapping path lease and leaves dirty session unchanged', () => {
   const fx = fixture();
   const session = beginEditSession(fx.repoRoot, {
     purpose: 'Lease owner still active',
@@ -1342,7 +1342,7 @@ test('metadata-only reconciliation rejects live lease and leaves dirty session u
     'test-owner',
     [
       {
-        resourceKey: 'workspace:checkout-runtime-continuity',
+        resourceKey: 'path:checkout-runtime-continuity:source.ts',
         mode: 'write',
         repoId: fx.repository.repoId,
         checkoutId: durableBinding().checkoutId,
@@ -1380,6 +1380,62 @@ test('metadata-only reconciliation rejects live lease and leaves dirty session u
     }),
   ).toMatchObject({ safe: false, reason: 'EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE' });
   releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'legacy-unscoped-owner');
+});
+
+test('metadata-only reconciliation ignores same-checkout leases that do not own session paths (#713)', () => {
+  const fx = fixture();
+  const binding = durableBinding();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Unrelated same-checkout Writers stay active',
+    allowedPaths: ['source.ts'],
+    checks: ['package:check:type'],
+    binding,
+  });
+  applyEditOperations(
+    fx.repoRoot,
+    fx.policy,
+    session.sessionId,
+    [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expectedSha256: sha256(fx.initial),
+        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+      },
+    ],
+    { binding },
+  );
+  spawnSync('git', ['add', 'source.ts'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'integrated while unrelated same-checkout work is active'], { cwd: fx.repoRoot });
+
+  const scope = { repoId: fx.repository.repoId, checkoutId: binding.checkoutId };
+  const held = acquireExecutionLeases(
+    fx.controllerHome,
+    fx.repository.repoId,
+    'same-checkout-unrelated-owner',
+    [
+      { resourceKey: `path:${binding.checkoutId}:other.ts`, mode: 'write', ...scope },
+      { resourceKey: `build-cache:${fx.repository.repoId}`, mode: 'write', ...scope },
+      { resourceKey: `validation-input:${binding.checkoutId}`, mode: 'read', ...scope },
+      { resourceKey: `workspace:${binding.checkoutId}`, mode: 'write', ...scope },
+    ],
+    { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+  );
+  expect(held.acquired).toBe(true);
+  expect(
+    inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+      repoId: fx.repository.repoId,
+      controllerHome: fx.controllerHome,
+    }),
+  ).toMatchObject({ safe: true, unverifiedChecks: ['package:check:type'] });
+
+  const reconciled = cleanupEditSession(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId,
+    controllerHome: fx.controllerHome,
+  });
+  expect(reconciled.status).toBe('reconciled_unverified');
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial.replace('value = 1', 'value = 2'));
+  releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'same-checkout-unrelated-owner');
 });
 
 test('metadata-only reconciliation ignores a lease held by another checkout', () => {

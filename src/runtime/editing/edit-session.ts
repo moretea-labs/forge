@@ -1204,11 +1204,21 @@ export function inspectIntegratedEditSession(
   const session = getEditSession(repoRoot, sessionId);
   if (session.repoId !== input.repoId || !session.checkoutId || !session.principalId)
     return reject('EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED');
-  const activeCheckoutLease = listActiveLeases(input.controllerHome, input.repoId).find((lease) => {
+  // Only a lease that can still own this session's exact source paths blocks
+  // metadata reconciliation. Same-checkout leases on unrelated paths, build
+  // caches, validation input or the retired checkout-wide `workspace:` key are
+  // not source ownership (#713). Unscoped legacy leases stay conservative.
+  const trackedPathClaims = sessionTrackedPaths(session).map((path) => ({
+    resourceKey: `path:${session.checkoutId}:${path}`,
+    mode: 'write' as const,
+  }));
+  const conflictingLease = listActiveLeases(input.controllerHome, input.repoId).find((lease) => {
     const leaseCheckoutId = lease.checkoutId ?? lease.ownerIdentity?.checkoutId;
-    return !leaseCheckoutId || leaseCheckoutId === 'unscoped' || leaseCheckoutId === session.checkoutId;
+    if (!leaseCheckoutId || leaseCheckoutId === 'unscoped') return true;
+    if (leaseCheckoutId !== session.checkoutId) return false;
+    return trackedPathClaims.some((claim) => claimsConflict(claim, lease));
   });
-  if (activeCheckoutLease) return reject('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
+  if (conflictingLease) return reject('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
   if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0)
     return reject('EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE');
   if (currentHashMismatches(repoRoot, session).length) {
@@ -1268,13 +1278,14 @@ export function inspectIntegratedEditSession(
   if (!unverifiedChecks.length) {
     return {
       safe: true,
-      reason: 'Exact committed after-images, no live lease; requested checks are already PASSED or not required.',
+      reason:
+        'Exact committed after-images, no conflicting live lease; requested checks are already PASSED or not required.',
       unverifiedChecks: [],
     };
   }
   return {
     safe: true,
-    reason: 'Exact committed after-images, no live lease; missing checks remain UNVERIFIED.',
+    reason: 'Exact committed after-images, no conflicting live lease; missing checks remain UNVERIFIED.',
     unverifiedChecks,
   };
 }
