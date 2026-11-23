@@ -1,22 +1,22 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  utimesSync,
-  writeFileSync,
-} from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanupControllerReleaseHistory } from '../../src/runtime/control-plane/release-retention';
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
-import { backupControlPlaneDatabase, inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import {
+  backupControlPlaneDatabase,
+  inspectControlPlaneDatabase,
+} from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { forgeRuntimeServicePaths, writeForgeRuntimeServiceConfig } from '../../src/runtime/root/service';
-import { advanceReleaseSession, createReleaseSession, recordReleaseSessionTransaction, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease } from '../../src/runtime/release/release-session';
+import {
+  advanceReleaseSession,
+  createReleaseSession,
+  recordReleaseSessionTransaction,
+  type ReleaseSessionCandidateRelease,
+  type ReleaseSessionStableRelease,
+} from '../../src/runtime/release/release-session';
 import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runtime/root/runtime-lane';
 
 const homes: string[] = [];
@@ -49,18 +49,25 @@ function writeRecoverableKnownGood(home: string, releaseId: string): string {
   const releaseRoot = join(home, 'runtime', 'releases', releaseId);
   mkdirSync(releaseRoot, { recursive: true });
   const manifestPath = join(releaseRoot, 'manifest.json');
-  writeFileSync(manifestPath, `${JSON.stringify({
-    schemaVersion: 1,
-    releaseId,
-    artifactIdentity: `artifact-${releaseId}`,
-    entrypoint: 'forge-runtime',
-    arguments: [],
-    configurationSchemaVersion: 1,
-    controllerHome: home,
-    databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-    workerProtocolVersion: 1,
-    createdAt: new Date(NOW).toISOString(),
-  }, null, 2)}\n`);
+  writeFileSync(
+    manifestPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        releaseId,
+        artifactIdentity: `artifact-${releaseId}`,
+        entrypoint: 'forge-runtime',
+        arguments: [],
+        configurationSchemaVersion: 1,
+        controllerHome: home,
+        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+        workerProtocolVersion: 1,
+        createdAt: new Date(NOW).toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+  );
   const repositoryRoot = join(home, 'source');
   const authTokenFile = join(home, 'mcp', 'runtime-token');
   mkdirSync(repositoryRoot, { recursive: true });
@@ -78,38 +85,54 @@ function writeRecoverableKnownGood(home: string, releaseId: string): string {
   const databasePath = join(bundleRoot, 'controller.sqlite');
   const database = backupControlPlaneDatabase(home, databasePath);
   const serviceContractPath = join(bundleRoot, 'service-contract.json');
-  writeFileSync(serviceContractPath, `${JSON.stringify({
-    schemaVersion: 1,
-    configPath: forgeRuntimeServicePaths(home).configPath,
-    serviceConfig: service.config,
-  }, null, 2)}\n`);
-  mkdirSync(join(home, 'recovery', 'state'), { recursive: true });
-  writeFileSync(join(home, 'recovery', 'state', 'known-good.json'), `${JSON.stringify({
-    schemaVersion: 2,
-    releases: [{
-      path: manifestPath,
-      revision: releaseId,
-      artifactIdentity: `artifact-${releaseId}`,
-      manifestSha256: sha256(manifestPath),
-      workerProtocolVersion: 1,
-      controllerHome: home,
-      recoveryBundle: {
+  writeFileSync(
+    serviceContractPath,
+    `${JSON.stringify(
+      {
         schemaVersion: 1,
-        attestationId: 'attestation-retention-test',
-        root: bundleRoot,
-        database: {
-          path: databasePath,
-          sha256: sha256(databasePath),
-          schemaVersion: database.schemaVersion,
-          recordCount: database.recordCount,
-          auditEventCount: database.auditEventCount,
-        },
-        serviceContract: { path: serviceContractPath, sha256: sha256(serviceContractPath) },
-        createdAt: new Date(NOW).toISOString(),
+        configPath: forgeRuntimeServicePaths(home).configPath,
+        serviceConfig: service.config,
       },
-    }],
-    updatedAt: new Date(NOW).toISOString(),
-  }, null, 2)}\n`);
+      null,
+      2,
+    )}\n`,
+  );
+  mkdirSync(join(home, 'recovery', 'state'), { recursive: true });
+  writeFileSync(
+    join(home, 'recovery', 'state', 'known-good.json'),
+    `${JSON.stringify(
+      {
+        schemaVersion: 2,
+        releases: [
+          {
+            path: manifestPath,
+            revision: releaseId,
+            artifactIdentity: `artifact-${releaseId}`,
+            manifestSha256: sha256(manifestPath),
+            workerProtocolVersion: 1,
+            controllerHome: home,
+            recoveryBundle: {
+              schemaVersion: 1,
+              attestationId: 'attestation-retention-test',
+              root: bundleRoot,
+              database: {
+                path: databasePath,
+                sha256: sha256(databasePath),
+                schemaVersion: database.schemaVersion,
+                recordCount: database.recordCount,
+                auditEventCount: database.auditEventCount,
+              },
+              serviceContract: { path: serviceContractPath, sha256: sha256(serviceContractPath) },
+              createdAt: new Date(NOW).toISOString(),
+            },
+          },
+        ],
+        updatedAt: new Date(NOW).toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+  );
   return releaseRoot;
 }
 
@@ -129,20 +152,25 @@ function writeRuntimeAuthority(
       releaseId: activeId,
       manifestPath: join(releasesRoot, activeId, 'manifest.json'),
     },
-    ...(previousId ? {
-      previous: {
-        releaseId: previousId,
-        manifestPath: join(releasesRoot, previousId, 'manifest.json'),
-        ...(backupPath ? { databaseBackup: { path: backupPath } } : {}),
-      },
-    } : {}),
+    ...(previousId
+      ? {
+          previous: {
+            releaseId: previousId,
+            manifestPath: join(releasesRoot, previousId, 'manifest.json'),
+            ...(backupPath ? { databaseBackup: { path: backupPath } } : {}),
+          },
+        }
+      : {}),
     operationId: 'test',
     committedAt: new Date(NOW).toISOString(),
   };
   writeFileSync(join(releasesRoot, 'authority.json'), `${JSON.stringify(authority, null, 2)}\n`, 'utf8');
 }
 
-function linkedFamily(home: string, family: 'supervisor' | 'recovery'): {
+function linkedFamily(
+  home: string,
+  family: 'supervisor' | 'recovery',
+): {
   current: string;
   previous: string;
   stale: string;
@@ -232,16 +260,35 @@ describe('ReleaseSession candidate retention integration', () => {
       phase: 'built',
       candidateRelease: retiredRelease,
     });
-    retired = advanceReleaseSession({ controllerHome: home, sessionId: retired.sessionId, expectedRevision: retired.revision, phase: 'candidate_booted' });
+    retired = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: retired.sessionId,
+      expectedRevision: retired.revision,
+      phase: 'candidate_booted',
+    });
     retired = advanceReleaseSession({
       controllerHome: home,
       sessionId: retired.sessionId,
       expectedRevision: retired.revision,
       phase: 'candidate_verified',
-      receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
+      receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+        id,
+        kind: 'candidate_canary' as const,
+        summary: id,
+      })),
     });
-    retired = advanceReleaseSession({ controllerHome: home, sessionId: retired.sessionId, expectedRevision: retired.revision, phase: 'cutover_eligible' });
-    retired = advanceReleaseSession({ controllerHome: home, sessionId: retired.sessionId, expectedRevision: retired.revision, phase: 'cutover_attempting' });
+    retired = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: retired.sessionId,
+      expectedRevision: retired.revision,
+      phase: 'cutover_eligible',
+    });
+    retired = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: retired.sessionId,
+      expectedRevision: retired.revision,
+      phase: 'cutover_attempting',
+    });
     const transactionAt = new Date(NOW).toISOString();
     retired = recordReleaseSessionTransaction({
       controllerHome: home,
@@ -268,15 +315,29 @@ describe('ReleaseSession candidate retention integration', () => {
         startedAt: transactionAt,
       },
     });
-    retired = advanceReleaseSession({ controllerHome: home, sessionId: retired.sessionId, expectedRevision: retired.revision, phase: 'cutover_committed' });
-    retired = advanceReleaseSession({ controllerHome: home, sessionId: retired.sessionId, expectedRevision: retired.revision, phase: 'soaking' });
+    retired = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: retired.sessionId,
+      expectedRevision: retired.revision,
+      phase: 'cutover_committed',
+    });
+    retired = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: retired.sessionId,
+      expectedRevision: retired.revision,
+      phase: 'soaking',
+    });
     retired = advanceReleaseSession({
       controllerHome: home,
       sessionId: retired.sessionId,
       expectedRevision: retired.revision,
       phase: 'known_good',
       receipts: [
-        { id: 'supervisor_continuation_proof', kind: 'soak', summary: 'prove retained Supervisor continuation during soak' },
+        {
+          id: 'supervisor_continuation_proof',
+          kind: 'soak',
+          summary: 'prove retained Supervisor continuation during soak',
+        },
         { id: 'retention-known-good', kind: 'known_good', summary: 'terminalize retired retention fixture' },
       ],
     });
@@ -335,7 +396,6 @@ describe('ReleaseSession candidate retention integration', () => {
     expect(report.cycle.skippedByReason.release_session_candidate_resumable).toBe(1);
     expect(report.cycle.skippedByReason.release_session_candidate_authority_missing).toBe(1);
   });
-
 });
 
 describe('controller release retention', () => {
@@ -413,13 +473,24 @@ describe('controller release retention', () => {
     writeFileSync(referencedBackup, 'referenced', 'utf8');
     writeRuntimeAuthority(home, 'active-release', 'previous-release', referencedBackup);
     mkdirSync(join(home, 'recovery', 'state'), { recursive: true });
-    writeFileSync(join(home, 'recovery', 'state', 'known-good.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      releases: [
-        { revision: 'known-good-release', path: join(knownGood, 'manifest.json') },
-        { revision: 'already-pruned-release', path: join(home, 'runtime', 'releases', 'already-pruned-release', 'manifest.json') },
-      ],
-    }, null, 2)}\n`, 'utf8');
+    writeFileSync(
+      join(home, 'recovery', 'state', 'known-good.json'),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          releases: [
+            { revision: 'known-good-release', path: join(knownGood, 'manifest.json') },
+            {
+              revision: 'already-pruned-release',
+              path: join(home, 'runtime', 'releases', 'already-pruned-release', 'manifest.json'),
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
     age(knownGood);
     age(stale);
 
@@ -491,17 +562,25 @@ describe('controller release retention', () => {
     const stale = runtimeRelease(home, 'stale-release');
     writeRuntimeAuthority(home, 'active-release', 'previous-release');
     mkdirSync(join(home, 'recovery', 'state'), { recursive: true });
-    writeFileSync(join(home, 'recovery', 'state', 'runtime-pin.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      release: {
-        revision: 'pinned-release',
-        path: join(pinned, 'manifest.json'),
-        artifactIdentity: `sha256:${'a'.repeat(64)}`,
-        manifestSha256: 'b'.repeat(64),
-        workerProtocolVersion: 1,
-      },
-      updatedAt: new Date(NOW).toISOString(),
-    }, null, 2)}\n`, 'utf8');
+    writeFileSync(
+      join(home, 'recovery', 'state', 'runtime-pin.json'),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          release: {
+            revision: 'pinned-release',
+            path: join(pinned, 'manifest.json'),
+            artifactIdentity: `sha256:${'a'.repeat(64)}`,
+            manifestSha256: 'b'.repeat(64),
+            workerProtocolVersion: 1,
+          },
+          updatedAt: new Date(NOW).toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
     age(pinned);
     age(stale);
 
@@ -566,7 +645,6 @@ describe('controller release retention', () => {
   });
 });
 
-
 describe('runtime cleanup release integration', () => {
   test('periodic cleanup consumes remaining cycle budget to prune release history', () => {
     const home = controllerHome();
@@ -616,15 +694,17 @@ describe('runtime cleanup release integration', () => {
     writeFileSync(staleTemp, 'temporary\n', 'utf8');
     age(staleTemp);
 
-    const reports = [6, 13, 20, 27, 34, 41].map((periodicSequence) => cleanupControllerRuntimeState(home, {
-      reason: 'periodic',
-      periodicSequence,
-      nowMs: NOW,
-      maxEntries: 100,
-      maxRemovals: 1,
-      releaseRetentionGraceMs: 0,
-      inspectProcess: () => ({ alive: false }),
-    }));
+    const reports = [6, 13, 20, 27, 34, 41].map((periodicSequence) =>
+      cleanupControllerRuntimeState(home, {
+        reason: 'periodic',
+        periodicSequence,
+        nowMs: NOW,
+        maxEntries: 100,
+        maxRemovals: 1,
+        releaseRetentionGraceMs: 0,
+        inspectProcess: () => ({ alive: false }),
+      }),
+    );
 
     expect(staleReleases.every((path) => !existsSync(path))).toBe(true);
     expect(staleBackups.every((path) => !existsSync(path))).toBe(true);
@@ -635,5 +715,4 @@ describe('runtime cleanup release integration', () => {
     expect(reports.every((report) => report.cycle.removed === 1)).toBe(true);
     expect(reports.slice(0, -1).every((report) => report.cycle.budgetExhausted)).toBe(true);
   });
-
 });

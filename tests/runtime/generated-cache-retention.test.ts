@@ -1,10 +1,33 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, iosTestEvidenceResourceId, recordIosTestEvidenceOwner, recordProcessXcodeTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
-import { getOwnedResource, markOwnedResourceRetained, recordOwnedResource } from '../../packages/kernel/identity/api/index';
+import {
+  cleanupControllerHomeBrowserArtifacts,
+  cleanupGeneratedRepositoryCaches,
+  cleanupGeneratedRepositoryCheckoutCaches,
+  cleanupReleasableIosTestEvidence,
+  inspectRepositoryIosTestEvidence,
+  iosTestEvidenceResourceId,
+  recordIosTestEvidenceOwner,
+  recordProcessXcodeTestEvidenceOwner,
+} from '../../src/runtime/control-plane/generated-cache-retention';
+import {
+  getOwnedResource,
+  markOwnedResourceRetained,
+  recordOwnedResource,
+} from '../../packages/kernel/identity/api/index';
 import { stableCheckoutId } from '../../src/core/repository/identity';
 
 import { planSchedulerPeriodicMaintenance } from '../../src/runtime/control-plane/global-scheduler/maintenance';
@@ -31,7 +54,11 @@ function controllerHome(): string {
   return home;
 }
 
-function registeredCheckout(repoId: string, localRoot: string, lifecycle: 'active' | 'removed' | 'archived' = 'active') {
+function registeredCheckout(
+  repoId: string,
+  localRoot: string,
+  lifecycle: 'active' | 'removed' | 'archived' = 'active',
+) {
   const canonicalRoot = realpathSync(localRoot);
   return { checkoutId: stableCheckoutId(repoId, canonicalRoot), localRoot, canonicalRoot, worktree: true, lifecycle };
 }
@@ -198,14 +225,26 @@ describe('generated repository cache retention', () => {
     mkdirSync(unknown, { recursive: true });
     writeFileSync(join(unknown, 'BUILD_ID'), 'user data');
     writeFileSync(join(root, 'apps', 'docs', 'package.json'), '{"name":"docs"}');
-    for (const p of [join(swift, '.build'), join(swift, '.build', 'arm64-apple-macosx'), swiftOutput,
-      join(cargo, 'target'), cargoOutput, join(cargoOutput, 'deps'),
-      join(cargoOutput, '.fingerprint'), join(swiftOutput, 'Modules'),
-      nextOutput, join(nextOutput, 'cache'), unknown]) age(p);
+    for (const p of [
+      join(swift, '.build'),
+      join(swift, '.build', 'arm64-apple-macosx'),
+      swiftOutput,
+      join(cargo, 'target'),
+      cargoOutput,
+      join(cargoOutput, 'deps'),
+      join(cargoOutput, '.fingerprint'),
+      join(swiftOutput, 'Modules'),
+      nextOutput,
+      join(nextOutput, 'cache'),
+      unknown,
+    ])
+      age(p);
 
     const report = cleanupGeneratedRepositoryCaches(root, {
-      nowMs: Date.parse('2026-11-10T00:00:00.000Z'), maxEntries: 300,
-      processCommands: [], maxRemovals: 8,
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+      maxEntries: 300,
+      processCommands: [],
+      maxRemovals: 8,
     });
     expect(report.removedPaths).toContain('integrations/note-editor/.build/arm64-apple-macosx/debug');
     expect(report.removedPaths).toContain('apps/desktop-native/bridge/target/debug');
@@ -232,25 +271,35 @@ describe('generated repository cache retention', () => {
     writeFileSync(join(root, 'Cargo.toml'), '[workspace]');
     writeFileSync(join(cargo, 'CACHEDIR.TAG'), 'generated');
     writeFileSync(join(debug, 'deps', 'save'), 'keep');
-    age(join(debug, 'deps')); age(join(debug, '.fingerprint')); age(debug); age(cargo);
+    age(join(debug, 'deps'));
+    age(join(debug, '.fingerprint'));
+    age(debug);
+    age(cargo);
 
-    const live = cleanupGeneratedRepositoryCaches(root, { processCommands: ['cargo build'],
-      nowMs: Date.parse('2026-11-10T00:00:00.000Z') });
+    const live = cleanupGeneratedRepositoryCaches(root, {
+      processCommands: ['cargo build'],
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+    });
     expect(existsSync(debug)).toBe(true);
     expect(live.skippedByReason.active_process ?? 0).toBeGreaterThanOrEqual(1);
     expect(live.byClass.cargo_build).toMatchObject({ scanned: 1, retained: 1, removed: 0 });
 
     execFileSync('git', ['-C', root, 'add', 'target/debug/deps/save']);
-    const tracked = cleanupGeneratedRepositoryCaches(root, { processCommands: [],
-      nowMs: Date.parse('2026-11-10T00:00:00.000Z') });
+    const tracked = cleanupGeneratedRepositoryCaches(root, {
+      processCommands: [],
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+    });
     expect(existsSync(debug)).toBe(true);
     expect(tracked.skippedByReason.tracked_content ?? 0).toBeGreaterThanOrEqual(1);
 
     const fake = join(root, 'target', 'release');
     mkdirSync(join(fake, 'deps'), { recursive: true });
-    writeFileSync(join(fake, 'keep'), 'unknown'); age(fake);
-    const unknown = cleanupGeneratedRepositoryCaches(root, { processCommands: [],
-      nowMs: Date.parse('2026-11-10T00:00:00.000Z') });
+    writeFileSync(join(fake, 'keep'), 'unknown');
+    age(fake);
+    const unknown = cleanupGeneratedRepositoryCaches(root, {
+      processCommands: [],
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+    });
     expect(existsSync(fake)).toBe(true);
     expect(unknown.removedPaths).not.toContain('target/release');
   });
@@ -264,14 +313,18 @@ describe('generated repository cache retention', () => {
     const swiftOutput = join(swiftRoot, 'arm64-apple-macosx', 'debug');
     mkdirSync(join(swiftOutput, 'Modules'), { recursive: true });
     writeFileSync(join(swiftOutput, 'Modules', 'editor.swiftmodule'), 'compiled');
-    age(join(swiftOutput, 'Modules')); age(swiftOutput); age(join(swiftRoot, 'arm64-apple-macosx')); age(swiftRoot);
+    age(join(swiftOutput, 'Modules'));
+    age(swiftOutput);
+    age(join(swiftRoot, 'arm64-apple-macosx'));
+    age(swiftRoot);
 
     const nextRoot = join(root, '.next');
     const nextCache = join(nextRoot, 'cache');
     mkdirSync(nextCache, { recursive: true });
     writeFileSync(join(nextRoot, 'BUILD_ID'), 'generated');
     writeFileSync(join(nextCache, 'cache.bin'), 'compiled');
-    age(nextCache); age(nextRoot);
+    age(nextCache);
+    age(nextRoot);
 
     const report = cleanupGeneratedRepositoryCaches(root, {
       nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
@@ -291,9 +344,12 @@ describe('generated repository cache retention', () => {
     mkdirSync(join(output, 'deps'), { recursive: true });
     writeFileSync(join(cargo, 'CACHEDIR.TAG'), 'generated');
     writeFileSync(join(output, 'deps', 'live.bin'), 'just rebuilt');
-    age(output); age(cargo); age(join(output, '.fingerprint'));
+    age(output);
+    age(cargo);
+    age(join(output, '.fingerprint'));
     const recent = cleanupGeneratedRepositoryCaches(root, {
-      nowMs: Date.now(), processCommands: [],
+      nowMs: Date.now(),
+      processCommands: [],
     });
     expect(existsSync(output)).toBe(true);
     expect(recent.skippedByReason.retention_grace ?? 0).toBeGreaterThanOrEqual(1);
@@ -303,7 +359,8 @@ describe('generated repository cache retention', () => {
     mkdirSync(join(outside, 'deps'), { recursive: true });
     symlinkSync(outside, join(cargo, 'release'), 'dir');
     const linked = cleanupGeneratedRepositoryCaches(root, {
-      nowMs: Date.parse('2026-11-10T00:00:00.000Z'), processCommands: [],
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+      processCommands: [],
     });
     expect(existsSync(join(cargo, 'release'))).toBe(true);
     expect(existsSync(outside)).toBe(true);
@@ -318,8 +375,17 @@ describe('generated repository cache retention', () => {
     writeFileSync(join(canonicalRoot, '.gitignore'), '.build/\n.next/\ntarget/\n');
     writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
     execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
-    execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
-      'user.email=test@example.org', 'commit', '-qm', 'initial']);
+    execFileSync('git', [
+      '-C',
+      canonicalRoot,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.org',
+      'commit',
+      '-qm',
+      'initial',
+    ]);
 
     const parent = mkdtempSync(join(tmpdir(), 'forge-gc-multi-checkouts-'));
     roots.push(parent);
@@ -334,14 +400,18 @@ describe('generated repository cache retention', () => {
     const swiftOutput = join(swiftRoot, 'arm64-apple-macosx', 'debug');
     mkdirSync(join(swiftOutput, 'Modules'), { recursive: true });
     writeFileSync(join(swiftOutput, 'Modules', 'editor.swiftmodule'), 'compiled');
-    age(join(swiftOutput, 'Modules')); age(swiftOutput); age(join(swiftRoot, 'arm64-apple-macosx')); age(swiftRoot);
+    age(join(swiftOutput, 'Modules'));
+    age(swiftOutput);
+    age(join(swiftRoot, 'arm64-apple-macosx'));
+    age(swiftRoot);
 
     const nextRoot = join(nextCheckout, '.next');
     const nextCache = join(nextRoot, 'cache');
     mkdirSync(nextCache, { recursive: true });
     writeFileSync(join(nextRoot, 'BUILD_ID'), 'generated');
     writeFileSync(join(nextCache, 'cache.bin'), 'compiled');
-    age(nextCache); age(nextRoot);
+    age(nextCache);
+    age(nextRoot);
 
     const cargoRoot = join(cargoCheckout, 'target');
     const cargoOutput = join(cargoRoot, 'debug');
@@ -349,22 +419,36 @@ describe('generated repository cache retention', () => {
     mkdirSync(join(cargoOutput, 'deps'), { recursive: true });
     writeFileSync(join(cargoRoot, 'CACHEDIR.TAG'), 'Signature: 8a477f597d28d172789f06886806bc55');
     writeFileSync(join(cargoOutput, 'deps', 'editor'), 'compiled');
-    age(join(cargoOutput, '.fingerprint')); age(join(cargoOutput, 'deps')); age(cargoOutput); age(cargoRoot);
+    age(join(cargoOutput, '.fingerprint'));
+    age(join(cargoOutput, 'deps'));
+    age(cargoOutput);
+    age(cargoRoot);
 
-    const report = cleanupGeneratedRepositoryCheckoutCaches(repositoryRootSet(canonicalRoot, [
-      registeredCheckout('test-repo', swiftCheckout),
-      registeredCheckout('test-repo', nextCheckout),
-      registeredCheckout('test-repo', cargoCheckout),
-    ]), {
-      controllerHome: controllerHome(),
-      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
-      processCommands: [],
-      maxEntries: 300,
-      maxRemovals: 8,
-    });
-    expect(report.removedPaths.some((path) => path.startsWith(swiftCheckout + ':') && path.endsWith('.build/arm64-apple-macosx/debug'))).toBe(true);
-    expect(report.removedPaths.some((path) => path.startsWith(nextCheckout + ':') && path.endsWith('.next/cache'))).toBe(true);
-    expect(report.removedPaths.some((path) => path.startsWith(cargoCheckout + ':') && path.endsWith('target/debug'))).toBe(true);
+    const report = cleanupGeneratedRepositoryCheckoutCaches(
+      repositoryRootSet(canonicalRoot, [
+        registeredCheckout('test-repo', swiftCheckout),
+        registeredCheckout('test-repo', nextCheckout),
+        registeredCheckout('test-repo', cargoCheckout),
+      ]),
+      {
+        controllerHome: controllerHome(),
+        nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+        processCommands: [],
+        maxEntries: 300,
+        maxRemovals: 8,
+      },
+    );
+    expect(
+      report.removedPaths.some(
+        (path) => path.startsWith(swiftCheckout + ':') && path.endsWith('.build/arm64-apple-macosx/debug'),
+      ),
+    ).toBe(true);
+    expect(
+      report.removedPaths.some((path) => path.startsWith(nextCheckout + ':') && path.endsWith('.next/cache')),
+    ).toBe(true);
+    expect(
+      report.removedPaths.some((path) => path.startsWith(cargoCheckout + ':') && path.endsWith('target/debug')),
+    ).toBe(true);
     expect(report.byClass.swiftpm_build).toMatchObject({ scanned: 1, eligible: 1, removed: 1 });
     expect(report.byClass.next_build).toMatchObject({ scanned: 1, eligible: 1, removed: 1 });
     expect(report.byClass.cargo_build).toMatchObject({ scanned: 1, eligible: 1, removed: 1 });
@@ -375,7 +459,11 @@ describe('generated repository cache retention', () => {
     const canonicalHead = execFileSync('git', ['-C', canonicalRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     for (const root of [canonicalRoot, swiftCheckout, nextCheckout, cargoCheckout]) {
       expect(execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(canonicalHead);
-      expect(execFileSync('git', ['-C', root, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' }).trim()).toBe('');
+      expect(
+        execFileSync('git', ['-C', root, 'status', '--porcelain', '--untracked-files=normal'], {
+          encoding: 'utf8',
+        }).trim(),
+      ).toBe('');
     }
     expect(existsSync(join(swiftCheckout, 'Package.swift'))).toBe(true);
     expect(existsSync(join(nextCheckout, 'package.json'))).toBe(true);
@@ -387,8 +475,17 @@ describe('generated repository cache retention', () => {
     writeFileSync(join(canonicalRoot, '.gitignore'), 'target/');
     writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
     execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
-    execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
-      'user.email=test@example.org', 'commit', '-qm', 'initial']);
+    execFileSync('git', [
+      '-C',
+      canonicalRoot,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.org',
+      'commit',
+      '-qm',
+      'initial',
+    ]);
 
     const parent = mkdtempSync(join(tmpdir(), 'forge-gc-linked-checkout-'));
     roots.push(parent);
@@ -400,13 +497,18 @@ describe('generated repository cache retention', () => {
       mkdirSync(join(output, '.fingerprint'), { recursive: true });
       writeFileSync(join(linked, 'target', 'CACHEDIR.TAG'), 'cargo-generated');
       writeFileSync(join(output, 'deps', 'artifact'), 'compiled');
-      age(join(output, 'deps')); age(join(output, '.fingerprint'));
-      age(output); age(join(linked, 'target'));
+      age(join(output, 'deps'));
+      age(join(output, '.fingerprint'));
+      age(output);
+      age(join(linked, 'target'));
     };
     const options = {
       controllerHome: controllerHome(),
-      nowMs: Date.parse('2026-11-10T00:00:00.000Z'), processCommands: [],
-      maxEntries: 300, maxRemovals: 5, rootStartIndex: 1,
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+      processCommands: [],
+      maxEntries: 300,
+      maxRemovals: 5,
+      rootStartIndex: 1,
     };
     const repoSet = repositoryRootSet(canonicalRoot, [registeredCheckout('test-repo', linked)]);
     createCache();
@@ -428,8 +530,17 @@ describe('generated repository cache retention', () => {
     rmSync(join(linked, 'untracked-source.md'));
     writeFileSync(join(linked, 'extra.md'), 'independent commit');
     execFileSync('git', ['-C', linked, 'add', 'extra.md']);
-    execFileSync('git', ['-C', linked, '-c', 'user.name=Test', '-c',
-      'user.email=test@example.org', 'commit', '-qm', 'unmerged']);
+    execFileSync('git', [
+      '-C',
+      linked,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.org',
+      'commit',
+      '-qm',
+      'unmerged',
+    ]);
     const unmerged = cleanupGeneratedRepositoryCheckoutCaches(repoSet, options);
     expect(existsSync(output)).toBe(true);
     expect(unmerged.skippedByReason.worktree_source_protected ?? 0).toBeGreaterThanOrEqual(1);
@@ -440,8 +551,17 @@ describe('generated repository cache retention', () => {
     writeFileSync(join(canonicalRoot, '.gitignore'), '.repo-harness/\n');
     writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
     execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
-    execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
-      'user.email=test@example.org', 'commit', '-qm', 'initial']);
+    execFileSync('git', [
+      '-C',
+      canonicalRoot,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.org',
+      'commit',
+      '-qm',
+      'initial',
+    ]);
     const parent = mkdtempSync(join(tmpdir(), 'forge-gc-owner-identity-'));
     roots.push(parent);
     const validRoot = join(parent, 'valid');
@@ -456,25 +576,50 @@ describe('generated repository cache retention', () => {
     const recycledCache = join(recycledRoot, '.repo-harness', 'ios-build', 'DerivedData-recycled');
     const ambiguousCache = join(ambiguousRoot, '.repo-harness', 'ios-build', 'DerivedData-ambiguous');
     const foreignCache = join(foreignClone, '.repo-harness', 'ios-build', 'DerivedData-foreign');
-    for (const cache of [validCache, recycledCache, ambiguousCache, foreignCache]) { xcodeCache(cache); age(cache); }
+    for (const cache of [validCache, recycledCache, ambiguousCache, foreignCache]) {
+      xcodeCache(cache);
+      age(cache);
+    }
     const home = controllerHome();
     const validCheckout = registeredCheckout('test-repo', validRoot);
     const recycledCheckout = registeredCheckout('test-repo', recycledRoot);
     const ambiguousCheckout = registeredCheckout('test-repo', ambiguousRoot);
     const foreignCheckout = registeredCheckout('test-repo', foreignClone);
-    recordOwnedResource(home, { resourceId: 'test-worktree-owner-valid', kind: 'worktree',
-      targetRef: validCheckout.canonicalRoot, creator: 'forge:managed-workspace', repoId: 'test-repo' });
-    recordOwnedResource(home, { resourceId: 'test-worktree-owner-recycled', kind: 'worktree',
-      targetRef: recycledCheckout.canonicalRoot, creator: 'forge:managed-workspace', repoId: 'test-repo',
-      identityFingerprint: 'not-the-current-filesystem-identity' });
+    recordOwnedResource(home, {
+      resourceId: 'test-worktree-owner-valid',
+      kind: 'worktree',
+      targetRef: validCheckout.canonicalRoot,
+      creator: 'forge:managed-workspace',
+      repoId: 'test-repo',
+    });
+    recordOwnedResource(home, {
+      resourceId: 'test-worktree-owner-recycled',
+      kind: 'worktree',
+      targetRef: recycledCheckout.canonicalRoot,
+      creator: 'forge:managed-workspace',
+      repoId: 'test-repo',
+      identityFingerprint: 'not-the-current-filesystem-identity',
+    });
     for (const resourceId of ['test-worktree-owner-ambiguous-a', 'test-worktree-owner-ambiguous-b']) {
-      recordOwnedResource(home, { resourceId, kind: 'worktree', targetRef: ambiguousCheckout.canonicalRoot,
-        creator: 'forge:managed-workspace', repoId: 'test-repo' });
+      recordOwnedResource(home, {
+        resourceId,
+        kind: 'worktree',
+        targetRef: ambiguousCheckout.canonicalRoot,
+        creator: 'forge:managed-workspace',
+        repoId: 'test-repo',
+      });
     }
-    const report = cleanupGeneratedRepositoryCheckoutCaches(repositoryRootSet(canonicalRoot, [
-      validCheckout, recycledCheckout, ambiguousCheckout, foreignCheckout,
-    ]), { controllerHome: home, nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
-      graceMs: 60_000, processCommands: [], maxEntries: 300, maxRemovals: 10 });
+    const report = cleanupGeneratedRepositoryCheckoutCaches(
+      repositoryRootSet(canonicalRoot, [validCheckout, recycledCheckout, ambiguousCheckout, foreignCheckout]),
+      {
+        controllerHome: home,
+        nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+        graceMs: 60_000,
+        processCommands: [],
+        maxEntries: 300,
+        maxRemovals: 10,
+      },
+    );
     expect(existsSync(join(validCache, 'Build'))).toBe(false);
     expect(existsSync(join(recycledCache, 'Build'))).toBe(true);
     expect(existsSync(join(ambiguousCache, 'Build'))).toBe(true);
@@ -489,8 +634,17 @@ describe('generated repository cache retention', () => {
     writeFileSync(join(canonicalRoot, '.gitignore'), 'target/\n');
     writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
     execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
-    execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
-      'user.email=test@example.org', 'commit', '-qm', 'initial']);
+    execFileSync('git', [
+      '-C',
+      canonicalRoot,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.org',
+      'commit',
+      '-qm',
+      'initial',
+    ]);
 
     const parent = mkdtempSync(join(tmpdir(), 'forge-gc-owner-inventory-'));
     roots.push(parent);
@@ -501,17 +655,29 @@ describe('generated repository cache retention', () => {
     mkdirSync(join(output, '.fingerprint'), { recursive: true });
     writeFileSync(join(linked, 'target', 'CACHEDIR.TAG'), 'cargo-generated');
     writeFileSync(join(output, 'deps', 'artifact'), 'compiled');
-    age(join(output, 'deps')); age(join(output, '.fingerprint')); age(output); age(join(linked, 'target'));
+    age(join(output, 'deps'));
+    age(join(output, '.fingerprint'));
+    age(output);
+    age(join(linked, 'target'));
 
     const home = controllerHome();
     const checkout = registeredCheckout('test-repo', linked);
-    recordOwnedResource(home, { resourceId: 'test-worktree-owner-corrupt', kind: 'worktree',
-      targetRef: checkout.canonicalRoot, creator: 'forge:managed-workspace', repoId: 'test-repo' });
+    recordOwnedResource(home, {
+      resourceId: 'test-worktree-owner-corrupt',
+      kind: 'worktree',
+      targetRef: checkout.canonicalRoot,
+      creator: 'forge:managed-workspace',
+      repoId: 'test-repo',
+    });
     writeFileSync(join(home, 'owned-resources', 'test-worktree-owner-corrupt.json'), '{not-json');
 
     const report = cleanupGeneratedRepositoryCheckoutCaches(repositoryRootSet(canonicalRoot, [checkout]), {
-      controllerHome: home, nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
-      graceMs: 60_000, processCommands: [], maxEntries: 300, maxRemovals: 10,
+      controllerHome: home,
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+      graceMs: 60_000,
+      processCommands: [],
+      maxEntries: 300,
+      maxRemovals: 10,
     });
     expect(existsSync(output)).toBe(true);
     expect(report.removedPaths).toEqual([]);
@@ -536,8 +702,10 @@ describe('generated repository cache retention', () => {
     }
     age(target);
     const options = {
-      nowMs: Date.parse('2026-11-10T00:00:00.000Z'), processCommands: [],
-      maxEntries: 300, maxRemovals: 1,
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+      processCommands: [],
+      maxEntries: 300,
+      maxRemovals: 1,
     };
     const first = cleanupGeneratedRepositoryCaches(root, options);
     expect(first.removedPaths).toHaveLength(1);
@@ -738,8 +906,17 @@ describe('generated repository cache retention', () => {
     writeFileSync(join(canonicalRoot, '.gitignore'), '.repo-harness/\n');
     writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
     execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
-    execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
-      'user.email=test@example.org', 'commit', '-qm', 'initial']);
+    execFileSync('git', [
+      '-C',
+      canonicalRoot,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.org',
+      'commit',
+      '-qm',
+      'initial',
+    ]);
     const parent = mkdtempSync(join(tmpdir(), 'forge-gc-active-worktrees-'));
     roots.push(parent);
     const activeWorktreeRoot = join(parent, 'active');
@@ -761,18 +938,23 @@ describe('generated repository cache retention', () => {
     age(siblingCache);
     age(removedCache);
 
-    const report = cleanupGeneratedRepositoryCheckoutCaches(repositoryRootSet(canonicalRoot, [
-      registeredCheckout('test-repo', activeWorktreeRoot),
-      registeredCheckout('test-repo', siblingWorktreeRoot),
-      registeredCheckout('test-repo', removedWorktreeRoot, 'removed'),
-    ]), {
-      controllerHome: controllerHome(),
-      nowMs: Date.parse('2026-08-25T12:00:00.000Z'),
-      graceMs: 60_000,
-      maxEntries: 100,
-      maxRemovals: 10,
-      processCommands: [`xcodebuild -project ${join(activeWorktreeRoot, 'ios', 'App.xcodeproj')} -derivedDataPath ${activeCache}`],
-    });
+    const report = cleanupGeneratedRepositoryCheckoutCaches(
+      repositoryRootSet(canonicalRoot, [
+        registeredCheckout('test-repo', activeWorktreeRoot),
+        registeredCheckout('test-repo', siblingWorktreeRoot),
+        registeredCheckout('test-repo', removedWorktreeRoot, 'removed'),
+      ]),
+      {
+        controllerHome: controllerHome(),
+        nowMs: Date.parse('2026-08-25T12:00:00.000Z'),
+        graceMs: 60_000,
+        maxEntries: 100,
+        maxRemovals: 10,
+        processCommands: [
+          `xcodebuild -project ${join(activeWorktreeRoot, 'ios', 'App.xcodeproj')} -derivedDataPath ${activeCache}`,
+        ],
+      },
+    );
 
     expect(existsSync(activeCache)).toBe(true);
     expect(existsSync(join(siblingCache, 'Build'))).toBe(false);
@@ -787,8 +969,17 @@ describe('generated repository cache retention', () => {
     writeFileSync(join(canonicalRoot, '.gitignore'), '.forge/ios/DerivedData/\n');
     writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
     execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
-    execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
-      'user.email=test@example.org', 'commit', '-qm', 'initial']);
+    execFileSync('git', [
+      '-C',
+      canonicalRoot,
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.org',
+      'commit',
+      '-qm',
+      'initial',
+    ]);
     const parent = mkdtempSync(join(tmpdir(), 'forge-gc-root-rotation-'));
     roots.push(parent);
     const activeWorktreeRoot = join(parent, 'active');
@@ -818,18 +1009,36 @@ describe('generated repository cache retention', () => {
     expect(existsSync(join(canonicalCache, 'Build'))).toBe(true);
     // Two repositories and two checkout roots previously visited only one
     // parity of roots forever because both used the global sequence.
-    const visits = [0, 1, 2, 3].map((round) => planSchedulerPeriodicMaintenance({
-      nowMs: round * 5 * 60_000, cleanupIntervalMs: 60_000, repositoryCount: 2,
-    }));
-    expect(visits.map((visit) => [visit.generatedCacheRepositoryIndex, visit.generatedCacheRootStartIndex % 2]))
-      .toEqual([[0, 0], [1, 0], [0, 1], [1, 1]]);
+    const visits = [0, 1, 2, 3].map((round) =>
+      planSchedulerPeriodicMaintenance({
+        nowMs: round * 5 * 60_000,
+        cleanupIntervalMs: 60_000,
+        repositoryCount: 2,
+      }),
+    );
+    expect(
+      visits.map((visit) => [visit.generatedCacheRepositoryIndex, visit.generatedCacheRootStartIndex % 2]),
+    ).toEqual([
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      [1, 1],
+    ]);
     // Thirty registered repositories must not turn five-minute retention
     // cadence into a 150-minute generated-cache collection cycle.
-    const thirty = [0, 1, 29, 30].map((minute) => planSchedulerPeriodicMaintenance({
-      nowMs: minute * 60_000, cleanupIntervalMs: 60_000, repositoryCount: 30,
-    }));
-    expect(thirty.map((visit) => [visit.generatedCacheRepositoryIndex, visit.generatedCacheRootStartIndex]))
-      .toEqual([[0, 0], [1, 0], [29, 0], [0, 1]]);
+    const thirty = [0, 1, 29, 30].map((minute) =>
+      planSchedulerPeriodicMaintenance({
+        nowMs: minute * 60_000,
+        cleanupIntervalMs: 60_000,
+        repositoryCount: 30,
+      }),
+    );
+    expect(thirty.map((visit) => [visit.generatedCacheRepositoryIndex, visit.generatedCacheRootStartIndex])).toEqual([
+      [0, 0],
+      [1, 0],
+      [29, 0],
+      [0, 1],
+    ]);
     expect(thirty.map((visit) => visit.runRetention)).toEqual([true, false, false, true]);
     // Advance entry rotation after a complete root/namespace cycle.
     const protectedCache = join(activeWorktreeRoot, '.forge', 'ios', 'DerivedData', 'aaa-protected');
@@ -838,9 +1047,15 @@ describe('generated repository cache retention', () => {
     xcodeCache(lateCache);
     age(protectedCache);
     age(lateCache);
-    const next = cleanupGeneratedRepositoryCheckoutCaches(repoSet, { controllerHome: home,
-      nowMs: Date.parse('2026-08-25T12:00:00.000Z'), graceMs: 60_000,
-      maxEntries: 1, maxRemovals: 1, rootStartIndex: 25, processCommands: [`xcodebuild -derivedDataPath ${protectedCache}`] });
+    const next = cleanupGeneratedRepositoryCheckoutCaches(repoSet, {
+      controllerHome: home,
+      nowMs: Date.parse('2026-08-25T12:00:00.000Z'),
+      graceMs: 60_000,
+      maxEntries: 1,
+      maxRemovals: 1,
+      rootStartIndex: 25,
+      processCommands: [`xcodebuild -derivedDataPath ${protectedCache}`],
+    });
     expect(next.rootsInspected).toBe(1);
     expect(existsSync(join(protectedCache, 'Build'))).toBe(true);
     expect(existsSync(join(lateCache, 'Build'))).toBe(false);
@@ -866,9 +1081,11 @@ describe('generated repository cache retention', () => {
     age(join(recent, 'Build'));
 
     const first = cleanupGeneratedRepositoryCaches(root, {
-      nowMs: Date.parse('2026-11-03T12:00:00Z'), graceMs: 60_000,
+      nowMs: Date.parse('2026-11-03T12:00:00Z'),
+      graceMs: 60_000,
       processCommands: [`xcodebuild -derivedDataPath ${recent}`],
-      maxEntries: 100, maxRemovals: 1,
+      maxEntries: 100,
+      maxRemovals: 1,
     });
     expect(first.removedPaths).toContain('.repo-harness/old-run/DerivedData/Build');
     expect(first.reclaimedBytes).toBeGreaterThanOrEqual(10);
@@ -878,9 +1095,11 @@ describe('generated repository cache retention', () => {
     expect(existsSync(join(unknown, 'review.txt'))).toBe(true);
 
     const second = cleanupGeneratedRepositoryCaches(root, {
-      nowMs: Date.parse('2026-11-03T12:00:00Z'), graceMs: 60_000,
+      nowMs: Date.parse('2026-11-03T12:00:00Z'),
+      graceMs: 60_000,
       processCommands: [`xcodebuild -derivedDataPath ${recent}`],
-      maxEntries: 100, maxRemovals: 1,
+      maxEntries: 100,
+      maxRemovals: 1,
     });
     expect(second.reclaimedBytes).toBe(0);
     expect(second.unknownReclaimedByteCount).toBe(0);
@@ -888,8 +1107,12 @@ describe('generated repository cache retention', () => {
     expect(existsSync(join(recent, 'Build'))).toBe(true);
 
     const aggregate = cleanupGeneratedRepositoryCheckoutCaches(repositoryRootSet(root, []), {
-      controllerHome: controllerHome(), nowMs: Date.parse('2026-11-03T12:00:00Z'), graceMs: 60_000,
-      processCommands: [`xcodebuild -derivedDataPath ${recent}`], maxEntries: 100 });
+      controllerHome: controllerHome(),
+      nowMs: Date.parse('2026-11-03T12:00:00Z'),
+      graceMs: 60_000,
+      processCommands: [`xcodebuild -derivedDataPath ${recent}`],
+      maxEntries: 100,
+    });
     expect(aggregate.reclaimedBytes).toBe(0);
     expect(aggregate.unknownReclaimedByteCount).toBe(0);
   });
@@ -913,7 +1136,6 @@ describe('generated repository cache retention', () => {
     expect(report.removedPaths).toEqual(['.forge/browser/uploads/stale.zip']);
     expect(report.budgetExhausted).toBe(true);
   });
-
 
   test('inspects only bounded iOS xcresult evidence without deleting bundles or asserting ownership', () => {
     const canonicalRoot = repository();
@@ -980,7 +1202,13 @@ describe('generated repository cache retention', () => {
     const path = join(root, relativePath);
     mkdirSync(path, { recursive: true });
     writeFileSync(join(path, 'Info.plist'), 'finished Xcode test evidence');
-    const args = { controllerHome, repoId, repoRoot: root, resultBundlePath: relativePath, producerRequestId: 'JOB-exact-1' };
+    const args = {
+      controllerHome,
+      repoId,
+      repoRoot: root,
+      resultBundlePath: relativePath,
+      producerRequestId: 'JOB-exact-1',
+    };
     const created = recordIosTestEvidenceOwner(args);
     expect(created.recorded).toBe(true);
     expect(created.resourceId).toBe(iosTestEvidenceResourceId(repoId, path));
@@ -989,9 +1217,13 @@ describe('generated repository cache retention', () => {
     expect(stored?.provenance.creator).toBe('forge:ios.xcode_test:JOB-exact-1');
     expect(stored?.retention.intent).toBe('persistent_until_explicit_release');
     expect(stored?.locator).toEqual({ kind: 'filesystem_path', value: realpathSync(path) });
-    const owned = inspectRepositoryIosTestEvidence({ canonicalRoot: root, checkouts: [] }, {
-      owner: { controllerHome, repoId }, maxEntries: 50,
-    });
+    const owned = inspectRepositoryIosTestEvidence(
+      { canonicalRoot: root, checkouts: [] },
+      {
+        owner: { controllerHome, repoId },
+        maxEntries: 50,
+      },
+    );
     expect(owned.verifiedOwnerCount).toBe(1);
     expect(owned.ownershipUnverified).toBe(0);
     expect(owned.verifiedOwnerBytesLowerBound).toBeGreaterThan(0);
@@ -1005,9 +1237,13 @@ describe('generated repository cache retention', () => {
     renameSync(path, join(root, 'old-result-elsewhere'));
     mkdirSync(path, { recursive: true });
     writeFileSync(join(path, 'Info.plist'), 'different evidence, same name');
-    const replaced = inspectRepositoryIosTestEvidence({ canonicalRoot: root, checkouts: [] }, {
-      owner: { controllerHome, repoId }, maxEntries: 50,
-    });
+    const replaced = inspectRepositoryIosTestEvidence(
+      { canonicalRoot: root, checkouts: [] },
+      {
+        owner: { controllerHome, repoId },
+        maxEntries: 50,
+      },
+    );
     expect(replaced.verifiedOwnerCount).toBe(0);
     expect(replaced.ownershipUnverified).toBe(1);
     expect(replaced.verifiedOwnerBytesLowerBound).toBe(0);
@@ -1044,16 +1280,19 @@ describe('generated repository cache retention', () => {
     });
 
     const rawCanonical = realpathSync(raw);
-    const cleaned = cleanupReleasableIosTestEvidence({ canonicalRoot: root, checkouts: [] }, {
-      owner: { controllerHome, repoId },
-      nowMs: Date.now() + 8 * 24 * 60 * 60_000,
-      graceMs: 1,
-      maxAgeMs: 1,
-      maxCount: 0,
-      maxBytes: 0,
-      maxEntries: 100,
-      maxRemovals: 8,
-    });
+    const cleaned = cleanupReleasableIosTestEvidence(
+      { canonicalRoot: root, checkouts: [] },
+      {
+        owner: { controllerHome, repoId },
+        nowMs: Date.now() + 8 * 24 * 60 * 60_000,
+        graceMs: 1,
+        maxAgeMs: 1,
+        maxCount: 0,
+        maxBytes: 0,
+        maxEntries: 100,
+        maxRemovals: 8,
+      },
+    );
     expect(cleaned.removedPaths).toEqual([rawCanonical]);
     expect(existsSync(raw)).toBe(false);
     expect(getOwnedResource(controllerHome, recorded.resourceId!)?.status).toBe('released');
@@ -1063,33 +1302,37 @@ describe('generated repository cache retention', () => {
     mkdirSync(nestedResult, { recursive: true });
     writeFileSync(join(nestedWorktree, '.git'), 'gitdir: /tmp/foreign-worktree');
     writeFileSync(join(nestedResult, 'Info.plist'), 'nested result');
-    expect(recordProcessXcodeTestEvidenceOwner({
-      controllerHome,
-      repoId,
-      repoRoot: root,
-      command: {
-        kind: 'argv',
-        executable: 'xcodebuild',
-        args: ['test', '-resultBundlePath', nestedResult],
-        cwd: root,
-      },
-      processId: 'proc-nested-worktree',
-    })).toEqual({ recorded: false, reason: 'missing_or_untrusted_result_path' });
+    expect(
+      recordProcessXcodeTestEvidenceOwner({
+        controllerHome,
+        repoId,
+        repoRoot: root,
+        command: {
+          kind: 'argv',
+          executable: 'xcodebuild',
+          args: ['test', '-resultBundlePath', nestedResult],
+          cwd: root,
+        },
+        processId: 'proc-nested-worktree',
+      }),
+    ).toEqual({ recorded: false, reason: 'missing_or_untrusted_result_path' });
 
     const dynamic = join(root, '.repo-harness', 'dynamic', 'dynamic.xcresult');
     mkdirSync(dynamic, { recursive: true });
     writeFileSync(join(dynamic, 'Info.plist'), 'dynamic result');
-    expect(recordProcessXcodeTestEvidenceOwner({
-      controllerHome,
-      repoId,
-      repoRoot: root,
-      command: {
-        kind: 'shell',
-        shellCommand: 'xcodebuild test -resultBundlePath "$RESULT_BUNDLE"',
-        cwd: root,
-      },
-      processId: 'proc-dynamic-xcode',
-    })).toEqual({ recorded: false, reason: 'unsupported_or_dynamic_xcode_result_path' });
+    expect(
+      recordProcessXcodeTestEvidenceOwner({
+        controllerHome,
+        repoId,
+        repoRoot: root,
+        command: {
+          kind: 'shell',
+          shellCommand: 'xcodebuild test -resultBundlePath "$RESULT_BUNDLE"',
+          cwd: root,
+        },
+        processId: 'proc-dynamic-xcode',
+      }),
+    ).toEqual({ recorded: false, reason: 'unsupported_or_dynamic_xcode_result_path' });
   });
 
   test('reclaims old exact-owner XCTest evidence by bounded policy while explicit retained resources stay protected', () => {
@@ -1106,29 +1349,41 @@ describe('generated repository cache retention', () => {
       age(path);
     }
     const cancelledOwner = recordIosTestEvidenceOwner({
-      controllerHome, repoId, repoRoot: root, resultBundlePath: cancelled,
+      controllerHome,
+      repoId,
+      repoRoot: root,
+      resultBundlePath: cancelled,
       producerRequestId: 'JOB-cancelled',
     });
     const activeOwner = recordIosTestEvidenceOwner({
-      controllerHome, repoId, repoRoot: root, resultBundlePath: active,
+      controllerHome,
+      repoId,
+      repoRoot: root,
+      resultBundlePath: active,
       producerRequestId: 'JOB-active',
     });
     const retainedOwner = recordIosTestEvidenceOwner({
-      controllerHome, repoId, repoRoot: root, resultBundlePath: retained,
+      controllerHome,
+      repoId,
+      repoRoot: root,
+      resultBundlePath: retained,
       producerRequestId: 'JOB-retained',
     });
     markOwnedResourceRetained(controllerHome, retainedOwner.resourceId!);
 
-    const report = cleanupReleasableIosTestEvidence({ canonicalRoot: root, checkouts: [] }, {
-      owner: { controllerHome, repoId },
-      nowMs: Date.parse('2026-11-04T12:00:00Z'),
-      graceMs: 1,
-      maxAgeMs: 1,
-      maxCount: 0,
-      maxBytes: 0,
-      maxEntries: 100,
-      maxRemovals: 8,
-    });
+    const report = cleanupReleasableIosTestEvidence(
+      { canonicalRoot: root, checkouts: [] },
+      {
+        owner: { controllerHome, repoId },
+        nowMs: Date.parse('2026-11-04T12:00:00Z'),
+        graceMs: 1,
+        maxAgeMs: 1,
+        maxCount: 0,
+        maxBytes: 0,
+        maxEntries: 100,
+        maxRemovals: 8,
+      },
+    );
     expect(report.policyVersion).toBe('ios-test-evidence-retention-v1');
     expect(new Set(report.removedPaths)).toEqual(new Set([cancelled, active]));
     expect(report.reclaimedBytes).toBeGreaterThan(0);
@@ -1156,9 +1411,13 @@ describe('generated repository cache retention', () => {
     const staleDownload = join(downloads, 'stale.zip');
     const staleDiagnostic = join(diagnostics, 'stale.json');
     for (const [path, body] of [
-      [staleShot, '1111'], [quotaShot, '2222'], [activeShot, '3333'],
-      [staleDownload, 'download'], [staleDiagnostic, 'diagnostic'],
-    ] as const) writeFileSync(path, body);
+      [staleShot, '1111'],
+      [quotaShot, '2222'],
+      [activeShot, '3333'],
+      [staleDownload, 'download'],
+      [staleDiagnostic, 'diagnostic'],
+    ] as const)
+      writeFileSync(path, body);
     age(staleShot);
     age(quotaShot);
     age(staleDownload);
