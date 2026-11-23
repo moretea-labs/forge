@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from 'fs';
+import { join, relative, resolve, sep } from 'path';
 import { spawnSync } from 'child_process';
 import { performance } from 'perf_hooks';
 import { repositoryControllerRoot } from '../../effects/controller-home';
@@ -349,6 +349,29 @@ function requireBundleId(value: unknown): string {
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'bundle_id must be an installed application bundle identifier, not a URL or deep link.', { retryable: false });
   }
   return bundleId;
+}
+
+function requireBoundedPhysicalAppBundle(input: AssistantPluginActionExecutionInput, value: unknown): string {
+  const rawPath = requireString(value, 'app_path');
+  const candidate = resolve(input.repoRoot, rawPath);
+  if (!candidate.endsWith('.app')) {
+    throw new AssistantPluginError('IOS_DEVICE_APP_PATH_INVALID', 'app_path must point to an .app bundle.', { retryable: false });
+  }
+  if (!existsSync(candidate) || !lstatSync(candidate).isDirectory()) {
+    throw new AssistantPluginError('IOS_DEVICE_APP_NOT_FOUND', 'The requested .app bundle does not exist.', { retryable: false });
+  }
+  const canonicalApp = realpathSync(candidate);
+  const iosRootCandidate = resolve(input.repoRoot, '.forge', 'ios');
+  const canonicalIosRoot = existsSync(iosRootCandidate) ? realpathSync(iosRootCandidate) : iosRootCandidate;
+  const rel = relative(canonicalIosRoot, canonicalApp);
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`)) {
+    throw new AssistantPluginError(
+      'IOS_DEVICE_APP_PATH_NOT_BOUNDED',
+      'app_path must be a built .app under the repository .forge/ios directory.',
+      { retryable: false },
+    );
+  }
+  return canonicalApp;
 }
 
 function commandFailure(result: CommandResult, code: string, fallback: string): never {
@@ -1149,7 +1172,7 @@ export async function resolveIosPhysicalDeviceAuthorizationContext(
   const action = iosPhysicalDeviceActions().find((entry) => entry.actionId === input.actionId);
   if (!action || action.confirmation !== 'authorization') return undefined;
 
-  if (input.actionId === 'physical_device_open') {
+  if (input.actionId === 'physical_device_open' || input.actionId === 'physical_device_install') {
     const selected = await selectDevice(input, input.args.device);
     return {
       target: physicalDeviceAuthorizationTarget(selected),
@@ -1221,6 +1244,13 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['ios.device'], resourceClaims: stateClaim,
       argumentsSchema: { type: 'object', properties: { device: { type: 'string' }, bundle_id: { type: 'string' } }, required: ['device', 'bundle_id'], additionalProperties: false },
+    },
+    {
+      actionId: 'physical_device_install', title: 'Install app on physical iPhone',
+      description: 'Install one repository-built .app under .forge/ios onto the exact paired iPhone through xcrun devicectl. No Xcode GUI or Simulator is started.',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 3 * 60_000, cancellable: true, idempotent: false,
+      scopes: ['ios.device'], resourceClaims: mutationClaims,
+      argumentsSchema: { type: 'object', properties: { device: { type: 'string' }, app_path: { type: 'string' } }, required: ['device', 'app_path'], additionalProperties: false },
     },
     {
       actionId: 'physical_device_open', title: 'Open physical iOS app session',
@@ -1399,6 +1429,34 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
     const selected = await selectDevice(input, input.args.device);
     const bundleId = requireBundleId(input.args.bundle_id);
     return { provider: 'coredevice', device: selected, apps: await installedApps(input, selected, bundleId) };
+  }
+  if (input.actionId === 'physical_device_install') {
+    const selectStartedAt = performance.now();
+    const selected = await selectDevice(input, input.args.device);
+    recordTiming(timingStages, 'deviceSelection', selectStartedAt, false);
+    if (!selected.connected) {
+      throw new AssistantPluginError(
+        'IOS_DEVICE_NOT_CONNECTED',
+        'The selected paired iPhone has no usable CoreDevice connection; app installation was not attempted.',
+        { retryable: true },
+      );
+    }
+    const appPath = requireBoundedPhysicalAppBundle(input, input.args.app_path);
+    const installStartedAt = performance.now();
+    const response = await runCoreJson(
+      input,
+      ['device', 'install', 'app', '--device', selected.identifier, appPath],
+      'IOS_DEVICE_INSTALL_FAILED',
+      3 * 60_000,
+    );
+    recordTiming(timingStages, 'appInstall', installStartedAt, false);
+    return finishTimedResult(actionStartedAt, timingStages, {
+      provider: 'coredevice',
+      device: selected,
+      installed: true,
+      appPath: relative(input.repoRoot, appPath),
+      result: objectValue(response.result),
+    });
   }
   if (input.actionId === 'physical_device_open') {
     const selectStartedAt = performance.now();

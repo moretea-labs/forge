@@ -561,6 +561,70 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect((result.devices as Array<{ identifier: string }>)[0]?.identifier).toBe('CORE-DEVICE-1');
   });
 
+  it('installs a repository-built app on an exact physical iPhone through CoreDevice', async () => {
+    const value = fixture();
+    spawnSync('git', ['init', '-b', 'main'], { cwd: value.repoRoot, stdio: 'ignore' });
+    const repository = registerRepository({ path: value.repoRoot, controllerHome: value.controllerHome });
+    value.repoId = repository.repoId;
+    const appPath = join(
+      value.repoRoot,
+      '.forge',
+      'ios',
+      'DerivedData',
+      'Build',
+      'Products',
+      'Debug-iphoneos',
+      'Example.app',
+    );
+    mkdirSync(appPath, { recursive: true });
+    const commands: string[][] = [];
+
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === 'devicectl' && args[1] === '--version') {
+          return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        }
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) {
+          return {
+            ok: true,
+            status: 0,
+            stdout: json({ devices: [deviceEntry()] }),
+            stderr: '',
+            command: [command, ...args],
+          };
+        }
+        if (joined.includes('device install app')) {
+          return {
+            ok: true,
+            status: 0,
+            stdout: json({ installedApplications: [{ bundleIdentifier: 'com.example.app' }] }),
+            stderr: '',
+            command: [command, ...args],
+          };
+        }
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    const authorization = await resolveIosPhysicalDeviceAuthorizationContext(
+      input(value, 'physical_device_install', { device: 'greyson', app_path: appPath }),
+    );
+    expect(authorization?.target).toMatchObject({ kind: 'ios-physical-device', id: 'CORE-DEVICE-1' });
+
+    const result = await executeIosPhysicalDeviceAction(
+      input(value, 'physical_device_install', { device: 'greyson', app_path: appPath }),
+    );
+    expect(result).toMatchObject({ provider: 'coredevice', installed: true });
+    expect(
+      commands.some((command) => command.join(' ').includes('devicectl device install app --device CORE-DEVICE-1')),
+    ).toBe(true);
+    const computerManifest = getAssistantPluginManifest(value.controllerHome, repository, 'computer');
+    expect(computerManifest.actions.some((action) => action.actionId === 'physical_device_install')).toBe(true);
+  });
+
   it('opens, types, and screenshots without probing or creating a semantic Runner session', async () => {
     const value = fixture();
     spawnSync('git', ['init', '-b', 'main'], { cwd: value.repoRoot, stdio: 'ignore' });
