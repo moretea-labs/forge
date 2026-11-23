@@ -33,10 +33,10 @@ Default visible columns: icon rail + list + main. Opening Changes/Files from the
 
 ## 2. Toolbar ownership
 
-- **Window toolbar (single top chrome):** sidebar toggle, quiet workspace scope + status, and Agent Changes / Files / More as plain icons (`agent.changes`, `agent.files`, `agent.tools.more`). System vibrancy only — no solid canvas paint, no second in-pane tool strip.
+- **No titlebar content band.** `.toolbarBackground(.hidden)` — traffic lights sit on the same surface as content. Do not host breadcrumb/status in a filled toolbar strip.
+- **Agent tools:** Changes / Files / More as plain window-toolbar icons only (`agent.changes`, `agent.files`, `agent.tools.more`); never a second in-content tool strip. Scope/status are quiet in-content text, not a toolbar layer.
 - **Right pane:** underline tab strip switches Changes | Files while open; maximize and close use the shared chrome icon size. Empty Files pane omits search chrome until there is something to filter. Browser remains deferred and disabled.
 - **List header (会话):** New Chat, Search, Inbox — New Chat uses `sidebar.thread.new`; icons share `ForgeClientDesign.Icon`.
-- **Window toolbar, other pages and 看板:** sidebar toggle, back, quiet project breadcrumb, page refresh.
 - **Composer:** provider/model/attachments/voice/send; chrome icons share the same 13/28 optical size; focus ring only while focused.
 
 ## 3. Plain-button rule (P0)

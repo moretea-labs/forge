@@ -45,6 +45,9 @@ struct ForgeWorkspaceView: View {
         NavigationSplitView(columnVisibility:$visibility) {
             unifiedSidebar
                 .navigationSplitViewColumnWidth(min:ForgeClientDesign.Shell.sidebarMin,ideal:ForgeClientDesign.Shell.sidebarIdeal,max:ForgeClientDesign.Shell.sidebarMax)
+                // Clear the split-column fill so ForgeSidebarMaterial can show through.
+                .background(Color.clear)
+                .scrollContentBackground(.hidden)
         } detail: {
             if model.zenMode {
                 ZenWorkspacePane(model:model,screen:$model.zenScreen,
@@ -133,29 +136,12 @@ struct ForgeWorkspaceView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .toolbar {
-            ToolbarItem(placement:.principal) {
-                // Agent owns the navigation title slot; other pages keep a quiet breadcrumb.
-                if model.zenMode || model.page != .agent {
-                HStack(spacing:6) {
-                    Text(model.semanticProject?.displayName ?? "Forge")
-                        .font(.system(size:12,weight:.medium))
-                        .lineLimit(1)
-                    if let repository = model.project {
-                        Text(repository.label)
-                            .font(.system(size:12))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                .frame(maxWidth:480)
-                .accessibilityIdentifier("forge.toolbar.context")
-                }
-            }
             ToolbarItemGroup(placement:.automatic) {
                 unifiedWindowToolbarActions
             }
         }
-        // Keep the system unified titlebar vibrancy — do not paint a solid canvas.
+        // Hide the toolbar fill so traffic lights sit on the same surface as content.
+        .toolbarBackground(.hidden, for:.windowToolbar)
         .task {
             if model.zenMode { model.show(.requirement) }
         }
@@ -373,7 +359,7 @@ struct ForgeWorkspaceView: View {
             listColumn
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
-        .background(.ultraThinMaterial)
+        .forgeSidebarMaterial()
     }
 
     private var projectsListColumn: some View {
@@ -1195,25 +1181,30 @@ struct ForgeWorkspaceView: View {
             projectPickerShown.toggle()
             if !projectPickerShown { projectSearch = "" }
         } label: {
-            HStack(spacing:6) {
-                Image(systemName:"folder").forgeChromeIcon()
+            HStack(spacing:5) {
+                Image(systemName:"folder")
+                    .font(ForgeClientDesign.Icon.font)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(ForgePalette.secondary)
                 Text(model.project?.label ?? "选择代码工作区")
                     .font(.system(size:12,weight:.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .layoutPriority(1)
                 if let branch = model.checkoutBranch, model.project != nil {
                     Text(branch)
                         .font(.system(size:11))
                         .foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
+                        .layoutPriority(0)
                 }
                 Spacer(minLength:4)
                 Image(systemName:"chevron.up.chevron.down")
                     .font(.system(size:9,weight:.semibold))
                     .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal,2)
-            .frame(height:ForgeClientDesign.Icon.hit)
+            .padding(.horizontal,4)
+            .frame(height:24)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -78,6 +78,35 @@ extension View {
   func forgeHoverFill(cornerRadius: CGFloat = 8) -> some View {
     modifier(ForgeHoverFill(cornerRadius: cornerRadius))
   }
+
+  /// Real behind-window vibrancy for the icon rail + list column.
+  func forgeSidebarMaterial() -> some View {
+    background {
+      ForgeVisualEffectView(material: .sidebar, blendingMode: .behindWindow)
+        .ignoresSafeArea()
+    }
+  }
+}
+
+/// AppKit vibrancy host — SwiftUI `.ultraThinMaterial` alone is painted over by
+/// NavigationSplitView's opaque column chrome on macOS.
+struct ForgeVisualEffectView: NSViewRepresentable {
+  var material: NSVisualEffectView.Material = .sidebar
+  var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
+
+  func makeNSView(context: Context) -> NSVisualEffectView {
+    let view = NSVisualEffectView()
+    view.material = material
+    view.blendingMode = blendingMode
+    view.state = .followsWindowActiveState
+    view.isEmphasized = true
+    return view
+  }
+
+  func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+    nsView.material = material
+    nsView.blendingMode = blendingMode
+  }
 }
 
 /// The only secondary-action style: plain accent text, hover tint, no bezel/card.

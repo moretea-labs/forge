@@ -110,11 +110,18 @@ struct AgentPane: View {
         GeometryReader { geometry in
             agentContent(availableWidth:geometry.size.width)
         }
-        // Window title owns workspace scope; conversation actions belong in Agent main.
+        // No titlebar content band: tools sit as plain icons with a hidden
+        // toolbar background so traffic lights + content share one surface.
         .toolbar {
-            ToolbarItem(placement:.navigation) { agentToolbarTitle }
+            ToolbarItemGroup(placement:.primaryAction) {
+                if !workSurfaceVisible {
+                    workspaceChangesControl
+                    workspaceFilesControl
+                    additionalAgentTools
+                }
+            }
         }
-        // Inherit system unified-titlebar vibrancy; do not force a solid fill.
+        .toolbarBackground(.hidden, for:.windowToolbar)
         .task(id: workSurfaceVisible && selectedWorkSurface == .changes
               ? model.checkoutId : nil) {
             // Right pane stays hidden until Changes/Files is opened.
@@ -139,15 +146,10 @@ struct AgentPane: View {
         return ForgePalette.secondary
     }
 
-    /// Quiet scope + status in the unified titlebar (no second header row).
-    private var agentToolbarTitle: some View {
+    /// Quiet in-content status — never hosted in a titlebar band.
+    private var agentWorkspaceStatusChip: some View {
         Button { Task { await model.refresh() } } label: {
-            HStack(spacing:6) {
-                Text(agentScopeLabel.isEmpty ? (model.thread?.title ?? "Forge") : agentScopeLabel)
-                    .font(.system(size:12,weight:.medium))
-                    .foregroundStyle(ForgePalette.ink)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            HStack(spacing:5) {
                 Circle().fill(agentWorkspaceStatusColor).frame(width:5,height:5)
                 Text(model.agentWorkspaceStatusLabel)
                     .font(.system(size:10.5))
@@ -157,7 +159,6 @@ struct AgentPane: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .frame(maxWidth:480,alignment:.leading)
         .help("\(agentScopeLabel.isEmpty ? model.agentWorkspaceStatusDetail : agentScopeLabel)\n\(model.agentWorkspaceStatusDetail)\n点击刷新")
         .accessibilityLabel("工作区")
         .accessibilityValue("\(agentScopeLabel.isEmpty ? (model.thread?.title ?? "Forge") : agentScopeLabel) · \(model.agentWorkspaceStatusLabel)")
@@ -303,19 +304,6 @@ struct AgentPane: View {
         .accessibilityIdentifier(AgentConversationToolbarContract.moreIdentifier)
     }
 
-    /// Agent-local tools remain discoverable when the optional right pane is hidden.
-    private var agentConversationToolbar: some View {
-        HStack(spacing:10) {
-            Spacer(minLength:0)
-            workspaceChangesControl
-            workspaceFilesControl
-            additionalAgentTools
-        }
-        .padding(.horizontal,20)
-        .frame(height:34)
-        .accessibilityIdentifier("agent.conversation.toolbar")
-    }
-
     private var composerInputHeight: CGFloat {
         let lines = model.draft.split(separator:"\n",omittingEmptySubsequences:false).count
         let wrapped = max(lines, (model.draft.count + 69) / 70)
@@ -332,10 +320,8 @@ struct AgentPane: View {
             HSplitView {
                 ZStack {
                     // Keep the composer and transcript mounted during review.
+                    // No titleband and no in-content tool strip.
                     VStack(spacing:0) {
-                        if !workSurfaceVisible {
-                            agentConversationToolbar
-                        }
                         ScrollViewReader { reader in
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:16) {
@@ -1084,6 +1070,11 @@ struct AgentPane: View {
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         }
         .background(ForgePalette.canvas)
+        .overlay(alignment:.topTrailing) {
+            agentWorkspaceStatusChip
+                .padding(.top,8)
+                .padding(.trailing,14)
+        }
         .safeAreaInset(edge:.trailing,spacing:0) {
             if availableWidth >= 900, !workSurfaceVisible,
                let inspector = semanticInspector {
