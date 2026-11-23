@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -258,17 +258,21 @@ describe('controller.plugins capability', () => {
 });
 
 describe('repository.direct_edit capability', () => {
-  test('routes apply through the existing Safe Patch/EditSession owner', async () => {
+  test('explicit sessionless=false preserves the legacy Safe Patch/EditSession owner', async () => {
     const fx = fixture();
     roots.push(fx.root);
 
-    const edited = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+    const edited = await callCoreCapabilityAdapter(
+      { ...fx.ctx, principalId: 'legacy-direct-edit-test-principal' },
+      'capability_execute',
+      {
       repo_id: fx.repository.repoId,
       capability_id: 'repository.direct_edit',
       action: 'apply',
       request_id: 'direct-edit-capability-apply',
       arguments: {
         purpose: 'Exercise the canonical direct-edit capability route.',
+        sessionless: false,
         operations: [
           {
             type: 'replace',
@@ -290,6 +294,40 @@ describe('repository.direct_edit capability', () => {
     expect(payload.reviewEvidence?.patchPreview).toContain('export const n = 2;');
     expect(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'), 'utf-8')).toBe('export const n = 2;\n');
   });
+});
+
+test('repository.direct_edit defaults to sessionless CAS without a durable EditSession (#713)', async () => {
+  const fx = fixture();
+  roots.push(fx.root);
+  const sessionRoot = join(fx.repoRoot, '.ai/harness/edit-sessions');
+  const sessionCount = () => existsSync(sessionRoot)
+    ? readdirSync(sessionRoot).filter((name) => name.startsWith('EDIT-')).length : 0;
+  const before = sessionCount();
+  const initial = readFileSync(join(fx.repoRoot, 'src/lib.ts'), 'utf8');
+  const edited = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+    repo_id: fx.repository.repoId,
+    capability_id: 'repository.direct_edit',
+    action: 'apply',
+    request_id: 'direct-edit-sessionless-atomic-cas',
+    arguments: {
+      operations: [{
+        type: 'replace',
+        path: 'src/lib.ts',
+        expected_sha256: createHash('sha256').update(initial).digest('hex'),
+        replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 4;' }],
+      }],
+    },
+  });
+  if (edited?.isError) throw new Error(JSON.stringify(edited.structuredContent ?? edited));
+  const payload = edited?.structuredContent as {
+    status?: string; sessionless?: boolean; session?: unknown;
+    reviewEvidence?: { source?: string; afterSha256?: string };
+  };
+  expect(payload).toMatchObject({ status: 'applied', sessionless: true });
+  expect(payload.session).toBeUndefined();
+  expect(payload.reviewEvidence?.source).toBe('atomic_patch');
+  expect(sessionCount()).toBe(before);
+  expect(readFileSync(join(fx.repoRoot, 'src/lib.ts'), 'utf8')).toBe('export const n = 4;\n');
 });
 
 describe('Gateway Thin Harness routing before ExecutionJob', () => {
@@ -1547,6 +1585,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
   test('safe patch starts opt-in validation and joins later without replaying the edit', async () => {
     const fx = fixture();
     roots.push(fx.root);
+    const editContext = { ...fx.ctx, principalId: 'validation-session-test-owner' };
     writeFileSync(
       join(fx.repoRoot, '.forge', 'checks.json'),
       JSON.stringify(
@@ -1569,7 +1608,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const before = readFileSync(sourcePath, 'utf8');
     const validationRequestId = 'safe-patch-validation-smoke';
 
-    const started = await routeDurableMcpCall(fx.ctx, 'repository_safe_patch_apply', {
+    const started = await routeDurableMcpCall(editContext, 'repository_safe_patch_apply', {
       repo_id: fx.repository.repoId,
       checkout_id: fx.repository.activeCheckoutId,
       purpose: 'safe patch with opt-in validation',
@@ -1587,7 +1626,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       validation_request_id: validationRequestId,
       interactive_wait_ms: 0,
     });
-    expect(started?.isError).not.toBe(true);
+    if (started?.isError) throw new Error(JSON.stringify(started.structuredContent ?? started));
     const startedPayload = started?.structuredContent as Record<string, unknown>;
     expect(startedPayload.status).toBe('applied');
     expect(startedPayload.validationStarted).toBe(true);
@@ -1642,7 +1681,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     // validation_only intentionally omits checkout_id here. The gateway must
     // recover the durable edit-session checkout instead of inheriting the
     // unrelated active checkout from the repository registry.
-    const joined = await routeDurableMcpCall(fx.ctx, 'repository_safe_patch_apply', {
+    const joined = await routeDurableMcpCall(editContext, 'repository_safe_patch_apply', {
       repo_id: fx.repository.repoId,
       session_id: sessionId,
       validation_only: true,

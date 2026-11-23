@@ -4,6 +4,7 @@ import {
   existsSync,
   fsyncSync,
   mkdirSync,
+  lstatSync,
   openSync,
   readFileSync,
   renameSync,
@@ -200,6 +201,56 @@ function withTargetLock<T>(targetPath: string, fn: () => T): T {
       fsyncDirectory(dirname(targetPath));
     }
   }
+}
+
+/**
+ * Sessionless single-file source mutation. The expected hash is checked
+ * INSIDE the existing target lock before any bytes change. Unlike the legacy
+ * EditSession writer, this creates no persistent backup or editing history:
+ * a crash before rename leaves the old file, after rename leaves the new one.
+ * Multi-file transactions still use the journaled legacy path until migrated.
+ */
+export function atomicCompareAndSwapText(
+  repoRoot: string,
+  path: string,
+  expectedSha256: string,
+  after: string,
+): { beforeSha256: string; afterSha256: string } {
+  const target = resolveInsideRepo(repoRoot, path);
+  if (!target.ok || !target.path) throw new Error(target.error ?? 'invalid path');
+  const targetPath = target.path;
+  if (!existsSync(targetPath)) throw new Error(`TARGET_MISSING: ${path}`);
+  return withTargetLock(targetPath, () => {
+    // A symlink target is not eligible for sessionless replacement: callers
+    // must not have a rename swap the symlink itself behind an alias.
+    const before = readFileSync(targetPath, 'utf-8');
+    const currentHash = createHash('sha256').update(before).digest('hex');
+    if (currentHash !== expectedSha256) {
+      throw new Error(`STALE_FILE_SHA: ${path}: expected ${expectedSha256}, got ${currentHash}`);
+    }
+    if (before === after) throw new Error(`NO_CHANGE: ${path}`);
+    const mode = statModeForCas(targetPath);
+    const temporary = resolve(dirname(targetPath), `.${basename(targetPath)}.${process.pid}.${Date.now()}.cas.tmp`);
+    try {
+      writeFileDurably(temporary, after, mode);
+      renameSync(temporary, targetPath);
+      fsyncDirectory(dirname(targetPath));
+    } finally {
+      rmSync(temporary, { force: true });
+    }
+    return {
+      beforeSha256: currentHash,
+      afterSha256: createHash('sha256').update(after).digest('hex'),
+    };
+  });
+}
+
+function statModeForCas(targetPath: string): number {
+  // Defer fs stat lookup until after the target lock is acquired; source mode
+  // is part of the same immutable write attempt as the expected content.
+  const stat = lstatSync(targetPath);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`CAS_TARGET_NOT_REGULAR_FILE: ${targetPath}`);
+  return stat.mode & 0o777;
 }
 
 export interface AtomicWriteResult {

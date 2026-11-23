@@ -87,8 +87,30 @@ export async function callCoreCapabilityAdapter(
       if (!toolName) {
         return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported repository.direct_edit action: ${action || '<empty>'}` } }, true);
       }
+      // #713: ordinary single-file text edits no longer need long-lived
+      // EditSession state. Explicit sessionless=false, validation, multi-file
+      // batches and resumed sessions retain the existing journaled path.
+      const operations = Array.isArray(input.operations) ? input.operations : [];
+      const singleTextEdit =
+        action === 'apply' &&
+        operations.length === 1 &&
+        typeof operations[0] === 'object' &&
+        operations[0] !== null &&
+        ['replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after'].includes(
+          String((operations[0] as Record<string, unknown>).type ?? ''),
+        );
+      const useSessionless =
+        input.sessionless === true ||
+        (input.sessionless !== false &&
+          singleTextEdit &&
+          !input.session_id &&
+          input.expected_revision === undefined &&
+          input.validation_only !== true &&
+          !input.check_ids &&
+          input.continue_on_error !== true);
       const forwarded = await callRepositoryTool(ctx.controllerHome, toolName, {
         ...input,
+        ...(useSessionless ? { sessionless: true } : {}),
         ...(typeof args.repo_id === 'string' && args.repo_id.trim() ? { repo_id: args.repo_id.trim() } : {}),
         ...(typeof args.checkout_id === 'string' && args.checkout_id.trim() ? { checkout_id: args.checkout_id.trim() } : {}),
       }, {

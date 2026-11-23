@@ -13,6 +13,8 @@ import {
 } from '../editing/edit-session';
 import { normalizeEditOperation, type EditOperation } from '../editing/edit-operation-contract';
 import { getToolPolicy } from '../control-plane/tool-policy';
+import { atomicCompareAndSwapText } from '../../effects/fs-transaction';
+import { globMatches, resolveMcpPath } from '../safe-tooling/path-policy';
 import type { RepositoryRecord } from '../../core/repository/types';
 import { ensureRepositoryRuntimeStorageBinding } from './runtime-storage';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
@@ -308,6 +310,104 @@ function patchErrorFailures(error: unknown, chunkIndex: number): SafePatchPrefli
     message: failure.message,
     currentSha256: failure.currentSha256,
   }));
+}
+
+/**
+ * One-file Safe Patch migration path. Reuses the legacy operation contract and
+ * preflight but never opens an EditSession or writes its backups/worklog.
+ * Multi-file and resumable session edits still use the legacy journaled owner.
+ */
+export function applySessionlessSafePatch(repository: RepositoryRecord, input: {
+  operations: unknown;
+  allowedPaths?: unknown;
+  refreshFingerprints?: unknown;
+}): {
+  status: 'applied' | 'failed';
+  sessionless: true;
+  createdSession: false;
+  changedFiles: string[];
+  appliedChunks: Array<{ index: number; operationCount: number; paths: string[] }>;
+  failures: SafePatchPreflightFailure[];
+  receipt?: { path: string; beforeSha256: string; afterSha256: string };
+  plan: SafePatchPlan;
+} {
+  const operations = normalizedSafePatchOperations(input.operations);
+  if (operations.length !== 1 || !['replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after'].includes(operations[0]!.type)) {
+    throw new Error('SESSIONLESS_SAFE_PATCH_SINGLE_TEXT_OPERATION_REQUIRED');
+  }
+  const original = operations[0]!;
+  const policy = getToolPolicy('controller', { repoRoot: repository.canonicalRoot });
+  const resolved = resolveMcpPath(repository.canonicalRoot, original.path, policy, 'write');
+  if (!resolved.ok || !resolved.relativePath || !resolved.absolutePath)
+    throw new Error(`SAFE_PATCH_PATH_DENIED: ${resolved.reason ?? original.path}`);
+  const allowed = Array.isArray(input.allowedPaths)
+    ? input.allowedPaths.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+  if (allowed.length && !allowed.some((pattern) => globMatches(pattern, resolved.relativePath!)))
+    throw new Error(`SAFE_PATCH_PATH_OUTSIDE_SCOPE: ${resolved.relativePath}`);
+
+  const plan = buildSafePatchPlan(repository, { operations, chunkSize: 1 });
+  const checked = preflightChunk(repository, operations, 1, input.refreshFingerprints === true);
+  const failureResult = (failures: SafePatchPreflightFailure[]) => ({
+    status: 'failed' as const,
+    sessionless: true as const,
+    createdSession: false as const,
+    changedFiles: [],
+    appliedChunks: [],
+    failures,
+    plan,
+  });
+  if (checked.failures.length) return failureResult(checked.failures);
+  const operation = checked.operations[0]!;
+  if (operation.type === 'create' || operation.type === 'delete')
+    throw new Error('SESSIONLESS_SAFE_PATCH_SINGLE_TEXT_OPERATION_REQUIRED');
+  const current = currentFile(repository, operation.path);
+  if (!current.exists || !current.sha256) {
+    return failureResult([{
+      chunkIndex: 1, operationIndex: 1, type: operation.type,
+      path: resolved.relativePath, code: 'TARGET_MISSING', message: 'target is no longer present',
+    }]);
+  }
+  if (operation.expectedSha256 !== current.sha256) {
+    return failureResult([{
+      chunkIndex: 1, operationIndex: 1, type: operation.type,
+      path: resolved.relativePath, code: 'STALE_FILE_SHA',
+      message: `stale file version for ${resolved.relativePath}`,
+      currentSha256: current.sha256,
+      expectedSha256: operation.expectedSha256,
+      context: snippetAround(current.content, operation.type === 'replace' ? operation.replacements[0]?.oldText ?? '' : ''),
+    }]);
+  }
+  const content = operation.type === 'write'
+    ? operation.content
+    : applyTextPreview(operation as Exclude<EditOperation, { type: 'create' | 'write' | 'delete' }>, current.content);
+  try {
+    const receipt = atomicCompareAndSwapText(repository.canonicalRoot, resolved.relativePath, current.sha256, content);
+    return {
+      status: 'applied',
+      sessionless: true,
+      createdSession: false,
+      changedFiles: [resolved.relativePath],
+      appliedChunks: [{ index: 1, operationCount: 1, paths: [resolved.relativePath] }],
+      failures: [],
+      receipt: { path: resolved.relativePath, ...receipt },
+      plan,
+    };
+  } catch (error) {
+    const latest = currentFile(repository, resolved.relativePath);
+    const message = error instanceof Error ? error.message : String(error);
+    const code = message.startsWith('STALE_FILE_SHA:') ? 'STALE_FILE_SHA' : 'APPLY_FAILED';
+    const needle = operation.type === 'replace'
+      ? operation.replacements[0]?.oldText ?? ''
+      : 'anchor' in operation ? operation.anchor : '';
+    return failureResult([{
+      chunkIndex: 1, operationIndex: 1, type: operation.type,
+      path: resolved.relativePath, code, message,
+      currentSha256: latest.sha256,
+      expectedSha256: current.sha256,
+      context: snippetAround(latest.content, needle),
+    }]);
+  }
 }
 
 export function applySafePatch(repository: RepositoryRecord, input: {

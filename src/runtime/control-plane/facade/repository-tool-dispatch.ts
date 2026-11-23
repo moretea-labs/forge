@@ -30,7 +30,7 @@ import {
 } from '../../repositories/registry';
 import { repositoryGitRemoveWorktree } from '../../repositories/structured-worktree-cleanup';
 import { buildControllerWorkbench } from '../../repositories/workbench';
-import { applySafePatch, buildSafePatchPlan } from '../../repositories/safe-patch';
+import { applySafePatch, applySessionlessSafePatch, buildSafePatchPlan } from '../../repositories/safe-patch';
 import {
   assertEditSessionDurableBinding,
   getEditSession,
@@ -814,8 +814,56 @@ export async function callRepositoryTool(
       }
       case 'repository_safe_patch_apply': {
         const repository = resolveRepositorySelectionWithoutWorkAuthority(controllerHome, args, repoIdValue, caller);
-        const binding = safePatchEditBinding(repository, args, caller);
         const patchPaths = extractPatchPaths(args.operations);
+        if (args.sessionless === true) {
+          if (args.session_id || args.validation_only === true || args.check_ids || args.expected_revision !== undefined || args.continue_on_error === true) {
+            throw new Error('SESSIONLESS_SAFE_PATCH_LEGACY_SESSION_OR_VALIDATION_NOT_SUPPORTED');
+          }
+          const atomicClaims = patchPaths.length > 0
+            ? claimPathWrites(patchPaths, repository.activeCheckoutId, repository.repoId)
+            : [];
+          const atomic = withRepositoryMutationExclusion(
+            controllerHome, repository.repoId, 'mcp:repository_safe_patch_atomic',
+            () => applySessionlessSafePatch(repository, {
+              operations: args.operations,
+              allowedPaths: args.allowed_paths,
+              refreshFingerprints: args.refresh_fingerprints,
+            }), 60_000, atomicClaims,
+          );
+          const firstFailure = atomic.failures[0];
+          const digest = buildSyncOperationDigest({
+            ok: atomic.status === 'applied',
+            operation: 'repository_safe_patch_apply',
+            summary: atomic.status === 'applied'
+              ? `原子补丁已应用：${atomic.changedFiles.join(', ')}（无持久 EditSession）。`
+              : `原子补丁未应用：${firstFailure?.message ?? '请刷新源码后重试'}`,
+            changedFiles: atomic.changedFiles,
+            errorClass: atomic.status === 'applied' ? undefined : classifyUserFacingError({
+              code: firstFailure?.code,
+              message: firstFailure?.message,
+            }),
+            errorMessage: firstFailure?.message,
+          });
+          const payload = {
+            repoId: repository.repoId,
+            checkoutId: repository.activeCheckoutId,
+            ...atomic,
+            terminal: true,
+            phase: digest.phase,
+            statusLabel: digest.statusLabel,
+            summary: digest.summary,
+            digest,
+            reviewEvidence: atomic.receipt ? {
+              source: 'atomic_patch',
+              ...atomic.receipt,
+              semanticReviewAuthority: 'chatgpt',
+              next: 'Use repository_git_diff for the exact reviewable diff; no EditSession was created.',
+            } : undefined,
+            suggestedNextActions: digest.suggestedNextActions,
+          };
+          return atomic.status === 'applied' ? result(payload) : { ...result(payload), isError: true };
+        }
+        const binding = safePatchEditBinding(repository, args, caller);
         const mutationClaims =
           args.validation_only === true
             ? []

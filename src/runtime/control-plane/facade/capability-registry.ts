@@ -16,7 +16,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'local_repo_write',
     exposedVia: 'capability_execute',
     schemaExposure: 'stable_static',
-    summary: 'Plan and apply bounded repository edits through the existing Safe Patch/EditSession authority, with optional targeted validation and no second editing engine.',
+    summary: 'Plan and apply bounded repository edits through Safe Patch. Ordinary single-file text edits use sessionless atomic CAS by default; multi-file, validation and explicitly resumed sessions retain the legacy journal.',
   },
   {
     capabilityId: 'controller.handoff_inbox',
@@ -456,6 +456,7 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
               continue_on_error: { type: 'boolean' },
               refresh_fingerprints: { type: 'boolean' },
               recover_stale_session: { type: 'boolean' },
+              sessionless: { type: 'boolean' },
               check_ids: { type: 'array', maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 256 } },
               check_timeout_ms: { type: 'number', minimum: 1 },
               lease_wait_ms: { type: 'number', minimum: 0 },
