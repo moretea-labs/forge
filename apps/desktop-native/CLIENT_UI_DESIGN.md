@@ -11,7 +11,8 @@ Scope: native macOS Client window architecture, layout, navigation, typography, 
 - **Browser deferred.** Never show Browser as an active enabled control until a separate authorized pane exists.
 - **Cursor density.** Prefer quieter chrome: denser thread rows, icon-first conversation tools, flatter composer, list-header New Chat (`sidebar.thread.new`), and right-pane tab strip instead of a dropdown title.
 - **No duplicate chrome.** When the right pane is open, Changes/Files live only in its tab strip; the conversation column does not repeat those openers. Window title shows workspace scope + honest status color (orange when checkout unavailable), not a second copy of the selected thread title.
-- **Flat Cursor surfaces.** Conversation column and right tool pane share the same canvas. Prefer typography/selection fills over hairlines, card wells, pill tabs, and drop shadows. Right-pane tabs use underline selection; composer shows an edge only while focused.
+- **Material sidebar + flat content.** Sidebar uses `.ultraThinMaterial` (transparent vibrancy). Keep system unified-titlebar vibrancy — never paint a solid white toolbar. Conversation/right panes stay content-first without card wells. Prefer typography/selection fills over hairlines and drop shadows. Right-pane tabs use underline selection; composer shows an edge only while focused.
+- **Icon optical contract.** Chrome glyphs use `ForgeClientDesign.Icon`: 13pt / 28pt hit for toolbar·sidebar·composer, 15pt rail glyphs + 9pt labels; hierarchical rendering, medium weight.
 
 ## 1. Overall layout
 
@@ -32,12 +33,11 @@ Default visible columns: icon rail + list + main. Opening Changes/Files from the
 
 ## 2. Toolbar ownership
 
-- **Window toolbar (single top chrome, Cursor-style):** sidebar toggle, quiet workspace scope + status, and Agent Changes / Files / More as plain icon actions. Stable identifiers remain `agent.changes`, `agent.files`, and `agent.tools.more`. Toolbar background matches the content canvas — no second in-pane tool strip under the titlebar.
-- **No middle conversation toolbar.** Content starts flush below the window toolbar.
-- **Right pane:** underline tab strip switches Changes | Files while open; maximize and close stay as plain icon buttons. Empty Files pane omits search chrome until there is something to filter. Browser remains deferred and disabled.
-- **List header (会话):** New Chat, Search, Inbox — New Chat uses `sidebar.thread.new`.
+- **Window toolbar (single top chrome):** sidebar toggle, quiet workspace scope + status, and Agent Changes / Files / More as plain icons (`agent.changes`, `agent.files`, `agent.tools.more`). System vibrancy only — no solid canvas paint, no second in-pane tool strip.
+- **Right pane:** underline tab strip switches Changes | Files while open; maximize and close use the shared chrome icon size. Empty Files pane omits search chrome until there is something to filter. Browser remains deferred and disabled.
+- **List header (会话):** New Chat, Search, Inbox — New Chat uses `sidebar.thread.new`; icons share `ForgeClientDesign.Icon`.
 - **Window toolbar, other pages and 看板:** sidebar toggle, back, quiet project breadcrumb, page refresh.
-- **Composer:** provider/model/attachments/voice/send; focus ring only while focused; remains mounted while the right pane replaces its presentation at compact widths.
+- **Composer:** provider/model/attachments/voice/send; chrome icons share the same 13/28 optical size; focus ring only while focused.
 
 ## 3. Plain-button rule (P0)
 
@@ -67,8 +67,8 @@ NO decorative card/capsule/softFill wrapping every toolbar, rail, tab, commit fo
 
 1. Cold start shows Agent with right pane closed.
 2. Icon rail switches 会话 / 项目 / 看板 without losing draft or return context.
-3. The unified window toolbar exposes Changes / Files / More with the stable AX identifiers above; list header exposes New Chat (`sidebar.thread.new`). There is no second tool strip inside the conversation column.
-4. The right pane opens from the window toolbar, shows a Changes|Files tab strip, stays selected through wide → compact → wide transitions, and can close or maximize without losing chat state.
+3. The middle conversation toolbar exposes Changes / Files / More with the stable AX identifiers above; list header exposes New Chat (`sidebar.thread.new`).
+4. The right pane opens from the middle toolbar, shows a Changes|Files tab strip, stays selected through wide → compact → wide transitions, and can close or maximize without losing chat state.
 5. `swift test` / `swift build`; GUI/AX at 860 / 1100 / 1260 / 1440 / 1800+ when authorized.
 
 Do not replace the installed App or activate Runtime without separate authorization.

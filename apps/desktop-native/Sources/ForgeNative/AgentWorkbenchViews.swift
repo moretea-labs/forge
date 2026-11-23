@@ -17,7 +17,7 @@ enum AgentWorkSurface: String, CaseIterable, Identifiable, Equatable {
     var symbol: String { self == .changes ? "doc.text.magnifyingglass" : "paperclip" }
 }
 
-/// Stable AX ids for Agent tools hosted in the unified window toolbar.
+/// Stable AX ids for Agent actions hosted in the conversation toolbar.
 enum AgentConversationToolbarContract {
     static let changesIdentifier = "agent.changes"
     static let filesIdentifier = "agent.files"
@@ -110,18 +110,11 @@ struct AgentPane: View {
         GeometryReader { geometry in
             agentContent(availableWidth:geometry.size.width)
         }
-        // Cursor-style: one unified window toolbar owns scope + Changes/Files/More.
-        // Content starts immediately below — no second in-pane tool strip.
+        // Window title owns workspace scope; conversation actions belong in Agent main.
         .toolbar {
             ToolbarItem(placement:.navigation) { agentToolbarTitle }
-            ToolbarItemGroup(placement:.primaryAction) {
-                workspaceChangesControl
-                workspaceFilesControl
-                additionalAgentTools
-            }
         }
-        .toolbarBackground(ForgePalette.canvas, for:.windowToolbar)
-        .toolbarBackground(.visible, for:.windowToolbar)
+        // Inherit system unified-titlebar vibrancy; do not force a solid fill.
         .task(id: workSurfaceVisible && selectedWorkSurface == .changes
               ? model.checkoutId : nil) {
             // Right pane stays hidden until Changes/Files is opened.
@@ -219,11 +212,7 @@ struct AgentPane: View {
                 Divider()
                 Button("浏览器（尚未接入）") {}.disabled(true)
             } label: {
-                Image(systemName:"ellipsis")
-                    .font(.system(size:11,weight:.medium))
-                    .foregroundStyle(ForgePalette.secondary)
-                    .frame(width:24,height:26)
-                    .contentShape(Rectangle())
+                Image(systemName:"ellipsis").forgeChromeIcon()
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
@@ -253,18 +242,15 @@ struct AgentPane: View {
                 openWorkSurface(.changes)
             }
         } label: {
-            HStack(spacing:4) {
-                Image(systemName:"doc.text.magnifyingglass")
-                    .font(.system(size:12,weight:.medium))
+            HStack(spacing:3) {
+                Image(systemName:"doc.text.magnifyingglass").forgeChromeIcon(active:active)
                 if workspaceReviewFileCount > 0 {
                     Text("\(workspaceReviewFileCount)")
                         .font(.system(size:10,weight:.medium))
                         .monospacedDigit()
+                        .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
                 }
             }
-            .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
-            .frame(minWidth:24,minHeight:24)
-            .padding(.horizontal,workspaceReviewFileCount > 0 ? 4 : 0)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -284,11 +270,7 @@ struct AgentPane: View {
                 openWorkSurface(.files)
             }
         } label: {
-            Image(systemName:"paperclip")
-                .font(.system(size:12,weight:.medium))
-                .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
-                .frame(width:24,height:24)
-                .contentShape(Rectangle())
+            Image(systemName:"paperclip").forgeChromeIcon(active:active)
         }
         .buttonStyle(.plain)
         .help("查看会话文件与图片")
@@ -312,17 +294,26 @@ struct AgentPane: View {
             Button("浏览器（尚未接入）") {}
                 .disabled(true)
         } label: {
-            Image(systemName:"ellipsis")
-                .font(.system(size:12,weight:.medium))
-                .foregroundStyle(ForgePalette.secondary)
-                .frame(width:26,height:26)
-                .contentShape(Rectangle())
+            Image(systemName:"ellipsis").forgeChromeIcon()
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .help("更多会话工具；浏览器尚未接入")
         .accessibilityIdentifier(AgentConversationToolbarContract.moreIdentifier)
+    }
+
+    /// Agent-local tools remain discoverable when the optional right pane is hidden.
+    private var agentConversationToolbar: some View {
+        HStack(spacing:10) {
+            Spacer(minLength:0)
+            workspaceChangesControl
+            workspaceFilesControl
+            additionalAgentTools
+        }
+        .padding(.horizontal,20)
+        .frame(height:34)
+        .accessibilityIdentifier("agent.conversation.toolbar")
     }
 
     private var composerInputHeight: CGFloat {
@@ -341,8 +332,10 @@ struct AgentPane: View {
             HSplitView {
                 ZStack {
                     // Keep the composer and transcript mounted during review.
-                    // Tools live in the window toolbar — content starts flush below.
                     VStack(spacing:0) {
+                        if !workSurfaceVisible {
+                            agentConversationToolbar
+                        }
                         ScrollViewReader { reader in
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:16) {
@@ -889,10 +882,7 @@ struct AgentPane: View {
                         }
                         .disabled(!model.selectedProviderSupportsImages)
                     } label: {
-                        Image(systemName:"paperclip")
-                            .font(.system(size:10,weight:.medium))
-                            .foregroundStyle(ForgePalette.secondary)
-                            .frame(width:27,height:27)
+                        Image(systemName:"paperclip").forgeChromeIcon()
                     }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden)
                     .fixedSize()
@@ -969,11 +959,7 @@ struct AgentPane: View {
                             voiceBaseDraft = model.draft
                             Task { await voiceDictation.start() }
                         } label: {
-                            Image(systemName:"mic")
-                                .font(.system(size:14,weight:.medium))
-                                .foregroundStyle(ForgePalette.secondary)
-                                .frame(width:30,height:30)
-                                .contentShape(Rectangle())
+                            Image(systemName:"mic").forgeChromeIcon()
                         }
                         .buttonStyle(.plain)
                         .disabled(model.busy || model.zenRefinementActive)
@@ -984,11 +970,7 @@ struct AgentPane: View {
 
                     if model.busy || model.zenRefinementActive {
                         Button { Task { await model.cancel() } } label: {
-                            Image(systemName:"stop.fill")
-                                .font(ForgeClientDesign.Shell.control.weight(.semibold))
-                                .foregroundStyle(ForgePalette.secondary)
-                                .frame(width:30,height:30)
-                                .contentShape(Rectangle())
+                            Image(systemName:"stop.fill").forgeChromeIcon()
                         }
                         .buttonStyle(.plain)
                         .keyboardShortcut(.escape,modifiers:[])
@@ -1008,9 +990,9 @@ struct AgentPane: View {
                             Task { await model.send() }
                         } label: {
                             Image(systemName:"arrow.up")
-                                .font(.system(size:11,weight:.bold))
+                                .font(.system(size:ForgeClientDesign.Icon.point,weight:.bold))
                                 .foregroundStyle(.white)
-                                .frame(width:30,height:30)
+                                .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
                                 .background(ForgePalette.accent,in:Circle())
                                 .opacity(sendDisabled ? 0.34 : 1)
                         }
@@ -1271,10 +1253,7 @@ struct AgentPane: View {
                     Image(systemName:workSurfaceMaximized
                           ? "arrow.down.right.and.arrow.up.left"
                           : "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size:11,weight:.medium))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .frame(width:24,height:24)
-                        .contentShape(Rectangle())
+                        .forgeChromeIcon()
                 }
                 .buttonStyle(.plain)
                 .help(workSurfaceMaximized ? "退出扩展视图" : "扩展右侧分栏")
@@ -1282,19 +1261,15 @@ struct AgentPane: View {
                 Button {
                     closeWorkSurface()
                 } label: {
-                    Image(systemName:"xmark")
-                        .font(.system(size:10,weight:.semibold))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .frame(width:24,height:24)
-                        .contentShape(Rectangle())
+                    Image(systemName:"xmark").forgeChromeIcon()
                 }
                 .buttonStyle(.plain)
                 .help("关闭右侧分栏")
                 .accessibilityLabel("关闭右侧分栏")
                 .accessibilityIdentifier("agent.work-surface.close")
             }
-            .padding(.horizontal,12)
-            .frame(height:30)
+            .padding(.horizontal,10)
+            .frame(height:ForgeClientDesign.Icon.hit)
 
             ZStack {
                 AgentChangesPane(model:model)
@@ -1710,19 +1685,20 @@ struct AgentPane: View {
     private func quickControlLabel(_ title:String,systemImage:String) -> some View {
         HStack(spacing:4) {
             Image(systemName:systemImage)
-                .font(.system(size:9,weight:.medium))
+                .font(ForgeClientDesign.Icon.font)
+                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(ForgePalette.secondary)
             Text(title)
-                .font(.system(size:10.5,weight:.medium))
+                .font(.system(size:11,weight:.medium))
                 .foregroundStyle(ForgePalette.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Image(systemName:"chevron.down")
-                .font(.system(size:6,weight:.bold))
+                .font(.system(size:7,weight:.bold))
                 .foregroundStyle(.tertiary)
         }
         .padding(.horizontal,4)
-        .frame(height:24)
+        .frame(height:ForgeClientDesign.Icon.hit)
         .contentShape(Rectangle())
     }
 

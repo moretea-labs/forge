@@ -18,12 +18,47 @@ enum ForgePalette {
   static let userBubble = Color.primary.opacity(0.05)
   static let raisedSurface = Color(nsColor: .controlBackgroundColor)
   static let softFill = Color.primary.opacity(0.045)
-  static let composer = Color(nsColor: .controlBackgroundColor).opacity(0.95)
+  static let composer = Color(nsColor: .controlBackgroundColor).opacity(0.72)
   /// Near-invisible edge reserved for focus rings only — not column separators.
   static let hairline = Color.primary.opacity(0.08)
   static let primaryHairlineFocused = Color.primary.opacity(0.18)
-  /// Side tools share the same canvas as the conversation (Cursor). Prefer no tint.
-  static let sidePanel = canvas
+  /// Soft tonal lift when a material backdrop is unavailable.
+  static let sidePanel = Color.primary.opacity(0.02)
+}
+
+extension ForgeClientDesign {
+  /// One optical size for chrome icons (rail / window toolbar / sidebar / composer).
+  enum Icon {
+    static let point: CGFloat = 13
+    static let railPoint: CGFloat = 15
+    static let railLabel: CGFloat = 9
+    static let hit: CGFloat = 28
+    static let weight: Font.Weight = .medium
+    static var font: Font { .system(size: point, weight: weight) }
+    static var railFont: Font { .system(size: railPoint, weight: weight) }
+    static var railLabelFont: Font { .system(size: railLabel, weight: .regular) }
+  }
+}
+
+extension Image {
+  /// Toolbar / sidebar / composer glyph with shared optical size.
+  func forgeChromeIcon(active: Bool = false) -> some View {
+    self
+      .font(ForgeClientDesign.Icon.font)
+      .symbolRenderingMode(.hierarchical)
+      .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
+      .frame(width: ForgeClientDesign.Icon.hit, height: ForgeClientDesign.Icon.hit)
+      .contentShape(Rectangle())
+  }
+
+  func forgeRailIcon(active: Bool) -> some View {
+    self
+      .font(.system(size: ForgeClientDesign.Icon.railPoint,
+                    weight: active ? .semibold : ForgeClientDesign.Icon.weight))
+      .symbolRenderingMode(.hierarchical)
+      .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
+      .frame(height: 18)
+  }
 }
 
 /// Quiet hover feedback for plain list/starter buttons (not toolbar/rail chrome).

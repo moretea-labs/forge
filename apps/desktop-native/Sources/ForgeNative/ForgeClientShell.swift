@@ -155,8 +155,7 @@ struct ForgeWorkspaceView: View {
                 unifiedWindowToolbarActions
             }
         }
-        .toolbarBackground(ForgePalette.canvas, for:.windowToolbar)
-        .toolbarBackground(.visible, for:.windowToolbar)
+        // Keep the system unified titlebar vibrancy — do not paint a solid canvas.
         .task {
             if model.zenMode { model.show(.requirement) }
         }
@@ -240,12 +239,12 @@ struct ForgeWorkspaceView: View {
         return Button {
             openSidebarDestination(destination)
         } label: {
-            VStack(spacing:2) {
+            VStack(spacing:3) {
                 Image(systemName:destination.symbol)
-                    .font(.system(size:14,weight:selected ? .semibold : .regular))
-                    .frame(height:16)
+                    .forgeRailIcon(active:selected)
                 Text(destination.title)
-                    .font(.system(size:9,weight:selected ? .semibold : .regular))
+                    .font(.system(size:ForgeClientDesign.Icon.railLabel,
+                                  weight:selected ? .semibold : .regular))
                     .lineLimit(1)
             }
             .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
@@ -374,7 +373,7 @@ struct ForgeWorkspaceView: View {
             listColumn
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
-        .background(ForgePalette.sidePanel)
+        .background(.ultraThinMaterial)
     }
 
     private var projectsListColumn: some View {
@@ -479,11 +478,7 @@ struct ForgeWorkspaceView: View {
                     model.show(.agent)
                     model.newThread()
                 } label: {
-                    Image(systemName:"square.and.pencil")
-                        .font(.system(size:11.5,weight:.medium))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .frame(width:24,height:24)
-                        .contentShape(Rectangle())
+                    Image(systemName:"square.and.pencil").forgeChromeIcon()
                 }
                 .buttonStyle(.plain)
                 .disabled(model.busy || model.zenRefinementActive)
@@ -492,11 +487,7 @@ struct ForgeWorkspaceView: View {
                 .accessibilityIdentifier("sidebar.thread.new")
 
                 Button { model.toggleConversationSearch() } label: {
-                    Image(systemName:model.showSearch ? "xmark" : "magnifyingglass")
-                        .font(.system(size:11.5,weight:.medium))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .frame(width:24,height:24)
-                        .contentShape(Rectangle())
+                    Image(systemName:model.showSearch ? "xmark" : "magnifyingglass").forgeChromeIcon()
                 }
                 .buttonStyle(.plain)
                 .help(model.showSearch ? "关闭会话搜索 (Esc)" : "搜索全部会话 (⌘K)")
@@ -508,10 +499,7 @@ struct ForgeWorkspaceView: View {
                     if inboxShown { Task { await model.loadUserRequests() } }
                 } label: {
                     ZStack(alignment:.topTrailing) {
-                        Image(systemName:"tray")
-                            .font(.system(size:11.5,weight:.medium))
-                            .foregroundStyle(ForgePalette.secondary)
-                            .frame(width:24,height:24)
+                        Image(systemName:"tray").forgeChromeIcon()
                         if !model.relevantUserRequests.isEmpty {
                             let visibleCount = model.relevantUserRequests.count
                             let exactCount = model.userRequestsTotalCount
@@ -536,7 +524,7 @@ struct ForgeWorkspaceView: View {
                 }
             }
             .padding(.leading,10).padding(.trailing,6)
-            .frame(height:26)
+            .frame(height:ForgeClientDesign.Icon.hit)
             .padding(.top,2).padding(.bottom,2)
 
             if model.showSearch {
@@ -1207,27 +1195,25 @@ struct ForgeWorkspaceView: View {
             projectPickerShown.toggle()
             if !projectPickerShown { projectSearch = "" }
         } label: {
-            HStack(spacing:5) {
-                Image(systemName:"folder")
-                    .font(.system(size:11,weight:.medium))
-                    .foregroundStyle(ForgePalette.secondary)
+            HStack(spacing:6) {
+                Image(systemName:"folder").forgeChromeIcon()
                 Text(model.project?.label ?? "选择代码工作区")
-                    .font(.system(size:11.5,weight:.medium))
+                    .font(.system(size:12,weight:.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if let branch = model.checkoutBranch, model.project != nil {
                     Text(branch)
-                        .font(.system(size:10.5))
+                        .font(.system(size:11))
                         .foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength:4)
                 Image(systemName:"chevron.up.chevron.down")
-                    .font(.system(size:8,weight:.semibold))
+                    .font(.system(size:9,weight:.semibold))
                     .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal,4)
-            .frame(height:26)
+            .padding(.horizontal,2)
+            .frame(height:ForgeClientDesign.Icon.hit)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
