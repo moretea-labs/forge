@@ -136,7 +136,7 @@
     // proves that the turn terminated. Unmapped turns, arbitrary message text,
     // and mere absence of Stop cannot authorize recovery.
     const interrupted = providerFailureText().split('\n').some((text) =>
-      /^(?:连接已中断，正在等待完整答复|Connection interrupted, waiting for the full response|分析已暂停|Analysis paused)[。.!]?$/.test(text.trim()));
+      /^(?:连接已中断，正在等待完整答复|Connection interrupted, waiting for the full response|分析已暂停|Analysis paused|消息传输超时[。.!]?\s*请重试[。.!]?(?:\s*重试)?)[。.!]?$/.test(text.trim()));
     return lastRole === 'user' && interrupted
       ? { ready: true, capability: 'recover-no-stop-prewrite-v1' }
       : { ready: false, reason: 'provider_recovery_turn_unknown' };
@@ -176,7 +176,7 @@
         return text.length <= 250 && (
           /(?:你已达到此对话的长度上限|此对话已达到长度上限|you(?:'ve| have) reached the (?:maximum length for this conversation|conversation length limit)|this conversation has reached its maximum length)/i.test(text)
           || /^(?:无法加载此 ChatGPT 对话|Unable to load this ChatGPT conversation|Unable to load this conversation)$/i.test(text)
-          || /^(?:连接已中断，正在等待完整答复|Connection interrupted, waiting for the full response|分析已暂停|Analysis paused)[。.!]?$/.test(text)
+          || /^(?:连接已中断，正在等待完整答复|Connection interrupted, waiting for the full response|分析已暂停|Analysis paused|消息传输超时[。.!]?\s*请重试[。.!]?(?:\s*重试)?)[。.!]?$/.test(text)
         );
       })
       .filter(visible);
