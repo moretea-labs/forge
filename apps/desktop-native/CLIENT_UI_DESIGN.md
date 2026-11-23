@@ -11,7 +11,7 @@ Scope: native macOS Client window architecture, layout, navigation, typography, 
 - **Browser deferred.** Never show Browser as an active enabled control until a separate authorized pane exists.
 - **Cursor density.** Prefer quieter chrome: denser thread rows, icon-first conversation tools, flatter composer, list-header New Chat (`sidebar.thread.new`), and a persistent right activity rail instead of a titlebar tool strip.
 - **No duplicate chrome.** Titlebar shows only Changes. Files / planning / knowledge live on the right rail; the conversation column does not repeat those openers. Window title shows workspace scope + honest status color (orange when checkout unavailable), not a second copy of the selected thread title.
-- **App-owned Dark Glass.** Forge owns a Dark appearance independent of the macOS global theme: SwiftUI uses a dark root color scheme and the NSWindow uses `darkAqua`, while remaining non-opaque with a shared behind-window material. Rail/list columns use only a slightly stronger tonal wash. Never paint a solid toolbar or opaque main canvas. Conversation/right panes stay content-first without card wells; search/input/composer remain translucent and the composer shows an edge only while focused.
+- **App-owned Floating Dark Glass.** Forge owns a Dark appearance independent of the macOS global theme: SwiftUI uses a dark root color scheme and the NSWindow uses `darkAqua`, while remaining non-opaque with shared behind-window material. The outer shell is a custom divider-free `HStack`, not `NavigationSplitView`: left navigation glass and main glass are separate rounded panels with an 8pt air gap, never a black/system splitter. The left panel uses only a slightly stronger tonal wash; the right activity rail floats directly in main glass with no slab. Search/input/composer/work-surface controls are nested translucent glass with near-invisible rims; the composer shows a stronger edge only while focused.
 - **Icon optical contract.** Chrome glyphs use `ForgeClientDesign.Icon`: 13pt / 28pt hit for toolbar·sidebar·composer, 15pt rail glyphs + 9pt labels; hierarchical rendering, medium weight.
 
 ## 1. Overall layout
@@ -29,7 +29,7 @@ macOS unified toolbar: traffic lights + Changes (Agent)
 +------+--------------+----------------------------------+--------+
 ~~~
 
-Default visible columns: left icon rail + list + main + right activity rail. The entire shell shares one dark translucent backdrop independent of the macOS system appearance; rail/list depth comes from tonal material rather than separators, borders, or opaque slabs. Titlebar exposes only Changes; 附件 / 规划 / 知识 stay on the right rail. Clicking Changes or a rail tool expands the work-surface column between chat and the rail. It supports resize, close, and maximize without destroying chat state. The side-by-side threshold is 840pt (420pt conversation + 360pt work surface + 60pt native split/spacing allowance) inside the split area beside the rail; width changes switch presentation without clearing the selected surface.
+Default visible columns: left icon rail + list + main + right activity rail. The icon rail + list live in one 288pt floating glass panel (52 + 236); the main workspace is a second floating glass panel separated by an 8pt transparent gap. No outer native split divider is allowed. The entire shell shares one dark translucent backdrop independent of macOS system appearance; hierarchy comes from material/tone/spacing rather than separators, borders, or opaque slabs. The right activity rail has no independent background slab. Titlebar exposes only Changes; 附件 / 规划 / 知识 stay on the right rail. Clicking Changes or a rail tool expands the work-surface column between chat and the rail. It supports resize, close, and maximize without destroying chat state. The side-by-side threshold is 840pt (420pt conversation + 360pt work surface + 60pt native split/spacing allowance) inside the work area; width changes switch presentation without clearing the selected surface.
 
 ## 2. Toolbar ownership
 
@@ -41,7 +41,7 @@ Default visible columns: left icon rail + list + main + right activity rail. The
 
 ## 3. Plain-button rule (P0)
 
-NO decorative card/capsule/softFill wrapping every toolbar, rail, tab, commit form, notice, or diff shell. Globally, `.bordered` bezel buttons, pill selectors, column hairlines and boxed form fields are forbidden; secondary actions use `.forgeText`, forms use label-left rows. `.borderedProminent` is reserved for one primary action per surface. Icon-rail and list selection may use a quiet selection fill. Composer may show a focus ring only while focused; diff lines tint in place without a surrounding card.
+NO decorative card/capsule/softFill wrapping every toolbar, rail, tab, commit form, notice, or diff shell. Globally, `.bordered` bezel buttons, pill selectors, native column dividers, column hairlines and boxed form fields are forbidden; secondary actions use `.forgeText`, forms use label-left rows. `.borderedProminent` is reserved for one primary action per surface. Icon-rail and list selection may use a quiet translucent selection wash. Composer/search/work-surface may use nested glass, but their resting rim must be nearly invisible; Composer may strengthen its focus ring only while focused. Diff lines tint in place without a surrounding card.
 
 ## 4. Navigation invariants
 
@@ -69,6 +69,6 @@ NO decorative card/capsule/softFill wrapping every toolbar, rail, tab, commit fo
 2. Icon rail switches 会话 / 项目 / 看板 without losing draft or return context.
 3. The window toolbar exposes only Changes (`agent.changes`) by default; list header exposes New Chat (`sidebar.thread.new`).
 4. Opening Changes (or a right-rail tool) expands the pane with a 附件/规划/知识 activity rail, stays selected through wide → compact → wide transitions, and can close or maximize without losing chat state.
-5. `swift test` / `swift build`; GUI/AX at 860 / 1100 / 1260 / 1440 / 1800+ when authorized. The app remains Dark Glass under either macOS Light or Dark system appearance; system appearance is never changed.
+5. `swift test` / `swift build`; GUI/AX at 860 / 1100 / 1260 / 1440 / 1800+ when authorized. The app remains Dark Glass under either macOS Light or Dark system appearance; system appearance is never changed. At 860 and 1260 the outer left/main glass panels must remain divider-free and readable; a high-contrast/purple backdrop must visibly sample through the shell rather than reveal an opaque gray canvas.
 
 Do not replace the installed App or activate Runtime without separate authorization.

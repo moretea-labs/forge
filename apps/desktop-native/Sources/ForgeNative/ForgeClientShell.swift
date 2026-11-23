@@ -5,7 +5,6 @@ import UniformTypeIdentifiers
 struct ForgeWorkspaceView: View {
     @ObservedObject var model: NativeWorkspace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var visibility: NavigationSplitViewVisibility = .automatic
     @State private var renameThreadId: String?
     @State private var renameThreadTitle = ""
     @State private var hoveredThreadId: String?
@@ -41,13 +40,14 @@ struct ForgeWorkspaceView: View {
     @SceneStorage("forge.shell.v5.rail") private var primaryRailRaw = "agent"
 
     var body: some View {
-        NavigationSplitView(columnVisibility:$visibility) {
+        HStack(spacing:8) {
             unifiedSidebar
-                .navigationSplitViewColumnWidth(min:ForgeClientDesign.Shell.sidebarMin,ideal:ForgeClientDesign.Shell.sidebarIdeal,max:ForgeClientDesign.Shell.sidebarMax)
-                // Clear the split-column fill so ForgeSidebarMaterial can show through.
+                .frame(width:ForgeClientDesign.Shell.sidebarIdeal)
+                .padding(.leading,8)
+                .padding(.bottom,8)
                 .background(Color.clear)
-                .scrollContentBackground(.hidden)
-        } detail: {
+
+            Group {
             if model.zenMode {
                 ZenWorkspacePane(model:model,screen:$model.zenScreen,
                                  focusedRequirementId:$model.zenFocusedRequirementId,
@@ -132,8 +132,11 @@ struct ForgeWorkspaceView: View {
             } else {
                 main
             }
+            }
+            .padding(.trailing,8)
+            .padding(.bottom,8)
+            .forgePanelGlass(cornerRadius:20)
         }
-        .navigationSplitViewStyle(.balanced)
         .forgeWindowMaterial()
         .toolbar {
             ToolbarItemGroup(placement:.automatic) {
@@ -235,10 +238,10 @@ struct ForgeWorkspaceView: View {
             }
             .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
             .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
-            .background(selected ? ForgePalette.selection : .clear,
-                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
-            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
-            .forgeHoverFill(cornerRadius:8)
+            .background(selected ? ForgePalette.selectionStrong : .clear,
+                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
+            .contentShape(RoundedRectangle(cornerRadius:11,style:.continuous))
+            .forgeHoverFill(cornerRadius:11)
         }
         .buttonStyle(.plain)
         .help(destination.title)
@@ -296,7 +299,7 @@ struct ForgeWorkspaceView: View {
             Spacer(minLength:0)
             sidebarDestinationButton(.settings)
         }
-        .padding(.vertical,8)
+        .padding(.vertical,10)
         .frame(width:ForgeClientDesign.Shell.iconRailWidth)
         .frame(maxHeight:.infinity)
         .background(ForgePalette.railTint)
@@ -361,7 +364,7 @@ struct ForgeWorkspaceView: View {
             listColumn
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
-        .forgeSidebarMaterial()
+        .forgePanelGlass(cornerRadius:20, material:.sidebar)
     }
 
     private var projectsListColumn: some View {
@@ -893,9 +896,9 @@ struct ForgeWorkspaceView: View {
         }
         .padding(.leading,8).padding(.trailing,4)
         .frame(height:ForgeClientDesign.Shell.threadRowHeight)
-        .background(selected ? ForgePalette.selection : (hovered ? ForgePalette.softFill : .clear),
-                    in:RoundedRectangle(cornerRadius:6,style:.continuous))
-        .contentShape(RoundedRectangle(cornerRadius:6,style:.continuous))
+        .background(selected ? ForgePalette.selectionStrong : (hovered ? ForgePalette.softFill : .clear),
+                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
+        .contentShape(RoundedRectangle(cornerRadius:10,style:.continuous))
         .onHover { inside in
             if inside {
                 hoveredThreadId = thread.id

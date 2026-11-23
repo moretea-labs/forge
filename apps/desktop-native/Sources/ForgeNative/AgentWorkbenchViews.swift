@@ -221,7 +221,7 @@ struct AgentPane: View {
         .padding(.vertical,8)
         .frame(width:ForgeClientDesign.Shell.iconRailWidth)
         .frame(maxHeight:.infinity)
-        .background(ForgePalette.railTint)
+        .background(Color.clear)
         .accessibilityElement(children:.contain)
         .accessibilityIdentifier("agent.right-rail")
     }
@@ -248,10 +248,10 @@ struct AgentPane: View {
             }
             .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
             .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
-            .background(selected ? ForgePalette.selection : .clear,
-                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
-            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
-            .forgeHoverFill(cornerRadius:8)
+            .background(selected ? ForgePalette.selectionStrong : .clear,
+                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
+            .contentShape(RoundedRectangle(cornerRadius:11,style:.continuous))
+            .forgeHoverFill(cornerRadius:11)
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -311,7 +311,7 @@ struct AgentPane: View {
             isVisible:workSurfaceVisible,
             isMaximized:workSurfaceMaximized
         )
-        return HStack(spacing:0) {
+        return HStack(spacing:8) {
             HSplitView {
                 ZStack {
                     // Keep the composer and transcript mounted during review.
@@ -1022,12 +1022,13 @@ struct AgentPane: View {
                 }
             }
             .background(ForgePalette.composer,
-                        in:RoundedRectangle(cornerRadius:12,style:.continuous))
+                        in:RoundedRectangle(cornerRadius:18,style:.continuous))
+            .forgeFloatingGlass(cornerRadius:18)
             .overlay {
-                RoundedRectangle(cornerRadius:12,style:.continuous)
-                    .strokeBorder(isComposerDropTarget ? ForgePalette.accent.opacity(0.5)
+                RoundedRectangle(cornerRadius:18,style:.continuous)
+                    .strokeBorder(isComposerDropTarget ? ForgePalette.accent.opacity(0.42)
                                   : composerFocused ? ForgePalette.primaryHairlineFocused : Color.clear,
-                                  lineWidth:isComposerDropTarget || composerFocused ? 1 : 0)
+                                  lineWidth:isComposerDropTarget || composerFocused ? 0.75 : 0)
             }
             .animation(reduceMotion ? nil : .easeOut(duration:0.12),value:composerFocused)
             .dropDestination(for:URL.self) { urls, _ in
@@ -1054,12 +1055,16 @@ struct AgentPane: View {
             }
             .frame(minWidth:AgentWorkSurfaceLayout.conversationMinimumWidth)
             .frame(maxWidth:.infinity,maxHeight:.infinity)
+            .padding(.trailing,6)
+            .forgeSplitSeamMask()
 
             if workSurfacePresentation == .sideBySide {
                 workSurfaceContent()
                     .frame(minWidth:AgentWorkSurfaceLayout.workSurfaceMinimumWidth,
                            idealWidth:max(390,splitWidth * 0.43),
                            maxWidth:max(480,splitWidth * 0.60))
+                    .forgeFloatingGlass(cornerRadius:18)
+                    .padding(.leading,6)
             }
             }
             .frame(maxWidth:.infinity,maxHeight:.infinity)
@@ -1072,8 +1077,10 @@ struct AgentPane: View {
             }
 
             rightToolRail
-                .forgeSidebarMaterial()
+                .padding(.vertical,8)
+                .padding(.trailing,2)
         }
+        .padding(8)
         .background(ForgePalette.canvas)
         .animation(reduceMotion ? nil : .easeOut(duration:0.20),value:workSurfaceVisible)
         .onChange(of:workSurfaceVisible) { visible in

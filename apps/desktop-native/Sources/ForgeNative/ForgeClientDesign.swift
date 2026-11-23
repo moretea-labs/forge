@@ -6,7 +6,7 @@ import SwiftUI
 enum ForgePalette {
   // The window itself is glass. Content gets only a light adaptive wash so
   // text stays readable without turning the main workspace back into an opaque panel.
-  static let canvas = Color(nsColor: .windowBackgroundColor).opacity(0.24)
+  static let canvas = Color.clear
   static let ink = Color.primary
   static let secondary = Color(nsColor: .secondaryLabelColor)
   static let accent = Color(
@@ -15,22 +15,25 @@ enum ForgePalette {
         ? NSColor.controlAccentColor
         : NSColor.labelColor
     })
-  static let selection = Color.primary.opacity(0.052)
-  static let selectionStrong = Color.primary.opacity(0.085)
-  static let userBubble = Color.primary.opacity(0.045)
-  static let raisedSurface = Color(nsColor: .controlBackgroundColor).opacity(0.46)
-  static let softFill = Color.primary.opacity(0.032)
-  static let inputFill = Color(nsColor: .controlBackgroundColor).opacity(0.32)
-  static let composer = Color(nsColor: .controlBackgroundColor).opacity(0.42)
-  /// Near-invisible edge reserved for focus rings only — not column separators.
-  static let hairline = Color.primary.opacity(0.07)
-  static let primaryHairlineFocused = Color.primary.opacity(0.16)
-  /// Adaptive tonal layers over the shared behind-window material. They replace
-  /// separators/card wells and keep the rail/list readable in both appearances.
-  static let windowTint = Color(nsColor: .windowBackgroundColor).opacity(0.12)
-  static let railTint = Color.primary.opacity(0.018)
-  static let listTint = Color(nsColor: .controlBackgroundColor).opacity(0.055)
-  static let sidePanel = Color(nsColor: .controlBackgroundColor).opacity(0.12)
+  // Selection and hover are light floating washes, not opaque rows.
+  static let selection = Color.white.opacity(0.065)
+  static let selectionStrong = Color.white.opacity(0.095)
+  static let userBubble = Color.white.opacity(0.035)
+  static let raisedSurface = Color.white.opacity(0.045)
+  static let softFill = Color.white.opacity(0.03)
+  static let inputFill = Color.white.opacity(0.03)
+  static let composer = Color.white.opacity(0.018)
+  /// Near-invisible edge reserved for focus rings and floating glass rims.
+  static let hairline = Color.white.opacity(0.04)
+  static let primaryHairlineFocused = Color.white.opacity(0.10)
+  /// The wallpaper/material should do most of the visual work. These tints are
+  /// deliberately much weaker than the first Dark Glass pass.
+  static let windowTint = Color.black.opacity(0.035)
+  static let railTint = Color.black.opacity(0.055)
+  static let listTint = Color.black.opacity(0.025)
+  static let sidePanel = Color.black.opacity(0.035)
+  static let floatingTint = Color.white.opacity(0.018)
+  static let floatingStroke = Color.white.opacity(0.012)
 }
 
 extension ForgeClientDesign {
@@ -106,6 +109,49 @@ extension View {
           .ignoresSafeArea()
         ForgePalette.sidePanel.ignoresSafeArea()
       }
+    }
+  }
+
+  /// Rounded outer glass panel used by the left navigation and main workspace.
+  /// This is the primary visual separation in the shell; no hard split lines.
+  func forgePanelGlass(cornerRadius: CGFloat = 18,
+                       material: NSVisualEffectView.Material = .underWindowBackground) -> some View {
+    background {
+      ZStack {
+        ForgeVisualEffectView(material: material, blendingMode: .behindWindow)
+        ForgePalette.windowTint
+      }
+      .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
+    .overlay {
+      RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        .strokeBorder(ForgePalette.floatingStroke, lineWidth: 0.5)
+    }
+  }
+
+  /// Nested floating glass for composer/search/work-surface controls.
+  func forgeFloatingGlass(cornerRadius: CGFloat = 14) -> some View {
+    background {
+      ZStack {
+        ForgeVisualEffectView(material: .popover, blendingMode: .withinWindow)
+        ForgePalette.floatingTint
+      }
+      .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
+    .overlay {
+      RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        .strokeBorder(ForgePalette.floatingStroke, lineWidth: 0.5)
+    }
+  }
+
+  /// Covers the system split divider with the same behind-window glass so column
+  /// separation reads as air/gap instead of a black IDE-style rule.
+  func forgeSplitSeamMask(material: NSVisualEffectView.Material = .underWindowBackground) -> some View {
+    overlay(alignment: .trailing) {
+      ForgeVisualEffectView(material: material, blendingMode: .behindWindow)
+        .frame(width: 6)
+        .offset(x: 3)
+        .allowsHitTesting(false)
     }
   }
 }
