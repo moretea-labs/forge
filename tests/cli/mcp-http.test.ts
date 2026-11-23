@@ -4,7 +4,7 @@ import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/proce
 import { mcpToolDefinitionToSdk } from '../../packages/protocols/mcp/tool-contract';
 import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
 import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
-import { createCanonicalRuntimeProxy, createMcpToolContext, deriveCanonicalForwardingTiming } from '../../adapters/mcp/server';
+import { createCanonicalRuntimeProxy, createMcpToolContext, deriveCanonicalForwardingTiming, projectGatewayProxyResponseMeta } from '../../adapters/mcp/server';
 import { Server } from '@modelcontextprotocol/server';
 import { startRuntimeMcpTransport } from '../../src/runtime/root/mcp-transport';
 import express from 'express';
@@ -3063,6 +3063,33 @@ test(`durable Process survives real Gateway process replacement (lost receipt=${
 }, 20_000);
 }
 
+
+test('Gateway response timing keeps canonical trace and actual handler time distinct from proxy waits', () => {
+  const canonicalTraceId = '30a0144f-1c29-4b01-8a4a-c34a36b197a5';
+  const projected = projectGatewayProxyResponseMeta(
+    { serverStartedAt: '2026-11-23T14:07:34.001Z', serverDurationMs: 21.25, traceId: 'do-not-copy' },
+    {
+      gatewayProxyLaneWaitMs: 187,
+      gatewayProxyConnectMs: 56.5,
+      gatewayProxyCallMs: 30,
+      gatewayProxyConnectionState: 'cold_connect',
+      gatewayProxyCanonicalTraceId: canonicalTraceId,
+    },
+  );
+  expect(projected).toEqual({
+    gatewayProxyTimingMs: {
+      gatewayProxyLaneWaitMs: 187,
+      gatewayProxyConnectMs: 56.5,
+      gatewayProxyCallMs: 30,
+    },
+    gatewayProxyConnectionState: 'cold_connect',
+    canonicalTraceId,
+    canonicalServerStartedAt: '2026-11-23T14:07:34.001Z',
+    canonicalServerDurationMs: 21.25,
+  });
+  expect(projectGatewayProxyResponseMeta({}, {})).toEqual({});
+  expect(projectGatewayProxyResponseMeta({ serverDurationMs: Number.NaN }, { gatewayProxyLaneWaitMs: -1 })).toEqual({});
+});
 
 test('proxy audit correlation retains Canonical trace identity without requiring timing fields', () => {
   const traceId = '30a0144f-1c29-4b01-8a4a-c34a36b197a5';

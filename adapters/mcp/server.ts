@@ -99,11 +99,53 @@ function timingIdentity(value: CallToolResult | undefined): {
   };
 }
 
+const GATEWAY_RESPONSE_TIMING_FIELDS = [
+  'gatewayProxyResolveMs',
+  'gatewayProxyLaneWaitMs',
+  'gatewayProxyHandoffWaitMs',
+  'gatewayProxyConnectMs',
+  'gatewayProxyCallMs',
+  'gatewayProxyCanonicalDispatchLagMs',
+  'gatewayProxyCanonicalDurationMs',
+  'gatewayProxyReturnMs',
+] as const;
+
+/** Expose existing safe Gateway timing evidence without overwriting the Canonical Runtime span. */
+export function projectGatewayProxyResponseMeta(
+  forwardedMeta: Record<string, unknown>,
+  phaseTimings: Partial<McpTimingTrace>,
+): Record<string, unknown> {
+  const timings: Record<string, number> = {};
+  for (const key of GATEWAY_RESPONSE_TIMING_FIELDS) {
+    const value = phaseTimings[key];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) timings[key] = value;
+  }
+  if (Object.keys(timings).length === 0 && !phaseTimings.gatewayProxyCanonicalTraceId) return {};
+  const duration = forwardedMeta.serverDurationMs;
+  const startedAt = forwardedMeta.serverStartedAt;
+  return {
+    ...(Object.keys(timings).length > 0 ? { gatewayProxyTimingMs: timings } : {}),
+    ...(phaseTimings.gatewayProxyConnectionState
+      ? { gatewayProxyConnectionState: phaseTimings.gatewayProxyConnectionState }
+      : {}),
+    ...(phaseTimings.gatewayProxyCanonicalTraceId
+      ? { canonicalTraceId: phaseTimings.gatewayProxyCanonicalTraceId }
+      : {}),
+    ...(typeof startedAt === 'string' && Number.isFinite(Date.parse(startedAt))
+      ? { canonicalServerStartedAt: startedAt }
+      : {}),
+    ...(typeof duration === 'number' && Number.isFinite(duration) && duration >= 0
+      ? { canonicalServerDurationMs: duration }
+      : {}),
+  };
+}
+
 function tracedResult(
   value: CallToolResult | undefined,
   traceId: string,
   requestId: string,
   serverTiming?: { startedAt: string; durationMs: number },
+  forwarding?: { layer: NonNullable<McpTimingTrace['layer']>; phases: Partial<McpTimingTrace> },
 ): CallToolResult | undefined {
   if (
     !value ||
@@ -113,12 +155,19 @@ function tracedResult(
   )
     return value;
   const originalStructuredContent = value.structuredContent as Record<string, unknown>;
+  const forwardedMeta = originalStructuredContent.responseMeta &&
+    typeof originalStructuredContent.responseMeta === 'object' &&
+    !Array.isArray(originalStructuredContent.responseMeta)
+      ? (originalStructuredContent.responseMeta as Record<string, unknown>)
+      : {};
   const structuredContent = {
     ...originalStructuredContent,
     responseMeta: {
-      ...(originalStructuredContent.responseMeta && typeof originalStructuredContent.responseMeta === 'object'
-        ? (originalStructuredContent.responseMeta as Record<string, unknown>)
+      ...forwardedMeta,
+      ...(forwarding?.layer === 'public_gateway'
+        ? projectGatewayProxyResponseMeta(forwardedMeta, forwarding.phases)
         : {}),
+      ...(forwarding ? { handlerLayer: forwarding.layer } : {}),
       traceId,
       requestId,
       ...(serverTiming ? { serverStartedAt: serverTiming.startedAt, serverDurationMs: serverTiming.durationMs } : {}),
@@ -198,10 +247,16 @@ async function traceControllerMcpRequest(
       }
     }
     const serverDurationMs = Math.round((performance.now() - startedAt) * 100) / 100;
-    return tracedResult(value, traceId, requestId, {
-      startedAt: startedAtWall,
-      durationMs: serverDurationMs,
-    }) as CallToolResult;
+    return tracedResult(
+      value,
+      traceId,
+      requestId,
+      { startedAt: startedAtWall, durationMs: serverDurationMs },
+      {
+        layer: ctx.runtimeSourceRoot ? 'canonical_runtime' : 'public_gateway',
+        phases: phaseTimings,
+      },
+    ) as CallToolResult;
   } catch (error) {
     outcome = 'exception';
     errorCode = 'MCP_REQUEST_EXCEPTION';
