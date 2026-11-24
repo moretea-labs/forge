@@ -6,7 +6,7 @@ final class ForgeClientLayoutTests: XCTestCase {
   func testCompactWindowsReclaimSidebarWidthWithoutCollapsingNavigation() {
     XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 860), 228)
     XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1100), 231)
-    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1260), 265)
+    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1260), 264.6, accuracy: 0.001)
     XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1800), 288)
   }
 
@@ -19,6 +19,12 @@ final class ForgeClientLayoutTests: XCTestCase {
         $0 >= ForgeClientDesign.Shell.compactSidebarMin
           && $0 <= ForgeClientDesign.Shell.sidebarIdeal
       })
+  }
+
+  func testSidebarWidthChangesContinuouslyAboveCompactMinimum() {
+    let before = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1259)
+    let after = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1260)
+    XCTAssertEqual(after - before, 0.21, accuracy: 0.001)
   }
 
   func testHeaderAndReadingGutterHaveSharedMetrics() {

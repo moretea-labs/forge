@@ -9,7 +9,7 @@ extension ForgeClientDesign.Shell {
 
   /// Keep navigation usable on compact windows without reserving desktop-width space.
   static func sidebarWidth(windowWidth: CGFloat) -> CGFloat {
-    min(sidebarIdeal, max(compactSidebarMin, (windowWidth * 0.21).rounded()))
+    min(sidebarIdeal, max(compactSidebarMin, windowWidth * 0.21))
   }
 }
 

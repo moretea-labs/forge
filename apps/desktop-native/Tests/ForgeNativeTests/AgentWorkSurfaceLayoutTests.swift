@@ -11,6 +11,25 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
     XCTAssertFalse(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 780))
   }
 
+  func testInspectorPresentationUsesHysteresisNearThreshold() {
+    XCTAssertEqual(AgentWorkSurfaceLayout.enterSideBySideWidth, 864)
+    XCTAssertEqual(AgentWorkSurfaceLayout.exitSideBySideWidth, 816)
+
+    var current: AgentWorkSurfaceLayout.Presentation = .replacement
+    current = AgentWorkSurfaceLayout.stabilizedPresentation(
+      availableWidth: 850, isVisible: true, isMaximized: false, current: current)
+    XCTAssertEqual(current, .replacement)
+    current = AgentWorkSurfaceLayout.stabilizedPresentation(
+      availableWidth: 865, isVisible: true, isMaximized: false, current: current)
+    XCTAssertEqual(current, .sideBySide)
+    current = AgentWorkSurfaceLayout.stabilizedPresentation(
+      availableWidth: 830, isVisible: true, isMaximized: false, current: current)
+    XCTAssertEqual(current, .sideBySide)
+    current = AgentWorkSurfaceLayout.stabilizedPresentation(
+      availableWidth: 815, isVisible: true, isMaximized: false, current: current)
+    XCTAssertEqual(current, .replacement)
+  }
+
   func testSelectedSurfaceSurvivesWideCompactWidePresentationChanges() {
     let selectedSurface: AgentWorkSurface = .files
     let isVisible = true

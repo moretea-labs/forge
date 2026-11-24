@@ -36,6 +36,7 @@ Default visible columns: icon rail + list + main. The left glass is responsive: 
 - **No titlebar content band.** `.toolbarBackground(.hidden)` — traffic lights sit on the same surface as content. Do not host breadcrumb/status in a filled toolbar strip.
 - **Main pane header:** `agent.inspector.toggle` is the sole Agent tool opener, pinned to the trailing edge. The same compact header displays the conversation title and honest workspace status; no centered native toolbar items.
 - **Transcript and composer geometry:** both use one centered reading-column rule (760pt cap, 20pt horizontal gutter). Their left/right edges stay aligned at compact and desktop widths.
+- **Layout stability contract:** responsive sidebar width is continuous (no integer rounding steps). Passive conversation auto-follow during streaming/new-message/busy growth is non-animated; explicit user jumps may animate. Inspector presentation uses hysteresis: enter side-by-side at 864pt available width and leave it below 816pt, so resize near the 840pt nominal split threshold cannot flap.
 - **Inspector:** tabs 改动 / 附件 / 规划 / 知识 are available only when opened. Maximize and close live in its header. Unavailable tabs remain disabled; reopening restores the last available tab or falls back to 附件. Browser remains deferred.
 - **List header (会话):** New Chat, Search, Inbox — New Chat uses `sidebar.thread.new`; icons share `ForgeClientDesign.Icon`.
 - **Composer:** provider/model/attachments/voice/send; chrome icons share the same 13/28 optical size; focus ring only while focused.
@@ -69,7 +70,7 @@ NO decorative card/capsule/softFill wrapping every toolbar, rail, tab, commit fo
 1. Cold start shows Agent with right pane closed.
 2. Icon rail switches 会话 / 项目 / 看板 without losing draft or return context.
 3. The Agent header exposes a single trailing inspector opener (`agent.inspector.toggle`); no permanent right rail or hidden panel tabs in the closed state. List header exposes New Chat (`sidebar.thread.new`).
-4. Open inspector, switch 改动/附件/规划/知识, close/reopen the same available tab, resize wide → compact → wide, maximize/restore/close without losing chat state. Verify header context, responsive sidebar width (228pt @ 860, 265pt @ 1260, 288pt @ 1800), aligned transcript/composer edges, and reduced top whitespace in both empty and populated conversations.
+4. Open inspector, switch 改动/附件/规划/知识, close/reopen the same available tab, resize wide → compact → wide, maximize/restore/close without losing chat state. Verify header context, continuous responsive sidebar width (228pt minimum, 264.6pt @ 1260, 288pt cap), aligned transcript/composer edges, non-animated passive streaming follow, Inspector hysteresis (864 enter / 816 exit), and reduced top whitespace in both empty and populated conversations.
 5. `swift test` / `swift build`; GUI/AX at 860 / 1100 / 1260 / 1440 / 1800+ when authorized. The app remains Dark Glass under either macOS Light or Dark system appearance; system appearance is never changed. At 860 and 1260 the outer left/main glass panels must remain divider-free and readable; a high-contrast/purple backdrop must visibly sample through the shell rather than reveal an opaque gray canvas.
 
 Do not replace the installed App or activate Runtime without separate authorization.

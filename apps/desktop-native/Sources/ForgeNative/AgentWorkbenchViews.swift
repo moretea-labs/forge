@@ -52,9 +52,12 @@ enum AgentWorkSurfaceLayout {
     static let conversationMinimumWidth: CGFloat = 420
     static let workSurfaceMinimumWidth: CGFloat = 360
     static let splitDividerAndSpacingAllowance: CGFloat = 60
+    static let presentationHysteresis: CGFloat = 24
     static var minimumSideBySideWidth: CGFloat {
         conversationMinimumWidth + workSurfaceMinimumWidth + splitDividerAndSpacingAllowance
     }
+    static var enterSideBySideWidth: CGFloat { minimumSideBySideWidth + presentationHysteresis }
+    static var exitSideBySideWidth: CGFloat { minimumSideBySideWidth - presentationHysteresis }
 
     enum Presentation: Equatable {
         case conversationOnly
@@ -76,6 +79,23 @@ enum AgentWorkSurfaceLayout {
             return .replacement
         }
         return .sideBySide
+    }
+
+    /// Avoid mode flapping while a window is being resized near the split threshold.
+    static func stabilizedPresentation(
+        availableWidth: CGFloat,
+        isVisible: Bool,
+        isMaximized: Bool,
+        current: Presentation
+    ) -> Presentation {
+        guard isVisible else { return .conversationOnly }
+        guard !isMaximized else { return .replacement }
+        switch current {
+        case .sideBySide:
+            return availableWidth >= exitSideBySideWidth ? .sideBySide : .replacement
+        case .conversationOnly, .replacement:
+            return availableWidth >= enterSideBySideWidth ? .sideBySide : .replacement
+        }
     }
 }
 
@@ -112,6 +132,7 @@ struct AgentPane: View {
     @State private var conversationScrollMetrics: AgentScrollMetrics?
     @State private var conversationViewportHeight: CGFloat = 0
     @State private var followsLatestConversation = true
+    @State private var stableWorkSurfacePresentation: AgentWorkSurfaceLayout.Presentation = .conversationOnly
     @StateObject private var voiceDictation = AgentVoiceDictation()
     @State private var voiceBaseDraft = ""
     @State private var restoreComposerFocusAfterWorkSurface = false
@@ -293,11 +314,7 @@ struct AgentPane: View {
 
     private func agentContent(availableWidth:CGFloat) -> some View {
         let splitWidth = max(0, availableWidth - 16)
-        let workSurfacePresentation = AgentWorkSurfaceLayout.presentation(
-            availableWidth:splitWidth,
-            isVisible:workSurfaceVisible,
-            isMaximized:workSurfaceMaximized
-        )
+        let workSurfacePresentation = stableWorkSurfacePresentation
         return HSplitView {
                 ZStack {
                     // Keep the composer and transcript mounted during review.
@@ -738,9 +755,9 @@ struct AgentPane: View {
                         Task { @MainActor in
                             await Task.yield()
                             guard followsLatestConversation else { return }
-                            withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
-                                reader.scrollTo("pending",anchor:.bottom)
-                            }
+                            // Streaming output may grow many times per second. Keep the
+                            // viewport pinned without restarting an animation for every chunk.
+                            reader.scrollTo("pending",anchor:.bottom)
                         }
                         return
                     }
@@ -794,7 +811,7 @@ struct AgentPane: View {
                 }
                 .onChange(of:model.thread?.messages.count) { _ in
                     if followsLatestConversation, let last = model.thread?.messages.last {
-                        withAnimation(reduceMotion ? nil : .easeOut(duration:0.2)) { reader.scrollTo(last.id,anchor:.bottom) }
+                        reader.scrollTo(last.id,anchor:.bottom)
                     }
                 }
                 .onChange(of:model.busy) { busy in
@@ -802,7 +819,7 @@ struct AgentPane: View {
                     followsLatestConversation = true
                     Task { @MainActor in
                         await Task.yield()
-                        withAnimation(reduceMotion ? nil : .easeOut(duration:0.2)) { reader.scrollTo("pending",anchor:.bottom) }
+                        reader.scrollTo("pending",anchor:.bottom)
                     }
                 }
             }
@@ -1072,9 +1089,21 @@ struct AgentPane: View {
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .padding(8)
         .background(ForgePalette.canvas)
-        .animation(reduceMotion ? nil : .easeOut(duration:0.20),value:workSurfaceVisible)
+        .onAppear {
+            stableWorkSurfacePresentation = AgentWorkSurfaceLayout.stabilizedPresentation(
+                availableWidth:splitWidth,
+                isVisible:workSurfaceVisible,
+                isMaximized:workSurfaceMaximized,
+                current:stableWorkSurfacePresentation)
+        }
         .onChange(of:workSurfaceVisible) { visible in
-            if visible && (!AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: splitWidth) || workSurfaceMaximized) {
+            let nextPresentation = AgentWorkSurfaceLayout.stabilizedPresentation(
+                availableWidth:splitWidth,
+                isVisible:visible,
+                isMaximized:workSurfaceMaximized,
+                current:stableWorkSurfacePresentation)
+            stableWorkSurfacePresentation = nextPresentation
+            if visible && nextPresentation == .replacement {
                 restoreComposerFocusAfterWorkSurface = composerFocused
                 composerFocused = false
             } else if !visible && restoreComposerFocusAfterWorkSurface {
@@ -1085,20 +1114,33 @@ struct AgentPane: View {
             }
         }
         .onChange(of:workSurfaceMaximized) { maximized in
+            let nextPresentation = AgentWorkSurfaceLayout.stabilizedPresentation(
+                availableWidth:splitWidth,
+                isVisible:workSurfaceVisible,
+                isMaximized:maximized,
+                current:stableWorkSurfacePresentation)
+            stableWorkSurfacePresentation = nextPresentation
             guard workSurfaceVisible else { return }
             if maximized {
                 restoreComposerFocusAfterWorkSurface = composerFocused
                 composerFocused = false
-            } else if AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: splitWidth) && restoreComposerFocusAfterWorkSurface {
+            } else if nextPresentation == .sideBySide && restoreComposerFocusAfterWorkSurface {
                 restoreComposerFocusAfterWorkSurface = false
                 if !model.busy && !voiceDictation.blocksSend { composerFocused = true }
             }
         }
-        .onChange(of:!AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: splitWidth)) { isCompact in
-            // Keep the selected work surface mounted and selected. Only focus
-            // changes when the compact presentation temporarily replaces chat.
+        .onChange(of:splitWidth) { width in
+            let previous = stableWorkSurfacePresentation
+            let next = AgentWorkSurfaceLayout.stabilizedPresentation(
+                availableWidth:width,
+                isVisible:workSurfaceVisible,
+                isMaximized:workSurfaceMaximized,
+                current:previous)
+            guard next != previous else { return }
+            stableWorkSurfacePresentation = next
+            // Only crossing a hysteresis boundary changes focus/presentation.
             guard workSurfaceVisible && !workSurfaceMaximized else { return }
-            if isCompact {
+            if next == .replacement {
                 restoreComposerFocusAfterWorkSurface = composerFocused
                 composerFocused = false
             } else if restoreComposerFocusAfterWorkSurface {
