@@ -47,9 +47,10 @@ describe('interactive sync routing policy', () => {
 
   test('preferred entry points stay stable without hiding the complete MCP surface', () => {
     expect(PREFERRED_CONTROLLER_TOOL_NAMES.length).toBeGreaterThan(0);
-    expect(PREFERRED_CONTROLLER_TOOL_NAMES).toContain('repository_safe_patch_apply');
-    expect(PREFERRED_CONTROLLER_TOOL_NAMES).toContain('plugin_action_execute');
     const stableNames = new Set<string>(PREFERRED_CONTROLLER_TOOL_NAMES);
+    expect(stableNames.has('repository_safe_patch_apply')).toBe(false);
+    expect(stableNames.has('capability_execute')).toBe(true);
+    expect(stableNames.has('plugin_action_execute')).toBe(true);
     expect(stableNames.has('computer_console_unlock_prepare')).toBe(false);
     expect(stableNames.has('computer_console_unlock')).toBe(false);
     for (const name of [
