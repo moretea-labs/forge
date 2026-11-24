@@ -461,6 +461,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     // Computer binding over heartbeat focus or an arbitrary matching tab.
     const binding = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(identity))?.providerBinding;
     let candidates = exact;
+    let recoverOwnedHeartbeat = false;
     if (binding?.providerId === PROVIDER_ID && binding.windowId && binding.tabId) {
       const bound = exact.filter(({ instanceId, entry }) => instanceId === binding.providerSessionId
         && entry.providerBinding?.tabId === binding.tabId
@@ -474,16 +475,45 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         ? exact : [];
       candidates = bound.length ? bound : replacement;
     }
+    // Legacy runtimes could persist an ownerless Surface while the extension
+    // later created one attested replacement tab for the same conversation.
+    // Heartbeat carries the browser-session owner token written by THIS Forge
+    // extension. Recover only when exactly one exact tab has that proof and it
+    // is from the same pinned provider/profile (or the sole live provider when
+    // no durable binding exists). Never use focus/current-tab as authority.
+    if (exact.length > 1 && !binding?.ownerToken) {
+      const owned = exact.filter(({ entry }) => Boolean(entry.providerBinding?.ownerToken));
+      const candidate = owned.length === 1 ? owned[0] : undefined;
+      const samePinnedProvider = Boolean(candidate && binding?.providerId === PROVIDER_ID
+        && binding.providerSessionId === candidate.instanceId
+        && (!binding.browserProduct || binding.browserProduct === candidate.entry.providerBinding?.browserProduct));
+      const soleProviderWithoutBinding = Boolean(candidate && !binding && fresh.length === 1);
+      if (candidate && (samePinnedProvider || soleProviderWithoutBinding)) {
+        candidates = owned;
+        recoverOwnedHeartbeat = true;
+      }
+    }
     // A stale binding must not turn two observed exact tabs into a third tab.
     if (exact.length > 1 && candidates.length !== 1) return failure('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS', { failoverSafe: false });
-    // Ensure must verify the pinned owner before reading content. Heartbeat
-    // inventory carries no owner token and cannot recover a lost attachment.
-    // Route an authorized Ensure through the provider even when inventory still
-    // contains the old tab; only the provider can attest its replacement.
-    if (candidates.length === 1 && !(options.createIfMissing !== false && binding?.providerId === PROVIDER_ID)) {
+    // A unique heartbeat owner token is browser-session ownership evidence, not
+    // Send authority. Rebind it under Surface CAS, then immediately Observe the
+    // exact physical tab; the provider re-attests the token before any later
+    // Prepare/Dispatch can use this Surface.
+    if (candidates.length === 1 && (recoverOwnedHeartbeat
+      || !(options.createIfMissing !== false && binding?.providerId === PROVIDER_ID))) {
       const candidate = candidates[0]!;
       if (!candidate.entry.providerBinding) return failure('COMPUTER_CHATGPT_EXTENSION_PHYSICAL_TAB_UNVERIFIED', { failoverSafe: false });
-      const record = await this.bindAsync(identity, candidate.entry.providerBinding, candidate.instanceId);
+      let record: ComputerSurfaceTarget;
+      try {
+        record = await this.bindAsync(identity, candidate.entry.providerBinding, candidate.instanceId,
+          recoverOwnedHeartbeat ? { binding } : undefined);
+      } catch (error) {
+        if (recoverOwnedHeartbeat && error instanceof Error
+          && error.message === 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_CHANGED') {
+          return failure(error.message, { failoverSafe: false });
+        }
+        throw error;
+      }
       const target = this.target(identity, record, candidate.instanceId);
       try {
         const observation = await target.observe({ includeUserHistory: false, includePageText: false });

@@ -196,6 +196,115 @@ test('Computer exact-target socket owns heartbeat, claim, and completion without
   });
 });
 
+test('legacy ownerless exact Surface recovers only the unique heartbeat-owned duplicate', async () => {
+  const controllerHome = home();
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  const canonicalUrl = 'https://chatgpt.com/c/legacy-owned-recovery';
+  const identity = { namespace: 'chatgpt.conversation' as const, conversationId: 'legacy-owned-recovery', canonicalUrl };
+  const legacyBinding = {
+    providerId: 'browser.chrome-extension', observedAt: new Date().toISOString(),
+    providerSessionId: 'centbrowser-legacy', browserProduct: 'chrome', windowId: '9', tabId: '51',
+  };
+  const observation = {
+    url: canonicalUrl, title: 'Legacy owner recovery', latestUserText: '', latestAssistantResponse: '',
+    composerText: '', providerActivityText: '', providerFailureText: '', isGenerating: false,
+  };
+
+  await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension', providerInstanceId: 'centbrowser-legacy', observedAt: new Date().toISOString(),
+    conversations: [{ conversationId: identity.conversationId, canonicalUrl, providerBinding: legacyBinding }],
+  });
+  const seedPromise = runtime.port.ensureExact(identity, { createIfMissing: false });
+  let claim: Record<string, unknown> | undefined;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: 'centbrowser-legacy' });
+    if ((claim.result as { command?: unknown } | undefined)?.command) break;
+    await Bun.sleep(10);
+  }
+  const seedCommand = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(seedCommand).toMatchObject({ kind: 'observe', providerBinding: legacyBinding });
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: 'centbrowser-legacy', command_id: seedCommand.commandId,
+    result: { kind: 'observation', providerBinding: legacyBinding, observation },
+  });
+  expect((await seedPromise).state).toBe('ready');
+
+  const replacementProof = ['proof', 'legacy', 'replacement'].join('-');
+  const ownedBinding = {
+    ...legacyBinding, observedAt: new Date().toISOString(), windowId: '10', tabId: '52',
+    ownerToken: replacementProof,
+  };
+  await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension', providerInstanceId: 'centbrowser-legacy', observedAt: new Date().toISOString(),
+    conversations: [
+      { conversationId: identity.conversationId, canonicalUrl, providerBinding: legacyBinding },
+      { conversationId: identity.conversationId, canonicalUrl, providerBinding: ownedBinding, isCurrent: true },
+    ],
+  });
+
+  const recoveredPromise = runtime.port.ensureExact(identity);
+  claim = undefined;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: 'centbrowser-legacy' });
+    if ((claim.result as { command?: unknown } | undefined)?.command) break;
+    await Bun.sleep(10);
+  }
+  const recoveredCommand = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(recoveredCommand).toMatchObject({ kind: 'observe', providerBinding: ownedBinding });
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: 'centbrowser-legacy', command_id: recoveredCommand.commandId,
+    result: { kind: 'observation', providerBinding: ownedBinding,
+      observation: { ...observation, modelLockCapability: 'gpt-5.6-sol-high-v1' } },
+  });
+  expect(await recoveredPromise).toMatchObject({
+    state: 'ready', observation: { modelLockCapability: 'gpt-5.6-sol-high-v1' },
+  });
+
+  const refreshPromise = runtime.port.refreshExact(identity);
+  claim = undefined;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: 'centbrowser-legacy' });
+    if ((claim.result as { command?: unknown } | undefined)?.command) break;
+    await Bun.sleep(10);
+  }
+  const closeCommand = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(closeCommand).toMatchObject({ kind: 'close', providerBinding: ownedBinding });
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: 'centbrowser-legacy', command_id: closeCommand.commandId, result: { kind: 'closed' },
+  });
+  // The legacy unowned duplicate remains visible, so refresh must refuse to
+  // create a third tab rather than guessing or closing the user's tab.
+  expect(await refreshPromise).toMatchObject({
+    state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_EXTENSION_REFRESH_EXACT_TARGET_AMBIGUOUS' },
+  });
+});
+
+test('multiple heartbeat-owned duplicates remain ambiguous', async () => {
+  const controllerHome = home();
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  const canonicalUrl = 'https://chatgpt.com/c/two-owned-duplicates';
+  const base = {
+    providerId: 'browser.chrome-extension', observedAt: new Date().toISOString(),
+    providerSessionId: 'centbrowser-owned-duplicates', browserProduct: 'chrome', windowId: '11',
+  };
+  const firstProof = ['proof', 'first'].join('-');
+  const secondProof = ['proof', 'second'].join('-');
+  await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension', providerInstanceId: 'centbrowser-owned-duplicates', observedAt: new Date().toISOString(),
+    conversations: [
+      { conversationId: 'two-owned-duplicates', canonicalUrl,
+        providerBinding: { ...base, tabId: '61', ownerToken: firstProof } },
+      { conversationId: 'two-owned-duplicates', canonicalUrl,
+        providerBinding: { ...base, tabId: '62', ownerToken: secondProof } },
+    ],
+  });
+  expect(await runtime.port.ensureExact({
+    namespace: 'chatgpt.conversation', conversationId: 'two-owned-duplicates', canonicalUrl,
+  })).toMatchObject({
+    state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS' },
+  });
+});
+
 test('durable worker proxies observe through the Runtime-owned Computer socket', async () => {
   const controllerHome = home();
   const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
