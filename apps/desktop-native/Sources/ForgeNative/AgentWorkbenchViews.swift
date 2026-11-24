@@ -594,7 +594,7 @@ struct AgentPane: View {
                                                     }
                                                 } label: {
                                                     HStack(spacing:5) {
-                                                        Label(message.toolActivityCount.map { "工具 \($0)" } ?? "执行过程",
+                                                        Label(message.toolActivityCount.map { "调用 \($0)" } ?? "执行过程",
                                                               systemImage:"list.bullet.rectangle")
                                                         Image(systemName:expandedMessageActivities.contains(message.id)
                                                               ? "chevron.up" : "chevron.down")
@@ -602,8 +602,8 @@ struct AgentPane: View {
                                                     }
                                                 }
                                                 .buttonStyle(.plain)
-                                                .help(expandedMessageActivities.contains(message.id) ? "收起执行过程" : "查看执行过程")
-                                                .accessibilityLabel(expandedMessageActivities.contains(message.id) ? "收起执行过程" : "查看执行过程")
+                                                .help(expandedMessageActivities.contains(message.id) ? "收起工具调用" : "查看工具调用")
+                                                .accessibilityLabel(expandedMessageActivities.contains(message.id) ? "收起工具调用" : "查看工具调用")
                                                 .accessibilityValue(message.toolActivityCount.map { "\($0) 次工具调用" } ?? "有执行记录")
                                             } else if let count = message.toolActivityCount, count > 0 {
                                                 Label("工具 \(count)",systemImage:"hammer")
@@ -717,18 +717,20 @@ struct AgentPane: View {
                                     }
                                     Spacer(minLength:8)
                                     if let count = model.liveActivity?.toolActivityCount, count > 0 {
-                                        Text("\(count) tools")
+                                        Text("\(count) 次调用")
                                             .font(.system(size:9.5,weight:.medium))
                                             .foregroundStyle(.tertiary)
                                     }
                                     if let count = model.liveActivity?.events?.count, count > 4 {
-                                        Button(showActivityDetails ? "收起" : "全部") {
+                                        Button(showActivityDetails ? "收起" : "全部过程") {
                                             withAnimation(reduceMotion ? nil : .easeOut(duration:0.16)) {
                                                 showActivityDetails.toggle()
                                             }
                                         }
                                         .buttonStyle(.plain)
                                         .font(.system(size:10.5,weight:.medium))
+                                        .accessibilityLabel(showActivityDetails ? "收起全部执行过程" : "查看全部执行过程")
+                                        .accessibilityIdentifier("agent.activity.details.toggle")
                                     }
                                 }
 
@@ -1378,11 +1380,27 @@ struct AgentPane: View {
                     .font(.system(size:8.5,weight:.semibold))
                     .foregroundStyle(activityStatusColor(event))
             }
-            VStack(alignment:.leading,spacing:2) {
-                Text(event.label)
-                    .font(.system(size:10.5,weight:.medium))
-                    .foregroundStyle(ForgePalette.secondary)
-                    .lineLimit(1)
+            VStack(alignment:.leading,spacing:4) {
+                HStack(spacing:6) {
+                    Text(event.phase == "tool" ? "工具 · \(event.label)" : event.label)
+                        .font(.system(size:10.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .lineLimit(1)
+                        .help(event.toolCallId.map { "调用 ID：\($0)" } ?? event.label)
+                    Spacer(minLength:4)
+                    if let duration = event.durationLabel {
+                        Text(duration)
+                            .font(.system(size:9,design:.monospaced))
+                            .foregroundStyle(.tertiary)
+                            .accessibilityIdentifier("agent.activity.duration.\(event.id)")
+                    }
+                    if let status = activityStatusTitle(event) {
+                        Text(status)
+                            .font(.system(size:9.5,weight:.semibold))
+                            .foregroundStyle(activityStatusColor(event))
+                            .accessibilityIdentifier("agent.activity.status.\(event.id)")
+                    }
+                }
                 if let detail = event.detail, !detail.isEmpty {
                     Text(detail)
                         .font(.system(size:9.5,design:.monospaced))
@@ -1458,16 +1476,22 @@ struct AgentPane: View {
                     .padding(.top,2)
                 }
             }
-            Spacer(minLength:8)
-            if event.status == "failed" {
-                Text("失败")
-                    .font(.system(size:9.5,weight:.semibold))
-                    .foregroundStyle(Color.red)
-            } else if event.status == "unknown" {
-                Text("结果未知")
-                    .font(.system(size:9.5,weight:.semibold))
-                    .foregroundStyle(Color.orange)
-            }
+            .frame(maxWidth:.infinity,alignment:.leading)
+        }
+        .frame(maxWidth:.infinity,alignment:.leading)
+        .accessibilityIdentifier("agent.activity.event.\(event.id)")
+    }
+
+    private func activityStatusTitle(_ event: AgentLiveActivityEvent) -> String? {
+        guard event.phase == "tool" else { return nil }
+        switch event.status {
+        case "running": return "执行中"
+        case "output": return "输出中"
+        case "completed": return "已完成"
+        case "failed": return "失败"
+        case "unknown": return "结果未知"
+        case "cancelled": return "已取消"
+        default: return nil
         }
     }
 

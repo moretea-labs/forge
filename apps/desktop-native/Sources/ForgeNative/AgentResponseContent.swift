@@ -73,17 +73,24 @@ enum AgentMessageBlock: Equatable {
         while i < lines.count {
             let line = lines[i]
             let clean = line.trimmingCharacters(in: .whitespaces)
-            if clean.isEmpty { flush(); i += 1; continue }
+            if clean.isEmpty {
+                flush()
+                i += 1
+                continue
+            }
 
             if let fence = fenceStart(clean) {
-                flush(); i += 1
+                flush()
+                i += 1
                 var body: [String] = []
                 while i < lines.count {
                     let end = lines[i].trimmingCharacters(in: .whitespaces)
                     if end.count >= fence.count && end.allSatisfy({ $0 == fence.marker }) {
-                        i += 1; break
+                        i += 1
+                        break
                     }
-                    body.append(lines[i]); i += 1
+                    body.append(lines[i])
+                    i += 1
                 }
                 let content = body.joined(separator: "\n")
                 if fence.language?.lowercased() == "forge-options",
@@ -101,18 +108,23 @@ enum AgentMessageBlock: Equatable {
                 continue
             }
             if let heading = heading(line) {
-                flush(); result.append(.heading(level: heading.0, text: heading.1)); i += 1
+                flush()
+                result.append(.heading(level: heading.0, text: heading.1))
+                i += 1
                 continue
             }
             if divider(clean) {
-                flush(); result.append(.divider); i += 1
+                flush()
+                result.append(.divider)
+                i += 1
                 continue
             }
             if i + 1 < lines.count, let headers = cells(line),
                let separators = cells(lines[i + 1]),
                headers.count == separators.count,
                separators.allSatisfy(tableSeparator) {
-                flush(); i += 2
+                flush()
+                i += 2
                 var rows: [[String]] = []
                 while i < lines.count, rows.count < 100,
                       lines[i].contains("|"), let values = cells(lines[i]) {
@@ -138,12 +150,14 @@ enum AgentMessageBlock: Equatable {
                 flush()
                 var items: [AgentListItem] = []
                 while i < lines.count, let item = listItem(lines[i]) {
-                    items.append(item); i += 1
+                    items.append(item)
+                    i += 1
                 }
                 result.append(.list(items))
                 continue
             }
-            prose.append(line); i += 1
+            prose.append(line)
+            i += 1
         }
         flush()
         return result
@@ -233,14 +247,21 @@ enum AgentMessageBlock: Equatable {
         var source = line.trimmingCharacters(in: .whitespaces)
         if source.hasPrefix("|") { source.removeFirst() }
         if source.hasSuffix("|") { source.removeLast() }
-        var values: [String] = [], current = ""
+        var values: [String] = []
+        var current = ""
         var escaped = false
         for char in source {
-            if escaped { current.append(char); escaped = false }
+            if escaped {
+                current.append(char)
+                escaped = false
+            }
             else if char == "\\" { escaped = true }
             else if char == "|" {
-                values.append(current.trimmingCharacters(in: .whitespaces)); current = ""
-            } else { current.append(char) }
+                values.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+            } else {
+                current.append(char)
+            }
         }
         if escaped { current.append("\\") }
         values.append(current.trimmingCharacters(in: .whitespaces))

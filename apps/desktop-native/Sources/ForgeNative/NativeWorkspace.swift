@@ -182,6 +182,30 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
   var output: String? = nil
   var outputTruncated: Bool? = nil
   var id: String { toolCallId ?? "\(startedAt)|\(phase)|\(label)|\(detail ?? "")" }
+
+  var durationLabel: String? {
+    guard let completedAt,
+      let started = Self.parseTimestamp(startedAt),
+      let completed = Self.parseTimestamp(completedAt)
+    else { return nil }
+    let elapsed = completed.timeIntervalSince(started)
+    guard elapsed.isFinite, elapsed > 0 else { return nil }
+    let milliseconds = Int((elapsed * 1_000).rounded())
+    if milliseconds < 1_000 { return "\(milliseconds) ms" }
+    if milliseconds < 60_000 {
+      return String(format: "%.1f s", Double(milliseconds) / 1_000)
+    }
+    return "\(milliseconds / 60_000)m \((milliseconds % 60_000) / 1_000)s"
+  }
+
+  private static func parseTimestamp(_ value: String) -> Date? {
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = fractional.date(from: value) { return date }
+    let standard = ISO8601DateFormatter()
+    standard.formatOptions = [.withInternetDateTime]
+    return standard.date(from: value)
+  }
 }
 
 struct AgentLiveActivity: Codable {
@@ -6016,12 +6040,15 @@ final class NativeWorkspace: ObservableObject {
       let status =
         ["running", "unknown"].contains(receiptStatus ?? "")
         ? (receiptStatus ?? "unknown") : (ok ? "completed" : "failed")
+      let startedAt = row["startedAt"] as? String ?? now
+      let completedAt =
+        ["running", "output"].contains(status) ? nil : (row["completedAt"] as? String ?? now)
       let rawOutput = row["output"] as? String
       return AgentLiveActivityEvent(
         phase: "tool", label: name,
         detail: row["processId"] as? String ?? row["requestId"] as? String,
         status: status,
-        startedAt: now, completedAt: ["running", "output"].contains(status) ? nil : now,
+        startedAt: startedAt, completedAt: completedAt,
         toolCallId: row["toolCallId"] as? String,
         output: rawOutput.map { String($0.prefix(2_000)) },
         outputTruncated: rawOutput.map { $0.count > 2_000 }

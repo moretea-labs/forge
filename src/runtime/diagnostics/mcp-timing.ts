@@ -221,10 +221,13 @@ function mcpHttpTransportTraceKey(
   return JSON.stringify([resolve(controllerHome), sessionId, typeof rpcId, String(rpcId), layer, tool]);
 }
 
-function prunePendingMcpHttpTransportTraces(now: number): void {
+function pruneExpiredPendingMcpHttpTransportTraces(now: number): void {
   for (const [key, pending] of pendingMcpHttpTransportTraces) {
     if (pending.expiresAt <= now) pendingMcpHttpTransportTraces.delete(key);
   }
+}
+
+function evictOldestPendingMcpHttpTransportTracesIfNeeded(): void {
   while (pendingMcpHttpTransportTraces.size >= MCP_HTTP_TRANSPORT_TRACE_MAX_PENDING) {
     const oldestKey = pendingMcpHttpTransportTraces.keys().next().value;
     if (oldestKey === undefined) break;
@@ -240,8 +243,11 @@ function rememberPendingMcpHttpTransportTrace(controllerHome: string, trace: Mcp
   if (!sessionId || !traceId || trace.rpcId === undefined || !tool || !layer) return;
 
   const now = Date.now();
-  prunePendingMcpHttpTransportTraces(now);
+  pruneExpiredPendingMcpHttpTransportTraces(now);
   const key = mcpHttpTransportTraceKey(controllerHome, sessionId, trace.rpcId, layer, tool);
+  if (!pendingMcpHttpTransportTraces.has(key)) {
+    evictOldestPendingMcpHttpTransportTracesIfNeeded();
+  }
   pendingMcpHttpTransportTraces.set(key, {
     traceId,
     ...(trace.requestId ? { requestId: trace.requestId } : {}),
@@ -272,7 +278,7 @@ export function recordMcpHttpTransportSpan(controllerHome: string, span: McpHttp
   if (!sessionId || !tool) return false;
 
   const now = Date.now();
-  prunePendingMcpHttpTransportTraces(now);
+  pruneExpiredPendingMcpHttpTransportTraces(now);
   const key = mcpHttpTransportTraceKey(controllerHome, sessionId, span.rpcId, span.layer, tool);
   const pending = pendingMcpHttpTransportTraces.get(key);
   if (!pending) return false;

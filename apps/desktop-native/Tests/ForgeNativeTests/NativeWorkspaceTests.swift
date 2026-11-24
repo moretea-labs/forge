@@ -4046,6 +4046,41 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(completed.first?.status, "completed")
   }
 
+  func testApiActivityReceiptsPreserveRecordedTimingForCallDisplay() throws {
+    let startedAt = "2026-11-25T00:00:00.000Z"
+    let completedAt = "2026-11-25T00:00:01.260Z"
+    let receipt = NativeWorkspace.apiActivityEvents(
+      [
+        [
+          "name": "read_file", "ok": true, "toolCallId": "call-timed",
+          "startedAt": startedAt, "completedAt": completedAt,
+        ]
+      ] as [[String: Any]]
+    )
+    let event = try XCTUnwrap(receipt?.first)
+    XCTAssertEqual(event.startedAt, startedAt)
+    XCTAssertEqual(event.completedAt, completedAt)
+    XCTAssertEqual(event.durationLabel, "1.3 s")
+
+    let fastEvent = AgentLiveActivityEvent(
+      phase: "tool", label: "git_status", detail: nil, status: "completed",
+      startedAt: "2026-11-25T00:00:00.000Z",
+      completedAt: "2026-11-25T00:00:00.350Z", toolCallId: "call-fast"
+    )
+    XCTAssertEqual(fastEvent.durationLabel, "350 ms")
+
+    let runningEvent = AgentLiveActivityEvent(
+      phase: "tool", label: "git_status", detail: nil, status: "running",
+      startedAt: startedAt, completedAt: nil, toolCallId: "call-running"
+    )
+    XCTAssertNil(runningEvent.durationLabel)
+
+    let legacyReceipt = NativeWorkspace.apiActivityEvents(
+      [["name": "git_status", "ok": true]] as [[String: Any]]
+    )
+    XCTAssertNil(legacyReceipt?.first?.durationLabel)
+  }
+
   func testCommandActivityOutputSeparatesStdoutStderrAndProcessResult() {
     let event = AgentLiveActivityEvent(
       phase: "tool", label: "run_command", detail: "lightweight:process-id",

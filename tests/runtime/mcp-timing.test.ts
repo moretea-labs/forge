@@ -86,6 +86,57 @@ describe('MCP timing diagnostics', () => {
     expect(httpSpan).not.toHaveProperty('totalToolDurationMs');
   });
 
+  test('preserves the oldest live correlation when the pending bound is full', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-mcp-http-capacity-'));
+    homes.push(home);
+    const startedAt = '2026-11-24T12:00:00.000Z';
+    const span = {
+      sessionId: 'session-capacity',
+      layer: 'public_gateway' as const,
+      tool: 'rh_status',
+      route: '/mcp',
+      startedAt,
+      finishedAt: '2026-11-24T12:00:00.030Z',
+      durationMs: 30,
+      statusCode: 200,
+      outcome: 'finished' as const,
+    };
+
+    for (let rpcId = 0; rpcId < 4_096; rpcId += 1) {
+      recordMcpTiming(home, {
+        tool: 'rh_status',
+        traceId: `trace-capacity-${rpcId}`,
+        rpcId,
+        sessionId: 'session-capacity',
+        layer: 'public_gateway',
+        startedAt,
+        outcome: 'ok',
+        totalToolDurationMs: 1,
+      });
+    }
+    // Drain the first 4,096 tool-timing records so the independent bounded
+    // diagnostic write queue does not mask the correlation-map capacity test.
+    await flushMcpDiagnostics(home);
+
+    expect(recordMcpHttpTransportSpan(home, { ...span, rpcId: 0 })).toBe(true);
+    for (let rpcId = 1; rpcId < 4_096; rpcId += 1) {
+      expect(recordMcpHttpTransportSpan(home, { ...span, rpcId })).toBe(true);
+    }
+
+    await flushMcpDiagnostics(home);
+    const records = readFileSync(join(home, 'audit', 'mcp-timings.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const spans = records.filter((record) => record.spanKind === 'http_transport');
+    expect(spans).toHaveLength(4_096);
+    expect(spans[0]).toMatchObject({
+      traceId: 'trace-capacity-0',
+      rpcId: 0,
+      sessionId: 'session-capacity',
+    });
+  });
+
   test('keeps bounded transport interruption and reconnect evidence across diagnostic flush', async () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-mcp-transport-evidence-'));
     homes.push(home);
