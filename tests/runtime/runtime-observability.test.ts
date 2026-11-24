@@ -755,7 +755,7 @@ describe('runtime observability', () => {
       expect(defaultNames).not.toContain('repository_command_execute');
       expect(defaultNames).not.toContain('process_exec');
       expect(defaultNames).not.toContain('work_execute');
-      expect(defaultNames).toContain('repository_git_status');
+      expect(defaultNames).toContain('git_diff_paths');
       expect(defaultNames).toContain('git_commit_paths');
 
       // The same canonical registry is used by independent MCP sessions.
@@ -767,9 +767,18 @@ describe('runtime observability', () => {
       try {
         const fullNames = (await fullClient.listTools()).tools.map((tool) => tool.name);
         expect(fullNames).toEqual(defaultNames);
-        expect(fullNames).toContain('repository_git_status');
+        expect(fullNames).toContain('git_diff_paths');
         expect(fullNames).toContain('git_commit_paths');
-        expect(fullNames).toContain('verify_edit_session');
+        expect(fullNames).not.toEqual(expect.arrayContaining([
+          'begin_edit_session',
+          'get_edit_session',
+          'list_edit_sessions',
+          'get_edit_session_diff',
+          'create_edit_savepoint',
+          'verify_edit_session',
+          'rollback_edit_session',
+          'finalize_edit_session',
+        ]));
         expect(fullNames).toContain('execute_command');
         expect(fullNames).not.toContain('repository_command_execute');
         expect(fullNames).not.toContain('process_exec');

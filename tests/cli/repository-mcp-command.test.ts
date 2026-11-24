@@ -477,6 +477,7 @@ describe('repository MCP command tools', () => {
       'prepend',
       'append',
       'delete',
+      'move',
     ]);
     const applyProperties = directEditCapability.actions?.apply?.argumentsSchema?.properties;
     const applyOperations = applyProperties?.operations as
@@ -1600,7 +1601,16 @@ describe('repository MCP command tools', () => {
       };
 
       expect(publishedToolNames).toContain('apply_patch');
-      expect(publishedToolNames).not.toContain('begin_edit_session');
+      expect(publishedToolNames).not.toEqual(expect.arrayContaining([
+        'begin_edit_session',
+        'get_edit_session',
+        'list_edit_sessions',
+        'get_edit_session_diff',
+        'create_edit_savepoint',
+        'verify_edit_session',
+        'rollback_edit_session',
+        'finalize_edit_session',
+      ]));
       const applied = await callMcpTool(context, 'apply_patch', {
         operations: [
           { type: 'replace', path: 'app.txt', replacements: [{ old_text: 'before', new_text: 'after' }] },
@@ -1620,7 +1630,7 @@ describe('repository MCP command tools', () => {
       });
       expect(rejected.isError).toBe(true);
       expect(rejected.structuredContent).toMatchObject({
-        error: { code: 'SAFE_PATCH_LEGACY_SESSION_RETIRED' },
+        error: { code: 'SAFE_PATCH_ARGUMENTS_UNSUPPORTED' },
       });
       expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
     } finally {

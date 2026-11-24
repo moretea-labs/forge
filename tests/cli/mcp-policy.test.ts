@@ -21,15 +21,25 @@ describe('mcp policy and paths', () => {
     expect(names).not.toContain('project_snapshot');
   });
 
-  test('direct edit schema does not advertise retired Work authority', () => {
+  test('EditSession lifecycle tools are no longer published', () => {
     const definitions = buildMcpToolDefinitions(getToolPolicy('controller'));
-    const beginEdit = definitions.find((tool) => tool.name === 'begin_edit_session');
-    expect(beginEdit).toBeDefined();
+    const names = definitions.map((tool) => tool.name);
+    expect(names).not.toEqual(expect.arrayContaining([
+      'begin_edit_session',
+      'get_edit_session',
+      'list_edit_sessions',
+      'get_edit_session_diff',
+      'create_edit_savepoint',
+      'verify_edit_session',
+      'rollback_edit_session',
+      'finalize_edit_session',
+    ]));
+    const applyPatch = definitions.find((tool) => tool.name === 'apply_patch');
     const properties =
-      (beginEdit?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
-    expect(properties).not.toHaveProperty('work_id');
-    expect(properties).toHaveProperty('purpose');
-    expect(properties).toHaveProperty('allowed_paths');
+      (applyPatch?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
+    expect(properties).toHaveProperty('operations');
+    expect(properties).not.toHaveProperty('session_id');
+    expect(properties).not.toHaveProperty('expected_revision');
   });
 
   test('preferred facades do not advertise retired work_id (#483)', () => {

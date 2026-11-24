@@ -3,23 +3,10 @@ export type { CallToolResult, McpToolDefinition } from '../../../packages/protoc
 import { createHash } from 'crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
-import {
-  createEditSavepoint,
-  finalizeEditSession,
-  getEditSession,
-  getEditSessionDiff,
-  listEditSessions,
-  rollbackEditSession,
-} from '../../../src/runtime/editing/edit-session';
 import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/runtime/editing/edit-operation-contract';
 import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/leases/store';
 import type { ResourceClaimSpec } from '../../../src/runtime/execution/jobs/types';
-import { listAgentJobs } from '../../../src/cli/agent-jobs/job-manager';
 import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
-import {
-  buildExecutionDiagnostics,
-  buildRequirementBoard,
-} from '../../../src/runtime/control-plane/facade/requirement-board';
 import {
   listCapabilityDescriptors,
   summarizeCapabilityGroups,
@@ -39,7 +26,6 @@ import {
 } from '../../../src/runtime/shared/runtime-config';
 import { PREFERRED_FACADE_TOOL_NAMES } from '../toolset-names';
 import { buildLocalConnectorStatusForRepo } from '../../../src/cli/local-bridge/connector-freshness';
-import { gitSnapshot } from '../../../src/runtime/repositories/inspector';
 import {
   listSessions,
   openSession,
@@ -137,27 +123,20 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function editExecutionIdentity(ctx: McpToolContext): {
-  repoId: string;
-  checkoutId: string;
-  principalId: string;
-  controllerInstanceId: string;
-} {
+function mcpRepositoryIdentity(ctx: McpToolContext): { repoId: string; checkoutId: string } {
   const local = sha256(ctx.repoRoot).slice(0, 16);
   return {
-    repoId: ctx.repoId?.trim() || `repo-local-${local}`,
-    checkoutId: ctx.checkoutId?.trim() || `checkout-local-${local}`,
-    principalId: ctx.principalId?.trim() || 'legacy-controller',
-    controllerInstanceId: ctx.controllerInstanceId?.trim() || 'legacy-controller',
+    repoId: ctx.repoId?.trim() || 'repo-local-' + local,
+    checkoutId: ctx.checkoutId?.trim() || 'checkout-local-' + local,
   };
 }
 
 /**
- * Existing repository mutation lock, shared with safe_patch_apply and the
- * Local Bridge editor. Keep the whole synchronous edit primitive under one
- * lock; no nested lock in edit-session.ts, and no second mutation authority.
+ * Exact source-path claims for the MCP mutation entrypoint. The canonical
+ * Semantic Mutation Planner performs atomic CAS; this wrapper coordinates
+ * those paths with other repository mutation owners.
  */
-function editSourceClaims(ctx: McpToolContext, paths: Iterable<string>): ResourceClaimSpec[] | undefined {
+function mcpSourceClaims(ctx: McpToolContext, paths: Iterable<string>): ResourceClaimSpec[] | undefined {
   // Unknown checkout identity keeps the existing conservative repository fence.
   const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
   const checkoutId =
@@ -174,7 +153,7 @@ function editSourceClaims(ctx: McpToolContext, paths: Iterable<string>): Resourc
   }));
 }
 
-function withLegacyEditMutation<T>(
+function withMcpRepositoryMutation<T>(
   ctx: McpToolContext,
   operation: string,
   mutate: (leaseOwnerJobId?: string) => T,
@@ -505,7 +484,6 @@ export function buildMcpToolDefinitions(
             issue_id: { type: 'string' },
             task_id: { type: 'string' },
             run_id: { type: 'string' },
-            edit_session_id: { type: 'string' },
             since: { type: 'string' },
             until: { type: 'string' },
             limit: { type: 'number' },
@@ -526,7 +504,6 @@ export function buildMcpToolDefinitions(
             issue_id: { type: 'string' },
             task_id: { type: 'string' },
             run_id: { type: 'string' },
-            edit_session_id: { type: 'string' },
           },
           additionalProperties: false,
         },
@@ -535,18 +512,10 @@ export function buildMcpToolDefinitions(
       {
         name: 'apply_patch',
         description:
-          'Apply a sessionless mutation batch through the canonical Semantic Mutation Planner. Do not pass legacy session_id or expected_revision; omit them and use operations plus optional allowed_paths.',
+          'Apply a sessionless mutation batch through the canonical Semantic Mutation Planner using operations, optional allowed_paths, and optional refresh_fingerprints.',
         inputSchema: {
           type: 'object',
           properties: {
-            session_id: {
-              type: 'string',
-              description: 'Retired legacy field. If supplied, the call is rejected without writing.',
-            },
-            expected_revision: {
-              type: 'number',
-              description: 'Retired EditSession revision field. If supplied, the call is rejected without writing.',
-            },
             operations: {
               type: 'array',
               items: EDIT_OPERATION_INPUT_SCHEMA,
@@ -562,109 +531,6 @@ export function buildMcpToolDefinitions(
           openWorldHint: false,
           destructiveHint: false,
         },
-      },
-      {
-        name: 'get_edit_session',
-        description: 'Read an edit session, revisions, savepoints, and operation manifest.',
-        inputSchema: {
-          type: 'object',
-          properties: { session_id: { type: 'string' } },
-          required: ['session_id'],
-          additionalProperties: false,
-        },
-        annotations: readOnly,
-      },
-      {
-        name: 'list_edit_sessions',
-        description: 'List recent direct-edit sessions with revision, changed-file, and check summaries.',
-        inputSchema: {
-          type: 'object',
-          properties: { limit: { type: 'number' } },
-          additionalProperties: false,
-        },
-        annotations: readOnly,
-      },
-      {
-        name: 'get_edit_session_diff',
-        description: 'Read the current aggregate localized diff for one direct-edit session.',
-        inputSchema: {
-          type: 'object',
-          properties: { session_id: { type: 'string' } },
-          required: ['session_id'],
-          additionalProperties: false,
-        },
-        annotations: readOnly,
-      },
-      {
-        name: 'create_edit_savepoint',
-        description: 'Name the current edit revision so later patch batches can be rolled back to it.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string' },
-            name: { type: 'string' },
-          },
-          required: ['session_id', 'name'],
-          additionalProperties: false,
-        },
-        annotations: write,
-      },
-      {
-        name: 'verify_edit_session',
-        description:
-          'Verify the current edit revision through persisted Process Runtime checks. Retries with the same request_id reuse the original process and terminal receipts are attached to the exact revision.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string' },
-            check_ids: { type: 'array', items: { type: 'string' } },
-            request_id: { type: 'string' },
-            reviewer: { type: 'string' },
-            note: { type: 'string' },
-          },
-          required: ['session_id'],
-          additionalProperties: false,
-        },
-        annotations: write,
-      },
-      {
-        name: 'rollback_edit_session',
-        description: 'Rollback an active edit session completely, to a prior revision, or to a named savepoint.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string' },
-            to_revision: { type: 'number', description: 'Keep revisions up to this value; omit for full rollback.' },
-            savepoint: { type: 'string', description: 'Rollback to a named savepoint.' },
-          },
-          required: ['session_id'],
-          additionalProperties: false,
-        },
-        annotations: {
-          readOnlyHint: false,
-          openWorldHint: false,
-          destructiveHint: false,
-        },
-      },
-      {
-        name: 'finalize_edit_session',
-        description:
-          'Close an active edit session. Configured checks must pass; sessions without configured checks finalize directly.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string' },
-            reviewer: { type: 'string' },
-            note: { type: 'string' },
-            confirm_authorization: {
-              type: 'boolean',
-              description: 'Required when post-diff assurance detects protected paths or high semantic risk.',
-            },
-          },
-          required: ['session_id'],
-          additionalProperties: false,
-        },
-        annotations: write,
       },
     );
   }
@@ -959,7 +825,6 @@ export async function callMcpTool(
           issueId: typeof args.issue_id === 'string' ? args.issue_id : undefined,
           taskId: typeof args.task_id === 'string' ? args.task_id : undefined,
           runId: typeof args.run_id === 'string' ? args.run_id : undefined,
-          editSessionId: typeof args.edit_session_id === 'string' ? args.edit_session_id : undefined,
           since: typeof args.since === 'string' ? args.since : undefined,
           until: typeof args.until === 'string' ? args.until : undefined,
           limit: typeof args.limit === 'number' ? Math.trunc(args.limit) : undefined,
@@ -977,7 +842,6 @@ export async function callMcpTool(
             issueId: typeof args.issue_id === 'string' ? args.issue_id : undefined,
             taskId: typeof args.task_id === 'string' ? args.task_id : undefined,
             runId: typeof args.run_id === 'string' ? args.run_id : undefined,
-            editSessionId: typeof args.edit_session_id === 'string' ? args.edit_session_id : undefined,
           },
         });
         audit(ctx, name, 'ok', args, result.path);
@@ -986,13 +850,15 @@ export async function callMcpTool(
       case 'apply_patch': {
         if (ctx.policy.profile !== 'controller')
           return errorResult('TOOL_DISABLED', 'apply_patch requires the controller profile');
-        if (String(args.session_id ?? '').trim() || args.expected_revision !== undefined) {
-          const message =
-            'Legacy EditSession inputs are retired. Omit session_id and expected_revision; apply_patch now uses the sessionless Semantic Mutation Planner.';
+        const unsupportedArguments = Object.keys(args).filter(
+          (key) => !['operations', 'allowed_paths', 'refresh_fingerprints'].includes(key),
+        );
+        if (unsupportedArguments.length > 0) {
+          const message = 'unsupported apply_patch arguments: ' + unsupportedArguments.join(', ');
           audit(ctx, name, 'blocked', args, undefined, message);
-          return errorResult('SAFE_PATCH_LEGACY_SESSION_RETIRED', message);
+          return errorResult('SAFE_PATCH_ARGUMENTS_UNSUPPORTED', message, { fields: unsupportedArguments });
         }
-        const identity = editExecutionIdentity(ctx);
+        const identity = mcpRepositoryIdentity(ctx);
         const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
         const repository = resolveRepositorySelection({
           repoId: identity.repoId,
@@ -1000,7 +866,7 @@ export async function callMcpTool(
           controllerHome,
         });
         try {
-          const applied = withLegacyEditMutation(
+          const applied = withMcpRepositoryMutation(
             ctx,
             name,
             () =>
@@ -1009,7 +875,7 @@ export async function callMcpTool(
                 allowedPaths: stringList(args.allowed_paths),
                 refreshFingerprints: args.refresh_fingerprints === true,
               }),
-            editSourceClaims(ctx, extractPatchPaths(args.operations)),
+            mcpSourceClaims(ctx, extractPatchPaths(args.operations)),
           );
           audit(ctx, name, applied.status === 'failed' ? 'failed' : 'ok', args);
           return textResult(applied);
@@ -1019,129 +885,6 @@ export async function callMcpTool(
           audit(ctx, name, 'failed', args, undefined, message);
           return errorResult(code, message);
         }
-      }
-      case 'get_edit_session': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'get_edit_session requires the controller profile');
-        const session = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
-        audit(
-          ctx,
-          name,
-          'ok',
-          args,
-          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
-        );
-        return textResult(session);
-      }
-      case 'list_edit_sessions': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'list_edit_sessions requires the controller profile');
-        const limit = typeof args.limit === 'number' ? args.limit : 100;
-        audit(ctx, name, 'ok', args);
-        return textResult({ sessions: listEditSessions(ctx.repoRoot, limit) });
-      }
-      case 'get_edit_session_diff': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'get_edit_session_diff requires the controller profile');
-        const result = getEditSessionDiff(ctx.repoRoot, String(args.session_id ?? ''));
-        audit(ctx, name, 'ok', args, result.path);
-        return textResult(result);
-      }
-      case 'create_edit_savepoint': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'create_edit_savepoint requires the controller profile');
-        const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
-        const session = withLegacyEditMutation(
-          ctx,
-          name,
-          () => createEditSavepoint(ctx.repoRoot, current.sessionId, String(args.name ?? '')),
-          editSourceClaims(
-            ctx,
-            current.operations.map((entry) => entry.path),
-          ),
-        );
-        audit(
-          ctx,
-          name,
-          'ok',
-          args,
-          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
-        );
-        return textResult(session);
-      }
-      case 'verify_edit_session': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'verify_edit_session requires the controller profile');
-        const session = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
-        const requestId = typeof args.request_id === 'string' ? args.request_id.trim() || undefined : undefined;
-        audit(ctx, name, 'blocked', args, session.diffPath);
-        return errorResult(
-          'VERIFY_EDIT_SESSION_LOCAL_JOB_RETIRED',
-          'Edit-session verification no longer creates a Local Bridge Job. Run checks through Process Runtime, then finalize with the recorded evidence.',
-          { sessionId: session.sessionId, revision: session.currentRevision, requestId },
-        );
-      }
-      case 'rollback_edit_session': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'rollback_edit_session requires the controller profile');
-        const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
-        const session = withLegacyEditMutation(
-          ctx,
-          name,
-          () =>
-            rollbackEditSession(ctx.repoRoot, current.sessionId, {
-              toRevision: typeof args.to_revision === 'number' ? Math.trunc(args.to_revision) : undefined,
-              savepoint: typeof args.savepoint === 'string' ? args.savepoint : undefined,
-            }),
-          editSourceClaims(
-            ctx,
-            current.operations.map((entry) => entry.path),
-          ),
-        );
-        audit(
-          ctx,
-          name,
-          'ok',
-          args,
-          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
-        );
-        return textResult(session);
-      }
-      case 'finalize_edit_session': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'finalize_edit_session requires the controller profile');
-        const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
-        const identity = editExecutionIdentity(ctx);
-        const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
-        const session = withLegacyEditMutation(
-          ctx,
-          name,
-          (leaseOwnerJobId) =>
-            finalizeEditSession(ctx.repoRoot, current.sessionId, {
-              reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
-              note: typeof args.note === 'string' ? args.note : undefined,
-              approvalConfirmed: args.confirm_authorization === true,
-              controllerHome,
-              leaseOwnerJobId,
-              binding: {
-                repoId: identity.repoId,
-                checkoutId: identity.checkoutId,
-                principalId: identity.principalId,
-              },
-            }),
-          editSourceClaims(
-            ctx,
-            current.operations.map((entry) => entry.path),
-          ),
-        );
-        audit(
-          ctx,
-          name,
-          'ok',
-          args,
-          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
-        );
-        return textResult(session);
       }
       case 'list_workflow_files': {
         const files = workflowFileCandidates(ctx.repoRoot)
