@@ -839,6 +839,18 @@ struct AgentPane: View {
                     }
                 }
             }
+            .overlay(alignment:.trailing) {
+                if workSurfacePresentation == .overlay {
+                    workSurfaceContent()
+                        .frame(width:AgentWorkSurfaceLayout.overlayWidth(availableWidth:splitWidth))
+                        .frame(maxHeight:.infinity)
+                        .forgeFloatingGlass(cornerRadius:18)
+                        .transition(reduceMotion
+                                    ? .identity
+                                    : .move(edge:.trailing).combined(with:.opacity))
+                        .zIndex(2)
+                }
+            }
             VStack(alignment:.leading,spacing:0) {
                 ZStack(alignment:.topLeading) {
                     if model.draft.isEmpty {
@@ -1103,16 +1115,6 @@ struct AgentPane: View {
             .frame(minWidth:AgentWorkSurfaceLayout.conversationMinimumWidth)
             .frame(maxWidth:.infinity,maxHeight:.infinity)
 
-            if workSurfacePresentation == .overlay {
-                workSurfaceContent()
-                    .frame(width:AgentWorkSurfaceLayout.overlayWidth(availableWidth:splitWidth))
-                    .frame(maxHeight:.infinity)
-                    .forgeFloatingGlass(cornerRadius:18)
-                    .transition(reduceMotion
-                                ? .identity
-                                : .move(edge:.trailing).combined(with:.opacity))
-                    .zIndex(2)
-            }
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .padding(8)
