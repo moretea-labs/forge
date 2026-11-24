@@ -569,81 +569,6 @@ export function transitionExecutionJob(
   );
 }
 
-export function markExecutionJobSchedulerObserved(
-  controllerHome: string,
-  repoId: string,
-  jobId: string,
-): ExecutionJob | undefined {
-  return writeJobState(
-    controllerHome,
-    repoId,
-    jobId,
-    (current) => {
-      if (![...WAITING_JOB_STATUSES, 'dispatched'].includes(current.status)) return undefined;
-      if (current.timings?.schedulerObservedAt) return undefined;
-      const observedAt = now();
-      const queueDeadlineAt = current.timeoutPolicy
-        ? deadlineAfter(observedAt, current.timeoutPolicy.queueTimeoutMs)
-        : current.queueDeadlineAt;
-      return {
-        next: {
-          ...current,
-          queueDeadlineAt,
-          deadlineAt: queueDeadlineAt ?? current.deadlineAt,
-          timings: {
-            ...current.timings,
-            schedulerObservedAt: observedAt,
-          },
-        },
-        eventType: 'job_scheduler_observed',
-        eventData: { queueDeadlineAt },
-      };
-    },
-    `observe-job:${jobId}`,
-  );
-}
-
-export function claimExecutionJobForDispatch(
-  controllerHome: string,
-  repoId: string,
-  jobId: string,
-  leaseRefs: ExecutionJob['leaseRefs'],
-  eventData?: Record<string, unknown>,
-): ExecutionJob | undefined {
-  return writeJobState(
-    controllerHome,
-    repoId,
-    jobId,
-    (current) => {
-      if (!WAITING_JOB_STATUSES.has(current.status)) return undefined;
-      const observedAt = current.timings?.schedulerObservedAt ?? now();
-      const queueDeadlineAt =
-        current.queueDeadlineAt ??
-        (current.timeoutPolicy ? deadlineAfter(observedAt, current.timeoutPolicy.queueTimeoutMs) : undefined);
-      return {
-        next: {
-          ...current,
-          status: 'dispatched',
-          attempt: current.attempt + 1,
-          workerPid: undefined,
-          heartbeatAt: undefined,
-          leaseRefs,
-          queueDeadlineAt,
-          deadlineAt: queueDeadlineAt ?? current.deadlineAt,
-          timings: {
-            ...current.timings,
-            schedulerObservedAt: observedAt,
-            leaseCreatedAt: leaseRefs.length > 0 ? observedAt : current.timings?.leaseCreatedAt,
-          },
-        },
-        eventType: 'job_dispatched',
-        eventData,
-      };
-    },
-    `claim-job:${jobId}`,
-  );
-}
-
 export function attachExecutionWorker(
   controllerHome: string,
   repoId: string,
@@ -940,24 +865,6 @@ export async function cancelExecutionJob(
   releaseExecutionLeases(controllerHome, repoId, jobId, current.leaseRefs);
   await terminateProcessTree(current.workerPid);
   return cancelled;
-}
-
-export function removeExecutionJobFromActiveIndex(controllerHome: string, job: ExecutionJob): void {
-  withControllerLock(
-    controllerHome,
-    { scope: 'global', resource: 'execution-index' },
-    `execution-index-remove:${job.jobId}`,
-    () => {
-      const active = readActiveIndex(controllerHome);
-      active.jobs = active.jobs.filter((entry) => entry.jobId !== job.jobId);
-      writeActiveIndex(controllerHome, active);
-    },
-    10_000,
-  );
-}
-
-export function removeRequestIndex(controllerHome: string, requestId: string): void {
-  removeFile(requestPath(controllerHome, requestId));
 }
 
 export interface RetiredExecutionJobCleanupReport {

@@ -2183,6 +2183,11 @@ forbid(
   /executionJobCreationRetired|EXECUTION_JOB_RETENTION_REQUIRES_RETIRED_CREATION/,
   'historical ExecutionJob retention must not depend on a redundant retired-creation sentinel',
 );
+forbid(
+  'src/runtime/execution/jobs/store.ts',
+  /export function (?:markExecutionJobSchedulerObserved|claimExecutionJobForDispatch|removeExecutionJobFromActiveIndex|removeRequestIndex)\b/,
+  'zero-consumer ExecutionJob scheduling/index mutation APIs must stay physically absent',
+);
 requireMissing('src/runtime/execution/jobs/legacy-adapter.ts');
 requireMissing('src/cli/controller/migrated-issue-decision.ts');
 requireMissing('src/cli/mcp/oauth-client-retirement.ts');
