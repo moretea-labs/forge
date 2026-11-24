@@ -1,4 +1,5 @@
 import AppKit
+import Foundation
 import XCTest
 
 @testable import ForgeNative
@@ -90,5 +91,51 @@ final class ForgeClientLayoutTests: XCTestCase {
     XCTAssertEqual(ForgeClientDesign.Shell.readingGutter, 18)
     XCTAssertEqual(ForgeClientDesign.Shell.compactSidebarListMin, 152)
     XCTAssertEqual(ForgeClientDesign.Shell.compactSidebarListIdeal, 176)
+  }
+
+  func testDropdownsDoNotRegressToRaisedPopupPickers() throws {
+    let testFile = URL(fileURLWithPath: #filePath)
+    let packageRoot = testFile
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let sourcesRoot = packageRoot.appendingPathComponent("Sources/ForgeNative")
+    let fileManager = FileManager.default
+    let sourceURLs = (fileManager.enumerator(
+      at: sourcesRoot,
+      includingPropertiesForKeys: nil
+    )?.allObjects as? [URL] ?? []).filter { $0.pathExtension == "swift" }
+
+    var raisedMenuPickerFiles: [String] = []
+    var nonSegmentedPickerFiles: [String] = []
+
+    for url in sourceURLs {
+      let source = try String(contentsOf: url, encoding: .utf8)
+      let relativePath = url.path.replacingOccurrences(
+        of: packageRoot.path + "/",
+        with: ""
+      )
+      if source.contains(".pickerStyle(.menu)") {
+        raisedMenuPickerFiles.append(relativePath)
+      }
+
+      let pickerSegments = source.components(separatedBy: "Picker(").dropFirst()
+      for segment in pickerSegments {
+        let localControl = String(segment.prefix(600))
+        if !localControl.contains(".pickerStyle(.segmented)") {
+          nonSegmentedPickerFiles.append(relativePath)
+          break
+        }
+      }
+    }
+
+    XCTAssertTrue(
+      raisedMenuPickerFiles.isEmpty,
+      "Dropdowns must use Menu + ForgeMenuTriggerLabel, not raised .pickerStyle(.menu): \(raisedMenuPickerFiles)"
+    )
+    XCTAssertTrue(
+      nonSegmentedPickerFiles.isEmpty,
+      "Picker is reserved for segmented controls; dropdowns must use Menu + ForgeMenuTriggerLabel: \(nonSegmentedPickerFiles)"
+    )
   }
 }
