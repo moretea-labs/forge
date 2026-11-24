@@ -916,10 +916,6 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/engineering-design-gate.test.ts": {
-      "module": "workflow",
-      "resource": "temp-isolated"
-    },
     "tests/runtime/first-party-design-knowledge.test.ts": {
       "module": "controller",
       "resource": "temp-isolated"
@@ -1009,7 +1005,7 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/engineering-risk-profile.test.ts": {
+    "tests/runtime/project-engineering-contract.test.ts": {
       "module": "workflow",
       "resource": "temp-isolated"
     }

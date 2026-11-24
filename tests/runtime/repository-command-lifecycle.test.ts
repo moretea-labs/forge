@@ -58,7 +58,6 @@ import {
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { terminateProcessTree } from '../../src/runtime/shared/process-tree';
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from './process-hygiene';
-import { trustedEngineeringEvidence } from '../helpers/engineering-evidence';
 
 const roots: string[] = [];
 const tracked: ChildProcess[] = [];

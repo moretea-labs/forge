@@ -1346,7 +1346,7 @@ printf '{"ok":true}\\n'
     expect((closure?.readiness as { status?: string } | undefined)?.status).not.toBe('insufficient');
 
     const issued = validateRuntimeIssuedContextClosureReceipt(closure as unknown as ContextClosureReceipt);
-    expect(issued.receiptId).toBe(closure?.receiptId as string | undefined);
+    expect(issued.receiptId).toBe(String(closure?.receiptId));
     expect(issued.sourceRevision).toBe(sourceRevision);
     expect(() =>
       validateRuntimeIssuedContextClosureReceipt({

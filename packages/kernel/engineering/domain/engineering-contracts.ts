@@ -1,28 +1,5 @@
-import type {
-  DesignDecisionContractReceipt,
-  EngineeringBlockerDispositionReceipt,
-  EngineeringComplexityBudget,
-  EngineeringMutationClass,
-  IndependentCritiqueReceipt,
-  ProductDoDReceipt,
-} from './engineering-design';
-
-export const ENGINEERING_RISK_PROFILE_VERSION = 'engineering-risk-profile-v1' as const;
 export const ENGINEERING_RISK_CLASSES = ['low', 'normal', 'high', 'critical'] as const;
 export type EngineeringRiskClass = (typeof ENGINEERING_RISK_CLASSES)[number];
-export const ENGINEERING_EVIDENCE_KINDS = [
-  'project_contract',
-  'context_closure',
-  'product_dod',
-  'design_decision',
-  'independent_critique',
-  'semantic_tools',
-  'focused_validation',
-  'real_journey',
-  'fresh_review',
-] as const;
-export type EngineeringEvidenceKind = (typeof ENGINEERING_EVIDENCE_KINDS)[number];
-export type EngineeringEvidenceRequirement = 'required' | 'conditional' | 'optional';
 
 /** Exact source-bound reference for a loaded project engineering contract; the project file remains authority. */
 export interface ProjectEngineeringContractReceipt {
@@ -37,63 +14,6 @@ export interface ProjectEngineeringContractReceipt {
     source: 'repository';
     loadedAt: string;
   };
-}
-
-export interface EngineeringAdmissionEvidence {
-  projectContractReceipt?: ProjectEngineeringContractReceipt;
-  /** @deprecated Legacy audit-only id; does not satisfy enforced admission. */
-  contextClosureReceiptId?: string;
-  contextClosureReceipt?: ContextClosureReceipt;
-  /** @deprecated Legacy audit-only id; does not satisfy enforced admission. */
-  productDodReceiptId?: string;
-  /** @deprecated Legacy audit-only id; does not satisfy enforced admission. */
-  designDecisionReceiptId?: string;
-  /** @deprecated Legacy audit-only id; does not satisfy enforced admission. */
-  independentCritiqueReceiptId?: string;
-  productDodReceipt?: ProductDoDReceipt;
-  designDecisionReceipt?: DesignDecisionContractReceipt;
-  independentCritiqueReceipt?: IndependentCritiqueReceipt;
-  semanticToolReceiptIds?: string[];
-  validationReceiptIds?: string[];
-  journeyReceiptIds?: string[];
-  freshReviewReceiptId?: string;
-  conditions?: {
-    semanticToolsRequired?: boolean;
-    realJourneyRequired?: boolean;
-  };
-}
-
-export interface EngineeringContextReceipt {
-  schemaVersion: 1;
-  profileVersion: typeof ENGINEERING_RISK_PROFILE_VERSION;
-  riskClass: EngineeringRiskClass;
-  sourceIdentity: { kind: 'revision'; revision: string } | { kind: 'unborn' } | { kind: 'unknown' };
-  projectContractReceipt?: ProjectEngineeringContractReceipt;
-  evidence: {
-    contextClosureReceiptId?: string;
-    contextClosureReceipt?: ContextClosureReceipt;
-    productDodReceiptId?: string;
-    designDecisionReceiptId?: string;
-    independentCritiqueReceiptId?: string;
-    productDodReceipt?: ProductDoDReceipt;
-    designDecisionReceipt?: DesignDecisionContractReceipt;
-    independentCritiqueReceipt?: IndependentCritiqueReceipt;
-    semanticToolReceiptIds: string[];
-    validationReceiptIds: string[];
-    journeyReceiptIds: string[];
-    freshReviewReceiptId?: string;
-  };
-  conditions: {
-    semanticToolsRequired: boolean;
-    realJourneyRequired: boolean;
-  };
-  semanticScope?: { keys: string[]; mutationClass: EngineeringMutationClass };
-  complexityBudget?: EngineeringComplexityBudget;
-  designState?: 'ready' | 'revisit_required';
-  blockerDispositions?: EngineeringBlockerDispositionReceipt[];
-  missingAdmissionEvidence: EngineeringEvidenceKind[];
-  missingCompletionEvidence: EngineeringEvidenceKind[];
-  recordedAt: string;
 }
 
 export type ContextClosureReadinessStatus = 'ready' | 'degraded' | 'insufficient';
