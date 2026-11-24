@@ -258,6 +258,19 @@ enum ForgeClientDesign {
     static let supporting: Font = .system(size: 11)
     static let control: Font = .system(size: 10.5, weight: .medium)
   }
+  enum Transcript {
+    static let body: Font = .system(size: 12.75)
+    static let lineSpacing: CGFloat = 3
+    static let blockSpacing: CGFloat = 8
+    static let listSpacing: CGFloat = 6
+    static let heading1: Font = .system(size: 18, weight: .semibold)
+    static let heading2: Font = .system(size: 15.5, weight: .semibold)
+    static let heading3: Font = .system(size: 14, weight: .semibold)
+    static let heading4: Font = .system(size: 12.75, weight: .medium)
+    static let table: Font = .system(size: 11.25)
+    static let code: Font = .system(size: 11.25, design: .monospaced)
+    static let codeHeader: Font = .system(size: 9.75, weight: .medium, design: .monospaced)
+  }
   enum Size {
     static let approvalSheet: CGFloat = 520
     static let checkpointSheet: CGFloat = 500

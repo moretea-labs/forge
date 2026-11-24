@@ -79,7 +79,7 @@ struct AgentAssistantMessageBody: View {
     private var blocks: [AgentMessageBlock] { AgentMessageBlock.parse(text) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: ForgeClientDesign.Transcript.blockSpacing) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                 content(block, blockIndex: index)
             }
@@ -129,21 +129,26 @@ struct AgentAssistantMessageBody: View {
         case .heading(let level, let title):
             AgentInlineMarkdown(
                 text: title,
-                font: .system(size: level == 1 ? 20 : level == 2 ? 17 : level == 3 ? 15 : 13,
-                              weight: level <= 3 ? .semibold : .medium)
+                font: level == 1
+                    ? ForgeClientDesign.Transcript.heading1
+                    : level == 2
+                        ? ForgeClientDesign.Transcript.heading2
+                        : level == 3
+                            ? ForgeClientDesign.Transcript.heading3
+                            : ForgeClientDesign.Transcript.heading4
             )
-                .padding(.top, level <= 2 ? 7 : 3)
+                .padding(.top, level <= 2 ? 6 : 2)
         case .divider:
             Divider().opacity(0.5).padding(.vertical, 3)
         case .quote(let quote):
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
                 Rectangle().fill(Color.secondary.opacity(0.34)).frame(width: 2)
                 AgentInlineMarkdown(text: quote, color: .secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .fixedSize(horizontal: false, vertical: true)
         case .list(let items):
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: ForgeClientDesign.Transcript.listSpacing) {
                 ForEach(Array(items.enumerated()), id: \.offset) { itemIndex, item in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Color.clear.frame(width: CGFloat(item.indent * 14), height: 1)
@@ -217,7 +222,9 @@ struct AgentAssistantMessageBody: View {
     private func tableCell(_ text: String, header: Bool = false) -> some View {
         AgentInlineMarkdown(
             text: text,
-            font: .system(size: 11.5, weight: header ? .semibold : .regular)
+            font: header
+                ? .system(size: 11.25, weight: .semibold)
+                : ForgeClientDesign.Transcript.table
         )
         .frame(minWidth: 96, maxWidth: 310, alignment: .leading)
         .padding(.horizontal, 10)
@@ -227,7 +234,7 @@ struct AgentAssistantMessageBody: View {
 
 private struct AgentInlineMarkdown: View {
     let text: String
-    var font: Font = .system(size: 13)
+    var font: Font = ForgeClientDesign.Transcript.body
     var color: Color = .primary
 
     var body: some View {
@@ -245,7 +252,7 @@ private struct AgentInlineMarkdown: View {
         }
         .font(font)
         .foregroundStyle(color)
-        .lineSpacing(5)
+        .lineSpacing(ForgeClientDesign.Transcript.lineSpacing)
         .textSelection(.enabled)
     }
 }
@@ -294,7 +301,7 @@ struct AgentCodeBlockView: View {
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.tertiary)
                 Text(language?.isEmpty == false ? language! : "code")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .font(ForgeClientDesign.Transcript.codeHeader)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 8)
@@ -321,13 +328,13 @@ struct AgentCodeBlockView: View {
             .font(.system(size: 10, weight: .medium))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 10)
-            .frame(height: 31)
+            .frame(height: 29)
 
             ScrollView(.horizontal) {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                         Text(row.isEmpty ? " " : row)
-                            .font(.system(size: 11.5, design: .monospaced))
+                            .font(ForgeClientDesign.Transcript.code)
                             .foregroundStyle(diffColor(row))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -338,7 +345,7 @@ struct AgentCodeBlockView: View {
             }
             .scrollIndicators(.automatic)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.035))
+            .background(Color.primary.opacity(0.028))
         }
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
