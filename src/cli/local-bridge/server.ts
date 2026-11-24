@@ -86,9 +86,7 @@ import {
   defaultLocalAgentRunners,
 } from '../../runtime/shared/runtime-config';
 import { taskWriteScopesConflict } from '../controller/execution-policy';
-import { completionDecisionQueues, inspectCompletionBacklog } from '../controller/completion-backlog';
-import { inspectStuckControllerStates } from '../controller/stuck-state-migration';
-import { finishEditSession, finishTaskRun } from '../controller/completion-orchestrator';
+import { finishEditSession } from '../controller/completion-orchestrator';
 import { getToolPolicy } from '../../runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
 import { createMcpToolContext as createControllerMcpToolContext } from '../../../adapters/mcp/server';
@@ -393,38 +391,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     : projectBoard(repoRoot);
   const taskLedger = buildControllerTaskLedgerProjection(repoRoot);
   const operationalPlan = buildControllerOperationalPlan(repoRoot, taskLedger);
-  const completionBacklog = retiredLegacyControlPlane
-    ? {
-        scannedAt: new Date().toISOString(),
-        counts: {},
-        finishableRunIds: [],
-        needsHumanReviewRunIds: [],
-        retryTaskRefs: [],
-        items: [],
-        recommendations: ['Use Work and Execution Diagnostics.'],
-      }
-    : inspectCompletionBacklog(repoRoot, { limit: 100 });
-  const completionQueues = retiredLegacyControlPlane
-    ? {
-        scannedAt: new Date().toISOString(),
-        counts: {},
-        autoFinish: [],
-        needsHumanReview: [],
-        retryRequired: [],
-        noRunEvidence: [],
-        systemBlocked: [],
-        recentlyTerminal: [],
-        recommendations: ['Use Work and Execution Diagnostics.'],
-      }
-    : completionDecisionQueues(repoRoot, { limit: 100 });
-  const stuckStates = retiredLegacyControlPlane
-    ? {
-        generatedAt: new Date().toISOString(),
-        findings: [],
-        counts: {},
-        recommendations: ['Use Work and Execution Diagnostics.'],
-      }
-    : inspectStuckControllerStates(repoRoot, { limit: 100 });
   const runtime = runtimeControllerSnapshot(repoRoot);
   const executionJobs = 'executionJobs' in runtime ? (runtime.executionJobs ?? []) : [];
   const controllerHome = resolveControllerHome();
@@ -542,30 +508,8 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
           updatedAt: job.updatedAt,
         })),
     ].slice(0, 12),
-    readyForReview: [
-      ...completionQueues.autoFinish.map((item) => ({
-        kind: 'completion',
-        id: item.runId ?? `${item.issueId}/${item.taskId}`,
-        runId: item.runId,
-        issueId: item.issueId,
-        taskId: item.taskId,
-        title: item.title,
-        status: item.action,
-        updatedAt: undefined,
-      })),
-      ...reviewTasks,
-    ].slice(0, 12),
+    readyForReview: reviewTasks.slice(0, 12),
     pendingApprovals: [
-      ...completionQueues.needsHumanReview.map((item) => ({
-        kind: 'completion-review',
-        id: item.runId ?? `${item.issueId}/${item.taskId}`,
-        runId: item.runId,
-        issueId: item.issueId,
-        taskId: item.taskId,
-        title: item.title,
-        status: item.action,
-        updatedAt: undefined,
-      })),
       ...localJobs
         .filter((job) => job.status === 'pending_approval')
         .map((job) => ({
@@ -707,11 +651,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     timeoutPolicy: localBridgeTimeoutPolicy(repoRoot),
     runtime,
     decisionQueues,
-    completion: {
-      backlog: completionBacklog,
-      queues: completionQueues,
-      stuckStates,
-    },
     execution: {
       defaultMode: 'direct-edit',
       agentRunner: mcpConfig?.devMode?.agentRunner === true,
@@ -897,44 +836,50 @@ function userFacingAttentionItems(snapshot: LocalControllerSnapshot): UserFacing
     seen.add(item.id);
     items.push(item);
   };
-  const queues = snapshot.completion.queues;
-  for (const entry of queues.needsHumanReview.slice(0, 12)) {
+  const queues = snapshot.decisionQueues;
+  for (const entry of queues.readyForReview.slice(0, 12)) {
+    const value = entry as typeof entry & Record<string, unknown>;
     push({
-      id: `confirm:${entry.runId ?? `${entry.issueId}:${entry.taskId}`}`,
+      id: `review:${String(value.issueId ?? value.id ?? value.title)}:${String(value.taskId ?? '')}`,
       category: 'confirm_result',
       categoryLabel: '任务待确认',
-      title: entry.title,
-      reason: entry.reason || '任务已经产出结果，需要你确认完成或打回修改。',
+      title: String(value.title ?? '任务结果待确认'),
+      reason: '任务已有可审阅结果，请直接查看实际变更和验证结果。',
       scope: '当前仓库',
       icon: '✓',
       primaryAction: action('view_advanced', '查看结果'),
-      refs: { issueId: entry.issueId, taskId: entry.taskId, runId: entry.runId },
+      refs: {
+        ...(typeof value.issueId === 'string' ? { issueId: value.issueId } : {}),
+        ...(typeof value.taskId === 'string' ? { taskId: value.taskId } : {}),
+      },
     });
   }
-  for (const entry of queues.retryRequired.slice(0, 8)) {
+  for (const entry of queues.pendingApprovals.slice(0, 12)) {
+    const value = entry as typeof entry & Record<string, unknown>;
     push({
-      id: `retry:${entry.runId ?? `${entry.issueId}:${entry.taskId}`}`,
-      category: 'fix_failed_run',
-      categoryLabel: '失败需要处理',
-      title: entry.title,
-      reason: entry.reason || '最近一次执行失败，需要重新运行或打回修改。',
+      id: `approval:${String(value.id ?? value.title)}`,
+      category: 'confirm_result',
+      categoryLabel: '待授权',
+      title: String(value.title ?? '操作等待授权'),
+      reason: `当前状态：${String(value.status ?? 'pending')}。`,
       scope: '当前仓库',
-      icon: '!',
-      primaryAction: action('start_task', '重新发起'),
-      refs: { issueId: entry.issueId, taskId: entry.taskId, runId: entry.runId },
+      icon: '✓',
+      primaryAction: action('view_advanced', '查看详情'),
+      refs: {},
     });
   }
-  for (const entry of [...queues.noRunEvidence, ...queues.systemBlocked].slice(0, 8)) {
+  for (const entry of queues.needsAttention.slice(0, 12)) {
+    const value = entry as typeof entry & Record<string, unknown>;
     push({
-      id: `inspect:${entry.issueId}:${entry.taskId}`,
-      category: 'needs_inspection',
-      categoryLabel: '需要检查',
-      title: entry.title,
-      reason: entry.reason || '任务状态需要人工检查后再继续。',
+      id: `attention:${String(value.id ?? value.title)}`,
+      category: String(value.status) === 'failed' ? 'fix_failed_run' : 'needs_inspection',
+      categoryLabel: String(value.status) === 'failed' ? '失败需要处理' : '需要检查',
+      title: String(value.title ?? '执行需要处理'),
+      reason: `当前状态：${String(value.status ?? 'unknown')}。`,
       scope: '当前仓库',
-      icon: '?',
+      icon: String(value.status) === 'failed' ? '!' : '?',
       primaryAction: action('view_advanced', '查看诊断'),
-      refs: { issueId: entry.issueId, taskId: entry.taskId, runId: entry.runId },
+      refs: {},
     });
   }
   for (const plugin of snapshot.assistantPlugins
@@ -2796,23 +2741,6 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
       });
     } catch (error) {
       response.status(404).json({ error: errorMessage(error) });
-    }
-  });
-  app.post('/api/runs/:runId/finish', (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const result = finishTaskRun(repoRoot, {
-        runId: request.params.runId,
-        decision: String(request.body?.decision ?? 'auto').replace(/-/g, '_') as never,
-        reviewer: queryString(request.body?.reviewer) ?? 'local-bridge-completion',
-        note: queryString(request.body?.note),
-        cleanup: request.body?.keepWorktree !== true,
-        commit: request.body?.commit !== false,
-      });
-      localSnapshotCache.delete(repoRoot);
-      response.json(result);
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
     }
   });
   app.get('/api/runs/:runId/diff', (request, response) => {

@@ -10,7 +10,7 @@ import { buildControllerTaskLedgerProjection } from '../../src/cli/controller/ta
 import { inspectProjectGovernance, reconcileProjectGovernance } from '../../src/cli/controller/governance';
 import { clearCurrentIssue, loadControllerProjectState, saveControllerProjectState } from '../../src/cli/controller/project-state';
 import { finishEditSession, finishTaskRun } from '../../src/cli/controller/completion-orchestrator';
-import { applyCompletionDecision, finishCompletionBacklog, inspectCompletionBacklog } from '../../src/cli/controller/completion-backlog';
+import { inspectCompletionBacklog } from '../../src/cli/controller/completion-backlog';
 import { continueTaskAfterSuccessfulRun } from '../../src/cli/controller/execution-completion';
 import { applyStuckStateMigration, inspectStuckControllerStates } from '../../src/cli/controller/stuck-state-migration';
 
@@ -168,8 +168,6 @@ describe('legacy control-plane cutover', () => {
       expect(() => reconcileProjectGovernance(repoRoot)).toThrow('LEGACY_GOVERNANCE_RECONCILIATION_RETIRED');
       expect(() => finishTaskRun(repoRoot, { runId: 'RUN-MISSING' })).toThrow('LEGACY_TASK_RUN_COMPLETION_RETIRED');
       expect(() => finishEditSession(repoRoot, { sessionId: 'EDIT-MISSING' })).toThrow('LEGACY_EDIT_SESSION_COMPLETION_RETIRED');
-      expect(() => finishCompletionBacklog(repoRoot, { dryRun: false })).toThrow('LEGACY_COMPLETION_BACKLOG_RETIRED');
-      expect(() => applyCompletionDecision(repoRoot, { action: 'finish', runId: 'RUN-MISSING' })).toThrow('LEGACY_COMPLETION_DECISION_RETIRED');
       expect(() => applyStuckStateMigration(repoRoot, { dryRun: false })).toThrow('LEGACY_STUCK_STATE_MIGRATION_RETIRED');
       expect(inspectCompletionBacklog(repoRoot)).toMatchObject({ items: [], finishableRunIds: [], needsHumanReviewRunIds: [] });
       expect(inspectStuckControllerStates(repoRoot)).toMatchObject({ findings: [] });

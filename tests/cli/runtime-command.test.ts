@@ -436,9 +436,13 @@ describe('runtime command surface', () => {
       '/api/completion/stuck',
       '/api/completion/stuck/migrate',
       '/api/controller/codex-continuation',
+      '/api/runs/:runId/finish',
     ]) {
       expect(localBridgeServer).not.toContain(retiredCompletionRoute);
     }
+    expect(localBridgeServer).not.toContain('completionBacklog');
+    expect(localBridgeServer).not.toContain('completionQueues');
+    expect(localBridgeServer).not.toContain('stuckStates');
 
     expect(existsSync(join(ROOT, 'src/runtime/execution/jobs/restart-resume.ts'))).toBe(false);
     expect(executionWorker).not.toContain('runtimeToolArgumentsForExecutionJob');
