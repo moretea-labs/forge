@@ -49,21 +49,66 @@ export function browserNativeForegroundVerificationWaitMs(value: unknown): numbe
 }
 
 const READ_ACTIONS = new Set([
-  'list_sessions', 'reconcile_sessions', 'get_handoff_status',
-  'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute', 'list_frames', 'verify_state', 'reconcile_effect',
-  'extract_links', 'extract_tables', 'extract_forms', 'snapshot_interactive', 'get_console_errors', 'get_failed_requests',
-  'wait_for_load_state', 'wait_for_selector', 'await_file_transfer',
+  'list_sessions',
+  'reconcile_sessions',
+  'get_handoff_status',
+  'get_text',
+  'get_html',
+  'query_selector',
+  'query_all',
+  'get_attribute',
+  'list_frames',
+  'verify_state',
+  'reconcile_effect',
+  'extract_links',
+  'extract_tables',
+  'extract_forms',
+  'snapshot_interactive',
+  'get_console_errors',
+  'get_failed_requests',
+  'wait_for_load_state',
+  'wait_for_selector',
+  'await_file_transfer',
 ]);
 const SCREENSHOT_ACTIONS = new Set(['screenshot']);
 const INTERNAL_RESOURCE_READ_ACTIONS = new Set(['list_unpacked_extensions']);
 const INTERNAL_RESOURCE_MUTATION_ACTIONS = new Set(['install_unpacked_extension']);
-const TRUSTED_INPUT_ACTIONS = new Set(['trusted_input', 'activate_page', 'autofill_saved_password', 'autofill_forge_vault_password']);
-const DOM_INTERACTION_ACTIONS = new Set([
-  'create_session', 'open_page', 'navigate', 'reload', 'go_back',
-  'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option', 'check', 'uncheck',
-  'press', 'run_steps', 'keyboard_shortcut', 'dispatch_event', 'attach_local_file', 'close_page',
+const TRUSTED_INPUT_ACTIONS = new Set([
+  'trusted_input',
+  'activate_page',
+  'autofill_saved_password',
+  'autofill_forge_vault_password',
 ]);
-const IDEMPOTENT_ACTIONS = new Set(['configure', 'close_session', 'clear_session', 'request_human_handoff', 'resolve_handoff']);
+const DOM_INTERACTION_ACTIONS = new Set([
+  'create_session',
+  'open_page',
+  'navigate',
+  'reload',
+  'go_back',
+  'click',
+  'click_text',
+  'double_click',
+  'hover',
+  'focus',
+  'type',
+  'fill',
+  'select_option',
+  'check',
+  'uncheck',
+  'press',
+  'run_steps',
+  'keyboard_shortcut',
+  'dispatch_event',
+  'attach_local_file',
+  'close_page',
+]);
+const IDEMPOTENT_ACTIONS = new Set([
+  'configure',
+  'close_session',
+  'clear_session',
+  'request_human_handoff',
+  'resolve_handoff',
+]);
 
 interface BrowserRuntimeActionPolicy {
   requiredCapabilities: readonly BrowserProviderCapability[];
@@ -71,9 +116,14 @@ interface BrowserRuntimeActionPolicy {
   replaySafety: BrowserActionReplaySafety;
 }
 
-const registries = new Map<string, BrowserProviderRegistry<AssistantPluginActionExecutionInput, Record<string, unknown>>>();
+const registries = new Map<
+  string,
+  BrowserProviderRegistry<AssistantPluginActionExecutionInput, Record<string, unknown>>
+>();
 
-function registryFor(runtimeKey: string): BrowserProviderRegistry<AssistantPluginActionExecutionInput, Record<string, unknown>> {
+function registryFor(
+  runtimeKey: string,
+): BrowserProviderRegistry<AssistantPluginActionExecutionInput, Record<string, unknown>> {
   let registry = registries.get(runtimeKey);
   if (!registry) {
     registry = new BrowserProviderRegistry();
@@ -88,13 +138,25 @@ export function invalidateBrowserRuntime(runtimeKey: string, reason: string): vo
 
 export function browserRuntimeActionPolicy(actionId: string): BrowserRuntimeActionPolicy {
   if (SCREENSHOT_ACTIONS.has(actionId)) {
-    return { requiredCapabilities: ['browser.screenshot', 'browser.transaction'], foreground: 'none', replaySafety: 'read_only' };
+    return {
+      requiredCapabilities: ['browser.screenshot', 'browser.transaction'],
+      foreground: 'none',
+      replaySafety: 'read_only',
+    };
   }
   if (INTERNAL_RESOURCE_READ_ACTIONS.has(actionId)) {
-    return { requiredCapabilities: ['browser.internal_resources', 'browser.transaction'], foreground: 'none', replaySafety: 'read_only' };
+    return {
+      requiredCapabilities: ['browser.internal_resources', 'browser.transaction'],
+      foreground: 'none',
+      replaySafety: 'read_only',
+    };
   }
   if (INTERNAL_RESOURCE_MUTATION_ACTIONS.has(actionId)) {
-    return { requiredCapabilities: ['browser.internal_resources', 'browser.transaction'], foreground: 'none', replaySafety: 'non_idempotent' };
+    return {
+      requiredCapabilities: ['browser.internal_resources', 'browser.transaction'],
+      foreground: 'none',
+      replaySafety: 'non_idempotent',
+    };
   }
   if (TRUSTED_INPUT_ACTIONS.has(actionId)) {
     return {
@@ -107,7 +169,11 @@ export function browserRuntimeActionPolicy(actionId: string): BrowserRuntimeActi
     return { requiredCapabilities: ['dom.read', 'browser.transaction'], foreground: 'none', replaySafety: 'read_only' };
   }
   if (DOM_INTERACTION_ACTIONS.has(actionId)) {
-    return { requiredCapabilities: ['dom.interact', 'browser.transaction'], foreground: 'none', replaySafety: 'non_idempotent' };
+    return {
+      requiredCapabilities: ['dom.interact', 'browser.transaction'],
+      foreground: 'none',
+      replaySafety: 'non_idempotent',
+    };
   }
   return {
     requiredCapabilities: ['browser.transaction'],
@@ -115,7 +181,6 @@ export function browserRuntimeActionPolicy(actionId: string): BrowserRuntimeActi
     replaySafety: IDEMPOTENT_ACTIONS.has(actionId) ? 'idempotent' : 'non_idempotent',
   };
 }
-
 
 /**
  * Post-dispatch replay is a semantic BrowserRuntime decision. Only read-only
@@ -133,7 +198,12 @@ function stringArgument(args: Record<string, unknown>, key: string): string | un
 
 function stableTargetFor(input: AssistantPluginActionExecutionInput, providerId: string): BrowserTargetIdentity {
   if (INTERNAL_RESOURCE_READ_ACTIONS.has(input.actionId) || INTERNAL_RESOURCE_MUTATION_ACTIONS.has(input.actionId)) {
-    return { providerId, resourceKind: 'browser_internal_resource', resourceId: 'unpacked-extensions', ownership: 'provider_owned' };
+    return {
+      providerId,
+      resourceKind: 'browser_internal_resource',
+      resourceId: 'unpacked-extensions',
+      ownership: 'provider_owned',
+    };
   }
   const sessionId = stringArgument(input.args, 'session_id');
   const nativeProduct = stringArgument(input.args, 'native_browser_product');
@@ -176,18 +246,28 @@ function transactionFor(
     foreground: policy.foreground,
     replaySafety: policy.replaySafety,
     action: {
-      kind: INTERNAL_RESOURCE_READ_ACTIONS.has(input.actionId) || INTERNAL_RESOURCE_MUTATION_ACTIONS.has(input.actionId)
-        ? 'internal_resource'
-        : policy.replaySafety === 'read_only' ? 'read' : policy.foreground === 'explicit_required' ? 'trusted_input' : 'dom',
+      kind:
+        INTERNAL_RESOURCE_READ_ACTIONS.has(input.actionId) || INTERNAL_RESOURCE_MUTATION_ACTIONS.has(input.actionId)
+          ? 'internal_resource'
+          : policy.replaySafety === 'read_only'
+            ? 'read'
+            : policy.foreground === 'explicit_required'
+              ? 'trusted_input'
+              : 'dom',
       operation: input.actionId,
       arguments: input.args,
     },
     ...(policy.replaySafety === 'read_only'
       ? {}
-      : { postconditions: [{ kind: 'provider_assertion', assertion: 'semantic_action_result', expected: true }] as const }),
-    timeoutMs: typeof input.args.timeout_ms === 'number' && Number.isFinite(input.args.timeout_ms)
-      ? Math.max(1, Math.trunc(input.args.timeout_ms))
-      : 60_000,
+      : {
+          postconditions: [
+            { kind: 'provider_assertion', assertion: 'semantic_action_result', expected: true },
+          ] as const,
+        }),
+    timeoutMs:
+      typeof input.args.timeout_ms === 'number' && Number.isFinite(input.args.timeout_ms)
+        ? Math.max(1, Math.trunc(input.args.timeout_ms))
+        : 60_000,
   };
 }
 
@@ -197,8 +277,11 @@ export async function executeBrowserRuntimeAction(options: {
   providers: readonly BrowserRuntimeProvider<AssistantPluginActionExecutionInput, Record<string, unknown>>[];
 }): Promise<Record<string, unknown>> {
   if (options.providers.length !== 1) {
-    throw new AssistantPluginError('PLUGIN_BROWSER_PROVIDER_CARDINALITY_INVALID',
-      'One Browser action must bind exactly one provider before dispatch.', { retryable: false });
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_PROVIDER_CARDINALITY_INVALID',
+      'One Browser action must bind exactly one provider before dispatch.',
+      { retryable: false },
+    );
   }
   const registry = registryFor(options.runtimeKey);
   registry.register(options.providers[0]!);

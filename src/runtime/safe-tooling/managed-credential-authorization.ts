@@ -72,7 +72,8 @@ export function credentialUseStatus(input: {
   const endpoint = required(input.endpoint, 'CREDENTIAL_ENDPOINT_REQUIRED');
   const selectedProvider = provider(input.provider);
   const selectedAccount = account(input.account);
-  if ((selectedProvider === 'browser_password_manager' || selectedProvider === 'forge_local_vault') && !selectedAccount) throw new Error('CREDENTIAL_ACCOUNT_REQUIRED');
+  if ((selectedProvider === 'browser_password_manager' || selectedProvider === 'forge_local_vault') && !selectedAccount)
+    throw new Error('CREDENTIAL_ACCOUNT_REQUIRED');
   const grant = matchingGrant({
     controllerHome: input.controllerHome,
     credentialRef,
@@ -107,7 +108,8 @@ export function authorizeCredentialUse(input: {
   const endpoint = required(input.endpoint, 'CREDENTIAL_ENDPOINT_REQUIRED');
   const selectedProvider = provider(input.provider);
   const selectedAccount = account(input.account);
-  if ((selectedProvider === 'browser_password_manager' || selectedProvider === 'forge_local_vault') && !selectedAccount) throw new Error('CREDENTIAL_ACCOUNT_REQUIRED');
+  if ((selectedProvider === 'browser_password_manager' || selectedProvider === 'forge_local_vault') && !selectedAccount)
+    throw new Error('CREDENTIAL_ACCOUNT_REQUIRED');
   const current = credentialUseStatus({
     controllerHome: input.controllerHome,
     credentialRef,
@@ -145,19 +147,17 @@ export function authorizeCredentialUse(input: {
   return { grant, reused: false };
 }
 
-export function revokeCredentialUse(input: {
-  controllerHome: string;
-  credentialRef: string;
-  reason?: string;
-}) {
+export function revokeCredentialUse(input: { controllerHome: string; credentialRef: string; reason?: string }) {
   const credentialRef = required(input.credentialRef, 'CREDENTIAL_REF_REQUIRED');
   const current = activeOwnedGrants(input.controllerHome, credentialRef);
   if (current.length === 0) return { revoked: false, credentialRef };
-  const revoked = current.map((grant) => revokeCanonicalGrant(input.controllerHome, {
-    grantId: grant.grantId,
-    ownerScope: ownerScope(credentialRef),
-    reason: input.reason?.trim() || 'credential authorization revoked',
-  }));
+  const revoked = current.map((grant) =>
+    revokeCanonicalGrant(input.controllerHome, {
+      grantId: grant.grantId,
+      ownerScope: ownerScope(credentialRef),
+      reason: input.reason?.trim() || 'credential authorization revoked',
+    }),
+  );
   return {
     revoked: true,
     credentialRef,

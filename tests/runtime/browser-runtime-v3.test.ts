@@ -21,9 +21,7 @@ import {
   settleNativeCreatedPageIdentity,
   browserInteractiveSnapshotScript,
 } from '../../src/runtime/plugins/browser-adapter';
-import {
-  type BrowserRuntimeProvider,
-} from '../../packages/plugin-runtime/browser/provider-registry';
+import { type BrowserRuntimeProvider } from '../../packages/plugin-runtime/browser/provider-registry';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
 import {
   invalidateMacOsBrowserPageHandle,
@@ -87,8 +85,9 @@ test('saved password autofill is an exact-session trusted-foreground action with
   expect(Object.keys(schema.properties ?? {})).toEqual(expect.arrayContaining(['username_selector', 'credential_ref']));
   expect(schema.properties).not.toHaveProperty('text');
   expect(schema.properties).not.toHaveProperty('password');
-  expect(browserCapabilities().find((cap) => cap.capabilityId === 'browser-interaction')?.actions)
-    .toContain('autofill_saved_password');
+  expect(browserCapabilities().find((cap) => cap.capabilityId === 'browser-interaction')?.actions).toContain(
+    'autofill_saved_password',
+  );
   expect(browserRuntimeActionPolicy('autofill_saved_password')).toEqual({
     requiredCapabilities: ['browser.trusted_input', 'browser.foreground', 'browser.transaction'],
     foreground: 'explicit_required',
@@ -104,13 +103,14 @@ test('Forge vault browser fill has no plaintext input and requires exact session
   expect(descriptor?.idempotent).toBe(false);
   expect(descriptor?.confirmation).toBe('authorization');
   const schema = descriptor?.argumentsSchema as { required?: string[]; properties?: Record<string, unknown> };
-  expect(schema.required).toEqual(expect.arrayContaining([
-    'session_id', 'expected_origin', 'selector', 'username_selector', 'credential_ref',
-  ]));
+  expect(schema.required).toEqual(
+    expect.arrayContaining(['session_id', 'expected_origin', 'selector', 'username_selector', 'credential_ref']),
+  );
   expect(schema.properties).not.toHaveProperty('password');
   expect(schema.properties).not.toHaveProperty('text');
-  expect(browserCapabilities().find((cap) => cap.capabilityId === 'browser-interaction')?.actions)
-    .toContain('autofill_forge_vault_password');
+  expect(browserCapabilities().find((cap) => cap.capabilityId === 'browser-interaction')?.actions).toContain(
+    'autofill_forge_vault_password',
+  );
   expect(browserRuntimeActionPolicy('autofill_forge_vault_password')).toEqual({
     requiredCapabilities: ['browser.trusted_input', 'browser.foreground', 'browser.transaction'],
     foreground: 'explicit_required',
@@ -145,8 +145,11 @@ test('Computer-to-Browser broker preserves typed uncertain external mutation ins
       details: { stage: 'native_event' },
     });
   }
-  const readonlyFailure = new ComputerProviderError('BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE',
-    'Process probe unavailable.', { retryable: true, effectOutcome: 'failed' });
+  const readonlyFailure = new ComputerProviderError(
+    'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE',
+    'Process probe unavailable.',
+    { retryable: true, effectOutcome: 'failed' },
+  );
   expect(() => rethrowBrowserAutomationBrokerError(readonlyFailure)).toThrow(
     /BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE/,
   );
@@ -175,10 +178,14 @@ describe('Native Chrome Apple Events denial identity', () => {
     const url = 'https://example.com/flag-check';
     const metadata = ['false', url, 'Page', '0', '0', '1000', '750', '7', '9', 'false', 'false'].join(nativeSeparator);
     setMacOsBrowserRuntimeHooksForTest({
-      platform: 'darwin', appExists: () => true, processRunning: async () => true,
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
       runAppleScript: async (script) => {
         if (script.includes('execute targetTab javascript')) {
-          throw new Error('Executing JavaScript through AppleScript is turned off. View > Developer > Allow JavaScript from Apple Events.');
+          throw new Error(
+            'Executing JavaScript through AppleScript is turned off. View > Developer > Allow JavaScript from Apple Events.',
+          );
         }
         return metadata;
       },
@@ -188,8 +195,10 @@ describe('Native Chrome Apple Events denial identity', () => {
       await bound.page.evaluate('2+2');
       throw new Error('Expected Apple Events JavaScript denial');
     } catch (error) {
-      expect(error).toMatchObject({ code: 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED',
-        details: { browserProduct: 'chrome', processIdentity: 'unverified', windowId: '7', tabId: '9' } });
+      expect(error).toMatchObject({
+        code: 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED',
+        details: { browserProduct: 'chrome', processIdentity: 'unverified', windowId: '7', tabId: '9' },
+      });
       expect(String(error)).toContain('does not prove');
     }
     await expect(bound.page.readText('body')).rejects.toMatchObject({
@@ -215,7 +224,10 @@ describe('Browser Runtime V3 internal resources', () => {
     const right = provider({
       providerId: 'extensions',
       capabilities: ['browser.internal_resources', 'browser.transaction'],
-      execute: async () => { selected.push('right'); return { ok: true }; },
+      execute: async () => {
+        selected.push('right');
+        return { ok: true };
+      },
     });
     await executeBrowserRuntimeAction({
       runtimeKey: 'browser-v3:extensions',
@@ -250,11 +262,13 @@ describe('Browser Runtime V3 native create-tab provenance', () => {
         observedUrlAfterAssignment: 'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
       },
     });
-    expect(nativeReplacementAssignmentProvenanceProvesTarget(
-      evidence,
-      'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
-      { windowId: 'window-42', tabId: 'tab-99' },
-    )).toBe(true);
+    expect(
+      nativeReplacementAssignmentProvenanceProvesTarget(
+        evidence,
+        'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+        { windowId: 'window-42', tabId: 'tab-99' },
+      ),
+    ).toBe(true);
   });
 
   test('keeps legacy value parsing compatible but insufficient for replacement authority', () => {
@@ -263,11 +277,9 @@ describe('Browser Runtime V3 native create-tab provenance', () => {
       ref: { windowId: 'window-legacy', tabId: 'tab-legacy' },
       refSource: 'legacy_value',
     });
-    expect(nativeReplacementAssignmentProvenanceProvesTarget(
-      evidence,
-      'https://chatgpt.com/',
-      evidence.ref,
-    )).toBe(false);
+    expect(nativeReplacementAssignmentProvenanceProvesTarget(evidence, 'https://chatgpt.com/', evidence.ref)).toBe(
+      false,
+    );
   });
 
   test('fails replacement authority for mismatched request or stable ref', () => {
@@ -275,54 +287,61 @@ describe('Browser Runtime V3 native create-tab provenance', () => {
       ref: { windowId: 'window-1', tabId: 'tab-2' },
       navigation: { provenanceVersion: 1, requestedUrl: 'https://chatgpt.com/c/exact', assignmentAccepted: true },
     });
-    expect(nativeReplacementAssignmentProvenanceProvesTarget(
-      evidence,
-      'https://chatgpt.com/c/other',
-      evidence.ref,
-    )).toBe(false);
-    expect(nativeReplacementAssignmentProvenanceProvesTarget(
-      evidence,
-      'https://chatgpt.com/c/exact/',
-      evidence.ref,
-    )).toBe(false);
-    expect(nativeReplacementAssignmentProvenanceProvesTarget(
-      evidence,
-      'https://chatgpt.com/c/exact',
-      { windowId: 'window-1', tabId: 'tab-other' },
-    )).toBe(false);
+    expect(
+      nativeReplacementAssignmentProvenanceProvesTarget(evidence, 'https://chatgpt.com/c/other', evidence.ref),
+    ).toBe(false);
+    expect(
+      nativeReplacementAssignmentProvenanceProvesTarget(evidence, 'https://chatgpt.com/c/exact/', evidence.ref),
+    ).toBe(false);
+    expect(
+      nativeReplacementAssignmentProvenanceProvesTarget(evidence, 'https://chatgpt.com/c/exact', {
+        windowId: 'window-1',
+        tabId: 'tab-other',
+      }),
+    ).toBe(false);
   });
 
   test('accepts same-origin canonicalization only after exact assignment proof and never accepts wrong origin', () => {
-    expect(nativeReplacementPostAssignmentUrlMatchesTarget(
-      'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
-      'https://www.tunemymusic.com/',
-      true,
-    )).toBe(true);
-    expect(nativeReplacementPostAssignmentUrlMatchesTarget(
-      'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
-      'https://www.tunemymusic.com/',
-      false,
-    )).toBe(false);
-    expect(nativeReplacementPostAssignmentUrlMatchesTarget(
-      'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
-      'https://example.com/',
-      true,
-    )).toBe(false);
+    expect(
+      nativeReplacementPostAssignmentUrlMatchesTarget(
+        'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+        'https://www.tunemymusic.com/',
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      nativeReplacementPostAssignmentUrlMatchesTarget(
+        'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+        'https://www.tunemymusic.com/',
+        false,
+      ),
+    ).toBe(false);
+    expect(
+      nativeReplacementPostAssignmentUrlMatchesTarget(
+        'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+        'https://example.com/',
+        true,
+      ),
+    ).toBe(false);
   });
 
   test('rejects conflicting structured and legacy stable refs', () => {
-    expect(() => parseMacOsBrowserCreateTabBrokerResult({
-      value: `legacy-window${nativeSeparator}legacy-tab`,
-      ref: { windowId: 'window-1', tabId: 'tab-2' },
-    })).toThrow('conflicting structured and legacy create-tab refs');
+    expect(() =>
+      parseMacOsBrowserCreateTabBrokerResult({
+        value: `legacy-window${nativeSeparator}legacy-tab`,
+        ref: { windowId: 'window-1', tabId: 'tab-2' },
+      }),
+    ).toThrow('conflicting structured and legacy create-tab refs');
   });
 
   test('rejects malformed structured provenance instead of silently downgrading to legacy value', () => {
-    expect(() => parseMacOsBrowserCreateTabBrokerResult({
-      value: `window-1${nativeSeparator}tab-2`,
-      ref: { windowId: 'window-1', tabId: 'tab-2' },
-      navigation: { provenanceVersion: 1, requestedUrl: 'https://chatgpt.com/', assignmentAccepted: false },
-    })).toThrow('incomplete create-tab navigation provenance');
+    expect(() =>
+      parseMacOsBrowserCreateTabBrokerResult({
+        value: `window-1${nativeSeparator}tab-2`,
+        ref: { windowId: 'window-1', tabId: 'tab-2' },
+        navigation: { provenanceVersion: 1, requestedUrl: 'https://chatgpt.com/', assignmentAccepted: false },
+      }),
+    ).toThrow('incomplete create-tab navigation provenance');
   });
 });
 
@@ -338,10 +357,29 @@ describe('Browser explicit session resource classification', () => {
 
 describe('Browser Runtime V3 retry fencing', () => {
   test('replays only observation actions after dispatch and fences unknown mutation outcomes', () => {
-    for (const actionId of ['wait_for_load_state', 'get_text', 'query_selector', 'verify_state', 'screenshot', 'wait_for_selector', 'await_file_transfer']) {
+    for (const actionId of [
+      'wait_for_load_state',
+      'get_text',
+      'query_selector',
+      'verify_state',
+      'screenshot',
+      'wait_for_selector',
+      'await_file_transfer',
+    ]) {
       expect(browserActionCanReplayAfterDispatch(actionId)).toBe(true);
     }
-    for (const actionId of ['open_page', 'navigate', 'reload', 'go_back', 'click', 'fill', 'press', 'trusted_input', 'dispatch_event', 'attach_local_file']) {
+    for (const actionId of [
+      'open_page',
+      'navigate',
+      'reload',
+      'go_back',
+      'click',
+      'fill',
+      'press',
+      'trusted_input',
+      'dispatch_event',
+      'attach_local_file',
+    ]) {
       expect(browserActionCanReplayAfterDispatch(actionId)).toBe(false);
     }
     expect(browserActionCanReplayAfterDispatch('get_text', false)).toBe(false);
@@ -350,7 +388,9 @@ describe('Browser Runtime V3 retry fencing', () => {
 
 describe('Browser Runtime V3 native replacement postconditions', () => {
   test('accepts same-origin canonical landing only for an HTTP(S) origin-root target', () => {
-    expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/', 'https://chatgpt.com/?temporary-chat=true')).toBe(true);
+    expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/', 'https://chatgpt.com/?temporary-chat=true')).toBe(
+      true,
+    );
     expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/', 'https://chatgpt.com/c/new-session')).toBe(true);
     expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/', 'https://example.com/')).toBe(false);
   });
@@ -359,7 +399,9 @@ describe('Browser Runtime V3 native replacement postconditions', () => {
     expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/c/exact', 'https://chatgpt.com/c/exact')).toBe(true);
     expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/c/exact', 'https://chatgpt.com/')).toBe(false);
     expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/c/exact', 'https://chatgpt.com/c/other')).toBe(false);
-    expect(nativeReplacementUrlMatchesTarget('https://example.com/?mode=exact', 'https://example.com/?mode=other')).toBe(false);
+    expect(
+      nativeReplacementUrlMatchesTarget('https://example.com/?mode=exact', 'https://example.com/?mode=other'),
+    ).toBe(false);
   });
 
   test('does not accept transitional native URLs merely because DOM readyState is complete', () => {
@@ -374,16 +416,20 @@ describe('Browser Runtime V3 native replacement postconditions', () => {
   test('settles a newly created exact native tab before reading identity', async () => {
     const calls: string[] = [];
     let url = 'chrome://newtab/';
-    const identity = await settleNativeCreatedPageIdentity({
-      waitForLoadState: async (state, options) => {
-        calls.push(`wait:${state}:${String(options?.timeout)}:${String(options?.requireHttpUrl)}`);
-        url = 'https://chatgpt.com/';
+    const identity = await settleNativeCreatedPageIdentity(
+      {
+        waitForLoadState: async (state, options) => {
+          calls.push(`wait:${state}:${String(options?.timeout)}:${String(options?.requireHttpUrl)}`);
+          url = 'https://chatgpt.com/';
+        },
+        identity: async () => {
+          calls.push('identity');
+          return { url, title: 'ChatGPT' };
+        },
       },
-      identity: async () => {
-        calls.push('identity');
-        return { url, title: 'ChatGPT' };
-      },
-    }, 'domcontentloaded', 1_234);
+      'domcontentloaded',
+      1_234,
+    );
     expect(calls).toEqual(['wait:domcontentloaded:1234:true', 'identity']);
     expect(identity.url).toBe('https://chatgpt.com/');
     expect(nativeReplacementUrlMatchesTarget('https://chatgpt.com/', identity.url)).toBe(true);
@@ -391,54 +437,70 @@ describe('Browser Runtime V3 native replacement postconditions', () => {
 
   test('waits on the same replacement ref when it briefly preserves the previous URL', async () => {
     let identityReads = 0;
-    const identity = await settleNativeCreatedPageIdentity({
-      waitForLoadState: async () => undefined,
-      identity: async () => {
-        identityReads += 1;
-        return identityReads === 1
-          ? { url: 'https://example.com/previous', title: 'Previous' }
-          : { url: 'https://www.tunemymusic.com/transfer/spotify-to-apple-music', title: 'Tune My Music' };
+    const identity = await settleNativeCreatedPageIdentity(
+      {
+        waitForLoadState: async () => undefined,
+        identity: async () => {
+          identityReads += 1;
+          return identityReads === 1
+            ? { url: 'https://example.com/previous', title: 'Previous' }
+            : { url: 'https://www.tunemymusic.com/transfer/spotify-to-apple-music', title: 'Tune My Music' };
+        },
       },
-    }, 'domcontentloaded', 25, {
-      requestedUrl: 'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
-      previousUrl: 'https://example.com/previous',
-    });
+      'domcontentloaded',
+      25,
+      {
+        requestedUrl: 'https://www.tunemymusic.com/transfer/spotify-to-apple-music',
+        previousUrl: 'https://example.com/previous',
+      },
+    );
     expect(identityReads).toBe(2);
-    expect(nativeReplacementUrlMatchesTarget('https://www.tunemymusic.com/transfer/spotify-to-apple-music', identity.url)).toBe(true);
+    expect(
+      nativeReplacementUrlMatchesTarget('https://www.tunemymusic.com/transfer/spotify-to-apple-music', identity.url),
+    ).toBe(true);
   });
 
   test('still rejects a settled wrong HTTP target after native tab settlement', async () => {
-    const identity = await settleNativeCreatedPageIdentity({
-      waitForLoadState: async () => undefined,
-      identity: async () => ({ url: 'https://example.com/wrong', title: 'Wrong' }),
-    }, 'domcontentloaded', 1_000, {
-      requestedUrl: 'https://example.com/exact',
-      previousUrl: 'https://example.com/previous',
-    });
+    const identity = await settleNativeCreatedPageIdentity(
+      {
+        waitForLoadState: async () => undefined,
+        identity: async () => ({ url: 'https://example.com/wrong', title: 'Wrong' }),
+      },
+      'domcontentloaded',
+      1_000,
+      {
+        requestedUrl: 'https://example.com/exact',
+        previousUrl: 'https://example.com/previous',
+      },
+    );
     expect(nativeReplacementUrlMatchesTarget('https://example.com/exact', identity.url)).toBe(false);
   });
 
   test('classifies replacement mismatch without exposing URL contents', () => {
-    expect(nativeReplacementMismatchDiagnostic({
-      requestedUrl: 'https://chatgpt.com/',
-      actualUrl: 'https://example.com/previous',
-      previousUrl: 'https://example.com/previous',
-      obsoleteRef: { windowId: 'window-old', tabId: 'tab-old' },
-      replacementRef: { windowId: 'window-old', tabId: 'tab-new' },
-    })).toEqual({
+    expect(
+      nativeReplacementMismatchDiagnostic({
+        requestedUrl: 'https://chatgpt.com/',
+        actualUrl: 'https://example.com/previous',
+        previousUrl: 'https://example.com/previous',
+        obsoleteRef: { windowId: 'window-old', tabId: 'tab-old' },
+        replacementRef: { windowId: 'window-old', tabId: 'tab-new' },
+      }),
+    ).toEqual({
       sameTargetOrigin: false,
       samePreviousOrigin: true,
       samePreviousUrl: true,
       sameTabRef: false,
       actualScheme: 'https',
     });
-    expect(nativeReplacementMismatchDiagnostic({
-      requestedUrl: 'https://chatgpt.com/',
-      actualUrl: 'chrome://newtab/',
-      previousUrl: 'https://example.com/previous',
-      obsoleteRef: { windowId: 'window-old', tabId: 'tab-old' },
-      replacementRef: { windowId: 'window-old', tabId: 'tab-old' },
-    })).toEqual({
+    expect(
+      nativeReplacementMismatchDiagnostic({
+        requestedUrl: 'https://chatgpt.com/',
+        actualUrl: 'chrome://newtab/',
+        previousUrl: 'https://example.com/previous',
+        obsoleteRef: { windowId: 'window-old', tabId: 'tab-old' },
+        replacementRef: { windowId: 'window-old', tabId: 'tab-old' },
+      }),
+    ).toEqual({
       sameTargetOrigin: false,
       samePreviousOrigin: false,
       samePreviousUrl: false,
@@ -454,11 +516,16 @@ describe('Browser Runtime V3 routing', () => {
     const result = await executeBrowserRuntimeAction({
       runtimeKey: 'browser-v3:capability-routing',
       input: input('click', 'tx-capability'),
-      providers: [provider({
-        providerId: 'interactive',
-        capabilities: ['dom.interact', 'browser.transaction'],
-        execute: async () => { calls.push('interactive'); return { provider: 'interactive' }; },
-      })],
+      providers: [
+        provider({
+          providerId: 'interactive',
+          capabilities: ['dom.interact', 'browser.transaction'],
+          execute: async () => {
+            calls.push('interactive');
+            return { provider: 'interactive' };
+          },
+        }),
+      ],
     });
     expect(result).toEqual({ provider: 'interactive' });
     expect(calls).toEqual(['interactive']);
@@ -466,42 +533,67 @@ describe('Browser Runtime V3 routing', () => {
 
   test('rejects multiple providers before executing a Browser action', async () => {
     const calls: string[] = [];
-    await expect(executeBrowserRuntimeAction({
-      runtimeKey: 'browser-v3:pre-action-reselect',
-      input: input('click', 'tx-pre-action'),
-      providers: [
-        provider({ providerId: 'preferred', capabilities: ['dom.interact', 'browser.transaction'],
-          execute: async () => { calls.push('preferred'); return {}; } }),
-        provider({ providerId: 'alternate', capabilities: ['dom.interact', 'browser.transaction'],
-          execute: async () => { calls.push('alternate'); return {}; } }),
-      ],
-    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PROVIDER_CARDINALITY_INVALID' });
+    await expect(
+      executeBrowserRuntimeAction({
+        runtimeKey: 'browser-v3:pre-action-reselect',
+        input: input('click', 'tx-pre-action'),
+        providers: [
+          provider({
+            providerId: 'preferred',
+            capabilities: ['dom.interact', 'browser.transaction'],
+            execute: async () => {
+              calls.push('preferred');
+              return {};
+            },
+          }),
+          provider({
+            providerId: 'alternate',
+            capabilities: ['dom.interact', 'browser.transaction'],
+            execute: async () => {
+              calls.push('alternate');
+              return {};
+            },
+          }),
+        ],
+      }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PROVIDER_CARDINALITY_INVALID' });
     expect(calls).toEqual([]);
   });
 
   test('propagates unknown mutation outcome without retry or provider change', async () => {
     const calls: string[] = [];
-    await expect(executeBrowserRuntimeAction({
-      runtimeKey: 'browser-v3:no-blind-replay',
-      input: input('click', 'tx-unknown-outcome'),
-      providers: [provider({ providerId: 'bound-provider', capabilities: ['dom.interact', 'browser.transaction'],
-        execute: async () => { calls.push('bound-provider'); throw new Error('unknown outcome after transport started'); } })],
-    })).rejects.toThrow('unknown outcome after transport started');
+    await expect(
+      executeBrowserRuntimeAction({
+        runtimeKey: 'browser-v3:no-blind-replay',
+        input: input('click', 'tx-unknown-outcome'),
+        providers: [
+          provider({
+            providerId: 'bound-provider',
+            capabilities: ['dom.interact', 'browser.transaction'],
+            execute: async () => {
+              calls.push('bound-provider');
+              throw new Error('unknown outcome after transport started');
+            },
+          }),
+        ],
+      }),
+    ).rejects.toThrow('unknown outcome after transport started');
     expect(calls).toEqual(['bound-provider']);
   });
 
   test('preserves native browser broker timeout and contention identities for Supervisor retry spacing', async () => {
     const url = 'https://example.com/native-broker-failure';
-    const metadata = [
-      'false', url, 'Native Broker', '0', '0', '1200', '800', '7', '9', 'true', 'true',
-    ].join(nativeSeparator);
+    const metadata = ['false', url, 'Native Broker', '0', '0', '1200', '800', '7', '9', 'true', 'true'].join(
+      nativeSeparator,
+    );
     let code = 'BROWSER_AUTOMATION_TIMEOUT';
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
       appExists: () => true,
       processRunning: async () => true,
       runAppleScript: async (script) => {
-        if (script.includes('execute targetTab javascript')) throw new Error(`${code}: bounded provider request failed`);
+        if (script.includes('execute targetTab javascript'))
+          throw new Error(`${code}: bounded provider request failed`);
         return metadata;
       },
     });
@@ -514,24 +606,36 @@ describe('Browser Runtime V3 routing', () => {
 
   test('forwards typed Desktop Operator Chrome process ambiguity, identity loss, and probe failure without generic retry', async () => {
     const url = 'https://example.com/native-chrome-process-guard';
-    const metadata = ['false', url, 'Chrome Guard', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+    const metadata = ['false', url, 'Chrome Guard', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(
+      nativeSeparator,
+    );
     let code = 'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS';
     let mutations = 0;
     // Computer -> Browser preserves the typed provider error, not an
     // arbitrary message substring from a failing AppleScript transport.
     const { AssistantPluginError } = await import('../../src/runtime/plugins/errors');
     setMacOsBrowserRuntimeHooksForTest({
-      platform: 'darwin', appExists: () => true, processRunning: async () => true,
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
       runAppleScript: async (script) => {
         if (script.includes('execute targetTab javascript')) {
           mutations++;
-          throw new AssistantPluginError(code, 'Provider refused Chrome process targeting', { retryable: code === 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE' });
+          throw new AssistantPluginError(code, 'Provider refused Chrome process targeting', {
+            retryable: code === 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE',
+          });
         }
         return metadata;
       },
     });
     const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
-    for (const expected of ['BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS', 'BROWSER_AUTOMATION_PROCESS_IDENTITY_LOST', 'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE', 'BROWSER_AUTOMATION_NATIVE_EVENT_FAILED', 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN']) {
+    for (const expected of [
+      'BROWSER_AUTOMATION_PROCESS_TARGET_AMBIGUOUS',
+      'BROWSER_AUTOMATION_PROCESS_IDENTITY_LOST',
+      'BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE',
+      'BROWSER_AUTOMATION_NATIVE_EVENT_FAILED',
+      'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
+    ]) {
       code = expected;
       await expect(attached.page.evaluate('document.title')).rejects.toMatchObject({
         code: expected,
@@ -594,8 +698,9 @@ describe('Browser Runtime V3 routing', () => {
       },
     });
 
-    await expect(createMacOsBrowserOwnedPageForProduct('chrome', 'https://example.com/not-running', [], '7', 1_000))
-      .rejects.toMatchObject({ code: 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING' });
+    await expect(
+      createMacOsBrowserOwnedPageForProduct('chrome', 'https://example.com/not-running', [], '7', 1_000),
+    ).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING' });
     expect(brokerCalls).toBe(0);
     expect(timings).toHaveLength(1);
     expect(timings[0]).toMatchObject({
@@ -610,7 +715,9 @@ describe('Browser Runtime V3 routing', () => {
   test('reports native Browser process-precondition and dispatch phase timings through the test hook', async () => {
     const url = 'https://example.com/native-phase-timing';
     const timings: MacOsBrowserAutomationTiming[] = [];
-    const metadata = ['false', url, 'Native Timing', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+    const metadata = ['false', url, 'Native Timing', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(
+      nativeSeparator,
+    );
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
       appExists: () => true,
@@ -645,9 +752,9 @@ describe('Browser Runtime V3 routing', () => {
   test('uses a real idempotent click transition for macOS check and uncheck', async () => {
     const url = 'https://example.com/react-checkbox';
     const javaScriptCalls: string[] = [];
-    const metadata = [
-      'false', url, 'React Checkbox', '0', '0', '1200', '800', '7', '9', 'false', 'false',
-    ].join(nativeSeparator);
+    const metadata = ['false', url, 'React Checkbox', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(
+      nativeSeparator,
+    );
 
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
@@ -696,9 +803,9 @@ describe('Browser Runtime V3 routing', () => {
       // A Chrome tab may move windows without changing its stable tab ID.
       runAppleScript: async (script) => {
         metadataScripts.push(script);
-        return [
-          'false', url, 'Cold Exact', '0', '0', '1200', '800', '99', observedTabId, 'false', 'false',
-        ].join(nativeSeparator);
+        return ['false', url, 'Cold Exact', '0', '0', '1200', '800', '99', observedTabId, 'false', 'false'].join(
+          nativeSeparator,
+        );
       },
     });
 
@@ -718,19 +825,34 @@ describe('Browser Runtime V3 routing', () => {
 
     invalidateMacOsBrowserPageHandle('chrome', { windowId: '99', tabId: '9' });
     observedTabId = '10';
-    await expect(reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000))
-      .rejects.toMatchObject({ code: 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN', retryable: false });
+    await expect(reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000)).rejects.toMatchObject({
+      code: 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN',
+      retryable: false,
+    });
     expect(inventoryReads).toBe(0);
   });
 
   test('reattaches exact native tab after transient about blank metadata without replaying an action', async () => {
     let reads = 0;
     setMacOsBrowserRuntimeHooksForTest({
-      platform: 'darwin', appExists: () => true, processRunning: async () => true,
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
       runAppleScript: async () => {
         reads += 1;
-        return ['false', reads === 1 ? 'about:blank' : 'https://chatgpt.com/',
-          'ChatGPT', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+        return [
+          'false',
+          reads === 1 ? 'about:blank' : 'https://chatgpt.com/',
+          'ChatGPT',
+          '0',
+          '0',
+          '1200',
+          '800',
+          '7',
+          '9',
+          'false',
+          'false',
+        ].join(nativeSeparator);
       },
     });
     const ref = { windowId: '7', tabId: '9' };
@@ -748,9 +870,8 @@ describe('Browser Runtime V3 routing', () => {
     let metadataCalls = 0;
     let javaScriptCalls = 0;
     let activationCalls = 0;
-    const metadata = () => [
-      'false', metadataUrl, 'Native Warm', '0', '0', '1200', '800', '7', '9', 'false', 'false',
-    ].join(nativeSeparator);
+    const metadata = () =>
+      ['false', metadataUrl, 'Native Warm', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
 
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
@@ -788,9 +909,9 @@ describe('Browser Runtime V3 routing', () => {
     let inventoryReads = 0;
     let exactTabScripts = 0;
     const url = 'https://example.com/native-query';
-    const metadata = [
-      'false', url, 'Native Query', '0', '0', '1200', '800', '7', '9', 'false', 'false',
-    ].join(nativeSeparator);
+    const metadata = ['false', url, 'Native Query', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(
+      nativeSeparator,
+    );
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
       appExists: () => true,
@@ -832,7 +953,11 @@ describe('Browser Runtime V3 routing', () => {
       processRunning: async () => true,
       tabInventory: async () => {
         inventoryReads += 1;
-        return { product: 'chrome', truncated: false, tabs: [{ windowId: '7', tabId: '9', active: false, url, title }] };
+        return {
+          product: 'chrome',
+          truncated: false,
+          tabs: [{ windowId: '7', tabId: '9', active: false, url, title }],
+        };
       },
       runAppleScript: async (script, _args, timeoutMs) => {
         if (script.includes('execute targetTab javascript')) {
@@ -895,9 +1020,7 @@ describe('Browser Runtime V3 routing', () => {
     let preflightSlow = false;
     let reloadCalls = 0;
     const url = 'https://example.com/preflight-deadline';
-    const metadata = [
-      'true', url, '', '0', '0', '1200', '800', '7', '9', 'true', 'false',
-    ].join(nativeSeparator);
+    const metadata = ['true', url, '', '0', '0', '1200', '800', '7', '9', 'true', 'false'].join(nativeSeparator);
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
       appExists: () => true,
@@ -929,9 +1052,8 @@ describe('Browser Runtime V3 routing', () => {
     let inventoryReads = 0;
     let metadataTabId = '9';
     const url = 'https://example.com/exact-metadata';
-    const metadata = () => [
-      'true', url, '', '0', '0', '1200', '800', '7', metadataTabId, 'true', 'false',
-    ].join(nativeSeparator);
+    const metadata = () =>
+      ['true', url, '', '0', '0', '1200', '800', '7', metadataTabId, 'true', 'false'].join(nativeSeparator);
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
       appExists: () => true,
@@ -965,9 +1087,20 @@ describe('Browser Runtime V3 routing', () => {
     let currentWindowId = '7';
     let inventoryReads = 0;
     const activationScripts: string[] = [];
-    const metadata = () => [
-      'true', 'https://chatgpt.com/c/native-stable', 'Native Stable', '0', '0', '1200', '800', currentWindowId, '9', 'true', 'false',
-    ].join(nativeSeparator);
+    const metadata = () =>
+      [
+        'true',
+        'https://chatgpt.com/c/native-stable',
+        'Native Stable',
+        '0',
+        '0',
+        '1200',
+        '800',
+        currentWindowId,
+        '9',
+        'true',
+        'false',
+      ].join(nativeSeparator);
 
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
@@ -978,7 +1111,15 @@ describe('Browser Runtime V3 routing', () => {
         return {
           product: 'chrome',
           truncated: false,
-          tabs: [{ windowId: currentWindowId, tabId: '9', active: true, url: 'https://chatgpt.com/c/native-stable', title: 'Native Stable' }],
+          tabs: [
+            {
+              windowId: currentWindowId,
+              tabId: '9',
+              active: true,
+              url: 'https://chatgpt.com/c/native-stable',
+              title: 'Native Stable',
+            },
+          ],
         };
       },
       runAppleScript: async (script) => {
@@ -1011,18 +1152,20 @@ describe('Browser Runtime V3 routing', () => {
     let activations = 0;
     let metadataReads = 0;
     const eventBudgets: number[] = [];
-    const metadata = [
-      'true', url, 'Bounded activation', '0', '0', '1200', '800', '7', '9', 'true', 'false',
-    ].join(nativeSeparator);
+    const metadata = ['true', url, 'Bounded activation', '0', '0', '1200', '800', '7', '9', 'true', 'false'].join(
+      nativeSeparator,
+    );
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
       appExists: () => true,
       processRunning: async () => true,
       tabInventory: async () => {
         if (preflightWait) await new Promise((resolve) => setTimeout(resolve, preflightWait));
-        return { product: 'chrome', truncated: false, tabs: [
-          { windowId: '7', tabId: '9', active: true, url, title: 'Bounded activation' },
-        ] };
+        return {
+          product: 'chrome',
+          truncated: false,
+          tabs: [{ windowId: '7', tabId: '9', active: true, url, title: 'Bounded activation' }],
+        };
       },
       runAppleScript: async (script, _args, budget) => {
         eventBudgets.push(budget);
@@ -1038,14 +1181,18 @@ describe('Browser Runtime V3 routing', () => {
     const ref = { windowId: '7', tabId: '9' };
     preflightWait = 40;
     await expect(activateMacOsBrowserOwnedTab('chrome', ref, 10)).rejects.toMatchObject({
-      code: 'BROWSER_AUTOMATION_TIMEOUT', effectOutcome: 'failed', retryable: true,
+      code: 'BROWSER_AUTOMATION_TIMEOUT',
+      effectOutcome: 'failed',
+      retryable: true,
     });
     expect(activations).toBe(0);
     expect(metadataReads).toBe(0);
     preflightWait = 0;
     dispatchWait = 40;
     await expect(activateMacOsBrowserOwnedTab('chrome', ref, 10)).rejects.toMatchObject({
-      code: 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN', effectOutcome: 'outcome_unknown', retryable: false,
+      code: 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
+      effectOutcome: 'outcome_unknown',
+      retryable: false,
     });
     expect(activations).toBe(1);
     expect(metadataReads).toBe(0);
@@ -1065,10 +1212,20 @@ describe('Browser Runtime V3 routing', () => {
     let currentWindowId = '7';
     let inventoryReads = 0;
     const trustedTargets: string[] = [];
-    const metadata = () => [
-      'true', 'https://example.com/native-trusted', 'Trusted Native', '0', '0', '1200', '800',
-      currentWindowId, '9', 'true', 'false',
-    ].join(nativeSeparator);
+    const metadata = () =>
+      [
+        'true',
+        'https://example.com/native-trusted',
+        'Trusted Native',
+        '0',
+        '0',
+        '1200',
+        '800',
+        currentWindowId,
+        '9',
+        'true',
+        'false',
+      ].join(nativeSeparator);
 
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
@@ -1079,7 +1236,15 @@ describe('Browser Runtime V3 routing', () => {
         return {
           product: 'chrome',
           truncated: false,
-          tabs: [{ windowId: currentWindowId, tabId: '9', active: true, url: 'https://example.com/native-trusted', title: 'Trusted Native' }],
+          tabs: [
+            {
+              windowId: currentWindowId,
+              tabId: '9',
+              active: true,
+              url: 'https://example.com/native-trusted',
+              title: 'Trusted Native',
+            },
+          ],
         };
       },
       runAppleScript: async () => metadata(),
@@ -1101,9 +1266,20 @@ describe('Browser Runtime V3 routing', () => {
   test('fails closed before activation when live native tab identity cannot be proven', async () => {
     let ambiguous = false;
     let activationCalls = 0;
-    const metadata = () => [
-      'true', 'https://chatgpt.com/c/native-ambiguous', 'Native Ambiguous', '0', '0', '1200', '800', '7', '9', 'true', 'false',
-    ].join(nativeSeparator);
+    const metadata = () =>
+      [
+        'true',
+        'https://chatgpt.com/c/native-ambiguous',
+        'Native Ambiguous',
+        '0',
+        '0',
+        '1200',
+        '800',
+        '7',
+        '9',
+        'true',
+        'false',
+      ].join(nativeSeparator);
 
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
@@ -1114,10 +1290,24 @@ describe('Browser Runtime V3 routing', () => {
         truncated: false,
         tabs: ambiguous
           ? [
-            { windowId: '7', tabId: '9', active: true, url: 'https://chatgpt.com/c/native-ambiguous', title: 'Native Ambiguous' },
-            { windowId: '99', tabId: '9', active: false, url: 'https://example.com/', title: 'Other' },
-          ]
-          : [{ windowId: '7', tabId: '9', active: true, url: 'https://chatgpt.com/c/native-ambiguous', title: 'Native Ambiguous' }],
+              {
+                windowId: '7',
+                tabId: '9',
+                active: true,
+                url: 'https://chatgpt.com/c/native-ambiguous',
+                title: 'Native Ambiguous',
+              },
+              { windowId: '99', tabId: '9', active: false, url: 'https://example.com/', title: 'Other' },
+            ]
+          : [
+              {
+                windowId: '7',
+                tabId: '9',
+                active: true,
+                url: 'https://chatgpt.com/c/native-ambiguous',
+                title: 'Native Ambiguous',
+              },
+            ],
       }),
       runAppleScript: async (script) => {
         if (script.includes('set active tab index of targetWindow')) activationCalls += 1;
@@ -1138,7 +1328,9 @@ describe('Browser Runtime V3 routing', () => {
     const warmProvider = provider({
       providerId: 'warm-read',
       capabilities: ['dom.read', 'browser.transaction', 'browser.persistent_handle'],
-      revalidate: () => { revalidations += 1; },
+      revalidate: () => {
+        revalidations += 1;
+      },
       execute: async () => {
         executions += 1;
         return { executions };
@@ -1179,20 +1371,24 @@ describe('Browser Runtime V3 routing', () => {
     expect(inventory).toEqual({
       product: 'vivaldi',
       truncated: false,
-      tabs: [{
-        windowId: '7',
-        tabId: '9',
-        active: false,
-        frontmost: false,
-        url: 'https://chatgpt.com/c/stable-inventory',
-        title: 'ChatGPT',
-      }],
+      tabs: [
+        {
+          windowId: '7',
+          tabId: '9',
+          active: false,
+          frontmost: false,
+          url: 'https://chatgpt.com/c/stable-inventory',
+          title: 'ChatGPT',
+        },
+      ],
     });
     expect(scripts).toHaveLength(1);
     // The explicit background window is the creation target; do not
     // reassign it to front window inside the create script.
     setMacOsBrowserRuntimeHooksForTest({
-      platform: 'darwin', appExists: () => true, processRunning: async () => true,
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
       runAppleScript: async (script) => {
         scripts.push(script);
         return `7${nativeSeparator}10`;
@@ -1211,7 +1407,10 @@ describe('Browser Runtime V3 routing', () => {
       platform: 'darwin',
       appExists: () => true,
       processRunning: async () => false,
-      runAppleScript: async (script) => { scripts.push(script); return ''; },
+      runAppleScript: async (script) => {
+        scripts.push(script);
+        return '';
+      },
     });
 
     // `tell application` starts an application that is not running while the
@@ -1227,7 +1426,10 @@ describe('Browser Runtime V3 routing', () => {
       platform: 'darwin',
       appExists: () => false,
       processRunning: async () => true,
-      runAppleScript: async (script) => { scripts.push(script); return ''; },
+      runAppleScript: async (script) => {
+        scripts.push(script);
+        return '';
+      },
     });
 
     await expect(listMacOsBrowserTabs('vivaldi', 1_000)).rejects.toThrow('PLUGIN_BROWSER_NATIVE_APP_NOT_INSTALLED');
@@ -1237,32 +1439,57 @@ describe('Browser Runtime V3 routing', () => {
 
 test('interactive snapshot measures select text, caret clearance, label offset and scroll overflow using the existing DOM owner', () => {
   const select = {
-    tagName: 'SELECT', nodeType: 1, id: 'language', disabled: false, innerText: '', textContent: '',
+    tagName: 'SELECT',
+    nodeType: 1,
+    id: 'language',
+    disabled: false,
+    innerText: '',
+    textContent: '',
     selectedOptions: [{ textContent: 'A very long option label' }],
-    clientWidth: 136, scrollWidth: 164, clientHeight: 34, scrollHeight: 34,
-    isContentEditable: false, parentElement: { tagName: 'DIV' }, previousElementSibling: null,
-    getAttribute: (name: string) => name === 'aria-label' ? 'Language' : null,
+    clientWidth: 136,
+    scrollWidth: 164,
+    clientHeight: 34,
+    scrollHeight: 34,
+    isContentEditable: false,
+    parentElement: { tagName: 'DIV' },
+    previousElementSibling: null,
+    getAttribute: (name: string) => (name === 'aria-label' ? 'Language' : null),
     getBoundingClientRect: () => ({ left: 200, top: 90, width: 140, height: 34, right: 340, bottom: 124 }),
     querySelectorAll: () => [],
     labels: [{ getBoundingClientRect: () => ({ top: 96, height: 16 }) }],
   };
   const style = {
-    display: 'block', visibility: 'visible', opacity: '1',
-    paddingLeft: '10px', paddingRight: '9px', paddingTop: '4px', paddingBottom: '4px',
-    borderLeftWidth: '1px', borderRightWidth: '1px',
-    appearance: 'none', backgroundImage: 'url("chevron-down.svg")',
-    font: '12px system-ui', whiteSpace: 'nowrap', textAlign: 'start',
-    getPropertyValue: (name: string) => ({ '--select-arrow-offset': '4px', '--select-arrow-size': '12px' })[name as '--select-arrow-offset'] ?? '',
+    display: 'block',
+    visibility: 'visible',
+    opacity: '1',
+    paddingLeft: '10px',
+    paddingRight: '9px',
+    paddingTop: '4px',
+    paddingBottom: '4px',
+    borderLeftWidth: '1px',
+    borderRightWidth: '1px',
+    appearance: 'none',
+    backgroundImage: 'url("chevron-down.svg")',
+    font: '12px system-ui',
+    whiteSpace: 'nowrap',
+    textAlign: 'start',
+    getPropertyValue: (name: string) =>
+      ({ '--select-arrow-offset': '4px', '--select-arrow-size': '12px' })[name as '--select-arrow-offset'] ?? '',
   };
   const script = browserInteractiveSnapshotScript(5);
   const result = runInNewContext(script, {
     window: { innerWidth: 1024, innerHeight: 768, scrollX: 0, scrollY: 0, devicePixelRatio: 1 },
     document: {
       documentElement: { clientWidth: 1024, clientHeight: 768 },
-      querySelectorAll: (selector: string) => selector.includes(',') || selector === '#language' ? [select] : [],
-      createElement: () => ({ getContext: () => ({ font: '', measureText: (text: string) => ({ width: text.length * 7 }) }) }),
+      querySelectorAll: (selector: string) => (selector.includes(',') || selector === '#language' ? [select] : []),
+      createElement: () => ({
+        getContext: () => ({ font: '', measureText: (text: string) => ({ width: text.length * 7 }) }),
+      }),
     },
-    getComputedStyle: (element: unknown) => element === select ? style : ({ display: 'flex', alignItems: 'center', justifyContent: 'space-between', rowGap: '6px', columnGap: '12px' }),
+    getComputedStyle: (element: unknown) =>
+      element === select
+        ? style
+        : { display: 'flex', alignItems: 'center', justifyContent: 'space-between', rowGap: '6px', columnGap: '12px' },
     CSS: { escape: (value: string) => value },
   }) as { elements: Array<Record<string, any>>; geometryVersion: number };
   expect(result.geometryVersion).toBe(1);
@@ -1274,8 +1501,11 @@ test('interactive snapshot measures select text, caret clearance, label offset a
   expect(el.layout.labelCenterDeltaY).toBe(-3);
   expect(el.layout.parentLayout).toMatchObject({ display: 'flex', alignItems: 'center', rowGap: 6, columnGap: 12 });
   expect(el.layout.select).toMatchObject({
-    appearance: 'none', caretRightInset: 4, caretSize: 12,
-    extraTextClearance: -7, selectedTextFits: false,
+    appearance: 'none',
+    caretRightInset: 4,
+    caretSize: 12,
+    extraTextClearance: -7,
+    selectedTextFits: false,
   });
   expect(el.layout.review).toContain('select-caret-edge-inset');
   expect(el.layout.review).toContain('select-caret-text-clearance');
@@ -1289,14 +1519,22 @@ test('interactive snapshot measures select text, caret clearance, label offset a
     window: { innerWidth: 1024, innerHeight: 768, devicePixelRatio: 1 },
     document: {
       documentElement: { clientWidth: 1024, clientHeight: 768 },
-      querySelectorAll: (selector: string) => selector.includes(',') || selector === '#language' ? [select] : [],
-      createElement: () => ({ getContext: () => ({ font: '', measureText: (text: string) => ({ width: text.length * 7 }) }) }),
+      querySelectorAll: (selector: string) => (selector.includes(',') || selector === '#language' ? [select] : []),
+      createElement: () => ({
+        getContext: () => ({ font: '', measureText: (text: string) => ({ width: text.length * 7 }) }),
+      }),
     },
-    getComputedStyle: (element: unknown) => element === select ? style : ({ display: 'flex', alignItems: 'center', justifyContent: 'space-between', rowGap: '6px', columnGap: '12px' }),
+    getComputedStyle: (element: unknown) =>
+      element === select
+        ? style
+        : { display: 'flex', alignItems: 'center', justifyContent: 'space-between', rowGap: '6px', columnGap: '12px' },
     CSS: { escape: (value: string) => value },
   }) as { elements: Array<Record<string, any>> };
   expect(corrected.elements[0]!.layout.select).toMatchObject({
-    caretRightInset: 14, caretSize: 12, extraTextClearance: 10, selectedTextFits: true,
+    caretRightInset: 14,
+    caretSize: 12,
+    extraTextClearance: 10,
+    selectedTextFits: true,
   });
   expect(corrected.elements[0]!.layout.review).toEqual([]);
   // Native browser arrows cannot be measured from CSS variables; never invent clearance.
@@ -1305,21 +1543,35 @@ test('interactive snapshot measures select text, caret clearance, label offset a
     window: { innerWidth: 1024, innerHeight: 768, devicePixelRatio: 1 },
     document: {
       documentElement: { clientWidth: 1024, clientHeight: 768 },
-      querySelectorAll: (selector: string) => selector.includes(',') || selector === '#language' ? [select] : [],
-      createElement: () => ({ getContext: () => ({ font: '', measureText: (text: string) => ({ width: text.length * 7 }) }) }),
+      querySelectorAll: (selector: string) => (selector.includes(',') || selector === '#language' ? [select] : []),
+      createElement: () => ({
+        getContext: () => ({ font: '', measureText: (text: string) => ({ width: text.length * 7 }) }),
+      }),
     },
-    getComputedStyle: (element: unknown) => element === select ? style : ({ display: 'flex', alignItems: 'center', justifyContent: 'space-between', rowGap: '6px', columnGap: '12px' }),
+    getComputedStyle: (element: unknown) =>
+      element === select
+        ? style
+        : { display: 'flex', alignItems: 'center', justifyContent: 'space-between', rowGap: '6px', columnGap: '12px' },
     CSS: { escape: (value: string) => value },
   }) as { elements: Array<Record<string, any>> };
   expect(native.elements[0]!.layout.review).toContain('select-caret-unmeasured');
 });
 
-
 describe('Native Browser mutation batching', () => {
   test('runs contiguous fill, click and press steps in one exact-tab JavaScript evaluation', async () => {
     const calls: Array<{ script: string; args: string[] }> = [];
     const metadata = [
-      'false', 'https://example.com/', 'Example', '0', '0', '900', '600', '7', '9', 'false', 'false',
+      'false',
+      'https://example.com/',
+      'Example',
+      '0',
+      '0',
+      '900',
+      '600',
+      '7',
+      '9',
+      'false',
+      'false',
     ].join(nativeSeparator);
     const batchResult: {
       completed: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; durationMs: number }>;
@@ -1356,7 +1608,9 @@ describe('Native Browser mutation batching', () => {
     const evaluations = calls.filter((call) => call.script.includes('execute targetTab javascript javascriptSource'));
     expect(evaluations).toHaveLength(1);
     const source = evaluations[0]!.args[0]!;
-    expect(source.indexOf('document.querySelector("#task")')).toBeLessThan(source.indexOf('document.querySelector("#add")'));
+    expect(source.indexOf('document.querySelector("#task")')).toBeLessThan(
+      source.indexOf('document.querySelector("#add")'),
+    );
     expect(source).toContain("new Event('input', { bubbles: true })");
     expect(source).toContain("new KeyboardEvent('keydown', init)");
     expect(source).toContain('element.click()');

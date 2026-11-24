@@ -22,16 +22,24 @@ function home(): string {
 describe('credential use authorization', () => {
   test('requires explicit enrollment and reuses the exact active credential grant', () => {
     const controllerHome = home();
-    expect(() => authorizeCredentialUse({
-      controllerHome, credentialRef: 'cred_alpha', endpoint: 'https://api.example.com/v1',
-      confirmAuthorization: false,
-    })).toThrow('CREDENTIAL_AUTHORIZATION_CONFIRMATION_REQUIRED');
+    expect(() =>
+      authorizeCredentialUse({
+        controllerHome,
+        credentialRef: 'cred_alpha',
+        endpoint: 'https://api.example.com/v1',
+        confirmAuthorization: false,
+      }),
+    ).toThrow('CREDENTIAL_AUTHORIZATION_CONFIRMATION_REQUIRED');
     const first = authorizeCredentialUse({
-      controllerHome, credentialRef: 'cred_alpha', endpoint: 'https://api.example.com/v1',
+      controllerHome,
+      credentialRef: 'cred_alpha',
+      endpoint: 'https://api.example.com/v1',
       confirmAuthorization: true,
     });
     const second = authorizeCredentialUse({
-      controllerHome, credentialRef: 'cred_alpha', endpoint: 'https://api.example.com/v1',
+      controllerHome,
+      credentialRef: 'cred_alpha',
+      endpoint: 'https://api.example.com/v1',
       confirmAuthorization: true,
     });
     expect(first.reused).toBe(false);
@@ -42,23 +50,42 @@ describe('credential use authorization', () => {
   test('fails closed for endpoint mismatch, expiry and revoke', () => {
     const controllerHome = home();
     authorizeCredentialUse({
-      controllerHome, credentialRef: 'cred_alpha', endpoint: 'https://api.example.com/v1',
-      confirmAuthorization: true, expiresInMinutes: 1,
+      controllerHome,
+      credentialRef: 'cred_alpha',
+      endpoint: 'https://api.example.com/v1',
+      confirmAuthorization: true,
+      expiresInMinutes: 1,
     });
-    expect(credentialUseStatus({
-      controllerHome, credentialRef: 'cred_alpha', endpoint: 'https://other.example.com/v1',
-    }).authorized).toBe(false);
-    expect(() => assertCredentialUseAuthorized({
-      controllerHome, credentialRef: 'cred_alpha', endpoint: 'https://other.example.com/v1',
-    })).toThrow('CREDENTIAL_USE_NOT_AUTHORIZED');
-    expect(credentialUseStatus({
-      controllerHome, credentialRef: 'cred_alpha', endpoint: 'https://api.example.com/v1',
-      at: new Date(Date.now() + 120_000),
-    }).authorized).toBe(false);
+    expect(
+      credentialUseStatus({
+        controllerHome,
+        credentialRef: 'cred_alpha',
+        endpoint: 'https://other.example.com/v1',
+      }).authorized,
+    ).toBe(false);
+    expect(() =>
+      assertCredentialUseAuthorized({
+        controllerHome,
+        credentialRef: 'cred_alpha',
+        endpoint: 'https://other.example.com/v1',
+      }),
+    ).toThrow('CREDENTIAL_USE_NOT_AUTHORIZED');
+    expect(
+      credentialUseStatus({
+        controllerHome,
+        credentialRef: 'cred_alpha',
+        endpoint: 'https://api.example.com/v1',
+        at: new Date(Date.now() + 120_000),
+      }).authorized,
+    ).toBe(false);
     expect(revokeCredentialUse({ controllerHome, credentialRef: 'cred_alpha' }).revoked).toBe(true);
-    expect(credentialUseStatus({
-      controllerHome, credentialRef: 'cred_alpha', endpoint: 'https://api.example.com/v1',
-    }).authorized).toBe(false);
+    expect(
+      credentialUseStatus({
+        controllerHome,
+        credentialRef: 'cred_alpha',
+        endpoint: 'https://api.example.com/v1',
+      }).authorized,
+    ).toBe(false);
   });
 
   test('binds browser password manager authorization to exact origin and account without secret material', () => {
@@ -72,20 +99,24 @@ describe('credential use authorization', () => {
       confirmAuthorization: true,
     });
     expect(first.reused).toBe(false);
-    expect(credentialUseStatus({
-      controllerHome,
-      credentialRef: 'cred_browser_mail',
-      endpoint: 'https://accounts.example.com',
-      provider: 'browser_password_manager',
-      account: 'user@example.com',
-    })).toMatchObject({ authorized: true, provider: 'browser_password_manager', accountBound: true });
-    expect(credentialUseStatus({
-      controllerHome,
-      credentialRef: 'cred_browser_mail',
-      endpoint: 'https://accounts.example.com',
-      provider: 'browser_password_manager',
-      account: 'other@example.com',
-    }).authorized).toBe(false);
+    expect(
+      credentialUseStatus({
+        controllerHome,
+        credentialRef: 'cred_browser_mail',
+        endpoint: 'https://accounts.example.com',
+        provider: 'browser_password_manager',
+        account: 'user@example.com',
+      }),
+    ).toMatchObject({ authorized: true, provider: 'browser_password_manager', accountBound: true });
+    expect(
+      credentialUseStatus({
+        controllerHome,
+        credentialRef: 'cred_browser_mail',
+        endpoint: 'https://accounts.example.com',
+        provider: 'browser_password_manager',
+        account: 'other@example.com',
+      }).authorized,
+    ).toBe(false);
     const changed = authorizeCredentialUse({
       controllerHome,
       credentialRef: 'cred_browser_mail',
@@ -95,20 +126,24 @@ describe('credential use authorization', () => {
       confirmAuthorization: true,
     });
     expect(changed.reused).toBe(false);
-    expect(credentialUseStatus({
-      controllerHome,
-      credentialRef: 'cred_browser_mail',
-      endpoint: 'https://accounts.example.com',
-      provider: 'browser_password_manager',
-      account: 'user@example.com',
-    }).authorized).toBe(false);
-    expect(credentialUseStatus({
-      controllerHome,
-      credentialRef: 'cred_browser_mail',
-      endpoint: 'https://accounts.example.com',
-      provider: 'browser_password_manager',
-      account: 'other@example.com',
-    }).authorized).toBe(true);
+    expect(
+      credentialUseStatus({
+        controllerHome,
+        credentialRef: 'cred_browser_mail',
+        endpoint: 'https://accounts.example.com',
+        provider: 'browser_password_manager',
+        account: 'user@example.com',
+      }).authorized,
+    ).toBe(false);
+    expect(
+      credentialUseStatus({
+        controllerHome,
+        credentialRef: 'cred_browser_mail',
+        endpoint: 'https://accounts.example.com',
+        provider: 'browser_password_manager',
+        account: 'other@example.com',
+      }).authorized,
+    ).toBe(true);
     const grant = assertCredentialUseAuthorized({
       controllerHome,
       credentialRef: 'cred_browser_mail',
@@ -122,12 +157,14 @@ describe('credential use authorization', () => {
     });
     expect(JSON.stringify(grant)).not.toContain('password-value');
     expect(revokeCredentialUse({ controllerHome, credentialRef: 'cred_browser_mail' }).revoked).toBe(true);
-    expect(() => assertCredentialUseAuthorized({
-      controllerHome,
-      credentialRef: 'cred_browser_mail',
-      endpoint: 'https://accounts.example.com',
-      provider: 'browser_password_manager',
-    })).toThrow('CREDENTIAL_USE_NOT_AUTHORIZED');
+    expect(() =>
+      assertCredentialUseAuthorized({
+        controllerHome,
+        credentialRef: 'cred_browser_mail',
+        endpoint: 'https://accounts.example.com',
+        provider: 'browser_password_manager',
+      }),
+    ).toThrow('CREDENTIAL_USE_NOT_AUTHORIZED');
   });
 
   test('Forge-owned vault grants are separate from Apple/browser password-manager grants', () => {
@@ -136,46 +173,86 @@ describe('credential use authorization', () => {
     const account = 'owner@example.test';
     const ref = 'credref:v1:synthetic-forge-vault';
     const browser = authorizeCredentialUse({
-      controllerHome, credentialRef: ref, endpoint: origin,
-      provider: 'browser_password_manager', account, confirmAuthorization: true,
+      controllerHome,
+      credentialRef: ref,
+      endpoint: origin,
+      provider: 'browser_password_manager',
+      account,
+      confirmAuthorization: true,
     });
     expect(browser.reused).toBe(false);
-    expect(credentialUseStatus({
-      controllerHome, credentialRef: ref, endpoint: origin,
-      provider: 'forge_local_vault', account,
-    }).authorized).toBe(false);
-    expect(() => assertCredentialUseAuthorized({
-      controllerHome, credentialRef: ref, endpoint: origin,
-      provider: 'forge_local_vault', account,
-    })).toThrow('CREDENTIAL_USE_NOT_AUTHORIZED');
+    expect(
+      credentialUseStatus({
+        controllerHome,
+        credentialRef: ref,
+        endpoint: origin,
+        provider: 'forge_local_vault',
+        account,
+      }).authorized,
+    ).toBe(false);
+    expect(() =>
+      assertCredentialUseAuthorized({
+        controllerHome,
+        credentialRef: ref,
+        endpoint: origin,
+        provider: 'forge_local_vault',
+        account,
+      }),
+    ).toThrow('CREDENTIAL_USE_NOT_AUTHORIZED');
     const vault = authorizeCredentialUse({
-      controllerHome, credentialRef: ref, endpoint: origin,
-      provider: 'forge_local_vault', account, confirmAuthorization: true,
+      controllerHome,
+      credentialRef: ref,
+      endpoint: origin,
+      provider: 'forge_local_vault',
+      account,
+      confirmAuthorization: true,
     });
     expect(vault.reused).toBe(false);
-    expect(credentialUseStatus({
-      controllerHome, credentialRef: ref, endpoint: origin,
-      provider: 'forge_local_vault', account,
-    }).authorized).toBe(true);
-    expect(credentialUseStatus({
-      controllerHome, credentialRef: ref, endpoint: 'https://evil.example.test',
-      provider: 'forge_local_vault', account,
-    }).authorized).toBe(false);
-    expect(credentialUseStatus({
-      controllerHome, credentialRef: ref, endpoint: origin,
-      provider: 'forge_local_vault', account: 'other@example.test',
-    }).authorized).toBe(false);
-    expect(() => authorizeCredentialUse({
-      controllerHome, credentialRef: ref, endpoint: origin,
-      provider: 'forge_local_vault', confirmAuthorization: true,
-    })).toThrow('CREDENTIAL_ACCOUNT_REQUIRED');
+    expect(
+      credentialUseStatus({
+        controllerHome,
+        credentialRef: ref,
+        endpoint: origin,
+        provider: 'forge_local_vault',
+        account,
+      }).authorized,
+    ).toBe(true);
+    expect(
+      credentialUseStatus({
+        controllerHome,
+        credentialRef: ref,
+        endpoint: 'https://evil.example.test',
+        provider: 'forge_local_vault',
+        account,
+      }).authorized,
+    ).toBe(false);
+    expect(
+      credentialUseStatus({
+        controllerHome,
+        credentialRef: ref,
+        endpoint: origin,
+        provider: 'forge_local_vault',
+        account: 'other@example.test',
+      }).authorized,
+    ).toBe(false);
+    expect(() =>
+      authorizeCredentialUse({
+        controllerHome,
+        credentialRef: ref,
+        endpoint: origin,
+        provider: 'forge_local_vault',
+        confirmAuthorization: true,
+      }),
+    ).toThrow('CREDENTIAL_ACCOUNT_REQUIRED');
     revokeCredentialUse({ controllerHome, credentialRef: ref });
   });
 
   test('status is metadata-only', () => {
     const controllerHome = home();
     const status = credentialUseStatus({
-      controllerHome, credentialRef: 'cred_alpha', endpoint: 'https://api.example.com/v1',
+      controllerHome,
+      credentialRef: 'cred_alpha',
+      endpoint: 'https://api.example.com/v1',
     });
     const serialized = JSON.stringify(status);
     expect(status.authorized).toBe(false);
