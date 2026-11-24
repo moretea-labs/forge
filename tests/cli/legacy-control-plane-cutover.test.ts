@@ -183,21 +183,26 @@ describe('legacy control-plane cutover', () => {
     });
   });
 
-  test('Local Bridge marks old mutation routes as retired and its snapshot is Requirement-centered', () => {
+  test('Local Bridge physically omits retired Issue/Task mutation routes and keeps Requirement-centered reads', () => {
     const source = readFileSync(join(process.cwd(), 'src/cli/local-bridge/server.ts'), 'utf8');
-    expect(source).toContain('LEGACY_CONTROL_PLANE_MUTATION_RETIRED');
     expect(source).toContain('buildRequirementBoard');
     expect(source).toContain('buildExecutionDiagnostics');
     expect(source).toContain('issueToolsAvailable: !retiredLegacyControlPlane');
-    for (const route of [
-      '/api/project-state', '/api/issues/:issueId/focus', '/api/issues/:issueId/archive', '/api/issues/:issueId/restore',
-      '/api/issues/:issueId/tasks/:taskId/verify', '/api/issues/:issueId/tasks/:taskId/accept',
-      '/api/issues/:issueId/tasks/:taskId/request-changes', '/api/issues/:issueId/tasks/:taskId/cancel',
+    for (const retired of [
+      'LEGACY_CONTROL_PLANE_MUTATION_RETIRED',
+      'const retireLegacyIssueMutation =',
+      '/api/project-state',
+      '/api/progress',
+      '/api/tasks/launch-ready',
+      '/api/issues/:issueId/focus',
+      '/api/issues/:issueId/archive',
+      '/api/issues/:issueId/restore',
+      '/api/issues/:issueId/tasks/:taskId/verify',
+      '/api/issues/:issueId/tasks/:taskId/accept',
+      '/api/issues/:issueId/tasks/:taskId/request-changes',
+      '/api/issues/:issueId/tasks/:taskId/cancel',
       '/api/issues/:issueId/tasks/:taskId/dependencies',
-    ]) expect(source).toContain(route);
-    expect(source).toContain('const retireLegacyIssueMutation =');
-    expect(source).toContain('app.patch("/api/project-state", retireLegacyIssueMutation)');
-    expect(source).toContain('app.post(path, retireLegacyIssueMutation)');
+    ]) expect(source).not.toContain(retired);
     for (const writer of ['saveControllerProjectState(', 'recordTaskVerification(', 'archiveIssue(', 'restoreIssue(', 'setTaskDependencies(', 'acceptVerifiedTask(', 'updateTask(']) {
       expect(source).not.toContain(writer);
     }
