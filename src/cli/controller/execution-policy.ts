@@ -32,9 +32,7 @@ export function completionReceiptComplete(
     && receipt.targetRevision.trim()
     && receipt.editSessionId.trim()
     && (!expected.targetBranch || receipt.targetBranch === expected.targetBranch)
-    && receipt.delivery.status === 'integrated'
     && receipt.delivery.reachable
-    && receipt.cleanup.status !== 'blocked'
     && Array.isArray(receipt.cleanup.blockers)
     && receipt.cleanup.blockers.length === 0);
 }

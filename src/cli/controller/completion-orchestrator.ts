@@ -620,7 +620,7 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
     changedPaths,
     cleanupBlockers,
   });
-  if (completionReceipt.cleanup.status === 'blocked') {
+  if (completionReceipt.cleanup.blockers.length > 0) {
     updateTask(repoRoot, issue.id, task.id, {
       status: 'cleanup_blocked',
       note: completionReceipt.cleanup.blockers.map((entry) => entry.message).join(' '),
@@ -814,14 +814,6 @@ function directEditReceiptId(ownerId: string, targetRevision: string): string {
   return 'REC-direct_edit-' + digest;
 }
 
-function cleanupStatus(
-  warnings: readonly CompletionMaintenanceWarning[],
-  blockers: readonly CompletionResourceBlocker[],
-): RepositoryCompletionReceipt['cleanup']['status'] {
-  if (blockers.length > 0) return 'blocked';
-  return warnings.length > 0 ? 'maintenance_warning' : 'complete';
-}
-
 function blocker(
   code: CompletionResourceBlocker['code'],
   message: string,
@@ -868,11 +860,9 @@ function buildDirectEditCompletionReceipt(input: {
     baseRevision: input.integrationEvidence.baseRevision,
     changedPaths: Array.from(new Set(input.changedPaths)).sort((left, right) => left.localeCompare(right)),
     delivery: {
-      status: blockers.some((entry) => entry.code === 'target_revision_unreachable') ? 'blocked' : 'integrated',
       reachable: input.integrationEvidence.reachable,
     },
     cleanup: {
-      status: cleanupStatus(warnings, blockers),
       warnings,
       blockers,
     },

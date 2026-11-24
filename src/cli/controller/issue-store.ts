@@ -306,7 +306,6 @@ function summarizeVerification(verification?: TaskVerification) {
           targetBranch: verification.completionReceipt.targetBranch,
           targetRevision: verification.completionReceipt.targetRevision,
           changedPathCount: verification.completionReceipt.changedPaths.length,
-          cleanupStatus: verification.completionReceipt.cleanup.status,
           maintenanceWarningCount: verification.completionReceipt.cleanup.warnings.length,
           blockerCount: verification.completionReceipt.cleanup.blockers.length,
         }

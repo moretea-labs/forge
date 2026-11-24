@@ -41,11 +41,9 @@ function completionReceipt(receiptKey: string, targetRevision: string) {
     targetRevision,
     changedPaths: ['src/example.ts'],
     delivery: {
-      status: 'integrated' as const,
       reachable: true,
     },
     cleanup: {
-      status: 'complete' as const,
       warnings: [],
       blockers: [],
     },

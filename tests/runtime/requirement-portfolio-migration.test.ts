@@ -33,8 +33,8 @@ function completionReceipt(issueId: string, taskId: string) {
     targetBranch: 'main',
     targetRevision: `rev-${issueId}`,
     changedPaths: [`src/${issueId}.ts`],
-    delivery: { status: 'integrated' as const, reachable: true },
-    cleanup: { status: 'complete' as const, warnings: [], blockers: [] },
+    delivery: { reachable: true },
+    cleanup: { warnings: [], blockers: [] },
     verifiedAt: NOW,
     recordedAt: NOW,
   };

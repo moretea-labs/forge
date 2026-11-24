@@ -37,11 +37,9 @@ export interface RepositoryCompletionReceipt {
   baseRevision?: string;
   changedPaths: string[];
   delivery: {
-    status: 'integrated' | 'blocked';
     reachable: boolean;
   };
   cleanup: {
-    status: 'complete' | 'maintenance_warning' | 'blocked';
     warnings: CompletionMaintenanceWarning[];
     blockers: CompletionResourceBlocker[];
   };
