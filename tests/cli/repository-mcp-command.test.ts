@@ -446,9 +446,11 @@ describe('repository MCP command tools', () => {
     const rhContext = runtimeToolDefinitions.find((tool) => tool.name === 'rh_context');
     const rhWork = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
     const command = repositoryToolDefinitions.find((tool) => tool.name === 'execute_command');
-    const safePatchApply = repositoryToolDefinitions.find((tool) => tool.name === 'repository_safe_patch_apply');
     const directEditCapability = getCoreCapabilityExecutionSchema('repository.direct_edit') as {
-      actions?: { plan?: { argumentsSchema?: { properties?: Record<string, unknown> } } };
+      actions?: {
+        plan?: { argumentsSchema?: { properties?: Record<string, unknown> } };
+        apply?: { argumentsSchema?: { properties?: Record<string, unknown> } };
+      };
     };
     expect(rhContext?.description).toContain('model chooses');
     expect(rhContext?.description).not.toContain('fallback-only');
@@ -459,14 +461,8 @@ describe('repository MCP command tools', () => {
 
     expect(command?.description).toContain('Single terminal entry');
     expect(repositoryToolDefinitions.some((tool) => tool.name === 'repository_command_execute')).toBe(false);
-    const operationTypes = (tool: (typeof repositoryToolDefinitions)[number] | undefined): string[] | undefined => {
-      const properties = tool?.inputSchema.properties as Record<string, unknown> | undefined;
-      const operations = properties?.operations as
-        | { items?: { properties?: { type?: { enum?: string[] } } } }
-        | undefined;
-      return operations?.items?.properties?.type?.enum;
-    };
     expect(repositoryToolDefinitions.some((tool) => tool.name === 'repository_safe_patch_plan')).toBe(false);
+    expect(repositoryToolDefinitions.some((tool) => tool.name === 'repository_safe_patch_apply')).toBe(false);
     const planOperations = directEditCapability.actions?.plan?.argumentsSchema?.properties?.operations as
       | { items?: { properties?: { type?: { enum?: string[] } } } }
       | undefined;
@@ -480,7 +476,13 @@ describe('repository MCP command tools', () => {
       'append',
       'delete',
     ]);
-    expect(operationTypes(safePatchApply)).toEqual(planOperations?.items?.properties?.type?.enum);
+    const applyProperties = directEditCapability.actions?.apply?.argumentsSchema?.properties;
+    const applyOperations = applyProperties?.operations as
+      | { items?: { properties?: { type?: { enum?: string[] } } } }
+      | undefined;
+    expect(applyOperations?.items?.properties?.type?.enum).toEqual(planOperations?.items?.properties?.type?.enum);
+    expect(applyProperties).toHaveProperty('check_ids');
+    expect(applyProperties).toHaveProperty('validation_only');
     for (const retired of [
       'repository_goal_list',
       'repository_goal_upsert',

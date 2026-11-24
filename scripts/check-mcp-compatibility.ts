@@ -34,9 +34,9 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // 2026-11-08: managed generic API credentials add one metadata-only rh_credential facade.
 // It owns only credential-use AuthorizationGrant lifecycle; macOS Keychain/provider stores remain secret authorities.
 // Preferred facade names stay stable; any further complete-registry drift fails closed.
-// 2026-11-24 #714: repository_safe_patch_plan is no longer a top-level MCP tool;
-// repository.direct_edit action=plan remains the canonical capability_execute route.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '32a96ea4b9bf5298';
+// 2026-11-24 #714: repository_safe_patch_plan/apply are no longer top-level MCP tools;
+// repository.direct_edit plan/apply remains the canonical capability_execute route.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = '5e9139259c1ed49f';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a
@@ -45,7 +45,6 @@ const EXPECTED_EXPOSED_NAME_FINGERPRINT = '32a96ea4b9bf5298';
 const EXPECTED_PREFERRED_CONTROLLER_TOOL_NAMES = [
   'read_repository_file',
   'execute_command',
-  'repository_safe_patch_apply',
   'repository_list',
   'repository_get',
   'repository_register',
@@ -68,7 +67,7 @@ const EXPECTED_PREFERRED_CONTROLLER_TOOL_NAMES = [
 // already shipped on main. V3 Work objective relations intentionally extend only
 // the existing rh_work input schema; both changes must invalidate stale Connector
 // schema snapshots without adding a parallel execution or graph authority.
-const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
+const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = '9ebdaeedde7cf065';
 // Every public object-schema tool carries shared transport metadata only through
 // the final tools/list materialization path. Tool schema revisions
 // intentionally invalidate stale Connector schema snapshots.
@@ -112,9 +111,9 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // Schema v23 documents Project-scoped Plan identity and the project_id == scope_key rule.
 // 2026-11-18 #313 adds task-bound ChatGPT continuation identity and one bounded
 // Prompt to the existing Launch Session action.
-// 2026-11-21 #714: preferred routing leads with read_repository_file, execute_command,
-// and repository_safe_patch_apply. Facade names stay registered after them.
-// Refresh the name and schema fingerprints for that order only.
+// 2026-11-24 #714: Direct Edit now routes through the canonical repository.direct_edit
+// capability behind capability_execute; the redundant preferred Safe Patch alias is retired.
+// Refresh preferred name/schema fingerprints for that deliberate contraction.
 // 2026-11-20: revision-bound Autopilot authorization/checkpoint acceptance and
 // atomic parent-Requirement CAS for semantic Plan creation add explicit
 // expected-revision and approved-checkpoint identity fields. Project Requirement
@@ -129,7 +128,7 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'bdc96cdd84b4d338';
 // 2026-11-23: origin/main drifted past the prior preferred schema fence after
 // Work-retirement schema cleanup; refresh the exact fingerprint so Connector
 // snapshots invalidate without relaxing the frozen public-contract assertion.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '0a5519a420ce2594';
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'ca9c7c4841de0a8f';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

@@ -13,7 +13,6 @@ export const PREFERRED_CONTROLLER_TOOL_NAMES = [
   // for frozen connectors and optional Requirement/Plan progress.
   'read_repository_file',
   'execute_command',
-  'repository_safe_patch_apply',
 
   // Repository selection / bootstrap.
   'repository_list',

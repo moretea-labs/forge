@@ -5,7 +5,6 @@
  * repository-tool-dispatch module, which every transport shares.
  */
 import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
-import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/runtime/editing/edit-operation-contract';
 
 function definition(
   name: string,
@@ -165,25 +164,6 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     delete_branch: { type: 'boolean', description: 'Defaults to true.' },
     no_ff: { type: 'boolean', description: 'Use --no-ff instead of the default --ff-only.' },
   }, []),
-  definition('repository_safe_patch_apply', 'Apply one coherent deterministic edit batch and return bounded review evidence. Checks are opt-in: pass check_ids only when the batch is stable. Long checks return managed Process handles instead of blocking the MCP call; use validation_only with the returned session/request ids to join later without replaying the patch.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    session_id: { type: 'string', description: 'Existing edit session id. Required for validation_only; otherwise omit to create one.' },
-    purpose: { type: 'string', description: 'Purpose for a newly created edit session.' },
-    operations: { type: 'array', items: EDIT_OPERATION_INPUT_SCHEMA, description: 'Typed edit operations. Use type=create for a new path; write/replace/insert/prepend/append/delete require an existing target and preserve strict preconditions. Required unless validation_only=true.' },
-    chunk_size: { type: 'number', description: 'Maximum operations per deterministic chunk. Capped at 100.' },
-    expected_revision: { type: 'number', description: 'Expected starting edit-session revision.' },
-    allowed_paths: { type: 'array', items: { type: 'string' }, description: 'Optional allowed path globs for a newly created session.' },
-    continue_on_error: { type: 'boolean', description: 'Continue applying later independent chunks after a failed chunk. Defaults to false.' },
-    refresh_fingerprints: { type: 'boolean', description: 'Explicitly refresh caller-supplied file fingerprints before every chunk. Defaults to false so stale SHA values return a conflict for model reconciliation; operations without a SHA still bind to the latest file.' },
-    recover_stale_session: { type: 'boolean', description: 'For new sessions, recover stale edit-session fingerprints into a fresh session. Defaults to true.' },
-    check_ids: { type: 'array', items: { type: 'string' }, description: 'Optional focused validation for this stable coherent edit batch. Omit to edit without running tests.' },
-    check_timeout_ms: { type: 'number', description: 'Per-check execution budget. Long checks still return managed handles immediately.' },
-    lease_wait_ms: { type: 'number', description: 'Bounded resource-lease wait for conflicting validation lanes.' },
-    validation_request_id: { type: 'string', description: 'Stable validation identity returned by a prior edit+validation call; reuse with validation_only to join without replaying edits.' },
-    validation_only: { type: 'boolean', description: 'When true, do not edit. Reconcile/reuse the existing session validation Processes identified by session_id/check_ids/validation_request_id.' },
-    apply_mode: { type: 'string', enum: ['sync', 'async'], description: 'Defaults to sync for interactive development. Set async only for a separately durable operation.' },
-  }),
   definition('execute_command', 'Single terminal entry. Registered repository commands use Process Runtime handles; workspace_root targets are bounded direct execution (maximum 30 seconds, no durable handle). No Work or Plan required. Ordinary commands follow host permissions; host scope uses the existing explicit Full Access setting without a second Forge Grant or per-command confirmation.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
