@@ -58,11 +58,7 @@ function safeRepoId(repoId: string): string {
   return sanitizeFileComponent(repoId);
 }
 
-/** ExecutionJobs are historical diagnostics; new work is owned by Work + Process. */
-export function executionJobCreationRetired(): boolean {
-  return true;
-}
-
+/** ExecutionJobs are historical diagnostics; new execution uses direct Process Runtime or an explicit external Controller. */
 function executionJobRootPath(controllerHome: string, repoId: string): string {
   return join(repositoryControllerRoot(controllerHome, safeRepoId(repoId)), 'execution-jobs');
 }
@@ -983,9 +979,10 @@ const DEFAULT_RETIRED_JOB_SCAN = 5_000;
 const DEFAULT_RETIRED_JOB_REMOVALS = 32;
 
 /**
- * Bounded compatibility cleanup for the retired ExecutionJob authority. New
- * execution is Work + Process, so this only reclaims proven-terminal legacy
- * bundles and never participates in execution admission or effect recovery.
+ * Bounded compatibility cleanup for historical ExecutionJob records. New
+ * execution uses direct Process Runtime or an explicit external Controller, so
+ * this only reclaims proven-terminal legacy bundles and never participates in
+ * execution admission or effect recovery.
  */
 export function cleanupRetiredExecutionJobs(
   controllerHome: string,
@@ -999,7 +996,6 @@ export function cleanupRetiredExecutionJobs(
   } = {},
 ): RetiredExecutionJobCleanupReport {
   assertRuntimeMayWriteOrThrow('cleanup', controllerHome);
-  if (!executionJobCreationRetired()) throw new Error('EXECUTION_JOB_RETENTION_REQUIRES_RETIRED_CREATION');
   const nowMs = Number.isFinite(options.nowMs) ? Number(options.nowMs) : Date.now();
   const retentionMs = Math.max(60_000, Math.trunc(options.retentionMs ?? DEFAULT_RETIRED_JOB_RETENTION_MS));
   const maxTerminalRecords = Math.max(

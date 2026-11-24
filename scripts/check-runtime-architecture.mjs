@@ -2178,6 +2178,11 @@ forbid(
   /export function createExecutionJob\s*\(/,
   'retired ExecutionJob creation API must stay physically absent',
 );
+forbid(
+  'src/runtime/execution/jobs/store.ts',
+  /executionJobCreationRetired|EXECUTION_JOB_RETENTION_REQUIRES_RETIRED_CREATION/,
+  'historical ExecutionJob retention must not depend on a redundant retired-creation sentinel',
+);
 requireMissing('src/runtime/execution/jobs/legacy-adapter.ts');
 requireMissing('src/cli/controller/migrated-issue-decision.ts');
 requireMissing('src/cli/mcp/oauth-client-retirement.ts');
