@@ -19,8 +19,11 @@ export interface RuntimeIdentitySnapshot {
   profile?: string;
 }
 
-export function runtimeIdentitySnapshot(ctx: MultiRepositoryMcpToolContext): RuntimeIdentitySnapshot {
-  const observation = observeRuntimeStatus(ctx.controllerHome);
+export function runtimeIdentitySnapshot(
+  ctx: MultiRepositoryMcpToolContext,
+  precomputedObservation?: ReturnType<typeof observeRuntimeStatus>,
+): RuntimeIdentitySnapshot {
+  const observation = precomputedObservation ?? observeRuntimeStatus(ctx.controllerHome);
   const snapshot = observation.snapshot;
   return {
     releaseId: snapshot?.releaseId,
@@ -59,38 +62,45 @@ export function authenticatedFacadeControllerIdentity(
   const transportSessionId = ctx.sessionId?.trim();
   const requestedControllerId = typeof args.controller_id === 'string' ? args.controller_id.trim() : '';
   const requestedSessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
-  const requestedAuthorityId = typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '';
+  const requestedAuthorityId =
+    typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '';
   if (!principalId) {
     if (!transportSessionId && !requestedSessionId) {
-      throw new Error('CONTROLLER_AUTHENTICATED_SESSION_REQUIRED: reconnect or provide session_id through the authenticated MCP transport');
+      throw new Error(
+        'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED: reconnect or provide session_id through the authenticated MCP transport',
+      );
     }
     throw new Error('CONTROLLER_AUTHENTICATED_PRINCIPAL_REQUIRED: use an authenticated MCP transport');
   }
 
   const sessionId = transportSessionId || requestedSessionId || `mcp_request_${randomUUID().replace(/-/g, '')}`;
   const transportRolloverRequested = Boolean(
-    transportSessionId
-      && requestedSessionId
-      && requestedSessionId !== transportSessionId,
+    transportSessionId && requestedSessionId && requestedSessionId !== transportSessionId,
   );
   if (transportRolloverRequested && options.allowTransportSessionRollover !== true) {
-    throw new Error('CONTROLLER_TRANSPORT_SESSION_ROLLOVER_NOT_ALLOWED: this operation must use the current authenticated transport session');
+    throw new Error(
+      'CONTROLLER_TRANSPORT_SESSION_ROLLOVER_NOT_ALLOWED: this operation must use the current authenticated transport session',
+    );
   }
 
-  const compatibilityAuthorityId = (!transportSessionId && requestedSessionId ? requestedSessionId : '')
-    || (transportRolloverRequested ? requestedSessionId : '');
+  const compatibilityAuthorityId =
+    (!transportSessionId && requestedSessionId ? requestedSessionId : '') ||
+    (transportRolloverRequested ? requestedSessionId : '');
   const controllerAuthorityId = requestedAuthorityId || compatibilityAuthorityId;
   const authorityViaSessionCompatibility = !requestedAuthorityId && Boolean(compatibilityAuthorityId);
   if (requestedControllerId && requestedControllerId !== principalId) {
     throw new Error('CONTROLLER_ID_CONTEXT_MISMATCH: controller_id must match the authenticated principal');
   }
-  const requestedControllerType = typeof args.controller_type === 'string'
-    && ['chatgpt', 'codex', 'claude', 'grok', 'human'].includes(args.controller_type)
-    ? args.controller_type as 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human'
-    : undefined;
+  const requestedControllerType =
+    typeof args.controller_type === 'string' &&
+    ['chatgpt', 'codex', 'claude', 'grok', 'human'].includes(args.controller_type)
+      ? (args.controller_type as 'chatgpt' | 'codex' | 'claude' | 'grok' | 'human')
+      : undefined;
   const transportControllerType = ctx.controllerType;
   if (transportControllerType && requestedControllerType && requestedControllerType !== transportControllerType) {
-    throw new Error('CONTROLLER_TYPE_CONTEXT_MISMATCH: controller_type must match the authenticated transport provider');
+    throw new Error(
+      'CONTROLLER_TYPE_CONTEXT_MISMATCH: controller_type must match the authenticated transport provider',
+    );
   }
   return {
     controllerId: principalId,

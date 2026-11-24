@@ -299,11 +299,22 @@ describe('runtime command surface', () => {
     expect(runtimeTools).not.toContain('cli/mcp/keepalive');
     expect(runtimeObservation).not.toContain('cli/local-bridge/job-store');
     expect(runtimeObservation).toContain("includeRecentEvents: variant !== 'summary'");
-    expect(runtimeObservation).toContain("const liveGit = variant === 'summary'");
-    expect(runtimeObservation).toContain("'Working tree has changes; request repository_git_status for bounded detail.'");
+    expect(runtimeObservation).toContain('const requestedSections = Array.isArray(args.sections)');
+    expect(runtimeObservation).toContain('const selectedSections = requestedSections;');
+    expect(runtimeObservation).toContain("if (selectedSections.includes('git'))");
+    expect(runtimeObservation).toContain('contextIndex: {');
+    expect(runtimeObservation).toContain(
+      "status: selectedSections.includes('readiness') ? 'observed' : 'not_requested'",
+    );
+    expect(runtimeObservation).not.toContain("const liveGit = variant === 'summary'");
+    expect(runtimeObservation).toContain(
+      "'Working tree has changes; request repository_git_status for bounded detail.'",
+    );
     const taskLedgerSource = readFileSync(join(ROOT, 'src/cli/controller/task-ledger.ts'), 'utf8');
     expect(taskLedgerSource).toContain('options.includeRecentEvents === false');
-    expect(taskLedgerSource).toContain('cutover.repoId ? { controllerHome: cutover.controllerHome, repoId: cutover.repoId } : undefined');
+    expect(taskLedgerSource).toContain(
+      'cutover.repoId ? { controllerHome: cutover.controllerHome, repoId: cutover.repoId } : undefined',
+    );
     const readinessStart = runtimeObservation.indexOf("case 'controller_ready':");
     const readinessEnd = runtimeObservation.indexOf("case 'repository_runtime_snapshot':", readinessStart);
     const readinessBlock = runtimeObservation.slice(readinessStart, readinessEnd);
@@ -350,7 +361,9 @@ describe('runtime command surface', () => {
       contextHandlerBlock.indexOf('cachedGitIdentity('),
     );
     expect(contextHandlerBlock).toContain('CONTROLLER_CONTEXT_UNKNOWN_SECTION');
-    expect(contextHandlerBlock).toContain("status: selectedSections.includes('readiness') ? 'observed' : 'not_requested'");
+    expect(contextHandlerBlock).toContain(
+      "status: selectedSections.includes('readiness') ? 'observed' : 'not_requested'",
+    );
     expect(contextHandlerBlock).toMatch(/await controllerReadiness\(\s*ctx,\s*repository,\s*\{\},\s*\{/s);
     expect(contextHandlerBlock).toContain('taskLedger,');
     expect(contextHandlerBlock).toContain('projectionSnapshot: runtimeSnapshot');

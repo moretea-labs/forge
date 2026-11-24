@@ -20,12 +20,15 @@ import {
 import { executionJobRoot } from '../../src/runtime/execution/jobs/store';
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import { flushMcpDiagnostics, recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
-import {
-  classifyForgeIncidentForRepair,
-  maybeRegisterMcpIncidentRepair,
-} from '../../src/runtime/diagnostics/incident-repair';
+import { maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
-import { authenticatedFacadeControllerIdentity } from '../../adapters/mcp/runtime-gateway/controller-authority-adapter';
+import { controllerReadinessEvidence } from '../../adapters/mcp/runtime-gateway/runtime-readiness-observation';
+import { summarizeControllerReadyPayload } from '../../adapters/mcp/runtime-gateway/runtime-observation-adapter';
+import { result as mcpResult, serializeResultPayload } from '../../adapters/mcp/runtime-gateway/result-adapter';
+import {
+  authenticatedFacadeControllerIdentity,
+  runtimeIdentitySnapshot,
+} from '../../adapters/mcp/runtime-gateway/controller-authority-adapter';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../adapters/mcp/multi-repository';
 import {
   resolveControllerAccessState,
@@ -43,7 +46,7 @@ import {
   collectRuntimeSourceIdentity,
   rotateRuntimeGeneration,
 } from '../../src/runtime/control-plane/runtime-generation';
-import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { observeRuntimeStatus, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import {
   collectRepositoryLifecycleAttention,
   repositoryLifecycleAttentionBlocksReadiness,
@@ -51,8 +54,8 @@ import {
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { runHandoffInboxApplication } from '../../src/runtime/control-plane/facade/handoff-inbox-application';
-import { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
-import { FORGE_VERSION } from '../../src/runtime/shared/runtime-config';
+import { PREFERRED_CONTROLLER_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
+import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION } from '../../src/runtime/shared/runtime-config';
 import {
   PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,
   processRunnerReleaseCanaryChildCommand,
@@ -151,6 +154,20 @@ function controllerFixture(): { controllerHome: string; repoRoot: string; owners
 }
 
 describe('runtime observability', () => {
+  test('serializes structured MCP responses once and reuses the exact UTF-8 byte count', () => {
+    const payload = {
+      responseMeta: { structuredPayloadBytes: 0 },
+      label: 'context snowman ☃',
+      nested: { value: 42 },
+    };
+    const serialized = serializeResultPayload(payload);
+    expect(serialized.byteLength).toBe(Buffer.byteLength(serialized.text, 'utf8'));
+    expect(payload.responseMeta.structuredPayloadBytes).toBe(serialized.byteLength);
+    expect(JSON.parse(serialized.text)).toEqual(payload);
+    const response = mcpResult(payload, false, serialized.text);
+    expect(response.content[0]).toMatchObject({ type: 'text', text: serialized.text });
+    expect(response.structuredContent).toEqual(payload);
+  });
   test('transport-session rollover is an explicit recovery capability rather than implicit authority', () => {
     const ctx = {
       principalId: 'principal-a',
@@ -558,6 +575,138 @@ describe('runtime observability', () => {
     expect(health.activeBlockers.map((item) => item.code)).toContain('EXTERNAL_ENDPOINT_UNHEALTHY');
   });
 
+  test('keeps optional Local Bridge health unknown without turning it into a readiness blocker', () => {
+    const health = evaluateRuntimeHealth(
+      observations({
+        localBridge: {
+          enabled: true,
+          requiredForReadiness: false,
+          mode: 'embedded',
+          endpoint: 'http://127.0.0.1:8766',
+          endpointReachable: true,
+          expectedSurface: true,
+          observed: false,
+        },
+      }),
+    );
+    expect(health.ready).toBe(true);
+    expect(health.components.localBridge).toMatchObject({ state: 'warning', ready: true });
+    expect(health.warnings.map((item) => item.code)).toContain('LOCAL_BRIDGE_STATUS_UNKNOWN');
+  });
+
+  test('keeps unknown optional Local Bridge state unknown in compact status', () => {
+    const summary = summarizeControllerReadyPayload({
+      localBridge: {
+        running: null,
+        health: {
+          ready: true,
+          state: 'warning',
+          warnings: [{ code: 'LOCAL_BRIDGE_STATUS_UNKNOWN' }],
+        },
+      },
+    });
+    expect((summary.activity as Record<string, unknown>).localBridgeReady).toBeNull();
+  });
+
+  test('fails closed when a required Local Bridge readiness observation is unknown', () => {
+    const health = evaluateRuntimeHealth(
+      observations({
+        localBridge: {
+          enabled: true,
+          requiredForReadiness: true,
+          mode: 'standalone',
+          endpoint: 'http://127.0.0.1:8766',
+          endpointReachable: true,
+          expectedSurface: true,
+          observed: false,
+        },
+      }),
+    );
+    expect(health.ready).toBe(false);
+    expect(health.activeBlockers.map((item) => item.code)).toContain('LOCAL_BRIDGE_STATUS_UNKNOWN');
+  });
+
+  test('readiness probes Local Bridge only when the configured surface is required', async () => {
+    const { controllerHome, repoRoot, ownership } = controllerFixture();
+    try {
+      const ctx = createMultiRepositoryContext({
+        repo: repoRoot,
+        profile: 'controller',
+        controllerHome,
+        runtimeSourceRoot: repoRoot,
+      });
+      const repository = ctx.explicitRepository;
+      expect(repository).toBeTruthy();
+      const configPath = join(controllerHome, 'mcp', 'mcp.local.json');
+      mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          localController: { enabled: true, mode: 'embedded', host: '127.0.0.1', port: 8766 },
+        }),
+      );
+      const probeCalls: string[] = [];
+      const localBridgeProbe = async (endpoint: string | undefined) => {
+        probeCalls.push(endpoint ?? '');
+        return {
+          status: 'ok',
+          toolSurface: FORGE_TOOL_SURFACE,
+          schemaVersion: FORGE_MCP_SCHEMA_VERSION,
+          version: FORGE_VERSION,
+        };
+      };
+
+      const optional = await controllerReadinessEvidence(ctx, repository!, {}, { localBridgeProbe });
+      expect(probeCalls).toHaveLength(0);
+      expect(optional.localBridge?.running).toBeNull();
+      expect(optional.health.components.localBridge.state).toBe('warning');
+
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          localController: { enabled: true, mode: 'standalone', host: '127.0.0.1', port: 8766 },
+        }),
+      );
+      const required = await controllerReadinessEvidence(ctx, repository!, {}, { localBridgeProbe });
+      expect(probeCalls).toEqual(['http://127.0.0.1:8766/']);
+      expect(required.localBridge?.running).toBe(true);
+      expect(required.health.components.localBridge.activeBlockers).toHaveLength(0);
+    } finally {
+      ownership.release();
+      rmSync(controllerHome, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('reuses one Runtime observation for readiness and identity projection', async () => {
+    const { controllerHome, repoRoot, ownership } = controllerFixture();
+    try {
+      const ctx = createMultiRepositoryContext({
+        repo: repoRoot,
+        profile: 'controller',
+        controllerHome,
+        runtimeSourceRoot: repoRoot,
+      });
+      const observation = observeRuntimeStatus(controllerHome);
+      const readiness = await controllerReadinessEvidence(
+        ctx,
+        ctx.explicitRepository!,
+        {},
+        {
+          runtimeObservation: observation,
+        },
+      );
+      const identity = runtimeIdentitySnapshot(ctx, observation);
+      expect(readiness.daemon.instanceId).toBe(identity.runtimeInstanceId);
+      expect(identity.running).toBe(observation.running);
+      expect(identity.ready).toBe(observation.ready);
+    } finally {
+      ownership.release();
+      rmSync(controllerHome, { recursive: true, force: true });
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   test('controller_ready remains ready without a configured public endpoint', async () => {
     const { controllerHome, repoRoot, ownership } = controllerFixture();
     try {
@@ -769,16 +918,18 @@ describe('runtime observability', () => {
         expect(fullNames).toEqual(defaultNames);
         expect(fullNames).toContain('git_diff_paths');
         expect(fullNames).toContain('git_commit_paths');
-        expect(fullNames).not.toEqual(expect.arrayContaining([
-          'begin_edit_session',
-          'get_edit_session',
-          'list_edit_sessions',
-          'get_edit_session_diff',
-          'create_edit_savepoint',
-          'verify_edit_session',
-          'rollback_edit_session',
-          'finalize_edit_session',
-        ]));
+        expect(fullNames).not.toEqual(
+          expect.arrayContaining([
+            'begin_edit_session',
+            'get_edit_session',
+            'list_edit_sessions',
+            'get_edit_session_diff',
+            'create_edit_savepoint',
+            'verify_edit_session',
+            'rollback_edit_session',
+            'finalize_edit_session',
+          ]),
+        );
         expect(fullNames).toContain('execute_command');
         expect(fullNames).not.toContain('repository_command_execute');
         expect(fullNames).not.toContain('process_exec');

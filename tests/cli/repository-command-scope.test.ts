@@ -15,12 +15,18 @@ describe('repository command stable macOS host identity', () => {
       ['/usr/bin/osascript', '-e', 'tell application "Google Chrome" to get URL of active tab of front window'],
       ['/usr/sbin/screencapture', '-x', 'capture.png'],
       `osascript <<'APPLESCRIPT'\ntell application "Google Chrome" to get URL of active tab of front window\nAPPLESCRIPT`,
-      ['bash', '-lc', `osascript <<'APPLESCRIPT'\ntell application "Google Chrome" to get URL of active tab of front window\nAPPLESCRIPT`],
+      [
+        'bash',
+        '-lc',
+        `osascript <<'APPLESCRIPT'\ntell application "Google Chrome" to get URL of active tab of front window\nAPPLESCRIPT`,
+      ],
       ['zsh', '-c', '/usr/sbin/screencapture -x capture.png'],
     ];
 
     for (const command of denied) {
-      expect(() => assertRepositoryCommandStableHostIdentity(command)).toThrow(/COMMAND_POLICY_DENIED: .*macOS TCC-sensitive.*stable Forge Desktop Operator\/browser capability/);
+      expect(() => assertRepositoryCommandStableHostIdentity(command)).toThrow(
+        /COMMAND_POLICY_DENIED: .*macOS TCC-sensitive.*stable Forge Desktop Operator\/browser capability/,
+      );
     }
   });
 
@@ -35,12 +41,28 @@ describe('repository command stable macOS host identity', () => {
       `node --eval ${JSON.stringify(browserSource)}`,
     ];
     for (const command of denied) {
-      expect(() => assertRepositoryCommandNoPluginExecutionBypass(command)).toThrow('PLUGIN_ACTION_EXECUTION_REQUIRES_TYPED_PLUGIN_TOOL');
+      expect(() => assertRepositoryCommandNoPluginExecutionBypass(command)).toThrow(
+        'PLUGIN_ACTION_EXECUTION_REQUIRES_TYPED_PLUGIN_TOOL',
+      );
     }
 
-    expect(() => assertRepositoryCommandNoPluginExecutionBypass(['node', '-e', 'process.stdout.write("ok")'])).not.toThrow();
-    expect(() => assertRepositoryCommandNoPluginExecutionBypass(['bun', '-e', `import './src/runtime/plugins/browser-adapter'; console.log('manifest only')`])).not.toThrow();
-    expect(() => assertRepositoryCommandNoPluginExecutionBypass(['bun', '-e', `const executeBrowserPluginAction = 'documentation string'; console.log(executeBrowserPluginAction)`])).not.toThrow();
+    expect(() =>
+      assertRepositoryCommandNoPluginExecutionBypass(['node', '-e', 'process.stdout.write("ok")']),
+    ).not.toThrow();
+    expect(() =>
+      assertRepositoryCommandNoPluginExecutionBypass([
+        'bun',
+        '-e',
+        `import './src/runtime/plugins/browser-adapter'; console.log('manifest only')`,
+      ]),
+    ).not.toThrow();
+    expect(() =>
+      assertRepositoryCommandNoPluginExecutionBypass([
+        'bun',
+        '-e',
+        `const executeBrowserPluginAction = 'documentation string'; console.log(executeBrowserPluginAction)`,
+      ]),
+    ).not.toThrow();
   });
 
   test('does not reject ordinary repository text searches that mention TCC tools', () => {
@@ -55,23 +77,88 @@ describe('repository command stable macOS host identity', () => {
       writeFileSync(join(outside, 'value.txt'), 'outside\n');
       symlinkSync(outside, join(root, 'runtime-link'), 'dir');
       const canonicalRoot = realpathSync(root);
-      expect(() => assertCommandPathOperandsStayInRepository(
-        assertRepositoryCommandInputAllowed(['git', 'update-index', '--force-remove', '--', 'runtime-link']), canonicalRoot, canonicalRoot,
-      )).not.toThrow();
-      expect(() => assertCommandPathOperandsStayInRepository(
-        assertRepositoryCommandInputAllowed(['git', 'rm', '--cached', '--', 'runtime-link']), canonicalRoot, canonicalRoot,
-      )).not.toThrow();
-      expect(() => assertCommandPathOperandsStayInRepository(
-        assertRepositoryCommandInputAllowed(['cat', 'runtime-link/value.txt']), canonicalRoot, canonicalRoot,
-      )).toThrow(/COMMAND_SCOPE_DENIED: command operand escapes repository root/);
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(
+          assertRepositoryCommandInputAllowed(['git', 'update-index', '--force-remove', '--', 'runtime-link']),
+          canonicalRoot,
+          canonicalRoot,
+        ),
+      ).not.toThrow();
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(
+          assertRepositoryCommandInputAllowed(['git', 'rm', '--cached', '--', 'runtime-link']),
+          canonicalRoot,
+          canonicalRoot,
+        ),
+      ).not.toThrow();
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(
+          assertRepositoryCommandInputAllowed(['cat', 'runtime-link/value.txt']),
+          canonicalRoot,
+          canonicalRoot,
+        ),
+      ).toThrow(/COMMAND_SCOPE_DENIED: command operand escapes repository root/);
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
     }
   });
 
+  test('does not classify regex source data as an external path and still denies real external paths', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-command-regex-source-'));
+    try {
+      const canonicalRoot = realpathSync(root);
+      const inline = assertRepositoryCommandInputAllowed(['node', '-e', '/^(?:无法加载此.../']);
+      expect(() => assertCommandPathOperandsStayInRepository(inline, canonicalRoot, canonicalRoot)).not.toThrow();
+
+      const heredoc = ["node - <<'JS'", '/^(?:无法加载此.../', 'JS'].join('\n');
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(
+          assertRepositoryCommandInputAllowed(heredoc),
+          canonicalRoot,
+          canonicalRoot,
+        ),
+      ).not.toThrow();
+
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(
+          assertRepositoryCommandInputAllowed("printf '%s' '/tmp/forge-command-scope-string-data'"),
+          canonicalRoot,
+          canonicalRoot,
+        ),
+      ).not.toThrow();
+
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(
+          assertRepositoryCommandInputAllowed('printf value > /tmp/forge-command-scope-external-write'),
+          canonicalRoot,
+          canonicalRoot,
+        ),
+      ).toThrow(/COMMAND_SCOPE_DENIED: external writes are not allowed/);
+
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(
+          assertRepositoryCommandInputAllowed(['cat', '/tmp/forge-command-scope-external-read']),
+          canonicalRoot,
+          canonicalRoot,
+        ),
+      ).toThrow(/EXTERNAL_FILESYSTEM_GRANT_REQUIRED/);
+
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(
+          assertRepositoryCommandInputAllowed(['cat', '/tmp/forge+external-directory/']),
+          canonicalRoot,
+          canonicalRoot,
+        ),
+      ).toThrow(/EXTERNAL_FILESYSTEM_GRANT_REQUIRED/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('treats nested shells and inline interpreters as ordinary repository command shapes', () => {
-    const shell = ['bash', '-lc', 'printf local > marker.txt']; const inline = ['bun', '-e', 'console.log("ok")'];
+    const shell = ['bash', '-lc', 'printf local > marker.txt'];
+    const inline = ['bun', '-e', 'console.log("ok")'];
     expect(assertRepositoryCommandInputAllowed(shell).kind).toBe('argv');
     expect(assertRepositoryCommandInputAllowed(inline).kind).toBe('argv');
     expect(assertRepositoryCommandInputAllowed(shell, { allowOpaqueLocalScript: true }).kind).toBe('argv');

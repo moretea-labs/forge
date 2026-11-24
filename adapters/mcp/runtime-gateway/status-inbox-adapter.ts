@@ -3,7 +3,7 @@ import { join } from 'path';
 import { runProcess } from '../../../src/effects/process-runner';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { controllerExposureSnapshot, controllerToolSurfaceStatus } from '../toolset';
-import { result } from './result-adapter';
+import { result, serializeResultPayload } from './result-adapter';
 import { type selected, selectedOptional } from './shared-adapter';
 import {
   getProcessRecord,
@@ -414,11 +414,8 @@ export async function callStatusInboxAdapter(
         phaseTimingsMs: summaryPhaseTimingsMs,
         structuredPayloadBytes: 0,
       };
-      (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(
-        JSON.stringify(payload),
-        'utf8',
-      );
-      return result(payload, facade.status !== 'ok');
+      const serialized = serializeResultPayload(payload);
+      return result(payload, facade.status !== 'ok', serialized.text);
     }
     // Detail is repository-derived; without a repository target the requested
     // detail level was already downgraded to the instance-level summary above.
@@ -450,7 +447,7 @@ export async function callStatusInboxAdapter(
     const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source, ctx.runtimeSourceRoot);
     const sourceSnapshotStale = runtimeSource.restartRequired;
     const exposure = controllerExposureSnapshot(ctx);
-    const localRegisteredToolNames = [...exposure.actualToolNames].sort();
+    const _localRegisteredToolNames = [...exposure.actualToolNames].sort();
     markDetailPhase('tool_surface');
     const toolSurfaceReady = exposure.ready && exposure.missingToolNames.length === 0;
     // Ordinary interactive execution depends on the execution axis only.

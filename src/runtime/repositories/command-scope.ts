@@ -2,12 +2,17 @@ import { existsSync, realpathSync, statSync } from 'fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import type { ExternalFilesystemGrant } from '../safe-tooling/external-filesystem';
 import { externalFilesystemGrantExpired } from '../safe-tooling/external-filesystem';
-import type { RepositoryRecord } from '../../core/repository/types';
-import { normalizeRepositoryCommand, type CanonicalRepositoryCommand } from '../../core/repository-command/normalization';
+import {
+  normalizeRepositoryCommand,
+  type CanonicalRepositoryCommand,
+} from '../../core/repository-command/normalization';
 
 const MAX_COMMAND_LENGTH = 32 * 1024;
 
-export type RepositoryCommandExternalPathOperation = 'external_read' | 'external_copy_into_workspace' | 'controller_local_effect';
+export type RepositoryCommandExternalPathOperation =
+  | 'external_read'
+  | 'external_copy_into_workspace'
+  | 'controller_local_effect';
 
 export interface RepositoryCommandExternalPathUsage {
   token: string;
@@ -54,7 +59,8 @@ export interface RepositoryCommandScopeTarget {
 /** Canonical scope key for command policy/audit/approval storage. */
 export function commandExecutionScopeKey(target: RepositoryCommandScopeTarget): string {
   const key = target.repoId?.trim() || target.workspaceScopeKey?.trim();
-  if (!key) throw new Error('COMMAND_TARGET_SCOPE_REQUIRED: command target requires a repository id or workspace scope key');
+  if (!key)
+    throw new Error('COMMAND_TARGET_SCOPE_REQUIRED: command target requires a repository id or workspace scope key');
   return key;
 }
 
@@ -105,7 +111,9 @@ export function assertRepositoryCommandAllowed(
 }
 
 function macOsTccSensitiveShellTool(command: string): string | undefined {
-  const match = command.match(/(?:^|[\n;&|])\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*(?:(?:command|exec|sudo|nohup)\s+)?(?:\/usr\/(?:bin|sbin)\/)?(osascript|screencapture)(?=\s|$)/i);
+  const match = command.match(
+    /(?:^|[\n;&|])\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*(?:(?:command|exec|sudo|nohup)\s+)?(?:\/usr\/(?:bin|sbin)\/)?(osascript|screencapture)(?=\s|$)/i,
+  );
   return match?.[1]?.toLowerCase();
 }
 
@@ -123,8 +131,10 @@ function macOsTccSensitiveArgvTool(command: CanonicalRepositoryCommand): string 
 
 const INLINE_INTERPRETERS = new Set(['node', 'nodejs', 'bun', 'deno']);
 const SHELL_INTERPRETERS = new Set(['bash', 'sh', 'zsh', 'fish', 'dash']);
-const FORGE_PLUGIN_ACTION_EXECUTOR = /\b(?:submitAssistantPluginAction|executeAssistantPluginAction|executeBrowserPluginAction)\b/;
-const FORGE_RUNTIME_PLUGIN_IMPORT = /(?:\bfrom\s*|\bimport\s*\(|\brequire\s*\()\s*['"][^'"]*(?:^|[\\/])(?:src[\\/])?runtime[\\/]plugins[\\/][^'"]+['"]/m;
+const FORGE_PLUGIN_ACTION_EXECUTOR =
+  /\b(?:submitAssistantPluginAction|executeAssistantPluginAction|executeBrowserPluginAction)\b/;
+const FORGE_RUNTIME_PLUGIN_IMPORT =
+  /(?:\bfrom\s*|\bimport\s*\(|\brequire\s*\()\s*['"][^'"]*(?:^|[\\/])(?:src[\\/])?runtime[\\/]plugins[\\/][^'"]+['"]/m;
 
 function inlineEvalPayload(command: CanonicalRepositoryCommand): string | undefined {
   if (command.kind === 'shell') {
@@ -138,8 +148,8 @@ function inlineEvalPayload(command: CanonicalRepositoryCommand): string | undefi
   if (SHELL_INTERPRETERS.has(executableName)) {
     const commandFlagIndex = args.findIndex((arg) => /^(?:-[^-]*c[^-]*)$/i.test(arg));
     const payload = commandFlagIndex >= 0 ? args[commandFlagIndex + 1] : undefined;
-    return typeof payload === 'string'
-      && /(?:^|[;&|]\s*|\s)(?:node|nodejs|bun|deno)(?:\s+[^\n;&|]*)?\s(?:-e|--eval)(?:\s|=)/i.test(payload)
+    return typeof payload === 'string' &&
+      /(?:^|[;&|]\s*|\s)(?:node|nodejs|bun|deno)(?:\s+[^\n;&|]*)?\s(?:-e|--eval)(?:\s|=)/i.test(payload)
       ? payload
       : undefined;
   }
@@ -174,9 +184,8 @@ export function assertRepositoryCommandNoPluginExecutionBypass(input: unknown): 
  */
 export function assertRepositoryCommandStableHostIdentity(input: unknown): CanonicalRepositoryCommand {
   const command = normalizeRepositoryCommand(input);
-  const tool = command.kind === 'shell'
-    ? macOsTccSensitiveShellTool(command.shellCommand!)
-    : macOsTccSensitiveArgvTool(command);
+  const tool =
+    command.kind === 'shell' ? macOsTccSensitiveShellTool(command.shellCommand!) : macOsTccSensitiveArgvTool(command);
   if (tool) {
     throw new Error(
       `COMMAND_POLICY_DENIED: ${tool} is macOS TCC-sensitive and must run through the stable Forge Desktop Operator/browser capability; forge-runtime must not become the permission identity`,
@@ -190,7 +199,8 @@ export function assertRepositoryCommandInputAllowed(
   options: RepositoryCommandInputPolicyOptions = {},
 ): CanonicalRepositoryCommand {
   const command = assertRepositoryCommandStableHostIdentity(input);
-  if (options.managedBranchCreationOnly) assertManagedBranchCreationOnly(command, options.defaultBranch?.trim() || 'main');
+  if (options.managedBranchCreationOnly)
+    assertManagedBranchCreationOnly(command, options.defaultBranch?.trim() || 'main');
   if (options.singleCanonicalBranchOnly) assertSingleCanonicalBranchGitCommand(command);
   if (command.kind === 'shell') {
     assertRepositoryCommandAllowed(command.shellCommand!, options);
@@ -214,10 +224,26 @@ function shellSegments(command: string): string[] {
   };
   for (let index = 0; index < command.length; index += 1) {
     const character = command[index]!;
-    if (escaped) { current += character; escaped = false; continue; }
-    if (character === '\\' && quote !== "'") { current += character; escaped = true; continue; }
-    if (quote) { current += character; if (character === quote) quote = undefined; continue; }
-    if (character === "'" || character === '"') { quote = character; current += character; continue; }
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (character === '\\' && quote !== "'") {
+      current += character;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      current += character;
+      if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      current += character;
+      continue;
+    }
     if (character === ';' || character === '|' || character === '&') {
       flush();
       if (command[index + 1] === character) index += 1;
@@ -237,18 +263,44 @@ function stripTrailingPunctuation(token: string): string {
   return token.replace(/[,*?]+$/g, '');
 }
 
-
 function gitInvocation(words: string[]): { subcommand: string; args: string[] } | undefined {
-  const executable = words[0]?.split(/[\\\\/]/).at(-1)?.toLowerCase();
+  const executable = words[0]
+    ?.split(/[\\\\/]/)
+    .at(-1)
+    ?.toLowerCase();
   if (executable !== 'git' && executable !== 'git.exe') return undefined;
   let index = 1;
-  const valueOptions = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--exec-path', '--super-prefix']);
-  const flagOptions = new Set(['--no-pager', '--no-optional-locks', '--literal-pathspecs', '--no-replace-objects', '--bare']);
+  const valueOptions = new Set([
+    '-C',
+    '-c',
+    '--git-dir',
+    '--work-tree',
+    '--namespace',
+    '--config-env',
+    '--exec-path',
+    '--super-prefix',
+  ]);
+  const flagOptions = new Set([
+    '--no-pager',
+    '--no-optional-locks',
+    '--literal-pathspecs',
+    '--no-replace-objects',
+    '--bare',
+  ]);
   while (index < words.length) {
     const token = words[index]!;
-    if (valueOptions.has(token)) { index += 2; continue; }
-    if (['--git-dir=', '--work-tree=', '--namespace=', '--exec-path='].some((prefix) => token.startsWith(prefix))) { index += 1; continue; }
-    if (flagOptions.has(token)) { index += 1; continue; }
+    if (valueOptions.has(token)) {
+      index += 2;
+      continue;
+    }
+    if (['--git-dir=', '--work-tree=', '--namespace=', '--exec-path='].some((prefix) => token.startsWith(prefix))) {
+      index += 1;
+      continue;
+    }
+    if (flagOptions.has(token)) {
+      index += 1;
+      continue;
+    }
     break;
   }
   const subcommand = words[index]?.toLowerCase();
@@ -268,16 +320,36 @@ function nestedGitInvocations(words: string[], depth = 0): string[][] {
     let cursor = 0;
     while (cursor < args.length) {
       const value = args[cursor]!;
-      if (value === '--') { cursor += 1; break; }
+      if (value === '--') {
+        cursor += 1;
+        break;
+      }
       if (value === '-S' || value === '--split-string') {
         const payload = args[cursor + 1];
-        return typeof payload === 'string' ? shellSegments(payload).flatMap((segment) => descend(shellWords(segment))) : [];
+        return typeof payload === 'string'
+          ? shellSegments(payload).flatMap((segment) => descend(shellWords(segment)))
+          : [];
       }
-      if (['-i', '--ignore-environment', '-0'].includes(value)) { cursor += 1; continue; }
-      if (['-u', '--unset', '-C', '--chdir', '--argv0'].includes(value)) { cursor += 2; continue; }
-      if (value.startsWith('--unset=') || value.startsWith('--chdir=') || value.startsWith('--argv0=')) { cursor += 1; continue; }
-      if (value.startsWith('-')) { cursor += 1; continue; }
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(value)) { cursor += 1; continue; }
+      if (['-i', '--ignore-environment', '-0'].includes(value)) {
+        cursor += 1;
+        continue;
+      }
+      if (['-u', '--unset', '-C', '--chdir', '--argv0'].includes(value)) {
+        cursor += 2;
+        continue;
+      }
+      if (value.startsWith('--unset=') || value.startsWith('--chdir=') || value.startsWith('--argv0=')) {
+        cursor += 1;
+        continue;
+      }
+      if (value.startsWith('-')) {
+        cursor += 1;
+        continue;
+      }
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(value)) {
+        cursor += 1;
+        continue;
+      }
       break;
     }
     return descend(args.slice(cursor));
@@ -296,13 +368,41 @@ function nestedGitInvocations(words: string[], depth = 0): string[][] {
   }
 
   if (executable === 'sudo') {
-    const valueOptions = new Set(['-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '--close-from', '-T', '--command-timeout', '-r', '--role', '-t', '--type', '-D', '--chdir']);
+    const valueOptions = new Set([
+      '-u',
+      '--user',
+      '-g',
+      '--group',
+      '-h',
+      '--host',
+      '-p',
+      '--prompt',
+      '-C',
+      '--close-from',
+      '-T',
+      '--command-timeout',
+      '-r',
+      '--role',
+      '-t',
+      '--type',
+      '-D',
+      '--chdir',
+    ]);
     let cursor = 0;
     while (cursor < args.length) {
       const value = args[cursor]!;
-      if (value === '--') { cursor += 1; break; }
-      if (valueOptions.has(value)) { cursor += 2; continue; }
-      if (value.startsWith('-')) { cursor += 1; continue; }
+      if (value === '--') {
+        cursor += 1;
+        break;
+      }
+      if (valueOptions.has(value)) {
+        cursor += 2;
+        continue;
+      }
+      if (value.startsWith('-')) {
+        cursor += 1;
+        continue;
+      }
       break;
     }
     return descend(args.slice(cursor));
@@ -324,9 +424,10 @@ function nestedGitInvocations(words: string[], depth = 0): string[][] {
 
   const shell = ['bash', 'sh', 'zsh', 'fish', 'dash', 'cmd', 'cmd.exe', 'powershell', 'pwsh'].includes(executable);
   if (shell) {
-    const commandIndex = executable === 'cmd' || executable === 'cmd.exe'
-      ? args.findIndex((arg) => /^\/c$/i.test(arg))
-      : args.findIndex((arg) => /^(?:-[^-]*c[^-]*|--command|-command)$/i.test(arg));
+    const commandIndex =
+      executable === 'cmd' || executable === 'cmd.exe'
+        ? args.findIndex((arg) => /^\/c$/i.test(arg))
+        : args.findIndex((arg) => /^(?:-[^-]*c[^-]*|--command|-command)$/i.test(arg));
     if (commandIndex >= 0) {
       const payload = args[commandIndex + 1];
       return typeof payload === 'string'
@@ -339,33 +440,72 @@ function nestedGitInvocations(words: string[], depth = 0): string[][] {
 }
 
 function assertManagedBranchCreationOnly(command: CanonicalRepositoryCommand, defaultBranch: string): void {
-  const invocations = command.kind === 'argv'
-    ? nestedGitInvocations([command.executable!, ...(command.args ?? [])])
-    : shellSegments(command.shellCommand!).flatMap((segment) => nestedGitInvocations(shellWords(segment)));
+  const invocations =
+    command.kind === 'argv'
+      ? nestedGitInvocations([command.executable!, ...(command.args ?? [])])
+      : shellSegments(command.shellCommand!).flatMap((segment) => nestedGitInvocations(shellWords(segment)));
   const denied = (detail: string) => new Error('GIT_BRANCH_CREATION_REQUIRES_MANAGED_API: ' + detail);
   const readOnlyBranchFlags = new Set([
-    '-l', '--list', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose',
-    '--show-current', '--contains', '--merged', '--no-merged', '--points-at', '--format', '--sort',
-    '--column', '--no-column',
+    '-l',
+    '--list',
+    '-a',
+    '--all',
+    '-r',
+    '--remotes',
+    '-v',
+    '-vv',
+    '--verbose',
+    '--show-current',
+    '--contains',
+    '--merged',
+    '--no-merged',
+    '--points-at',
+    '--format',
+    '--sort',
+    '--column',
+    '--no-column',
   ]);
-  const mutationBranchFlags = new Set(['-c', '-C', '-m', '-M', '-d', '-D', '-f', '--copy', '--move', '--delete', '--force']);
+  const mutationBranchFlags = new Set([
+    '-c',
+    '-C',
+    '-m',
+    '-M',
+    '-d',
+    '-D',
+    '-f',
+    '--copy',
+    '--move',
+    '--delete',
+    '--force',
+  ]);
   for (const words of invocations) {
     const parsed = gitInvocation(words);
     if (!parsed) continue;
-    const deniedAlias = words.some((arg, index) => (arg === '-c' || arg === '--config-env') && (words[index + 1] ?? '').startsWith('alias.'))
-      || words.some((arg) => arg.startsWith('--config-env=alias.'));
+    const deniedAlias =
+      words.some(
+        (arg, index) => (arg === '-c' || arg === '--config-env') && (words[index + 1] ?? '').startsWith('alias.'),
+      ) || words.some((arg) => arg.startsWith('--config-env=alias.'));
     if (deniedAlias) throw denied('Git command aliases cannot override protected branch policy');
     const args = parsed.args;
     if (parsed.subcommand === 'branch') {
       const mutating = args.some((arg) => mutationBranchFlags.has(arg));
       const positional = args.filter((arg) => !arg.startsWith('-') && !arg.includes('='));
       const readOnly = args.length === 0 || args.some((arg) => readOnlyBranchFlags.has(arg));
-      if (mutating || (positional.length > 0 && !readOnly)) throw denied('branch creation, rename and deletion must use the typed branch API');
+      if (mutating || (positional.length > 0 && !readOnly))
+        throw denied('branch creation, rename and deletion must use the typed branch API');
     }
-    if (parsed.subcommand === 'switch' && args.some((arg) => ['-c', '-C', '--create', '--force-create', '--orphan', '--detach', '--discard-changes', '-f'].includes(arg))) {
+    if (
+      parsed.subcommand === 'switch' &&
+      args.some((arg) =>
+        ['-c', '-C', '--create', '--force-create', '--orphan', '--detach', '--discard-changes', '-f'].includes(arg),
+      )
+    ) {
       throw denied('branch creation and detached switching must use the typed branch API');
     }
-    if (parsed.subcommand === 'checkout' && args.some((arg) => ['-b', '-B', '--orphan', '--detach', '-f', '--force'].includes(arg))) {
+    if (
+      parsed.subcommand === 'checkout' &&
+      args.some((arg) => ['-b', '-B', '--orphan', '--detach', '-f', '--force'].includes(arg))
+    ) {
       throw denied('branch creation and detached checkout must use the typed branch API');
     }
     if (parsed.subcommand === 'worktree' && ['add', 'remove', 'move', 'prune', 'repair'].includes(args[0] ?? '')) {
@@ -383,8 +523,8 @@ function assertManagedBranchCreationOnly(command: CanonicalRepositoryCommand, de
         const [sourceRef = '', destinationRef] = refspec.split(':');
         const source = sourceRef.replace(/^\+/, '').replace(/^refs\/heads\//, '');
         const destination = destinationRef?.replace(/^\+/, '');
-        const allowedDestination = destination === undefined
-          || destination === 'refs/remotes/' + remote + '/' + defaultBranch;
+        const allowedDestination =
+          destination === undefined || destination === 'refs/remotes/' + remote + '/' + defaultBranch;
         return source !== defaultBranch || !allowedDestination;
       });
       if (forbiddenFlags || !remote || refspecs.length !== 1 || invalidRefspec) {
@@ -397,7 +537,10 @@ function assertManagedBranchCreationOnly(command: CanonicalRepositoryCommand, de
         throw denied('Git alias mutation is disabled for managed repositories');
       }
     }
-    if (parsed.subcommand === 'remote' && ['update', 'prune', 'set-url', 'add', 'remove', 'rename'].includes(args[0] ?? '')) {
+    if (
+      parsed.subcommand === 'remote' &&
+      ['update', 'prune', 'set-url', 'add', 'remove', 'rename'].includes(args[0] ?? '')
+    ) {
       throw denied('Git remote mutation is disabled for managed repositories');
     }
     if (parsed.subcommand === 'symbolic-ref' || (parsed.subcommand === 'stash' && args[0] === 'branch')) {
@@ -413,42 +556,84 @@ function assertManagedBranchCreationOnly(command: CanonicalRepositoryCommand, de
         const destination = (destinationRef ?? sourceRef).replace(/^\+/, '').replace(/^refs\/heads\//, '');
         return source !== defaultBranch || destination !== defaultBranch;
       });
-      const force = args.some((arg) => ['-f', '--force', '--mirror', '--all', '--delete'].includes(arg)
-        || arg === '--force-with-lease' || arg.startsWith('--force-with-lease='))
-        || refspecs.some((refspec) => refspec.startsWith('+'));
-      if (force || !positional[0] || refspecs.length !== 1 || invalidRefspec) {
-        throw denied('push must explicitly source and target only the canonical default branch without force or mirror');
+      const force =
+        args.some(
+          (arg) =>
+            ['-f', '--force', '--mirror', '--all', '--delete'].includes(arg) ||
+            arg === '--force-with-lease' ||
+            arg.startsWith('--force-with-lease='),
+        ) || refspecs.some((refspec) => refspec.startsWith('+'));
+      if (force || forbiddenFlags || !positional[0] || refspecs.length !== 1 || invalidRefspec) {
+        throw denied(
+          'push must explicitly source and target only the canonical default branch without force or mirror',
+        );
       }
     }
   }
 }
 
 function assertSingleCanonicalBranchGitCommand(command: CanonicalRepositoryCommand): void {
-  const invocations = command.kind === 'argv'
-    ? nestedGitInvocations([command.executable!, ...(command.args ?? [])])
-    : shellSegments(command.shellCommand!).flatMap((segment) => nestedGitInvocations(shellWords(segment)));
-  const denied = (detail: string) => new Error(`SOURCE_BRANCH_POLICY_MAIN_ONLY: ${detail}; use the canonical main checkout`);
+  const invocations =
+    command.kind === 'argv'
+      ? nestedGitInvocations([command.executable!, ...(command.args ?? [])])
+      : shellSegments(command.shellCommand!).flatMap((segment) => nestedGitInvocations(shellWords(segment)));
+  const denied = (detail: string) =>
+    new Error(`SOURCE_BRANCH_POLICY_MAIN_ONLY: ${detail}; use the canonical main checkout`);
   const readOnlyBranchFlags = new Set([
-    '-l', '--list', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose',
-    '--show-current', '--contains', '--merged', '--no-merged', '--points-at', '--format', '--sort',
-    '--column', '--no-column',
+    '-l',
+    '--list',
+    '-a',
+    '--all',
+    '-r',
+    '--remotes',
+    '-v',
+    '-vv',
+    '--verbose',
+    '--show-current',
+    '--contains',
+    '--merged',
+    '--no-merged',
+    '--points-at',
+    '--format',
+    '--sort',
+    '--column',
+    '--no-column',
   ]);
-  const mutationBranchFlags = new Set(['-c', '-C', '-m', '-M', '-d', '-D', '-f', '--copy', '--move', '--delete', '--force']);
+  const mutationBranchFlags = new Set([
+    '-c',
+    '-C',
+    '-m',
+    '-M',
+    '-d',
+    '-D',
+    '-f',
+    '--copy',
+    '--move',
+    '--delete',
+    '--force',
+  ]);
   for (const words of invocations) {
     const parsed = gitInvocation(words);
     if (!parsed) continue;
-    const deniedAlias = words.some((arg, index) => (arg === '-c' || arg === '--config-env') && (words[index + 1] ?? '').startsWith('alias.'))
-      || words.some((arg) => arg.startsWith('--config-env=alias.'));
+    const deniedAlias =
+      words.some(
+        (arg, index) => (arg === '-c' || arg === '--config-env') && (words[index + 1] ?? '').startsWith('alias.'),
+      ) || words.some((arg) => arg.startsWith('--config-env=alias.'));
     if (deniedAlias) throw denied('Git command aliases cannot override protected branch policy');
     const args = parsed.args;
     if (parsed.subcommand === 'branch') {
       const mutating = args.some((arg) => mutationBranchFlags.has(arg));
       const positional = args.filter((arg) => !arg.startsWith('-') && !arg.includes('='));
       const readOnly = args.length === 0 || args.some((arg) => readOnlyBranchFlags.has(arg));
-      if (mutating || (positional.length > 0 && !readOnly)) throw denied('branch ref creation, rename and deletion through shell commands are disabled');
+      if (mutating || (positional.length > 0 && !readOnly))
+        throw denied('branch ref creation, rename and deletion through shell commands are disabled');
     }
     if (parsed.subcommand === 'switch') {
-      if (args.some((arg) => ['-c', '-C', '--create', '--force-create', '--detach', '--orphan', '--discard-changes', '-f'].includes(arg))) {
+      if (
+        args.some((arg) =>
+          ['-c', '-C', '--create', '--force-create', '--detach', '--orphan', '--discard-changes', '-f'].includes(arg),
+        )
+      ) {
         throw denied('branch creation or detached checkout is disabled');
       }
       const target = args.find((arg) => !arg.startsWith('-'));
@@ -475,7 +660,13 @@ function assertSingleCanonicalBranchGitCommand(command: CanonicalRepositoryComma
       const destination = destinationRef?.replace(/^\+/, '');
       const forbiddenFlags = args.some((arg) => ['--all', '--multiple', '--prune', '-p'].includes(arg));
       const writesNonCanonicalDestination = destination !== undefined && destination !== 'refs/remotes/origin/main';
-      if (forbiddenFlags || positional[0] !== 'origin' || refspecs.length !== 1 || source !== 'main' || writesNonCanonicalDestination) {
+      if (
+        forbiddenFlags ||
+        positional[0] !== 'origin' ||
+        refspecs.length !== 1 ||
+        source !== 'main' ||
+        writesNonCanonicalDestination
+      ) {
         throw denied('fetch must explicitly target only origin/main without pruning or writing local branch refs');
       }
     }
@@ -505,12 +696,25 @@ function assertSingleCanonicalBranchGitCommand(command: CanonicalRepositoryComma
     if (parsed.subcommand === 'push') {
       const positional = args.filter((arg) => !arg.startsWith('-'));
       const refspecs = positional.slice(1);
-      const sources = refspecs.map((refspec) => (refspec.split(':')[0] ?? '').replace(/^\+/, '').replace(/^refs\/heads\//, ''));
-      const targets = refspecs.map((refspec) => (refspec.split(':').at(-1) ?? '').replace(/^\+/, '').replace(/^refs\/heads\//, ''));
-      const force = args.some((arg) => ['-f', '--force', '--mirror', '--all', '--delete'].includes(arg)
-        || arg === '--force-with-lease' || arg.startsWith('--force-with-lease='))
-        || refspecs.some((refspec) => refspec.startsWith('+'));
-      if (force || refspecs.length === 0 || sources.some((source) => source !== 'main') || targets.some((target) => target !== 'main')) {
+      const sources = refspecs.map((refspec) =>
+        (refspec.split(':')[0] ?? '').replace(/^\+/, '').replace(/^refs\/heads\//, ''),
+      );
+      const targets = refspecs.map((refspec) =>
+        (refspec.split(':').at(-1) ?? '').replace(/^\+/, '').replace(/^refs\/heads\//, ''),
+      );
+      const force =
+        args.some(
+          (arg) =>
+            ['-f', '--force', '--mirror', '--all', '--delete'].includes(arg) ||
+            arg === '--force-with-lease' ||
+            arg.startsWith('--force-with-lease='),
+        ) || refspecs.some((refspec) => refspec.startsWith('+'));
+      if (
+        force ||
+        refspecs.length === 0 ||
+        sources.some((source) => source !== 'main') ||
+        targets.some((target) => target !== 'main')
+      ) {
         throw denied('push must explicitly target protected main without force or mirror');
       }
     }
@@ -539,11 +743,39 @@ function sensitivePathDenied(canonicalPath: string): boolean {
 }
 
 function readOnlyProgram(program: string | undefined): boolean {
-  return Boolean(program && [
-    'pwd', 'ls', 'rg', 'grep', 'egrep', 'fgrep', 'cat', 'head', 'tail', 'wc',
-    'sort', 'uniq', 'cut', 'tr', 'stat', 'file', 'basename', 'dirname', 'printf',
-    'echo', 'du', 'df', 'realpath', 'readlink', 'jq', 'shasum', 'sha256sum', 'find',
-  ].includes(program.toLowerCase()));
+  return Boolean(
+    program &&
+      [
+        'pwd',
+        'ls',
+        'rg',
+        'grep',
+        'egrep',
+        'fgrep',
+        'cat',
+        'head',
+        'tail',
+        'wc',
+        'sort',
+        'uniq',
+        'cut',
+        'tr',
+        'stat',
+        'file',
+        'basename',
+        'dirname',
+        'printf',
+        'echo',
+        'du',
+        'df',
+        'realpath',
+        'readlink',
+        'jq',
+        'shasum',
+        'sha256sum',
+        'find',
+      ].includes(program.toLowerCase()),
+  );
 }
 
 interface RepositoryCommandPathPolicyOptions {
@@ -551,16 +783,37 @@ interface RepositoryCommandPathPolicyOptions {
   repositoryId?: string;
 }
 
-function grantCoversPath(grant: ExternalFilesystemGrant, canonicalPath: string, operation: RepositoryCommandExternalPathOperation): boolean {
+function grantCoversPath(
+  grant: ExternalFilesystemGrant,
+  canonicalPath: string,
+  operation: RepositoryCommandExternalPathOperation,
+): boolean {
   if (operation === 'controller_local_effect') return false;
   if (externalFilesystemGrantExpired(grant)) return false;
   if (operation === 'external_read' && grant.mode !== 'read') return false;
   if (operation === 'external_copy_into_workspace' && grant.mode !== 'copy_into_repo') return false;
   const rel = relative(grant.canonicalRoot, canonicalPath);
-  return rel === '' || (rel !== '..' && !rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(rel));
+  return (
+    rel === '' ||
+    (rel !== '..' && !rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(rel))
+  );
 }
 
-function operationForToken(words: string[], index: number, external: string, cwd: string, root: string): RepositoryCommandExternalPathOperation | 'external_write' | 'unsupported' {
+function isRegexLiteralToken(token: string): boolean {
+  // Inline source can contain a JavaScript/PCRE regex whose leading slash is
+  // data, not an absolute filesystem operand. Keep ordinary absolute paths in
+  // the external-path policy; only skip a complete regex-token shape.
+  const candidate = token.replace(/[;,]+$/g, '');
+  return /^\/\^(?:\(|\[).+\/[dgimsuvy]*$/.test(candidate);
+}
+
+function operationForToken(
+  words: string[],
+  index: number,
+  external: string,
+  cwd: string,
+  root: string,
+): RepositoryCommandExternalPathOperation | 'external_write' | 'unsupported' {
   const program = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
   if (!program) return 'unsupported';
   if (program === 'cp' || program === 'install') {
@@ -575,19 +828,27 @@ function operationForToken(words: string[], index: number, external: string, cwd
     }
     return 'external_write';
   }
-  if (program === 'find' && words.some((word) => ['-delete', '-exec', '-execdir', '-ok', '-okdir'].includes(word))) return 'external_write';
+  if (program === 'find' && words.some((word) => ['-delete', '-exec', '-execdir', '-ok', '-okdir'].includes(word)))
+    return 'external_write';
   if (readOnlyProgram(program)) return 'external_read';
   if (index === 0) return 'unsupported';
   return 'external_write';
 }
 
-function gitIndexOnlyRepositoryOperand(words: string[], index: number, candidateToken: string, cwd: string, root: string): boolean {
+function gitIndexOnlyRepositoryOperand(
+  words: string[],
+  index: number,
+  candidateToken: string,
+  cwd: string,
+  root: string,
+): boolean {
   const executable = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
   if (executable !== 'git') return false;
   const subcommand = words[1];
-  const indexOnly = subcommand === 'update-index'
-    || (subcommand === 'rm' && words.includes('--cached'))
-    || (subcommand === 'restore' && words.includes('--staged') && !words.includes('--worktree'));
+  const indexOnly =
+    subcommand === 'update-index' ||
+    (subcommand === 'rm' && words.includes('--cached')) ||
+    (subcommand === 'restore' && words.includes('--staged') && !words.includes('--worktree'));
   if (!indexOnly || index < 2) return false;
   const lexical = candidateToken.startsWith('/') ? resolve(candidateToken) : resolve(cwd, candidateToken);
   return pathInside(root, lexical);
@@ -598,22 +859,28 @@ export function assertCommandPathOperandsStayInRepository(
   cwd: string,
   root: string,
   externalGrants: ExternalFilesystemGrant[] = [],
-  options: RepositoryCommandPathPolicyOptions = {},
+  _options: RepositoryCommandPathPolicyOptions = {},
 ): RepositoryCommandExternalPathUsage[] {
   const usages: RepositoryCommandExternalPathUsage[] = [];
-  const segments = typeof command === 'string'
-    ? shellSegments(command).map((segment) => ({ raw: segment, words: shellWords(segment) }))
-    : command.kind === 'shell'
-      ? shellSegments(command.shellCommand!).map((segment) => ({ raw: segment, words: shellWords(segment) }))
-      : [{ raw: '', words: [command.executable!, ...(command.args ?? [])] }];
+  const segments =
+    typeof command === 'string'
+      ? shellSegments(command).map((segment) => ({ raw: segment, words: shellWords(segment) }))
+      : command.kind === 'shell'
+        ? shellSegments(command.shellCommand!).map((segment) => ({ raw: segment, words: shellWords(segment) }))
+        : [{ raw: '', words: [command.executable!, ...(command.args ?? [])] }];
   for (const { raw: segment, words } of segments) {
     const redirectionTarget = segment.match(/(?:^|\s)(?:\d?>?>)\s*(\/[^\s]+)/)?.[1];
     if (redirectionTarget && !redirectionTarget.startsWith('/dev/null')) {
-      throw new Error(`COMMAND_SCOPE_DENIED: external writes are not allowed from repository commands: ${redirectionTarget}`);
+      throw new Error(
+        `COMMAND_SCOPE_DENIED: external writes are not allowed from repository commands: ${redirectionTarget}`,
+      );
     }
+    const program = words[0]?.split(/[\/]/).at(-1)?.toLowerCase();
+    if (program === 'echo' || program === 'printf') continue;
     for (let index = 0; index < words.length; index += 1) {
       const token = words[index]!;
-      if (!token || token.startsWith('-') || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(token)) continue;
+      if (!token || token.startsWith('-') || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(token) || isRegexLiteralToken(token))
+        continue;
       if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
       if (index === 0) continue;
       const candidateToken = stripTrailingPunctuation(token);
@@ -629,21 +896,29 @@ export function assertCommandPathOperandsStayInRepository(
       const resolved = realpathSync(existing);
       if (pathInside(root, resolved)) continue;
       if (!absoluteInput) {
-        throw new Error(`COMMAND_SCOPE_DENIED: command operand escapes repository root through a symlink or parent path: ${token}`);
+        throw new Error(
+          `COMMAND_SCOPE_DENIED: command operand escapes repository root through a symlink or parent path: ${token}`,
+        );
       }
       if (sensitivePathDenied(resolved)) {
-        throw new Error(`COMMAND_SCOPE_DENIED: sensitive external path is never allowed in repository commands: ${token}`);
+        throw new Error(
+          `COMMAND_SCOPE_DENIED: sensitive external path is never allowed in repository commands: ${token}`,
+        );
       }
       const operation = operationForToken(words, index, token, cwd, root);
       if (operation === 'external_write') {
         throw new Error(`COMMAND_SCOPE_DENIED: external writes are not allowed from repository commands: ${token}`);
       }
       if (operation === 'unsupported') {
-        throw new Error(`COMMAND_SCOPE_DENIED: external path is only allowed for read-only commands or copy-into-repository sources: ${token}`);
+        throw new Error(
+          `COMMAND_SCOPE_DENIED: external path is only allowed for read-only commands or copy-into-repository sources: ${token}`,
+        );
       }
       const grant = externalGrants.find((entry) => grantCoversPath(entry, resolved, operation));
       if (!grant) {
-        throw new Error(`EXTERNAL_FILESYSTEM_GRANT_REQUIRED: ${operation} requires an active ${operation === 'external_read' ? 'read' : 'copy_into_repo'} grant for ${token}`);
+        throw new Error(
+          `EXTERNAL_FILESYSTEM_GRANT_REQUIRED: ${operation} requires an active ${operation === 'external_read' ? 'read' : 'copy_into_repo'} grant for ${token}`,
+        );
       }
       usages.push({
         token,

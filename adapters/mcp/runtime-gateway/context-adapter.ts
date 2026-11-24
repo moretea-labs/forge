@@ -7,7 +7,7 @@ import {
 import { isIncidentalSemanticDependencyProbe } from '../../../src/runtime/context/semantic-navigation-contract';
 import { buildContextClosureReceipt } from '../../../src/runtime/context/context-closure';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { result } from './result-adapter';
+import { result, serializeResultPayload } from './result-adapter';
 import { boundedRuntimeResult } from './bounded-result-runtime';
 import { selected } from './shared-adapter';
 import { resolveMcpPath } from '../../../src/runtime/safe-tooling/path-policy';
@@ -16,8 +16,8 @@ import {
   freshGitIdentityAsync,
   type CachedGitIdentity,
 } from '../../../src/runtime/repositories/inspector';
-import { repositorySummary, resolveRepositorySelection } from '../../../src/runtime/repositories/registry';
-import { getExecutionJob, listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
+import { repositorySummary } from '../../../src/runtime/repositories/registry';
+import { listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
 import {
   isManagedProcessActive,
   listProcessRecords,
@@ -1099,11 +1099,8 @@ export async function callContextAdapter(
       serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
       structuredPayloadBytes: 0,
     };
-    (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(
-      JSON.stringify(payload),
-      'utf8',
-    );
-    return result(payload);
+    const serialized = serializeResultPayload(payload);
+    return result(payload, false, serialized.text);
   }
   const capabilityIntentQuery = operation === 'list' && typeof args.query === 'string' ? args.query.trim() : '';
   if (capabilityIntentQuery) {
@@ -1336,10 +1333,7 @@ export async function callContextAdapter(
       serverDurationMs: Number((performance.now() - startedAt).toFixed(2)),
       structuredPayloadBytes: 0,
     };
-    (payload.responseMeta as { structuredPayloadBytes: number }).structuredPayloadBytes = Buffer.byteLength(
-      JSON.stringify(payload),
-      'utf8',
-    );
   }
-  return result(payload);
+  const serialized = serializeResultPayload(payload);
+  return result(payload, false, serialized.text);
 }

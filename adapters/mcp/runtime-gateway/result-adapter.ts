@@ -1,17 +1,46 @@
 import { readFileSync, realpathSync, statSync } from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
-import type { CallToolResult as SdkCallToolResult } from "@modelcontextprotocol/client";
+import type { CallToolResult as SdkCallToolResult } from '@modelcontextprotocol/client';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
-import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoot, repositoryControllerRoot } from '../../../src/effects/controller-home';
+import {
+  CONTROLLER_SCOPE_REPO_ID,
+  FORGE_INSTANCE_SCOPE_KEY,
+  controllerSystemRoot,
+  repositoryControllerRoot,
+} from '../../../src/effects/controller-home';
 import { redactMcpText } from '../redaction';
 
 /** Transport-only MCP result envelope. No lifecycle or domain mutation belongs here. */
-export function result(value: Record<string, unknown>, isError = false): CallToolResult {
+export function result(value: Record<string, unknown>, isError = false, serializedText?: string): CallToolResult {
   return {
-    content: [{ type: 'text', text: JSON.stringify(value) }],
+    content: [{ type: 'text', text: serializedText ?? JSON.stringify(value) }],
     structuredContent: value,
     ...(isError ? { isError: true } : {}),
   };
+}
+
+export function serializeResultPayload(value: Record<string, unknown>): { text: string; byteLength: number } {
+  const serialized = JSON.stringify(value);
+  if (typeof serialized !== 'string') throw new Error('MCP_RESPONSE_NOT_SERIALIZABLE');
+  const marker = '"structuredPayloadBytes":0';
+  const markerIndex = serialized.lastIndexOf(marker);
+  if (markerIndex < 0) return { text: serialized, byteLength: Buffer.byteLength(serialized, 'utf8') };
+
+  let byteLength = Buffer.byteLength(serialized, 'utf8');
+  let text = serialized;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const replacement = `"structuredPayloadBytes":${byteLength}`;
+    text = serialized.slice(0, markerIndex) + replacement + serialized.slice(markerIndex + marker.length);
+    const measured = Buffer.byteLength(text, 'utf8');
+    if (measured === byteLength) break;
+    byteLength = measured;
+  }
+  if (Buffer.byteLength(text, 'utf8') !== byteLength) throw new Error('MCP_RESPONSE_BYTE_COUNT_UNSTABLE');
+  const responseMeta = value.responseMeta;
+  if (responseMeta && typeof responseMeta === 'object' && !Array.isArray(responseMeta)) {
+    (responseMeta as Record<string, unknown>).structuredPayloadBytes = byteLength;
+  }
+  return { text, byteLength };
 }
 
 const MAX_INLINE_PLUGIN_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -26,9 +55,10 @@ export function boundedPluginArtifactImageContent(
   pluginResult: Record<string, unknown> | undefined,
 ): McpImageContent[] {
   if (!pluginResult) return [];
-  const nestedResult = pluginResult.result && typeof pluginResult.result === 'object' && !Array.isArray(pluginResult.result)
-    ? pluginResult.result as Record<string, unknown>
-    : undefined;
+  const nestedResult =
+    pluginResult.result && typeof pluginResult.result === 'object' && !Array.isArray(pluginResult.result)
+      ? (pluginResult.result as Record<string, unknown>)
+      : undefined;
   const candidates = [
     ...(Array.isArray(pluginResult.artifactCandidates) ? pluginResult.artifactCandidates : []),
     ...(nestedResult && Array.isArray(nestedResult.artifactCandidates) ? nestedResult.artifactCandidates : []),
@@ -36,7 +66,10 @@ export function boundedPluginArtifactImageContent(
   if (candidates.length === 0) return [];
   const instanceScoped = repoId === FORGE_INSTANCE_SCOPE_KEY || repoId === CONTROLLER_SCOPE_REPO_ID;
   const allowedRoots = instanceScoped
-    ? [resolve(controllerSystemRoot(controllerHome)), resolve(repositoryControllerRoot(controllerHome, CONTROLLER_SCOPE_REPO_ID))]
+    ? [
+        resolve(controllerSystemRoot(controllerHome)),
+        resolve(repositoryControllerRoot(controllerHome, CONTROLLER_SCOPE_REPO_ID)),
+      ]
     : [resolve(repositoryControllerRoot(controllerHome, repoId))];
   const images: McpImageContent[] = [];
   const seenPaths = new Set<string>();
@@ -56,7 +89,11 @@ export function boundedPluginArtifactImageContent(
         // Compare physical paths: a controller-local symlink must not expose
         // a screenshot (or any file) outside the selected storage authority.
         let root: string;
-        try { root = realpathSync(allowedRoot); } catch { return false; }
+        try {
+          root = realpathSync(allowedRoot);
+        } catch {
+          return false;
+        }
         const rel = relative(root, resolvedPath);
         return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
       });
@@ -95,18 +132,29 @@ const SCREENSHOT_ARTIFACT_KINDS = new Set(['ios_simulator_screenshot', 'ios_agen
 
 function hasScreenshotArtifact(value: Record<string, unknown> | undefined): boolean {
   if (!value) return false;
-  const nested = value.result && typeof value.result === 'object' && !Array.isArray(value.result)
-    ? value.result as Record<string, unknown>
-    : undefined;
+  const nested =
+    value.result && typeof value.result === 'object' && !Array.isArray(value.result)
+      ? (value.result as Record<string, unknown>)
+      : undefined;
   const candidates = [
     ...(Array.isArray(value.artifactCandidates) ? value.artifactCandidates : []),
     ...(nested && Array.isArray(nested.artifactCandidates) ? nested.artifactCandidates : []),
   ];
-  return candidates.some((candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate)
-    && [candidate.kind, candidate.artifactType].some((kind) => typeof kind === 'string' && SCREENSHOT_ARTIFACT_KINDS.has(kind)));
+  return candidates.some(
+    (candidate) =>
+      candidate &&
+      typeof candidate === 'object' &&
+      !Array.isArray(candidate) &&
+      [candidate.kind, candidate.artifactType].some(
+        (kind) => typeof kind === 'string' && SCREENSHOT_ARTIFACT_KINDS.has(kind),
+      ),
+  );
 }
 
-function compactSubmittedPluginPayload(value: Record<string, unknown>, screenshotArtifact = false): Record<string, unknown> {
+function compactSubmittedPluginPayload(
+  value: Record<string, unknown>,
+  screenshotArtifact = false,
+): Record<string, unknown> {
   const compact = { ...value };
   delete compact.artifactCandidates;
   if (screenshotArtifact || SCREENSHOT_ARTIFACT_KINDS.has(String(compact.artifactType ?? ''))) {
@@ -126,9 +174,10 @@ export function resultWithSubmittedPluginActionImages(
 ): CallToolResult {
   const nested = submittedResult?.result;
   const screenshotArtifact = hasScreenshotArtifact(submittedResult);
-  const compactNested = nested && typeof nested === 'object' && !Array.isArray(nested)
-    ? compactSubmittedPluginPayload(nested as Record<string, unknown>, screenshotArtifact)
-    : undefined;
+  const compactNested =
+    nested && typeof nested === 'object' && !Array.isArray(nested)
+      ? compactSubmittedPluginPayload(nested as Record<string, unknown>, screenshotArtifact)
+      : undefined;
   const compactResult = compactNested
     ? {
         ...compactNested,
@@ -136,14 +185,18 @@ export function resultWithSubmittedPluginActionImages(
           ? { work: submittedResult.work }
           : {}),
       }
-    : submittedResult ? compactSubmittedPluginPayload(submittedResult, screenshotArtifact) : undefined;
+    : submittedResult
+      ? compactSubmittedPluginPayload(submittedResult, screenshotArtifact)
+      : undefined;
   const compactValue = compactResult ? { ...value, result: compactResult } : value;
   return resultWithPluginArtifactImages(compactValue, controllerHome, repoId, submittedResult);
 }
 
 export function scrubPathText(text: string, replacements: string[]): string {
   let output = text;
-  for (const replacement of [...new Set(replacements.filter((entry) => entry.startsWith('/')))].sort((left, right) => right.length - left.length)) {
+  for (const replacement of [...new Set(replacements.filter((entry) => entry.startsWith('/')))].sort(
+    (left, right) => right.length - left.length,
+  )) {
     output = output.split(replacement).join('<repo>');
   }
   return output

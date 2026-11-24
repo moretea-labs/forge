@@ -67,6 +67,8 @@ export interface LocalBridgeObservation {
   endpoint?: string;
   endpointReachable: boolean;
   expectedSurface: boolean;
+  /** False means readiness intentionally did not probe an optional surface. */
+  observed?: boolean;
   processAlive?: boolean;
   runtimeStateFresh?: boolean;
   error?: string;
@@ -152,18 +154,13 @@ export function classifyRuntimeReadinessSemantics(
 ): RuntimeReadinessSemantics {
   const executionBlockers = [
     ...health.components.daemon.activeBlockers,
-    ...health.components.projection.activeBlockers.filter((item) => (
-      item.code === 'PROJECTION_UNREADABLE' || item.code === 'PROJECTION_BUILD_FAILED'
-    )),
+    ...health.components.projection.activeBlockers.filter(
+      (item) => item.code === 'PROJECTION_UNREADABLE' || item.code === 'PROJECTION_BUILD_FAILED',
+    ),
     ...health.components.localBridge.activeBlockers,
-    ...health.components.runtimeStorage.activeBlockers.filter((item) => (
-      item.code === 'RUNTIME_STORAGE_UNAVAILABLE'
-    )),
+    ...health.components.runtimeStorage.activeBlockers.filter((item) => item.code === 'RUNTIME_STORAGE_UNAVAILABLE'),
   ];
-  const releaseBlockers = [
-    ...health.activeBlockers,
-    ...health.components.projection.activeBlockers,
-  ];
+  const releaseBlockers = [...health.activeBlockers, ...health.components.projection.activeBlockers];
   return {
     executionReady: executionBlockers.length === 0,
     maintenanceHealthy: options.maintenanceHealthy ?? null,
@@ -203,10 +200,7 @@ function component(
   };
 }
 
-function classifyComponent(
-  blockers: HealthReason[],
-  warnings: HealthReason[],
-): ComponentHealth {
+function classifyComponent(blockers: HealthReason[], warnings: HealthReason[]): ComponentHealth {
   if (blockers.some((item) => item.code.endsWith('_UNAVAILABLE') || item.code === 'PROJECTION_UNREADABLE')) {
     return component('unavailable', blockers, warnings);
   }
@@ -220,45 +214,61 @@ function evaluateDaemon(observation: DaemonObservation): ComponentHealth {
   const warnings: HealthReason[] = [];
   const status = observation.status?.trim().toLowerCase();
   if (status && status !== 'ready') {
-    blockers.push(reason('daemon', 'RUNTIME_NOT_READY', `Forge Runtime is ${observation.status}.`, {
-      status: observation.status,
-      error: observation.error,
-    }));
+    blockers.push(
+      reason('daemon', 'RUNTIME_NOT_READY', `Forge Runtime is ${observation.status}.`, {
+        status: observation.status,
+        error: observation.error,
+      }),
+    );
   } else if (observation.heartbeatAgeMs === undefined) {
     warnings.push(reason('daemon', 'RUNTIME_HEARTBEAT_UNKNOWN', 'Forge Runtime heartbeat is not available.'));
   }
   return classifyComponent(blockers, warnings);
 }
 
-function evaluateScheduler(
-  observation: SchedulerObservation,
-  workers: WorkerObservation,
-): ComponentHealth {
+function evaluateScheduler(observation: SchedulerObservation, workers: WorkerObservation): ComponentHealth {
   const blockers: HealthReason[] = [];
   const warnings: HealthReason[] = [];
   const status = observation.status?.trim().toLowerCase();
-  const heartbeatStale = observation.heartbeatAgeMs !== undefined
-    && observation.heartbeatAgeMs > RUNTIME_HEALTH_THRESHOLDS.schedulerHeartbeatStaleMs;
+  const heartbeatStale =
+    observation.heartbeatAgeMs !== undefined &&
+    observation.heartbeatAgeMs > RUNTIME_HEALTH_THRESHOLDS.schedulerHeartbeatStaleMs;
   const queueWaiting = (workers.queueDepth ?? 0) > 0;
   const explicitlyNotReady = status === 'not_ready';
   const degradedWithWaitingWork = status === 'degraded' && queueWaiting;
   const staleWithWaitingWork = heartbeatStale && queueWaiting;
   if (explicitlyNotReady || degradedWithWaitingWork || staleWithWaitingWork) {
-    blockers.push(reason('scheduler', 'SCHEDULER_NOT_PROGRESSING', 'Scheduler is not progressing while durable work is waiting.', {
-      status: observation.status,
-      heartbeatAgeMs: observation.heartbeatAgeMs,
-      queueDepth: workers.queueDepth ?? 0,
-    }));
+    blockers.push(
+      reason('scheduler', 'SCHEDULER_NOT_PROGRESSING', 'Scheduler is not progressing while durable work is waiting.', {
+        status: observation.status,
+        heartbeatAgeMs: observation.heartbeatAgeMs,
+        queueDepth: workers.queueDepth ?? 0,
+      }),
+    );
   } else if (status === 'degraded') {
-    warnings.push(reason('scheduler', 'SCHEDULER_DEGRADED_IDLE', 'Scheduler reported a degraded recovery state, but its heartbeat is current and no work is waiting.', {
-      status: observation.status,
-      heartbeatAgeMs: observation.heartbeatAgeMs,
-      queueDepth: workers.queueDepth ?? 0,
-    }));
+    warnings.push(
+      reason(
+        'scheduler',
+        'SCHEDULER_DEGRADED_IDLE',
+        'Scheduler reported a degraded recovery state, but its heartbeat is current and no work is waiting.',
+        {
+          status: observation.status,
+          heartbeatAgeMs: observation.heartbeatAgeMs,
+          queueDepth: workers.queueDepth ?? 0,
+        },
+      ),
+    );
   } else if (heartbeatStale || observation.heartbeatAgeMs === undefined) {
-    warnings.push(reason('scheduler', 'SCHEDULER_HEARTBEAT_UNCERTAIN', 'Scheduler heartbeat is stale or unavailable; idle runtime remains usable.', {
-      heartbeatAgeMs: observation.heartbeatAgeMs,
-    }));
+    warnings.push(
+      reason(
+        'scheduler',
+        'SCHEDULER_HEARTBEAT_UNCERTAIN',
+        'Scheduler heartbeat is stale or unavailable; idle runtime remains usable.',
+        {
+          heartbeatAgeMs: observation.heartbeatAgeMs,
+        },
+      ),
+    );
   }
   return classifyComponent(blockers, warnings);
 }
@@ -271,22 +281,33 @@ function evaluateWorkers(observation: WorkerObservation): ComponentHealth {
   const blockers: HealthReason[] = [];
   const warnings: HealthReason[] = [];
   if (activeAttentionCount > 0) {
-    blockers.push(reason('workers', 'ACTIVE_JOB_ATTENTION_REQUIRED', 'Active execution records require attention before runtime work can be considered healthy.', {
-      activeAttentionCount,
-    }));
+    blockers.push(
+      reason(
+        'workers',
+        'ACTIVE_JOB_ATTENTION_REQUIRED',
+        'Active execution records require attention before runtime work can be considered healthy.',
+        {
+          activeAttentionCount,
+        },
+      ),
+    );
   }
   if (queueDepth > 0 && runningWorkers === 0 && activeLeases === 0) {
-    blockers.push(reason('workers', 'WORKER_NOT_RUNNING', 'Queued work exists but no worker is consuming it.', {
-      queueDepth,
-      runningWorkers,
-      activeLeases,
-    }));
+    blockers.push(
+      reason('workers', 'WORKER_NOT_RUNNING', 'Queued work exists but no worker is consuming it.', {
+        queueDepth,
+        runningWorkers,
+        activeLeases,
+      }),
+    );
   } else if (activeLeases > 0 && runningWorkers === 0) {
-    blockers.push(reason('workers', 'LEASE_WITHOUT_WORKER', 'Active leases exist without a running worker.', {
-      queueDepth,
-      runningWorkers,
-      activeLeases,
-    }));
+    blockers.push(
+      reason('workers', 'LEASE_WITHOUT_WORKER', 'Active leases exist without a running worker.', {
+        queueDepth,
+        runningWorkers,
+        activeLeases,
+      }),
+    );
   }
   return classifyComponent(blockers, warnings);
 }
@@ -295,23 +316,26 @@ function evaluateProjection(observation: ProjectionObservation): ComponentHealth
   const blockers: HealthReason[] = [];
   const warnings: HealthReason[] = [];
   if (!observation.readable) {
-    blockers.push(reason('projection', 'PROJECTION_UNREADABLE', 'Runtime projection is missing or unreadable.', {
-      persisted: observation.persisted,
-    }));
+    blockers.push(
+      reason('projection', 'PROJECTION_UNREADABLE', 'Runtime projection is missing or unreadable.', {
+        persisted: observation.persisted,
+      }),
+    );
     return classifyComponent(blockers, warnings);
   }
   if (observation.lastBuildError) {
-    blockers.push(reason('projection', 'PROJECTION_BUILD_FAILED', 'The latest required projection build failed.', {
-      error: observation.lastBuildError,
-    }));
-  }
-  const refreshPending = observation.refreshPending === true
-    || observation.sourceRevisionChanged === true
-    || (
-      observation.dirty === true
-      && observation.sourceRevisionChanged !== false
-      && observation.activeInvariantAtRisk === true
+    blockers.push(
+      reason('projection', 'PROJECTION_BUILD_FAILED', 'The latest required projection build failed.', {
+        error: observation.lastBuildError,
+      }),
     );
+  }
+  const refreshPending =
+    observation.refreshPending === true ||
+    observation.sourceRevisionChanged === true ||
+    (observation.dirty === true &&
+      observation.sourceRevisionChanged !== false &&
+      observation.activeInvariantAtRisk === true);
   if (refreshPending) {
     const details = {
       dirty: observation.dirty,
@@ -319,20 +343,48 @@ function evaluateProjection(observation: ProjectionObservation): ComponentHealth
       activeInvariantAtRisk: observation.activeInvariantAtRisk,
     };
     if (observation.refreshGraceElapsed === true) {
-      blockers.push(reason('projection', 'PROJECTION_REFRESH_MISSED', 'A required projection refresh has not completed within the bounded grace period.', details));
+      blockers.push(
+        reason(
+          'projection',
+          'PROJECTION_REFRESH_MISSED',
+          'A required projection refresh has not completed within the bounded grace period.',
+          details,
+        ),
+      );
     } else {
-      warnings.push(reason('projection', 'PROJECTION_REFRESH_PENDING', 'Projection content is awaiting a bounded refresh; readable idle state remains usable.', details));
+      warnings.push(
+        reason(
+          'projection',
+          'PROJECTION_REFRESH_PENDING',
+          'Projection content is awaiting a bounded refresh; readable idle state remains usable.',
+          details,
+        ),
+      );
     }
   }
   if (observation.producerHealthy === false) {
     if (refreshPending || observation.activeInvariantAtRisk === true) {
-      blockers.push(reason('projection', 'PROJECTION_PRODUCER_UNHEALTHY', 'Projection producer is unhealthy while a required refresh is pending.', {
-        producerHeartbeatAgeMs: observation.producerHeartbeatAgeMs,
-      }));
+      blockers.push(
+        reason(
+          'projection',
+          'PROJECTION_PRODUCER_UNHEALTHY',
+          'Projection producer is unhealthy while a required refresh is pending.',
+          {
+            producerHeartbeatAgeMs: observation.producerHeartbeatAgeMs,
+          },
+        ),
+      );
     } else {
-      warnings.push(reason('projection', 'PROJECTION_PRODUCER_UNCERTAIN', 'Projection producer heartbeat is unavailable; readable unchanged content remains usable.', {
-        producerHeartbeatAgeMs: observation.producerHeartbeatAgeMs,
-      }));
+      warnings.push(
+        reason(
+          'projection',
+          'PROJECTION_PRODUCER_UNCERTAIN',
+          'Projection producer heartbeat is unavailable; readable unchanged content remains usable.',
+          {
+            producerHeartbeatAgeMs: observation.producerHeartbeatAgeMs,
+          },
+        ),
+      );
     }
   }
   return classifyComponent(blockers, warnings);
@@ -340,6 +392,19 @@ function evaluateProjection(observation: ProjectionObservation): ComponentHealth
 
 function evaluateLocalBridge(observation: LocalBridgeObservation): ComponentHealth {
   if (!observation.enabled || observation.mode === 'disabled') return component('disabled');
+  if (observation.observed === false) {
+    const unknown = reason(
+      'localBridge',
+      'LOCAL_BRIDGE_STATUS_UNKNOWN',
+      'Local Controller health was not observed during this readiness check.',
+      {
+        endpoint: observation.endpoint,
+        mode: observation.mode,
+        requiredForReadiness: observation.requiredForReadiness,
+      },
+    );
+    return observation.requiredForReadiness ? component('degraded', [unknown]) : component('warning', [], [unknown]);
+  }
   const blockers: HealthReason[] = [];
   const warnings: HealthReason[] = [];
   const issue = (value: HealthReason): void => {
@@ -347,29 +412,57 @@ function evaluateLocalBridge(observation: LocalBridgeObservation): ComponentHeal
     else warnings.push(value);
   };
   if (!observation.endpointReachable) {
-    issue(reason('localBridge', 'LOCAL_BRIDGE_ENDPOINT_UNAVAILABLE', 'Expected Local Controller endpoint is not reachable.', {
-      endpoint: observation.endpoint,
-      mode: observation.mode,
-      error: observation.error,
-    }));
+    issue(
+      reason(
+        'localBridge',
+        'LOCAL_BRIDGE_ENDPOINT_UNAVAILABLE',
+        'Expected Local Controller endpoint is not reachable.',
+        {
+          endpoint: observation.endpoint,
+          mode: observation.mode,
+          error: observation.error,
+        },
+      ),
+    );
   } else if (!observation.expectedSurface) {
-    issue(reason('localBridge', 'LOCAL_BRIDGE_SURFACE_MISMATCH', 'Expected endpoint responded, but it is not the Local Controller health surface.', {
-      endpoint: observation.endpoint,
-    }));
+    issue(
+      reason(
+        'localBridge',
+        'LOCAL_BRIDGE_SURFACE_MISMATCH',
+        'Expected endpoint responded, but it is not the Local Controller health surface.',
+        {
+          endpoint: observation.endpoint,
+        },
+      ),
+    );
   }
   // Endpoint capability is authoritative. A stale persisted `running=false` or
   // missing PID is diagnostic evidence, not a failure when the expected surface
   // is reachable and identity checks pass.
   if (observation.endpointReachable && observation.expectedSurface && observation.processAlive === false) {
-    warnings.push(reason('localBridge', 'LOCAL_BRIDGE_PROCESS_EVIDENCE_STALE', 'Local Controller endpoint is healthy although process ownership evidence is stale.', {
-      endpoint: observation.endpoint,
-      mode: observation.mode,
-    }));
+    warnings.push(
+      reason(
+        'localBridge',
+        'LOCAL_BRIDGE_PROCESS_EVIDENCE_STALE',
+        'Local Controller endpoint is healthy although process ownership evidence is stale.',
+        {
+          endpoint: observation.endpoint,
+          mode: observation.mode,
+        },
+      ),
+    );
   }
   if (observation.endpointReachable && observation.runtimeStateFresh === false) {
-    warnings.push(reason('localBridge', 'LOCAL_BRIDGE_RUNTIME_STATE_STALE', 'Persisted Local Controller state is stale; live endpoint capability is being used.', {
-      endpoint: observation.endpoint,
-    }));
+    warnings.push(
+      reason(
+        'localBridge',
+        'LOCAL_BRIDGE_RUNTIME_STATE_STALE',
+        'Persisted Local Controller state is stale; live endpoint capability is being used.',
+        {
+          endpoint: observation.endpoint,
+        },
+      ),
+    );
   }
   return classifyComponent(blockers, warnings);
 }
@@ -378,14 +471,18 @@ function evaluateRuntimeStorage(observation: RuntimeStorageObservation): Compone
   const blockers: HealthReason[] = [];
   const warnings: HealthReason[] = [];
   if (!observation.readable || observation.ready === false) {
-    blockers.push(reason('runtimeStorage', 'RUNTIME_STORAGE_UNAVAILABLE', 'Runtime storage is not ready for durable execution.', {
-      readable: observation.readable,
-      warnings: observation.warnings ?? [],
-    }));
+    blockers.push(
+      reason('runtimeStorage', 'RUNTIME_STORAGE_UNAVAILABLE', 'Runtime storage is not ready for durable execution.', {
+        readable: observation.readable,
+        warnings: observation.warnings ?? [],
+      }),
+    );
   } else if ((observation.warnings ?? []).length > 0) {
-    warnings.push(reason('runtimeStorage', 'RUNTIME_STORAGE_WARNING', 'Runtime storage is usable but reported warnings.', {
-      warnings: observation.warnings,
-    }));
+    warnings.push(
+      reason('runtimeStorage', 'RUNTIME_STORAGE_WARNING', 'Runtime storage is usable but reported warnings.', {
+        warnings: observation.warnings,
+      }),
+    );
   }
   return classifyComponent(blockers, warnings);
 }
@@ -401,24 +498,19 @@ function evaluateGradedObservation(
     ...(observation.detail ? { detail: observation.detail } : {}),
     ...(observation.details ?? {}),
   };
-  const prefix = componentName === 'externalReachability'
-    ? 'EXTERNAL_ENDPOINT'
-    : componentName.replace(/[A-Z]/g, (value) => `_${value}`).toUpperCase();
+  const prefix =
+    componentName === 'externalReachability'
+      ? 'EXTERNAL_ENDPOINT'
+      : componentName.replace(/[A-Z]/g, (value) => `_${value}`).toUpperCase();
   if (observation.status === 'healthy') return component('healthy');
   if (observation.status === 'unknown') {
-    return component('warning', [], [reason(
-      componentName,
-      `${prefix}_UNKNOWN`,
-      `${label} status is unknown; readiness is not blocked.`,
-      details,
-    )]);
+    return component(
+      'warning',
+      [],
+      [reason(componentName, `${prefix}_UNKNOWN`, `${label} status is unknown; readiness is not blocked.`, details)],
+    );
   }
-  return component('degraded', [reason(
-    componentName,
-    `${prefix}_UNHEALTHY`,
-    `${label} is unhealthy.`,
-    details,
-  )]);
+  return component('degraded', [reason(componentName, `${prefix}_UNHEALTHY`, `${label} is unhealthy.`, details)]);
 }
 
 export function evaluateRuntimeHealth(observations: RuntimeHealthObservations): RuntimeHealthEvaluation {
@@ -435,20 +527,25 @@ export function evaluateRuntimeHealth(observations: RuntimeHealthObservations): 
       'External endpoint',
     ),
     mcpHandshake: evaluateGradedObservation('mcpHandshake', observations.mcpHandshake, 'MCP handshake'),
-    sessionContinuity: evaluateGradedObservation('sessionContinuity', observations.sessionContinuity, 'MCP session continuity'),
+    sessionContinuity: evaluateGradedObservation(
+      'sessionContinuity',
+      observations.sessionContinuity,
+      'MCP session continuity',
+    ),
   };
   const allComponents = Object.values(components);
   const activeBlockers = allComponents.flatMap((item) => item.activeBlockers);
   const warnings = allComponents.flatMap((item) => item.warnings);
-  const state: RuntimeHealthState = components.runtimeStorage.state === 'unavailable'
-    || components.projection.state === 'unavailable'
-    || components.localBridge.state === 'unavailable'
-    ? 'unavailable'
-    : activeBlockers.length > 0
-      ? 'degraded'
-      : warnings.length > 0
-        ? 'warning'
-        : 'healthy';
+  const state: RuntimeHealthState =
+    components.runtimeStorage.state === 'unavailable' ||
+    components.projection.state === 'unavailable' ||
+    components.localBridge.state === 'unavailable'
+      ? 'unavailable'
+      : activeBlockers.length > 0
+        ? 'degraded'
+        : warnings.length > 0
+          ? 'warning'
+          : 'healthy';
   return {
     state,
     ready: activeBlockers.length === 0,

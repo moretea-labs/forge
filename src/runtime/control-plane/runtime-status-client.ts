@@ -1,5 +1,5 @@
 import { resolveControllerHome } from '../../effects/controller-home';
-import { readSchedulerHealthSnapshot } from './global-scheduler/scheduler';
+import type { readSchedulerHealthSnapshot } from './global-scheduler/scheduler';
 import type { RuntimeSourceIdentity } from './runtime-generation';
 import { readRuntimeOwner } from '../root/ownership';
 import { observeRuntimeStatus } from '../root/status';
@@ -44,9 +44,10 @@ export function schedulerHeartbeatSnapshotHealthy(
   if (!heartbeat) return false;
   const heartbeatAt = Date.parse(heartbeat);
   const configuredTimeout = Number(scheduler.heartbeatTimeoutMs);
-  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
-    ? Math.max(MIN_SCHEDULER_HEARTBEAT_TIMEOUT_MS, configuredTimeout)
-    : DEFAULT_SCHEDULER_HEARTBEAT_TIMEOUT_MS;
+  const timeoutMs =
+    Number.isFinite(configuredTimeout) && configuredTimeout > 0
+      ? Math.max(MIN_SCHEDULER_HEARTBEAT_TIMEOUT_MS, configuredTimeout)
+      : DEFAULT_SCHEDULER_HEARTBEAT_TIMEOUT_MS;
   return Number.isFinite(heartbeatAt) && nowMs - heartbeatAt <= timeoutMs;
 }
 
@@ -54,9 +55,12 @@ export function resolveForgeRuntimeStatusHome(controllerHome: string): string {
   return resolveControllerHome(controllerHome);
 }
 
-export function readForgeRuntimeStatus(controllerHome: string): ForgeRuntimeStatus {
+export function readForgeRuntimeStatus(
+  controllerHome: string,
+  precomputedObservation?: ReturnType<typeof observeRuntimeStatus>,
+): ForgeRuntimeStatus {
   const home = resolveForgeRuntimeStatusHome(controllerHome);
-  const observation = observeRuntimeStatus(home);
+  const observation = precomputedObservation ?? observeRuntimeStatus(home);
   const owner = readRuntimeOwner(home);
   const snapshot = observation.snapshot;
   const generation = readRuntimeGeneration(home);
@@ -75,7 +79,9 @@ export function readForgeRuntimeStatus(controllerHome: string): ForgeRuntimeStat
     status,
     ...(pid ? { pid } : {}),
     ...(startedAt ? { startedAt } : {}),
-    ...(!observation.running && snapshot ? { stoppedAt: snapshot.updatedAt, shutdownReason: 'process_missing' as const } : {}),
+    ...(!observation.running && snapshot
+      ? { stoppedAt: snapshot.updatedAt, shutdownReason: 'process_missing' as const }
+      : {}),
     ...(!observation.ready && observation.reasonCodes.length > 0 ? { error: observation.reasonCodes.join(',') } : {}),
     gatewaySeparated: false,
     workerIsolation: true,

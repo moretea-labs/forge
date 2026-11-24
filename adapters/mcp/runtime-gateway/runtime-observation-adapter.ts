@@ -1,19 +1,13 @@
-import { existsSync } from 'fs';
 import {
   collectRuntimePerformanceDiagnostics,
   inferLocalControllerProcess,
 } from '../../../src/runtime/diagnostics/performance';
-import type { McpToolDefinition, CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
+import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { controllerExposureSnapshot, controllerToolSurfaceStatus } from '../toolset';
-import {
-  boundedPluginArtifactImageContent,
-  jsonPreview,
-  result,
-  resultWithPluginArtifactImages,
-} from './result-adapter';
-import { expectedRevision, repositoryRootForRepoId, selected, stringList } from './shared-adapter';
-import { callStatusInboxAdapter, GIT_IDENTITY_SAMPLE_TTL_MS } from './status-inbox-adapter';
+import { controllerExposureSnapshot } from '../toolset';
+import { result, resultWithPluginArtifactImages, serializeResultPayload } from './result-adapter';
+import { repositoryRootForRepoId, selected } from './shared-adapter';
+import { GIT_IDENTITY_SAMPLE_TTL_MS } from './status-inbox-adapter';
 import {
   ageMs,
   controllerReadinessEvidence,
@@ -23,12 +17,7 @@ import {
   type ControllerReadinessPrecomputed,
   type ControllerReadinessSignals,
 } from './runtime-readiness-observation';
-import {
-  listRepositories,
-  repositorySummary,
-  resolveRepositorySelection,
-} from '../../../src/runtime/repositories/registry';
-import { repositoryControllerRoot } from '../../../src/effects/controller-home';
+import { listRepositories, repositorySummary } from '../../../src/runtime/repositories/registry';
 import {
   findExecutionJob,
   getExecutionJob,
@@ -36,33 +25,19 @@ import {
   listExecutionJobs,
 } from '../../../src/runtime/execution/jobs/store';
 import { waitForExecutionJob } from '../../../src/runtime/execution/jobs/wait';
-import {
-  getProcessHandle,
-  listRecoverableProcessRecords,
-  processRuntimeResourceDiagnostics,
-} from '../../../src/runtime/execution/process-runtime';
+import { processRuntimeResourceDiagnostics } from '../../../src/runtime/execution/process-runtime';
 import { readExecutionArtifact } from '../../../src/runtime/evidence/artifact-store';
 import { readForgeRuntimeStatus } from '../../../src/runtime/control-plane/runtime-status-client';
+import { observeRuntimeStatus } from '../../../src/runtime/root/status';
 import { readSchedulerHealthSnapshot } from '../../../src/runtime/control-plane/global-scheduler/scheduler';
 import {
-  rebuildRepositoryProjection,
   projectionObservation,
   readRepositoryProjectionSnapshot,
 } from '../../../src/runtime/projections/materialized-view';
-import {
-  classifyRuntimeReadinessSemantics,
-  evaluateRuntimeHealth,
-  RUNTIME_HEALTH_THRESHOLDS,
-  type RuntimeHealthEvaluation,
-  type GradedObservation,
-} from '../../../src/runtime/health';
+import { evaluateRuntimeHealth } from '../../../src/runtime/health';
 import { inspectRepositoryRuntimeStorage } from '../../../src/runtime/repositories/runtime-storage';
 import { projectBoard } from '../../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
-import {
-  CONTROLLER_CONTEXT_IMPACT_DOMAINS,
-  type ControllerContextImpactDomain,
-} from '../../../src/runtime/context/context-pack-contract';
 import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
 import {
   listControllerChecks,
@@ -98,13 +73,7 @@ import {
   listLocalBridgeJobSnapshots,
   readLocalBridgeJobOutputSnapshot,
 } from '../../../src/runtime/local-bridge/read-model';
-import {
-  callRhWorkAdapter,
-  contextRecord,
-  contextText,
-  runFacadeRepair,
-  runtimeIdentitySnapshot,
-} from './rh-work-adapter';
+import { contextRecord, contextText, runtimeIdentitySnapshot } from './rh-work-adapter';
 import { summarizeJobEvents, summarizeExecutionJob } from './runtime-tool-shared';
 
 export function summarizeControllerReadyPayload(fullPayload: Record<string, unknown>): Record<string, unknown> {
@@ -113,6 +82,9 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
   const durableScheduler = (fullPayload.durableScheduler ?? {}) as Record<string, unknown>;
   const localBridge = (fullPayload.localBridge ?? {}) as Record<string, unknown>;
   const localBridgeHealth = (localBridge.health ?? {}) as Record<string, unknown>;
+  const localBridgeStatusUnknown =
+    Array.isArray(localBridgeHealth.warnings) &&
+    localBridgeHealth.warnings.some((warning) => contextRecord(warning).code === 'LOCAL_BRIDGE_STATUS_UNKNOWN');
   const toolSurface = (fullPayload.toolSurface ?? {}) as Record<string, unknown>;
   const routeBehavior = (fullPayload.routeBehavior ?? {}) as Record<string, unknown>;
   const expectedTools = Array.isArray(toolSurface.expectedTools) ? toolSurface.expectedTools : [];
@@ -140,7 +112,7 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
       activeLeases: workerLoop.activeLeases,
       schedulerStatus: durableScheduler.status,
       schedulerHeartbeatAgeMs: durableScheduler.heartbeatAgeMs,
-      localBridgeReady: localBridgeHealth.ready ?? localBridge.running,
+      localBridgeReady: localBridgeStatusUnknown ? null : (localBridgeHealth.ready ?? localBridge.running),
     },
     externalEndpoint: fullPayload.externalEndpoint,
     runtimeIdentity: (() => {
@@ -224,7 +196,6 @@ function withRuntimeResponseMeta(
       structuredPayloadBytes: 0,
     },
   };
-  response.responseMeta.structuredPayloadBytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
   return response;
 }
 
@@ -753,15 +724,18 @@ export async function callRuntimeObservationAdapter(
           (section) => !supportedSections.includes(section as (typeof supportedSections)[number]),
         );
         if (unknownSections.length > 0) {
-          return result({
-            error: {
-              code: 'CONTROLLER_CONTEXT_UNKNOWN_SECTION',
-              message: `Unsupported Context section(s): ${unknownSections.join(', ')}`,
-              errorClass: 'validation',
-              summary: 'Request only sections advertised by the Context Index.',
+          return result(
+            {
+              error: {
+                code: 'CONTROLLER_CONTEXT_UNKNOWN_SECTION',
+                message: `Unsupported Context section(s): ${unknownSections.join(', ')}`,
+                errorClass: 'validation',
+                summary: 'Request only sections advertised by the Context Index.',
+              },
+              supportedSections,
             },
-            supportedSections,
-          }, true);
+            true,
+          );
         }
 
         // Default summary is a true Context Index: repository identity and bounded
@@ -812,10 +786,15 @@ export async function callRuntimeObservationAdapter(
             }
           }
           if (selectedSections.includes('readiness')) {
-            sectionPayload.readiness = await controllerReadiness(ctx, repository, {}, {
-              projectionSnapshot: runtimeSnapshot!,
-              runtimeStorageInspection: storageInspection!,
-            });
+            sectionPayload.readiness = await controllerReadiness(
+              ctx,
+              repository,
+              {},
+              {
+                projectionSnapshot: runtimeSnapshot!,
+                runtimeStorageInspection: storageInspection!,
+              },
+            );
           }
           if (selectedSections.includes('activeRuns')) {
             sectionPayload.activeRuns = listActiveAgentJobSnapshots(repository.canonicalRoot, 20).map((run) => ({
@@ -932,7 +911,8 @@ export async function callRuntimeObservationAdapter(
             cacheHit: false,
             stale: false,
           });
-          const responseBytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
+          const serialized = serializeResultPayload(response);
+          const responseBytes = serialized.byteLength;
           recordControllerContextRead({
             durationMs: performance.now() - responseStartedAt,
             cacheHit: false,
@@ -940,7 +920,7 @@ export async function callRuntimeObservationAdapter(
             responseBytes,
             phaseDurationsMs: phaseTimingsMs,
           });
-          return result(response);
+          return result(response, false, serialized.text);
         }
         // One read-only storage observation shared with readiness/status;
         // a context read never creates or migrates storage.
@@ -1069,7 +1049,8 @@ export async function callRuntimeObservationAdapter(
               responseStartedAt,
               { ...responseOptions, cacheHit: input.cacheHit, stale: true, refreshJobId: input.refreshJobId },
             );
-            const responseBytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
+            const serialized = serializeResultPayload(response);
+            const responseBytes = serialized.byteLength;
             recordControllerContextRead({
               durationMs: performance.now() - responseStartedAt,
               cacheHit: input.cacheHit,
@@ -1077,7 +1058,7 @@ export async function callRuntimeObservationAdapter(
               responseBytes,
               phaseDurationsMs: phaseTimingsMs,
             });
-            return result(response, true);
+            return result(response, true, serialized.text);
           }
           const response = withRuntimeResponseMeta(
             {
@@ -1087,7 +1068,8 @@ export async function callRuntimeObservationAdapter(
             responseStartedAt,
             { ...responseOptions, cacheHit: input.cacheHit, stale: input.stale, refreshJobId: input.refreshJobId },
           );
-          const responseBytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
+          const serialized = serializeResultPayload(response);
+          const responseBytes = serialized.byteLength;
           recordControllerContextRead({
             durationMs: performance.now() - responseStartedAt,
             cacheHit: input.cacheHit,
@@ -1095,7 +1077,7 @@ export async function callRuntimeObservationAdapter(
             responseBytes,
             phaseDurationsMs: phaseTimingsMs,
           });
-          return result(response);
+          return result(response, false, serialized.text);
         };
         if (variant === 'summary' && cached && !cachedProjectionIncomplete && !cacheStale) {
           return respondWith(compactControllerContextSummaryPayload(cached.payload), cached, {
@@ -1112,15 +1094,13 @@ export async function callRuntimeObservationAdapter(
           const board = legacyIssuesRetired ? undefined : projectBoard(repository.canonicalRoot);
           markPhase('build.task_board', taskBoardStartedAt);
           const taskLedgerStartedAt = performance.now();
-          const taskLedger = buildControllerTaskLedgerProjection(
-            repository.canonicalRoot,
-            board,
-            undefined,
-            { includeRecentEvents: variant !== 'summary' },
-          );
+          const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot, board, undefined, {
+            includeRecentEvents: variant !== 'summary',
+          });
           markPhase('build.task_ledger', taskLedgerStartedAt);
           markPhase('build.task_state', taskStateStartedAt);
           const readinessStartedAt = performance.now();
+          const runtimeObservation = observeRuntimeStatus(ctx.controllerHome);
           const readiness = await controllerReadiness(
             ctx,
             repository,
@@ -1128,6 +1108,7 @@ export async function callRuntimeObservationAdapter(
             {
               projectionSnapshot: runtimeSnapshot,
               runtimeStorageInspection: storageInspection,
+              runtimeObservation,
             },
           );
           markPhase('build.readiness', readinessStartedAt);
@@ -1135,17 +1116,18 @@ export async function callRuntimeObservationAdapter(
             (checkout) => checkout.checkoutId === repository.activeCheckoutId,
           );
           const gitStartedAt = performance.now();
-          const liveGit = variant === 'summary'
-            ? {
-                branch: gitIdentity.branch,
-                head: gitIdentity.head,
-                status: gitIdentity.dirty
-                  ? 'Working tree has changes; request repository_git_status for bounded detail.'
-                  : 'Working tree clean.',
-                diffStat: '',
-                dirty: gitIdentity.dirty,
-              }
-            : gitSnapshot(repository.canonicalRoot);
+          const liveGit =
+            variant === 'summary'
+              ? {
+                  branch: gitIdentity.branch,
+                  head: gitIdentity.head,
+                  status: gitIdentity.dirty
+                    ? 'Working tree has changes; request repository_git_status for bounded detail.'
+                    : 'Working tree clean.',
+                  diffStat: '',
+                  dirty: gitIdentity.dirty,
+                }
+              : gitSnapshot(repository.canonicalRoot);
           markPhase('build.git', gitStartedAt);
           const currentIssueRecord = board?.currentIssueId
             ? board.issues.find((issue) => issue.id === board.currentIssueId)
@@ -1270,7 +1252,7 @@ export async function callRuntimeObservationAdapter(
               persisted: runtimeSnapshot.persisted,
             },
             controllerReady: readiness,
-            runtimeIdentity: runtimeIdentitySnapshot(ctx),
+            runtimeIdentity: runtimeIdentitySnapshot(ctx, runtimeObservation),
           };
         };
 
@@ -1503,8 +1485,7 @@ export async function callRuntimeObservationAdapter(
         const runtime = loadMcpRuntimeState(repository.canonicalRoot);
         const inferredLocalBridge =
           args.include_processes === false ? undefined : inferLocalControllerProcess(repository.canonicalRoot);
-        const activeJobIds = listActiveExecutionJobs(ctx.controllerHome, repository.repoId)
-          .map((job) => job.jobId);
+        const activeJobIds = listActiveExecutionJobs(ctx.controllerHome, repository.repoId).map((job) => job.jobId);
         const diagnostics = collectRuntimePerformanceDiagnostics({
           repoId: repository.repoId,
           repoRoot: repository.canonicalRoot,

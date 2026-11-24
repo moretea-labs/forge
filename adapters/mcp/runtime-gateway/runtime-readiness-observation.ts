@@ -1,12 +1,28 @@
-import type { MultiRepositoryMcpToolContext } from "../multi-repository";
-import { readForgeRuntimeStatus } from "../../../src/runtime/control-plane/runtime-status-client";
-import { readSchedulerHealthSnapshot } from "../../../src/runtime/control-plane/global-scheduler/scheduler";
-import { evaluateActiveRuntimeSourceDrift, type RuntimeSourceIdentity } from "../../../src/runtime/control-plane/runtime-generation";
-import { projectionObservation, readRepositoryProjectionSnapshot } from "../../../src/runtime/projections/materialized-view";
-import { classifyRuntimeReadinessSemantics, evaluateRuntimeHealth, RUNTIME_HEALTH_THRESHOLDS, type GradedObservation } from "../../../src/runtime/health";
-import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION } from "../../../src/runtime/shared/runtime-config";
-import { inspectRepositoryRuntimeStorage } from "../../../src/runtime/repositories/runtime-storage";
-import { resolveLocalBridgeSurface } from "../../../src/runtime/shared/local-bridge-surface";
+import type { MultiRepositoryMcpToolContext } from '../multi-repository';
+import { readForgeRuntimeStatus } from '../../../src/runtime/control-plane/runtime-status-client';
+import { observeRuntimeStatus } from '../../../src/runtime/root/status';
+import { readSchedulerHealthSnapshot } from '../../../src/runtime/control-plane/global-scheduler/scheduler';
+import {
+  evaluateActiveRuntimeSourceDrift,
+  type RuntimeSourceIdentity,
+} from '../../../src/runtime/control-plane/runtime-generation';
+import {
+  projectionObservation,
+  readRepositoryProjectionSnapshot,
+} from '../../../src/runtime/projections/materialized-view';
+import {
+  classifyRuntimeReadinessSemantics,
+  evaluateRuntimeHealth,
+  RUNTIME_HEALTH_THRESHOLDS,
+  type GradedObservation,
+} from '../../../src/runtime/health';
+import {
+  FORGE_MCP_SCHEMA_VERSION,
+  FORGE_TOOL_SURFACE,
+  FORGE_VERSION,
+} from '../../../src/runtime/shared/runtime-config';
+import { inspectRepositoryRuntimeStorage } from '../../../src/runtime/repositories/runtime-storage';
+import { resolveLocalBridgeSurface } from '../../../src/runtime/shared/local-bridge-surface';
 
 export function ageMs(value: string | undefined): number | undefined {
   if (!value) return undefined;
@@ -14,7 +30,9 @@ export function ageMs(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? Math.max(0, Date.now() - parsed) : undefined;
 }
 
-export async function probeLocalControllerHealth(endpoint: string | undefined): Promise<Record<string, unknown> | null> {
+export async function probeLocalControllerHealth(
+  endpoint: string | undefined,
+): Promise<Record<string, unknown> | null> {
   if (!endpoint) return null;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1_500);
@@ -25,7 +43,7 @@ export async function probeLocalControllerHealth(endpoint: string | undefined): 
     url.hash = '';
     const response = await fetch(url, { signal: controller.signal, headers: { accept: 'application/json' } });
     if (!response.ok) return null;
-    return await response.json() as Record<string, unknown>;
+    return (await response.json()) as Record<string, unknown>;
   } catch {
     return null;
   } finally {
@@ -37,11 +55,13 @@ export function localControllerDiagnosticMatchesRuntime(
   payload: Record<string, unknown> | null,
   expected: { generation?: string } = {},
 ): boolean {
-  return payload?.status === 'ok'
-    && payload.toolSurface === FORGE_TOOL_SURFACE
-    && payload.schemaVersion === FORGE_MCP_SCHEMA_VERSION
-    && payload.version === FORGE_VERSION
-    && (expected.generation === undefined || payload.generation === expected.generation);
+  return (
+    payload?.status === 'ok' &&
+    payload.toolSurface === FORGE_TOOL_SURFACE &&
+    payload.schemaVersion === FORGE_MCP_SCHEMA_VERSION &&
+    payload.version === FORGE_VERSION &&
+    (expected.generation === undefined || payload.generation === expected.generation)
+  );
 }
 
 export interface ControllerReadinessSignals {
@@ -53,6 +73,10 @@ export interface ControllerReadinessSignals {
 export interface ControllerReadinessPrecomputed {
   projectionSnapshot?: ReturnType<typeof readRepositoryProjectionSnapshot>;
   runtimeStorageInspection?: ReturnType<typeof inspectRepositoryRuntimeStorage>;
+  /** Request-scoped probe injection; omitted callers use the canonical bounded probe. */
+  localBridgeProbe?: (endpoint: string | undefined) => Promise<Record<string, unknown> | null>;
+  /** Reuse one source-of-truth Runtime observation across readiness and identity projection. */
+  runtimeObservation?: ReturnType<typeof observeRuntimeStatus>;
 }
 
 export async function controllerReadinessEvidence(
@@ -61,33 +85,36 @@ export async function controllerReadinessEvidence(
   signals: ControllerReadinessSignals = {},
   precomputed: ControllerReadinessPrecomputed = {},
 ) {
-  const daemon = readForgeRuntimeStatus(ctx.controllerHome);
+  const runtimeObservation = precomputed.runtimeObservation ?? observeRuntimeStatus(ctx.controllerHome);
+  const daemon = readForgeRuntimeStatus(ctx.controllerHome, runtimeObservation);
   const scheduler = readSchedulerHealthSnapshot(ctx.controllerHome);
-  const projectionSnapshot = precomputed.projectionSnapshot
-    ?? (repository ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId) : undefined);
+  const projectionSnapshot =
+    precomputed.projectionSnapshot ??
+    (repository ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId) : undefined);
   const projection = projectionSnapshot?.projection;
   const localBridgeSurface = repository
     ? resolveLocalBridgeSurface({
-      controllerHome: ctx.controllerHome,
-      repoRoot: repository.canonicalRoot,
-      allowProcessScan: false,
-    })
+        controllerHome: ctx.controllerHome,
+        repoRoot: repository.canonicalRoot,
+        allowProcessScan: false,
+      })
     : undefined;
   const localBridgeEndpoint = localBridgeSurface?.endpoint;
   const shouldProbeLocalBridge = Boolean(
-    localBridgeSurface?.enabled
-    && localBridgeSurface.endpointConfigured
-    && localBridgeEndpoint
-    && localBridgeSurface.mode !== 'disabled',
+    localBridgeSurface?.enabled &&
+      localBridgeSurface.requiredForReadiness &&
+      localBridgeSurface.endpointConfigured &&
+      localBridgeEndpoint &&
+      localBridgeSurface.mode !== 'disabled',
   );
   const localBridgeLiveHealth = shouldProbeLocalBridge
-    ? await probeLocalControllerHealth(localBridgeEndpoint)
+    ? await (precomputed.localBridgeProbe ?? probeLocalControllerHealth)(localBridgeEndpoint)
     : null;
   const localBridgeEndpointReachable = localBridgeLiveHealth !== null;
   const localBridgeExpectedSurface = shouldProbeLocalBridge
     ? localControllerDiagnosticMatchesRuntime(localBridgeLiveHealth, {
-      generation: localBridgeSurface?.generation,
-    })
+        generation: localBridgeSurface?.generation,
+      })
     : true;
   const schedulerHeartbeatAgeMs = ageMs(scheduler.lastTickAt);
   const dispatchHeartbeatAgeMs = ageMs(scheduler.lastDispatchAt);
@@ -98,6 +125,7 @@ export async function controllerReadinessEvidence(
     endpoint: localBridgeEndpoint,
     endpointReachable: shouldProbeLocalBridge ? localBridgeEndpointReachable : true,
     expectedSurface: localBridgeExpectedSurface,
+    observed: !localBridgeSurface?.enabled || localBridgeSurface.mode === 'disabled' || shouldProbeLocalBridge,
     processAlive: localBridgeSurface?.processRunning,
     runtimeStateFresh: localBridgeSurface?.source === 'service-runtime',
     error: localBridgeSurface?.error,
@@ -121,34 +149,37 @@ export async function controllerReadinessEvidence(
       activeLeases: projection?.activeLeases,
       activeAttentionCount: projection?.currentAttention.length,
     },
-    projection: projectionSnapshot ? projectionObservation(projectionSnapshot) : {
-      readable: true,
-      persisted: true,
-    },
+    projection: projectionSnapshot
+      ? projectionObservation(projectionSnapshot)
+      : {
+          readable: true,
+          persisted: true,
+        },
     localBridge: localBridgeObservation,
     runtimeStorage: repository
       ? (() => {
-        // Read-only counterpart of the status path: never creates or migrates
-        // storage during a readiness probe. Legitimately lazy binding stays
-        // benign; real legacy blockers and unusable paths stop readiness.
-        const inspection = precomputed.runtimeStorageInspection
-          ?? inspectRepositoryRuntimeStorage(repository, ctx.controllerHome);
-        return { readable: true, ready: inspection.readyForExecution, warnings: inspection.warnings };
-      })()
+          // Read-only counterpart of the status path: never creates or migrates
+          // storage during a readiness probe. Legitimately lazy binding stays
+          // benign; real legacy blockers and unusable paths stop readiness.
+          const inspection =
+            precomputed.runtimeStorageInspection ?? inspectRepositoryRuntimeStorage(repository, ctx.controllerHome);
+          return { readable: true, ready: inspection.readyForExecution, warnings: inspection.warnings };
+        })()
       : { readable: true, ready: true },
     ...signals,
   });
   const reasons: Array<{ code: string; message: string }> = runtimeHealth.activeBlockers.map((item) => ({
-    code: item.code === 'SCHEDULER_NOT_PROGRESSING'
-      ? 'DISPATCH_LOOP_STALLED'
-      : item.code === 'LEASE_WITHOUT_WORKER' || item.code === 'WORKER_NOT_RUNNING'
-        ? 'WORKER_NOT_RUNNING'
-        : item.code,
+    code:
+      item.code === 'SCHEDULER_NOT_PROGRESSING'
+        ? 'DISPATCH_LOOP_STALLED'
+        : item.code === 'LEASE_WITHOUT_WORKER' || item.code === 'WORKER_NOT_RUNNING'
+          ? 'WORKER_NOT_RUNNING'
+          : item.code,
     message: item.message,
   }));
   if (
-    reasons.some((item) => item.code === 'WORKER_NOT_RUNNING')
-    && (dispatchHeartbeatAgeMs === undefined || dispatchHeartbeatAgeMs > RUNTIME_HEALTH_THRESHOLDS.queueProgressStaleMs)
+    reasons.some((item) => item.code === 'WORKER_NOT_RUNNING') &&
+    (dispatchHeartbeatAgeMs === undefined || dispatchHeartbeatAgeMs > RUNTIME_HEALTH_THRESHOLDS.queueProgressStaleMs)
   ) {
     reasons.push({
       code: 'QUEUE_NOT_PROGRESSING',
@@ -158,7 +189,13 @@ export async function controllerReadinessEvidence(
   const ready = runtimeHealth.ready;
   return {
     ready,
-    state: ready ? runtimeHealth.state === 'healthy' ? 'ready' as const : 'degraded' as const : daemon.status === 'ready' ? 'degraded' as const : 'not_ready' as const,
+    state: ready
+      ? runtimeHealth.state === 'healthy'
+        ? ('ready' as const)
+        : ('degraded' as const)
+      : daemon.status === 'ready'
+        ? ('degraded' as const)
+        : ('not_ready' as const),
     reasons,
     warnings: runtimeHealth.warnings.map((item) => ({ code: item.code, message: item.message })),
     health: runtimeHealth,
@@ -180,26 +217,27 @@ export async function controllerReadinessEvidence(
       activeAttentionCount: projection?.currentAttention.length ?? 0,
       consuming: (projection?.queueDepth ?? 0) === 0 || (projection?.runningWorkers ?? 0) > 0,
     },
-    localBridge: repository ? {
-      running: Boolean(localBridgeSurface?.enabled)
-        && runtimeHealth.components.localBridge.ready
-        && (!shouldProbeLocalBridge || (localBridgeEndpointReachable && localBridgeExpectedSurface)),
-      endpoint: localBridgeEndpoint,
-      error: localBridgeSurface?.error,
-      inferredPid: localBridgeSurface?.pid,
-      statusSource: localBridgeSurface?.source ?? 'none',
-      health: runtimeHealth.components.localBridge,
-    } : undefined,
+    localBridge: repository
+      ? {
+          running: shouldProbeLocalBridge
+            ? runtimeHealth.components.localBridge.ready && localBridgeEndpointReachable && localBridgeExpectedSurface
+            : localBridgeSurface?.enabled
+              ? null
+              : false,
+          endpoint: localBridgeEndpoint,
+          error: localBridgeSurface?.error,
+          inferredPid: localBridgeSurface?.pid,
+          statusSource: localBridgeSurface?.source ?? 'none',
+          health: runtimeHealth.components.localBridge,
+        }
+      : undefined,
     projection,
     projectionSnapshot,
     semantics: classifyRuntimeReadinessSemantics(runtimeHealth),
   };
 }
 
-export function runtimeSourceSnapshotStatus(
-  active: RuntimeSourceIdentity | undefined,
-  currentRuntimeRoot?: string,
-) {
+export function runtimeSourceSnapshotStatus(active: RuntimeSourceIdentity | undefined, currentRuntimeRoot?: string) {
   const drift = evaluateActiveRuntimeSourceDrift(active, {
     currentRuntimeRoot,
   });
@@ -210,4 +248,3 @@ export function runtimeSourceSnapshotStatus(
     code: drift.code,
   };
 }
-
