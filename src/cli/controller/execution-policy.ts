@@ -40,33 +40,31 @@ function cleanupBlocker(
   code: CompletionResourceBlocker['code'],
   message: string,
   resourceKind: CompletionResourceBlocker['resourceKind'],
-  recordedAt: string,
 ): CompletionResourceBlocker {
-  return { code, message, resourceKind, recordedAt };
+  return { code, message, resourceKind };
 }
 
 export function cleanupEvidenceResourceBlockers(
   cleanup: CleanupEvidence,
   options: { includeRunTerminal?: boolean } = {},
 ): CompletionResourceBlocker[] {
-  const recordedAt = cleanup.recordedAt || new Date().toISOString();
   const blockers = [...(cleanup.resourceBlockers ?? [])];
   const warningOnlyRetention = (cleanup.maintenanceWarnings?.length ?? 0) > 0 && blockers.length === 0;
   const add = (entry: CompletionResourceBlocker): void => {
     if (!blockers.some((candidate) => candidate.code === entry.code && candidate.resourceKind === entry.resourceKind)) blockers.push(entry);
   };
   if (!cleanup.worktreeRemovedOrNotCreated && !warningOnlyRetention) {
-    add(cleanupBlocker('unknown_resource_ownership', 'Worktree removal or absence was not proven.', 'worktree', recordedAt));
+    add(cleanupBlocker('unknown_resource_ownership', 'Worktree removal or absence was not proven.', 'worktree'));
   }
   if (!cleanup.branchDeletedOrRetained && !warningOnlyRetention) {
-    add(cleanupBlocker('unknown_resource_ownership', 'Temporary branch deletion or retention was not proven.', 'branch', recordedAt));
+    add(cleanupBlocker('unknown_resource_ownership', 'Temporary branch deletion or retention was not proven.', 'branch'));
   }
-  if (!cleanup.leasesReleased) add(cleanupBlocker('lease_active', 'Task-owned leases are still active.', 'lease', recordedAt));
-  if (!cleanup.editSessionClosedOrNotCreated) add(cleanupBlocker('edit_session_open', 'Task-owned edit session is not closed.', 'edit_session', recordedAt));
-  if (!cleanup.noActiveProcess) add(cleanupBlocker('active_write_process', 'Task-owned execution process may still be active.', 'process', recordedAt));
-  if (!cleanup.noDirtyDiff) add(cleanupBlocker('dirty_owned_paths', 'Task-owned paths still have uncommitted changes.', 'workspace', recordedAt));
+  if (!cleanup.leasesReleased) add(cleanupBlocker('lease_active', 'Task-owned leases are still active.', 'lease'));
+  if (!cleanup.editSessionClosedOrNotCreated) add(cleanupBlocker('edit_session_open', 'Task-owned edit session is not closed.', 'edit_session'));
+  if (!cleanup.noActiveProcess) add(cleanupBlocker('active_write_process', 'Task-owned execution process may still be active.', 'process'));
+  if (!cleanup.noDirtyDiff) add(cleanupBlocker('dirty_owned_paths', 'Task-owned paths still have uncommitted changes.', 'workspace'));
   if (options.includeRunTerminal !== false && !cleanup.runTerminal) {
-    add(cleanupBlocker('run_not_terminal', 'Task-owned Run has not reached a terminal state.', 'process', recordedAt));
+    add(cleanupBlocker('run_not_terminal', 'Task-owned Run has not reached a terminal state.', 'process'));
   }
   return blockers;
 }

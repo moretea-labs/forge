@@ -5,9 +5,6 @@ export interface CompletionMaintenanceWarning {
     | 'edit_session_backup_retained'
     | 'cleanup_retained_by_request';
   message: string;
-  resourceKind?: 'worktree' | 'branch' | 'edit_session' | 'lease' | 'process' | 'workspace';
-  resourceId?: string;
-  recordedAt: string;
 }
 
 export interface CompletionResourceBlocker {
@@ -22,8 +19,6 @@ export interface CompletionResourceBlocker {
     | 'target_revision_unreachable';
   message: string;
   resourceKind?: 'worktree' | 'branch' | 'edit_session' | 'lease' | 'process' | 'workspace';
-  resourceId?: string;
-  recordedAt: string;
 }
 
 /** Kernel-owned repository delivery receipt derived from native execution, Git, and resource facts. */

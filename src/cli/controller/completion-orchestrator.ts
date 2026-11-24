@@ -818,10 +818,8 @@ function blocker(
   code: CompletionResourceBlocker['code'],
   message: string,
   resourceKind?: CompletionResourceBlocker['resourceKind'],
-  resourceId?: string,
-  at = nowIso(),
 ): CompletionResourceBlocker {
-  return { code, message, resourceKind, resourceId, recordedAt: at };
+  return { code, message, resourceKind };
 }
 
 function buildDirectEditCompletionReceipt(input: {
