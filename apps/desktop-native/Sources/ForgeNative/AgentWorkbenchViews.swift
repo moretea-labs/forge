@@ -286,10 +286,11 @@ struct AgentPane: View {
                 let selected = selectedWorkSurface == surface
                 Button { openWorkSurface(surface) } label: {
                     Text(surface.title)
-                        .font(.system(size:11,weight:selected ? .semibold : .regular))
+                        .font(.system(size:12,weight:selected ? .medium : .regular))
                         .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                        .padding(.horizontal,7)
-                        .frame(height:28)
+                        .lineLimit(1)
+                        .padding(.horizontal,8)
+                        .frame(height:30)
                         .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
                         .forgeChromeSurface(selected:selected,cornerRadius:8)
                 }
@@ -322,8 +323,8 @@ struct AgentPane: View {
             .accessibilityLabel("关闭工作面板")
             .accessibilityIdentifier("agent.work-surface.close")
         }
-        .padding(.horizontal,8)
-        .padding(.vertical,4)
+        .padding(.horizontal,12)
+        .padding(.vertical,5)
         .accessibilityElement(children:.contain)
         .accessibilityIdentifier("agent.inspector.tabs")
     }
@@ -568,7 +569,7 @@ struct AgentPane: View {
                                                     }
                                                 } label: {
                                                     HStack(spacing:5) {
-                                                        Label(message.toolActivityCount.map { "\($0) 次工具调用 · 过程" } ?? "查看过程",
+                                                        Label(message.toolActivityCount.map { "工具 \($0)" } ?? "执行过程",
                                                               systemImage:"list.bullet.rectangle")
                                                         Image(systemName:expandedMessageActivities.contains(message.id)
                                                               ? "chevron.up" : "chevron.down")
@@ -576,8 +577,12 @@ struct AgentPane: View {
                                                     }
                                                 }
                                                 .buttonStyle(.plain)
+                                                .help(expandedMessageActivities.contains(message.id) ? "收起执行过程" : "查看执行过程")
+                                                .accessibilityLabel(expandedMessageActivities.contains(message.id) ? "收起执行过程" : "查看执行过程")
+                                                .accessibilityValue(message.toolActivityCount.map { "\($0) 次工具调用" } ?? "有执行记录")
                                             } else if let count = message.toolActivityCount, count > 0 {
-                                                Label("\(count) 次工具调用",systemImage:"hammer")
+                                                Label("工具 \(count)",systemImage:"hammer")
+                                                    .accessibilityLabel("\(count) 次工具调用")
                                             }
                                             if let usage = message.usage {
                                                 Label(
@@ -591,6 +596,7 @@ struct AgentPane: View {
                                                 copyAgentText(message.text)
                                             } label: {
                                                 ForgeGlyph(.copy)
+                                                    .forgeChromeSurface(cornerRadius:7)
                                             }
                                             .buttonStyle(.plain)
                                             .help("复制完整回复")
@@ -2083,18 +2089,15 @@ struct AgentChangesPane: View {
                                 if !changes.untrackedFiles.isEmpty {
                                     untrackedChangesNotice(changes.untrackedFiles)
                                 }
-                                VStack(spacing:10) {
-                                    Image(systemName:"checkmark.circle")
-                                        .font(.system(size:24,weight:.light))
-                                        .foregroundStyle(ForgePalette.secondary)
-                                    Text(changes.untrackedFiles.isEmpty
-                                         ? (changes.staged ? "暂存区没有改动" : "工作区没有未提交改动")
-                                         : "没有可审查的已跟踪文件改动")
-                                        .font(.system(size:12,weight:.medium))
-                                        .foregroundStyle(ForgePalette.secondary)
-                                }
-                                .frame(maxWidth:.infinity)
-                                .padding(.vertical,48)
+                                Label(changes.untrackedFiles.isEmpty
+                                      ? (changes.staged ? "暂存区没有改动" : "工作区没有未提交改动")
+                                      : "没有可审查的已跟踪文件改动",
+                                      systemImage:"checkmark.circle")
+                                    .font(.system(size:12))
+                                    .foregroundStyle(ForgePalette.secondary)
+                                    .frame(maxWidth:.infinity,alignment:.leading)
+                                    .padding(.vertical,10)
+                                    .accessibilityIdentifier("changes.empty")
                             }
                             .padding(14)
                         }
@@ -2565,24 +2568,24 @@ struct AgentPlanningInspector: View {
         VStack(alignment:.leading,spacing:0) {
             HStack(alignment:.top,spacing:10) {
                 VStack(alignment:.leading,spacing:3) {
-                    Text("规划上下文").font(.system(size:13,weight:.semibold))
-                    Text("只关联当前会话，不会修改需求或计划。")
-                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                    if !inline {
+                        Text("规划上下文").font(.system(size:13,weight:.semibold))
+                    }
+                    Text("关联仅影响当前会话，不会修改需求或计划。")
+                        .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                 }
-                Spacer()
-                Button { dismiss() } label: {
-                    Image(systemName:"xmark")
-                        .font(.system(size:9,weight:.semibold))
-                        .frame(width:24,height:24)
+                Spacer(minLength:0)
+                if !inline {
+                    Button { dismiss() } label: {
+                        ForgeGlyph(.close).forgeChromeSurface(cornerRadius:8)
+                    }
+                    .buttonStyle(.plain)
+                    .help("关闭规划上下文")
+                    .accessibilityLabel("关闭规划上下文")
+                    .accessibilityIdentifier("agent.planning-inspector.close")
                 }
-                .buttonStyle(.plain)
-                .help("关闭规划上下文")
-                .accessibilityLabel("关闭规划上下文")
-                .accessibilityIdentifier("agent.planning-inspector.close")
             }
-            .padding(.horizontal,14).padding(.vertical,12)
-
-            Color.clear.frame(height:6)
+            .padding(.horizontal,14).padding(.vertical,8)
             HStack(alignment:.top,spacing:9) {
                 Image(systemName:currentBoundRecord == nil ? "paperclip" : "paperclip.circle.fill")
                     .font(.system(size:10,weight:.medium))
@@ -2605,7 +2608,7 @@ struct AgentPlanningInspector: View {
                             .font(.system(size:10.5,weight:.medium,design:.monospaced))
                             .lineLimit(1).truncationMode(.middle)
                     } else {
-                        Text("未绑定规划 · 会话可以直接工作")
+                        Text("未关联需求或计划")
                             .font(.system(size:10.5,weight:.medium))
                             .foregroundStyle(ForgePalette.secondary)
                     }
@@ -2685,14 +2688,11 @@ struct AgentPlanningInspector: View {
                 .scrollIndicators(.automatic)
             }
 
-            Color.clear.frame(height:6)
-            HStack {
-                Text("关联只影响当前会话，不会修改需求或计划。")
-                    .font(.system(size:9.5)).foregroundStyle(.tertiary)
-                Spacer()
-                if loading { ProgressView().controlSize(.mini) }
+            if loading && !records.isEmpty {
+                ProgressView().controlSize(.mini)
+                    .frame(maxWidth:.infinity,alignment:.trailing)
+                    .padding(10)
             }
-            .padding(.horizontal,14).frame(height:34)
         }
         .frame(width:inline ? nil : 390,height:inline ? nil : 455)
         .task(id:planningScopeKey) { await reload() }
@@ -2847,23 +2847,24 @@ struct AgentKnowledgeInspector: View {
         VStack(alignment:.leading,spacing:0) {
             HStack(alignment:.top,spacing:10) {
                 VStack(alignment:.leading,spacing:3) {
-                    Text("项目知识").font(.system(size:13,weight:.semibold))
-                    Text("先看可复用判断；加入当前草稿后仍可编辑，不会自动发送。")
-                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                    if !inline {
+                        Text("项目知识").font(.system(size:13,weight:.semibold))
+                    }
+                    Text("选中的知识可加入草稿，不会自动发送。")
+                        .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                 }
-                Spacer()
-                Button { dismiss() } label: {
-                    Image(systemName:"xmark")
-                        .font(.system(size:9,weight:.semibold))
-                        .frame(width:24,height:24)
+                Spacer(minLength:0)
+                if !inline {
+                    Button { dismiss() } label: {
+                        ForgeGlyph(.close).forgeChromeSurface(cornerRadius:8)
+                    }
+                    .buttonStyle(.plain)
+                    .help("关闭项目知识")
+                    .accessibilityLabel("关闭项目知识")
+                    .accessibilityIdentifier("agent.knowledge-inspector.close")
                 }
-                .buttonStyle(.plain)
-                .help("关闭项目知识")
-                .accessibilityLabel("关闭项目知识")
-                .accessibilityIdentifier("agent.knowledge-inspector.close")
             }
-            .padding(.horizontal,14).padding(.vertical,12)
-            Color.clear.frame(height:6)
+            .padding(.horizontal,14).padding(.vertical,8)
 
             HStack(spacing:7) {
                 Image(systemName:"magnifyingglass")
@@ -2929,20 +2930,17 @@ struct AgentKnowledgeInspector: View {
                 .scrollIndicators(.automatic)
             }
 
-            Color.clear.frame(height:6)
-            HStack(spacing:6) {
-                if let result {
-                    Text("\(result.items.count) 条结果")
-                    if result.truncated { Text("· 已截断") }
-                } else {
-                    Text("只读 · advisory")
+            if result?.truncated == true || (loading && result != nil) {
+                HStack(spacing:6) {
+                    if result?.truncated == true {
+                        Text("仅显示部分结果")
+                    }
+                    Spacer(minLength:0)
+                    if loading { ProgressView().controlSize(.mini) }
                 }
-                if result != nil { Text("· 按 Cognitive 返回顺序") }
-                Spacer()
-                if loading { ProgressView().controlSize(.mini) }
+                .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                .padding(.horizontal,14).frame(height:28)
             }
-            .font(.system(size:9.5)).foregroundStyle(.tertiary)
-            .padding(.horizontal,14).frame(height:34)
         }
         .frame(width:inline ? nil : 410,height:inline ? nil : 455)
         .task(id:[model.repoId ?? "", model.checkoutId ?? "", model.selectedThreadId ?? ""]) { await reload() }
