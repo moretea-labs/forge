@@ -9,6 +9,7 @@ import {
   getControllerPluginManifest,
   listAssistantPluginManifests,
   listControllerPluginManifests,
+  pluginProviderIsInternal,
 } from '../../../src/runtime/plugins/store';
 import { executeAssistantPluginActionApplication } from '../../../src/runtime/plugins/action-application';
 import { mcpPluginExecutionOrigin } from '../../../src/runtime/plugins/execution-origin';
@@ -152,6 +153,9 @@ export async function callPluginAdapter(
     }
     case 'get_plugin': {
       const pluginId = String(args.plugin_id ?? '').trim();
+      if (pluginProviderIsInternal(ctx.controllerHome, pluginId)) {
+        throw new Error(`PLUGIN_PROVIDER_NOT_PUBLIC: ${pluginId} is an internal Computer provider. Use the computer plugin.`);
+      }
       const scope = pluginTransportScope(ctx, args, pluginId);
       return result({
         scope: pluginScopeLabel(scope),

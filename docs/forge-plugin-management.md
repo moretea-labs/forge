@@ -10,12 +10,11 @@ forge plugin catalog
 
 | Plugin ID | Product | Pinned release | Platforms |
 | --- | --- | --- | --- |
-| `desktop_operator` | [Forge Desktop Operator](https://github.com/moretea-labs/forge-desktop-operator) | `v0.4.5` | macOS |
 | `design` | [Forge Design](https://github.com/moretea-labs/forge-design) | `v0.3.0` | macOS, Linux, Windows |
 | `personal_knowledge` | [Personal Knowledge Assistant](https://github.com/moretea-labs/personal-knowledge-assistant) | `v0.2.1` | macOS, Linux, Windows |
 | `figma` | [Forge Figma Bridge](https://github.com/moretea-labs/forge-figma-bridge) | `v0.3.0` | macOS |
 
-Investment Decision System remains an independent product and is intentionally not a Forge plugin.
+Investment Decision System remains an independent product and is intentionally not a Forge plugin. The native macOS Computer helper is pinned inside Forge for `forge computer setup`; it is not a catalog plugin.
 
 ## Product facades and generic provider management
 
@@ -31,7 +30,7 @@ forge computer uninstall
 forge computer uninstall --purge
 ```
 
-`Computer` is the Forge product/capability identity. `desktop_operator` remains the implementation/provider identity used for trusted registration, release diagnostics, the stable macOS app bundle, LaunchAgent, socket, and TCC permissions. Its provider release is independent from the Forge Runtime release. Desktop Operator owns native macOS Computer observe/input/capture/console-unlock/element capabilities; Browser automation remains under the separate Browser provider authority rather than being claimed by the Desktop Operator catalog. `status` is a bounded projection of registration and recorded health, never proof inferred from a host browser; `doctor` refreshes provider health before reporting platform, registration, pinned-release, and readiness checks only on a compatible provider platform, and otherwise reports the stored incompatible registration without probing its transport. Setup/update use the same pinned official catalog transaction as generic plugin installation and fail before mutation when no compatible native provider exists. Uninstall invokes the provider-owned native uninstaller before Forge removes registration/package state, and fails closed rather than orphaning a native service when that lifecycle cannot be proven.
+`Computer` is the Forge product/capability identity. The native macOS helper remains an internal provider: trusted registration, the stable bundle, LaunchAgent, socket, and TCC permissions stay provider-owned so Forge Runtime releases do not rotate the permission principal. It is not a public plugin. `forge plugin catalog`, Settings, `list_plugins`, `get_plugin`, and `plugin_action_execute` do not expose it. `forge computer setup` is the only install path. Desktop observe/input/capture/console-unlock/element actions are `computer` capabilities. One grant for a Computer capability and target covers the actions in that capability. Console unlock stays a per-invocation authorization on the `computer` plugin. `status` is a bounded projection of registration and recorded health, never proof inferred from a host browser; `doctor` refreshes provider health before reporting platform, registration, pinned-release, and readiness checks only on a compatible provider platform, and otherwise reports the stored incompatible registration without probing its transport. Setup/update use the pinned provider package and fail before mutation when no compatible native provider exists. Uninstall invokes the provider-owned native uninstaller before Forge removes registration/package state, and fails closed rather than orphaning a native service when that lifecycle cannot be proven.
 
 Generic provider administration remains available for diagnostics and non-Computer providers:
 
@@ -39,7 +38,7 @@ Generic provider administration remains available for diagnostics and non-Comput
 forge plugin install design
 forge plugin install personal_knowledge
 forge plugin install figma           # macOS, Figma bridge app/service required
-forge plugin install desktop_operator   # compatibility/advanced path on macOS
+# desktop_operator is not a public plugin; use forge computer setup
 forge plugin list --refresh
 ```
 

@@ -4,7 +4,7 @@ import { join, resolve } from 'path';
 import { execFileSync } from 'child_process';
 import { pathToFileURL } from 'url';
 import { tmpdir } from 'os';
-import { externalPluginListItem, installTrustedExternalPlugin, installerNextSteps, officialPluginCatalogItems, pluginCatalogCompatibility, registrationFrom, trustedExternalPluginCatalogEntry } from '../../src/cli/commands/plugin';
+import { externalPluginListItem, installOfficialPlugin, installTrustedExternalPlugin, installerNextSteps, officialPluginCatalogEntry, officialPluginCatalogItems, pluginCatalogCompatibility, registrationFrom, trustedExternalPluginCatalogEntry } from '../../src/cli/commands/plugin';
 import { assertExternalPluginRepositoryTrusted, assertFirstPartyPluginRepositoryTrusted, trustExternalPluginRepository, untrustExternalPluginRepository } from '../../src/runtime/plugins/catalog-trust';
 import { getExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import { readControllerPluginManagement } from '../../adapters/mcp/runtime-gateway/controller-plugins';
@@ -16,7 +16,7 @@ describe('official plugin catalog', () => {
       const snapshot = readControllerPluginManagement(home);
       expect(snapshot.schemaVersion).toBe(1);
       expect(snapshot.plugins.map((entry) => entry.pluginId)).toEqual([
-        'desktop_operator', 'design', 'personal_knowledge', 'figma',
+        'design', 'personal_knowledge', 'figma',
       ]);
       expect(snapshot.plugins.every((entry) => entry.installedVersion === undefined)).toBe(true);
       expect(snapshot.plugins.every((entry) => entry.authorizationCount === 0)).toBe(true);
@@ -35,7 +35,8 @@ describe('official plugin catalog', () => {
   });
 
   test('advertises provider-neutral Computer capabilities for Desktop Operator bootstrap resolution', () => {
-    const desktop = officialPluginCatalogItems('darwin').find((entry) => entry.id === 'desktop_operator');
+    expect(officialPluginCatalogItems('darwin').some((entry) => entry.id === 'desktop_operator')).toBe(false);
+    const desktop = officialPluginCatalogEntry('desktop_operator');
     expect(desktop?.semanticCapabilities).toEqual([
       'computer.observe.v1', 'computer.input.v1', 'computer.console.unlock.v1', 'computer.capture.v1',
       'computer.element.observe.v2', 'computer.element.action.v2',
@@ -43,14 +44,15 @@ describe('official plugin catalog', () => {
   });
 
   test('requires the Desktop Operator provider identity to match the catalog release', () => {
-    const desktop = officialPluginCatalogItems('darwin').find((entry) => entry.id === 'desktop_operator');
+    const desktop = officialPluginCatalogEntry('desktop_operator');
+    expect(() => installOfficialPlugin('desktop_operator', mkdtempSync(join(tmpdir(), 'forge-provider-install-')))).toThrow(/PLUGIN_PROVIDER_NOT_PUBLIC/);
     expect(desktop).toMatchObject({
       id: 'desktop_operator',
       version: '0.4.5',
       providerVersion: '0.4.5',
       ref: 'v0.4.5',
       protocolVersion: '1.0',
-      compatible: true,
+      distribution: 'provider',
     });
     expect(pluginCatalogCompatibility(desktop!, 'darwin')).toEqual({ compatible: true });
 

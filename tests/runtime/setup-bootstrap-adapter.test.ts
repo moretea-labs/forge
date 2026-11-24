@@ -89,13 +89,13 @@ describe('Stage4 setup bootstrap adapter', () => {
         runtime: () => ({ ready: true, title: 'Runtime', detail: 'ready' }),
         tunnel: () => ({ provider: 'openai' as const, ready: true, title: 'Tunnel', detail: 'ready' }),
         capabilities: () => [
-          { capabilityId: 'computer.observe.v1', status: 'installable' as const, providerId: 'desktop_operator', providerName: 'Desktop Operator', summary: 'Desktop Operator can provide computer.observe.v1.' },
+          { capabilityId: 'computer.observe.v1', status: 'installable' as const, providerId: 'computer', providerName: 'Forge Computer', summary: 'Forge Computer can provide computer.observe.v1.' },
           { capabilityId: 'knowledge.telepathy.v9', status: 'unsupported' as const, summary: 'No provider.' },
         ],
       },
     };
     const evaluation = observeSetupBootstrap(base);
-    expect(evaluation.actions.find((entry) => entry.id === 'capability.computer.observe.v1.install')).toMatchObject({ owner: 'forge', command: expect.stringContaining('forge plugin install desktop_operator') });
+    expect(evaluation.actions.find((entry) => entry.id === 'capability.computer.observe.v1.install')).toMatchObject({ owner: 'forge', command: expect.stringContaining('forge computer setup') });
     expect(evaluation.blockers.find((entry) => entry.stepId === 'capability.knowledge.telepathy.v9')).toMatchObject({ kind: 'unsupported', actionIds: [] });
   });
 

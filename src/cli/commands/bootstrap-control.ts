@@ -297,7 +297,9 @@ export function observeSetupBootstrap(options: SetupBootstrapOptions = {}): Boot
       kind: resolution.status === 'installable' ? 'install' : 'repair',
       owner: 'forge',
       summary: `${resolution.status === 'installable' ? 'Install' : 'Repair'} ${resolution.providerName ?? resolution.providerId} for ${resolution.capabilityId}.`,
-      command: `forge plugin install ${resolution.providerId} --controller-home ${JSON.stringify(controllerHome)}`,
+      command: resolution.providerId === 'computer' || resolution.providerId === 'desktop_operator'
+        ? `forge computer setup --controller-home ${JSON.stringify(controllerHome)}`
+        : `forge plugin install ${resolution.providerId} --controller-home ${JSON.stringify(controllerHome)}`,
       verification: 'forge setup next',
     };
     const blocker = blockerFor(stepId, `BOOTSTRAP_CAPABILITY_${safeCapabilityId.toUpperCase().replaceAll('.', '_').replaceAll('-', '_')}_${resolution.status.toUpperCase()}`, action, resolution.summary);

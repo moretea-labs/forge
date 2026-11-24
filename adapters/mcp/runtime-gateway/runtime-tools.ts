@@ -7,7 +7,6 @@ import { callRecoveryAdapter } from './recovery-adapter';
 import { callArtifactAdapter } from './artifact-adapter';
 import { callFilesystemAdapter } from './filesystem-adapter';
 import { callModelAdapter } from './model-adapter';
-import { callProtectedComputerAdapter } from './protected-computer-adapter';
 import { callRepositoryCompatibilityAdapter } from './repository-compat-adapter';
 import { callSchedulerAdapter } from './scheduler-adapter';
 import { callRuntimeObservationAdapter } from './runtime-observation-adapter';
@@ -37,8 +36,6 @@ async function callRuntimeToolUnchecked(
     if (statusInbox) return statusInbox;
     const context = await callContextAdapter(ctx, name, args);
     if (context) return context;
-    const protectedComputer = await callProtectedComputerAdapter(ctx, name, args);
-    if (protectedComputer) return protectedComputer;
     const coreCapability = await callCoreCapabilityAdapter(ctx, name, args);
     if (coreCapability) return coreCapability;
     const plugin = await callPluginAdapter(ctx, name, args);

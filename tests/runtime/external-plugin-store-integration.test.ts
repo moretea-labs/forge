@@ -1511,13 +1511,22 @@ describe('external plugin store integration', () => {
     expect(assistantPluginScope('desktop_operator', fx.controllerHome)).toBe('controller');
   });
 
-  test('keeps provider-only registrations exactly addressable but out of the normal product list', () => {
+  test('keeps provider-only registrations exactly addressable but out of the normal product list', async () => {
     const fx = fixture(true, 'provider');
     const manifests = listControllerPluginManifests(fx.controllerHome, { forceRefresh: true });
     expect(manifests.some((manifest) => manifest.pluginId === 'desktop_operator')).toBe(false);
     expect(manifests.some((manifest) => manifest.pluginId === 'computer')).toBe(true);
     expect(assistantPluginScope('desktop_operator', fx.controllerHome)).toBe('controller');
     expect(getControllerPluginManifest(fx.controllerHome, 'desktop_operator').pluginId).toBe('desktop_operator');
+    await expect(
+      submitControllerPluginAction(fx.controllerHome, {
+        pluginId: 'desktop_operator',
+        actionId: 'desktop_status',
+        requestId: 'provider-not-public',
+        args: {},
+        origin: { surface: 'mcp', actor: 'test' },
+      }),
+    ).rejects.toThrow('PLUGIN_PROVIDER_NOT_PUBLIC');
   });
 
   test('get uses the same external adapter registration rather than a second manifest authority', () => {

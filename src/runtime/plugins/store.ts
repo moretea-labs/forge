@@ -62,6 +62,19 @@ function resolvePluginAdapter(controllerHome: string, pluginId: string): Assista
   return PLUGIN_ADAPTERS.get(pluginId) ?? getExternalPluginAdapter(controllerHome, pluginId);
 }
 
+/** Provider registrations stay addressable for Computer and diagnostics. Public execution does not. */
+export function pluginProviderIsInternal(controllerHome: string, pluginId: string): boolean {
+  if (PLUGIN_ADAPTERS.has(pluginId)) return false;
+  return getExternalPluginAdapter(controllerHome, pluginId)?.exposure === 'internal';
+}
+
+function assertPublicPlugin(controllerHome: string, pluginId: string): void {
+  if (!pluginProviderIsInternal(controllerHome, pluginId)) return;
+  throw new Error(
+    `PLUGIN_PROVIDER_NOT_PUBLIC: ${pluginId} is an internal Computer provider. Use the computer plugin.`,
+  );
+}
+
 function listPluginAdapters(controllerHome: string): AssistantPluginAdapter[] {
   const firstParty = [...PLUGIN_ADAPTERS.values()].filter((adapter) => adapter.exposure !== 'internal');
   const external = listExternalPluginAdapters(controllerHome).filter(
@@ -1063,9 +1076,14 @@ function reusableCapabilityId(manifest: AssistantPluginManifest, action: Assista
     .map((capability) => capability.capabilityId)
     .filter(Boolean)
     .sort();
-  // Overlapping capability groups are ambiguous privilege boundaries. Fall back
-  // to action-local reuse instead of silently choosing a broader capability.
-  return matches.length === 1 ? matches[0]! : `action:${action.actionId}`;
+  if (matches.length === 1) return matches[0]!;
+  // One Computer capability covers every action in that capability. A provider
+  // group that lists the same action is not a second permission.
+  const computerCapabilities = matches.filter((capabilityId) => capabilityId.startsWith('computer.'));
+  if (computerCapabilities.length === 1) return computerCapabilities[0]!;
+  // Remaining overlaps are ambiguous privilege boundaries. Fall back to
+  // action-local reuse instead of silently choosing a broader capability.
+  return `action:${action.actionId}`;
 }
 
 const INTERACTIVE_PLUGIN_AUTHORIZATION_SURFACES = new Set(['mcp', 'local-ui', 'chatgpt-action']);
@@ -1413,6 +1431,7 @@ async function executePluginDirectNonPersistentInScope(
 }> {
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
   if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${request.pluginId}`);
+  assertPublicPlugin(controllerHome, request.pluginId);
   if (PLUGIN_ADAPTERS.get(request.pluginId) !== adapter) {
     throw new Error(`PLUGIN_DIRECT_NON_PERSISTENT_FIRST_PARTY_REQUIRED: ${request.pluginId}/${request.actionId}`);
   }
@@ -1501,6 +1520,7 @@ async function executePluginReadDirectInScope(
   result: Record<string, unknown>;
   receipt: PluginActionReceipt;
 }> {
+  assertPublicPlugin(controllerHome, request.pluginId);
   const manifest =
     scope.kind === 'controller'
       ? getControllerPluginManifest(controllerHome, request.pluginId)
@@ -2165,6 +2185,7 @@ async function submitPluginAction(
 }> {
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
   if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${request.pluginId}`);
+  assertPublicPlugin(controllerHome, request.pluginId);
   const manifest =
     scope.kind === 'controller'
       ? getControllerPluginManifest(controllerHome, request.pluginId)

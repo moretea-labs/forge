@@ -80,6 +80,7 @@ const DESKTOP_TARGET_OPEN_ACTION = 'desktop_target_open';
 const DESKTOP_TARGET_CLOSE_ACTION = 'desktop_target_close';
 const DESKTOP_ELEMENT_OBSERVE_ACTION = 'desktop_element_observe';
 const DESKTOP_ELEMENT_ACTION_ACTION = 'desktop_element_action';
+const elementObservationEpochs = new Map<string, { providerSessionId: string; snapshotRevision: number }>();
 export const COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION = 'console_unlock_prepare';
 export const COMPUTER_CONSOLE_UNLOCK_ACTION = 'console_unlock';
 export const COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION = 'console_unlock_enroll';
@@ -861,24 +862,16 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
         type: 'object',
         properties: {
           target_id: { type: 'string', description: 'Forge-owned durable Computer target id.' },
-          target: {
-            type: 'object',
-            properties: {
-              interactionId: { type: 'string' },
-              pid: { type: 'integer' },
-              bundleIdentifier: { type: 'string' },
-              appName: { type: 'string' },
-              windowRef: { type: 'string' },
-              snapshotRevision: { type: 'integer', minimum: 1 },
-            },
-            required: ['interactionId', 'pid', 'appName', 'snapshotRevision'],
-            additionalProperties: false,
+          observation_revision: {
+            type: 'integer',
+            minimum: 1,
+            description: 'snapshotRevision returned by desktop_element_observe for this target. Provider session identity stays inside Computer.',
           },
           ref: { type: 'string' },
           action: { type: 'string', enum: [...COMPUTER_ELEMENT_SEMANTIC_ACTIONS] },
           value: { anyOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }, { type: 'null' }] },
         },
-        required: ['target_id', 'target', 'ref', 'action'],
+        required: ['target_id', 'observation_revision', 'ref', 'action'],
         additionalProperties: false,
       },
     },
@@ -1398,7 +1391,7 @@ function desktopComputerRequest(
     if (!semanticAction || !args.target || typeof args.target !== 'object' || typeof args.ref !== 'string') {
       throw new AssistantPluginError(
         'PLUGIN_COMPUTER_ELEMENT_ACTION_INVALID',
-        'desktop_element_action requires target, ref, and one declared semantic action.',
+        'desktop_element_action requires a Computer-owned element target, ref, and one declared semantic action.',
         { retryable: false },
       );
     }
@@ -1749,6 +1742,37 @@ async function retireDesktopApplicationTargets(
       throw error;
     }
   }
+}
+
+function elementObservationKey(controllerHome: string, targetId: string): string {
+  return `${controllerHome}\0${targetId}`;
+}
+
+function rememberElementObservation(
+  controllerHome: string,
+  targetId: string,
+  providerSessionId: string,
+  snapshotRevision: number,
+): void {
+  elementObservationEpochs.set(elementObservationKey(controllerHome, targetId), {
+    providerSessionId,
+    snapshotRevision,
+  });
+}
+
+function projectElementObservation(result: Record<string, unknown>): Record<string, unknown> {
+  const projected: Record<string, unknown> = { ...result };
+  delete projected.interactionId;
+  delete projected.pid;
+  delete projected.bundleIdentifier;
+  delete projected.appName;
+  const root = projected.root;
+  if (root && typeof root === 'object' && !Array.isArray(root)) {
+    const nextRoot = { ...(root as Record<string, unknown>) };
+    delete nextRoot.target;
+    projected.root = nextRoot;
+  }
+  return projected;
 }
 
 function staleProviderBinding(targetId: string, providerBound: boolean): AssistantPluginError {
@@ -2114,35 +2138,42 @@ async function executeDesktopSemanticAction(
       });
     return computerTargetAuthority.withLease(input.controllerHome, targetId, async (lease) => {
       const current = lease.current();
-      const observedTarget =
-        input.args.target && typeof input.args.target === 'object'
-          ? (input.args.target as Record<string, unknown>)
-          : undefined;
-      const observedInteractionId =
-        typeof observedTarget?.interactionId === 'string' ? observedTarget.interactionId : '';
       const binding = current.providerBinding;
+      const observationRevision = input.args.observation_revision;
+      const epoch = elementObservationEpochs.get(elementObservationKey(input.controllerHome, targetId));
+      const appName = current.stableIdentity.appName ?? current.stableIdentity.bundleId;
       if (
         !binding ||
         binding.providerId !== DESKTOP_PROVIDER_ID ||
-        !observedInteractionId ||
-        binding.providerSessionId !== observedInteractionId
+        typeof binding.processId !== 'number' ||
+        !appName ||
+        !epoch ||
+        epoch.providerSessionId !== binding.providerSessionId ||
+        typeof observationRevision !== 'number' ||
+        epoch.snapshotRevision !== observationRevision
       ) {
         throw new AssistantPluginError(
           'COMPUTER_ELEMENT_OBSERVATION_STALE',
-          'Observed element target no longer matches the current provider binding. Re-observe the Forge Computer target instead of replaying an old element ref after rebind.',
+          'Observed element epoch no longer matches the current Computer target. Re-observe the target instead of replaying an old element ref.',
           {
             retryable: true,
-            details: {
-              targetId,
-              providerBound: Boolean(binding),
-              observedInteractionId: observedInteractionId || undefined,
-            },
+            details: { targetId, providerBound: Boolean(binding) },
           },
         );
       }
-      const { target_id: _targetId, ...rest } = input.args;
+      const { target_id: _targetId, observation_revision: _revision, ...rest } = input.args;
+      const providerArgs = {
+        ...rest,
+        target: {
+          interactionId: binding.providerSessionId,
+          pid: binding.processId,
+          ...(current.stableIdentity.bundleId ? { bundleIdentifier: current.stableIdentity.bundleId } : {}),
+          appName,
+          snapshotRevision: observationRevision,
+        },
+      };
       try {
-        return await executeRetainedDesktopAction(input, rest, binding.providerSessionId);
+        return await executeRetainedDesktopAction(input, providerArgs, binding.providerSessionId);
       } catch (error) {
         if (isMissingProviderSessionFailure(error)) throw staleProviderBinding(targetId, true);
         throw error;
@@ -2162,7 +2193,17 @@ async function executeDesktopSemanticAction(
     if (!binding || binding.providerId !== DESKTOP_PROVIDER_ID) throw staleProviderBinding(targetId, Boolean(binding));
     const { target_id: _targetId, ...rest } = input.args;
     try {
-      return await executeRetainedDesktopAction(input, rest, binding.providerSessionId);
+      const result = await executeRetainedDesktopAction(input, rest, binding.providerSessionId);
+      if (input.actionId === DESKTOP_ELEMENT_OBSERVE_ACTION && typeof result.snapshotRevision === 'number') {
+        rememberElementObservation(
+          input.controllerHome,
+          targetId,
+          binding.providerSessionId,
+          result.snapshotRevision,
+        );
+        return projectElementObservation(result);
+      }
+      return result;
     } catch (error) {
       if (isMissingProviderSessionFailure(error)) throw staleProviderBinding(targetId, true);
       throw error;

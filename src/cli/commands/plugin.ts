@@ -12,7 +12,7 @@ import { getControllerPluginManifest, syncControllerPluginRegistry } from '../..
 import { assertExternalPluginRepositoryTrusted, assertFirstPartyPluginRepositoryTrusted, readControllerPluginTrustPolicy, trustExternalPluginRepository, untrustExternalPluginRepository } from '../../runtime/plugins/catalog-trust';
 import { loadRuntimeReleaseManifest } from '../../runtime/root/release-manifest';
 
-export interface RegistryEntry { id:string; name:string; version:string; description:string; repository:string; ref:string; installer:string; providerVersion?:string; protocolVersion?:string; platforms:NodeJS.Platform[]; semanticCapabilities?:string[]; }
+export interface RegistryEntry { id:string; name:string; version:string; description:string; repository:string; ref:string; installer:string; providerVersion?:string; protocolVersion?:string; platforms:NodeJS.Platform[]; semanticCapabilities?:string[]; distribution?:'product'|'provider'; }
 interface Registry { schemaVersion:1; plugins:RegistryEntry[]; }
 interface CliOptions { json?:boolean; controllerHome?:string; refresh?:boolean; catalog?:string; }
 
@@ -47,6 +47,7 @@ function registryFromPath(path:string,trustRepository:(repository:string)=>strin
     if(plugin.providerVersion!==undefined&&!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(plugin.providerVersion))throw new Error(`PLUGIN_CATALOG_PROVIDER_VERSION_INVALID: ${plugin.id}`);
     if(plugin.protocolVersion!==undefined&&!/^\d+\.\d+$/.test(plugin.protocolVersion))throw new Error(`PLUGIN_CATALOG_PROTOCOL_VERSION_INVALID: ${plugin.id}`);
     if(plugin.semanticCapabilities!==undefined&&(!Array.isArray(plugin.semanticCapabilities)||plugin.semanticCapabilities.some(capability=>!/^[-a-z0-9_.]{3,128}$/.test(capability))))throw new Error(`PLUGIN_CATALOG_SEMANTIC_CAPABILITY_INVALID: ${plugin.id}`);
+    if(plugin.distribution!==undefined&&plugin.distribution!=='product'&&plugin.distribution!=='provider')throw new Error(`PLUGIN_CATALOG_DISTRIBUTION_INVALID: ${plugin.id}`);
     ids.add(plugin.id);
   }
   return value;
@@ -59,7 +60,7 @@ export function pluginCatalogCompatibility(entry:RegistryEntry,platform:NodeJS.P
   if(entry.providerVersion&&entry.providerVersion!==entry.version)return{compatible:false,reason:`catalog version ${entry.version} does not match pinned provider version ${entry.providerVersion}`};
   return{compatible:true};
 }
-export function officialPluginCatalogItems(platform:NodeJS.Platform=process.platform){return registry().plugins.map(entry=>({...entry,...pluginCatalogCompatibility(entry,platform)}));}
+export function officialPluginCatalogItems(platform:NodeJS.Platform=process.platform){return registry().plugins.filter(entry=>entry.distribution!=='provider').map(entry=>({...entry,...pluginCatalogCompatibility(entry,platform)}));}
 export function officialPluginCatalogEntry(pluginId:string):RegistryEntry|undefined{return registry().plugins.find(entry=>entry.id===pluginId);}
 export function trustedExternalPluginCatalogEntry(pluginId:string,catalogPath:string,controllerHome:string):RegistryEntry|undefined{return trustedExternalRegistry(catalogPath,controllerHome).plugins.find(entry=>entry.id===pluginId);}
 export function officialPluginLifecycleLockKey(pluginId:string):ControllerLockKey{return{scope:'global',resource:`external-plugin:${pluginId}`};}
@@ -129,9 +130,10 @@ function install(entry:RegistryEntry,controllerHome:string):Record<string,unknow
     return{pluginId:entry.id,version:entry.version,packageRoot:finalRoot,registrationRevision:installed.revision,enabled:plugin.enabled,health:plugin.health,nextSteps:installerNextSteps(result)};
   }catch(error){rmSync(stage,{recursive:true,force:true});if(backed&&existsSync(finalRoot))rmSync(finalRoot,{recursive:true,force:true});if(backed&&existsSync(backup))renameSync(backup,finalRoot);throw error;}
 }
-export function installOfficialPlugin(pluginId:string,controllerHome:string):Record<string,unknown>{
+export function installOfficialPlugin(pluginId:string,controllerHome:string,options:{allowProvider?:boolean}={}):Record<string,unknown>{
   const entry=officialPluginCatalogEntry(pluginId);
   if(!entry)throw new Error(`PLUGIN_NOT_IN_OFFICIAL_CATALOG: ${pluginId}`);
+  if(entry.distribution==='provider'&&options.allowProvider!==true)throw new Error(`PLUGIN_PROVIDER_NOT_PUBLIC: ${pluginId} is an internal Computer provider. Install it with forge computer setup.`);
   return withOfficialPluginLifecycleLock(controllerHome,pluginId,()=>install(entry,controllerHome));
 }
 export function installTrustedExternalPlugin(pluginId:string,catalogPath:string,controllerHome:string):Record<string,unknown>{
@@ -143,7 +145,7 @@ export function installTrustedExternalPlugin(pluginId:string,catalogPath:string,
 export function buildPluginCommand():Command{
   const root=new Command('plugin').description('Discover and install trusted Forge plugins');
   root.command('catalog').description('List official plugins').option('--json','Output JSON').action((o:CliOptions)=>{const items=officialPluginCatalogItems();if(o.json)console.log(JSON.stringify({schemaVersion:1,platform:process.platform,plugins:items},null,2));else items.forEach(x=>console.log(`${x.id}\t${x.version}\t${x.compatible?'compatible':`incompatible (${x.reason})`}\t${x.name}`));});
-  root.command('list').description('List installed external plugins').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').option('--refresh','Probe controller-scoped providers').action((o:CliOptions)=>{const home=resolveControllerHome(o.controllerHome);if(o.refresh)syncControllerPluginRegistry(home);const items=listExternalPluginRegistrations(home).map(r=>externalPluginListItem(home,r));if(o.json)console.log(JSON.stringify({schemaVersion:1,plugins:items},null,2));else if(!items.length)console.log('No external Forge plugins installed.');else items.forEach(x=>console.log(`${x.pluginId}\t${x.version}\t${x.enabled?'enabled':'disabled'}\t${'healthScope' in x?'repository-context-required':((x.health as {state?:string})?.state??'unknown')}`));});
+  root.command('list').description('List installed external plugins').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').option('--refresh','Probe controller-scoped providers').action((o:CliOptions)=>{const home=resolveControllerHome(o.controllerHome);if(o.refresh)syncControllerPluginRegistry(home);const items=listExternalPluginRegistrations(home).filter(r=>r.exposure!=='provider').map(r=>externalPluginListItem(home,r));if(o.json)console.log(JSON.stringify({schemaVersion:1,plugins:items},null,2));else if(!items.length)console.log('No external Forge plugins installed.');else items.forEach(x=>console.log(`${x.pluginId}\t${x.version}\t${x.enabled?'enabled':'disabled'}\t${'healthScope' in x?'repository-context-required':((x.health as {state?:string})?.state??'unknown')}`));});
   const trust=root.command('trust').description('Manage exact third-party plugin repository trust in Controller Home');
   trust.command('list').option('--json','Output JSON').option('--controller-home <path>','Override Controller Home').action((o:CliOptions)=>{const policy=readControllerPluginTrustPolicy(resolveControllerHome(o.controllerHome));if(o.json)console.log(JSON.stringify(policy,null,2));else policy.trustedRepositories.forEach(repository=>console.log(repository));});
   trust.command('add <repository-url>').option('--controller-home <path>','Override Controller Home').action((repository:string,o:CliOptions)=>{const policy=trustExternalPluginRepository(resolveControllerHome(o.controllerHome),repository);console.log(`Trusted exact plugin repository: ${policy.trustedRepositories.find(entry=>entry===new URL(repository).toString())??repository}`);});

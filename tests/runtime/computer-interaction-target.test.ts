@@ -21,10 +21,10 @@ import {
 import { isDirectNonPersistentPluginAction, isDirectPluginReadAction } from '../../src/runtime/plugins/store';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import {
-  callProtectedComputerAdapter,
   executeProtectedConsoleUnlockInvocation,
   executeProtectedConsoleUnlockPreparation,
 } from '../../adapters/mcp/runtime-gateway/protected-computer-adapter';
+import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import type { AssistantPluginActionExecutionInput } from '../../src/runtime/plugins/types';
 import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
@@ -1702,13 +1702,15 @@ describe('Computer durable InteractionTarget authority', () => {
     const ref = String(root.ref);
     expect(observed.protocolVersion).toBe(2);
     expect(observed.snapshotRevision).toBe(1);
-    expect(elementTarget.interactionId).toBe('provider_session_1');
+    expect(observed.interactionId).toBeUndefined();
+    expect(observed.pid).toBeUndefined();
+    expect(elementTarget).toBeUndefined();
 
     const acted = await computerPluginAdapter.executeAction(
       actionInput(
         fixture.controllerHome,
         'desktop_element_action',
-        { target_id: targetId, target: elementTarget, ref, action: 'invoke' },
+        { target_id: targetId, observation_revision: observed.snapshotRevision, ref, action: 'invoke' },
         'element-action-v2',
       ),
     );
@@ -1721,7 +1723,7 @@ describe('Computer durable InteractionTarget authority', () => {
         actionInput(
           fixture.controllerHome,
           'desktop_element_action',
-          { target_id: targetId, target: elementTarget, ref, action: 'invoke' },
+          { target_id: targetId, observation_revision: observed.snapshotRevision, ref, action: 'invoke' },
           'element-action-v2-stale-replay',
         ),
       ),
@@ -1746,7 +1748,12 @@ describe('Computer durable InteractionTarget authority', () => {
       actionInput(
         fixture.controllerHome,
         'desktop_element_action',
-        { target_id: targetId, target: refreshedRoot.target, ref: refreshedRoot.ref, action: 'click' },
+        {
+          target_id: targetId,
+          observation_revision: refreshed.snapshotRevision,
+          ref: refreshedRoot.ref,
+          action: 'click',
+        },
         'element-click-v2',
       ),
     );
@@ -1758,7 +1765,12 @@ describe('Computer durable InteractionTarget authority', () => {
         actionInput(
           fixture.controllerHome,
           'desktop_element_action',
-          { target_id: targetId, target: refreshedRoot.target, ref: refreshedRoot.ref, action: 'click' },
+          {
+            target_id: targetId,
+            observation_revision: refreshed.snapshotRevision,
+            ref: refreshedRoot.ref,
+            action: 'click',
+          },
           'element-click-v2-stale-replay',
         ),
       ),
@@ -1981,74 +1993,72 @@ describe('protected Computer console unlock composition', () => {
     disposeRuntimeComputerComposition();
   });
 
-  test('supports frozen client schema only as a non-secret prepare/opaque-handle carrier', async () => {
+  test('keeps console unlock on the computer plugin instead of dedicated MCP tools', async () => {
+    for (const name of [
+      'computer_console_unlock_prepare',
+      'computer_console_unlock',
+      'computer_console_unlock_enroll',
+      'computer_console_unlock_status',
+      'computer_console_unlock_recover',
+      'computer_console_unlock_revoke',
+    ]) {
+      expect(runtimeToolDefinitions.some((tool) => tool.name === name)).toBe(false);
+    }
     const fixture = await providerFixture();
-    const ctx = { controllerHome: fixture.controllerHome } as any;
-
-    const prepared = await callProtectedComputerAdapter(ctx, 'computer_console_unlock', {
-      credential: 'prepare_provider_local',
-      confirm_authorization: true,
-      timeout_ms: 5_000,
+    const prepared = await computerPluginAdapter.executeAction({
+      ...actionInput(fixture.controllerHome, 'console_unlock_prepare', {}, 'console-prepare-plugin'),
+      confirmAuthorization: true,
+      timeoutMs: 5_000,
     });
-    expect(prepared?.structuredContent).toMatchObject({
-      accepted: true,
-      action: 'prepare_unlock_console',
-      prepared: true,
-    });
-    const preparedContent = prepared?.structuredContent as Record<string, unknown> | undefined;
-    const handle = String(preparedContent?.credentialHandle ?? '');
+    expect(prepared).toMatchObject({ prepared: true });
+    const handle = String(prepared.credentialHandle ?? '');
     expect(handle).toMatch(/^[0-9a-f-]{36}$/i);
 
-    const unlocked = await callProtectedComputerAdapter(ctx, 'computer_console_unlock', {
-      credential: handle,
-      confirm_authorization: true,
-      timeout_ms: 5_000,
-    });
-    expect(unlocked?.structuredContent).toMatchObject({
-      accepted: true,
-      action: 'unlock_console',
-      unlocked: true,
-      verified: true,
-    });
+    await expect(
+      computerPluginAdapter.executeAction({
+        ...actionInput(fixture.controllerHome, 'console_unlock', { credential: 'secret' }, 'console-raw-credential'),
+        confirmAuthorization: true,
+        timeoutMs: 5_000,
+      }),
+    ).rejects.toThrow();
 
-    const rejected = await callProtectedComputerAdapter(ctx, 'computer_console_unlock', {
-      credential: 'not-an-opaque-handle',
-      confirm_authorization: true,
-      timeout_ms: 5_000,
+    const unlocked = await computerPluginAdapter.executeAction({
+      ...actionInput(
+        fixture.controllerHome,
+        'console_unlock',
+        { credential_handle: handle },
+        'console-unlock-plugin',
+      ),
+      confirmAuthorization: true,
+      timeoutMs: 5_000,
     });
-    expect(rejected?.structuredContent).toMatchObject({
-      accepted: false,
-      error: { code: 'COMPUTER_CONSOLE_UNLOCK_FROZEN_CLIENT_CARRIER_INVALID' },
-    });
+    expect(unlocked).toMatchObject({ unlocked: true, verified: true });
     disposeRuntimeComputerComposition();
   });
 
-  test('routes protected console lifecycle through the same explicit non-secret boundary', async () => {
+  test('routes protected console lifecycle through the computer plugin', async () => {
     const fixture = await providerFixture();
-    const ctx = { controllerHome: fixture.controllerHome } as any;
-
-    for (const [tool, action] of [
-      ['computer_console_unlock_enroll', 'console_unlock_enroll'],
-      ['computer_console_unlock_status', 'console_unlock_status'],
-      ['computer_console_unlock_recover', 'console_unlock_recover'],
-      ['computer_console_unlock_revoke', 'console_unlock_revoke'],
-    ] as const) {
-      const response = await callProtectedComputerAdapter(ctx, tool, {
-        confirm_authorization: true,
-        timeout_ms: 5_000,
+    for (const actionId of [
+      'console_unlock_enroll',
+      'console_unlock_status',
+      'console_unlock_recover',
+      'console_unlock_revoke',
+    ]) {
+      const response = await computerPluginAdapter.executeAction({
+        ...actionInput(fixture.controllerHome, actionId, {}, `console-${actionId}`),
+        confirmAuthorization: true,
+        timeoutMs: 5_000,
       });
-      expect(response?.structuredContent).toMatchObject({ accepted: true, action });
+      expect(response.available ?? response.enrolled ?? response.revoked).toBeDefined();
     }
 
-    const rejected = await callProtectedComputerAdapter(ctx, 'computer_console_unlock_status', {
-      confirm_authorization: false,
-      timeout_ms: 5_000,
-    });
-    expect(rejected?.structuredContent).toMatchObject({
-      accepted: false,
-      action: 'console_unlock_status',
-      error: { code: 'COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED' },
-    });
+    await expect(
+      computerPluginAdapter.executeAction({
+        ...actionInput(fixture.controllerHome, 'console_unlock_status', {}, 'console-status-unconfirmed'),
+        confirmAuthorization: false,
+        timeoutMs: 5_000,
+      }),
+    ).rejects.toThrow('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED');
     disposeRuntimeComputerComposition();
   });
 

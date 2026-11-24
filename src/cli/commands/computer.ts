@@ -244,7 +244,7 @@ export function runComputerSetup(options: { controllerHome?: string; platform?: 
   if (!compatibility.compatible) {
     throw new Error(`COMPUTER_PROVIDER_UNAVAILABLE_ON_PLATFORM: ${compatibility.reason}. Forge has no installable native Computer provider for this platform.`);
   }
-  const installed = installOfficialPlugin(COMPUTER_PROVIDER_PLUGIN_ID, controllerHome);
+  const installed = installOfficialPlugin(COMPUTER_PROVIDER_PLUGIN_ID, controllerHome, { allowProvider: true });
   return { installed, status: readComputerStatus({ controllerHome, platform: options.platform }) };
 }
 
