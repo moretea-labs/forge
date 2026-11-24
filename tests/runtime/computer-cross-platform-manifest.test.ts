@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { buildBrowserPluginManifest } from '../../src/runtime/plugins/browser-adapter';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { setComputerPlatformForTest } from '../../src/runtime/platform/computer-platform';
 
@@ -68,5 +69,29 @@ describe('Computer cross-platform manifest contract', () => {
       ready: false,
     });
     expect(mac.health.details?.desktop).toHaveProperty('supported', true);
+  });
+
+  test('WSL native Computer Browser reports missing provider, not missing packaged Playwright', () => {
+    if (process.platform !== 'linux') return;
+    const root = mkdtempSync(join(tmpdir(), 'forge-computer-linux-provider-'));
+    roots.push(root);
+    const release = join(root, 'release');
+    const playwright = join(release, 'package', 'node_modules', 'playwright');
+    mkdirSync(playwright, { recursive: true });
+    writeFileSync(join(release, 'manifest.json'), '{"schemaVersion":1}');
+    writeFileSync(join(release, 'package', 'package.json'), '{"name":"forge-release"}');
+    writeFileSync(join(playwright, 'package.json'), '{"name":"playwright","main":"index.js"}');
+    writeFileSync(join(playwright, 'index.js'), 'module.exports = {};');
+    const old = process.env.FORGE_RELEASE_PATH;
+    try {
+      process.env.FORGE_RELEASE_PATH = release;
+      const manifest = buildBrowserPluginManifest(1, undefined, root, undefined, true);
+      expect(manifest.health.details?.dependencyReady).toBe(true);
+      expect(manifest.health.details?.providerUnavailable).toBe(true);
+      expect(manifest.health.errors[0]).toContain('no authorized native, CDP or managed provider');
+    } finally {
+      if (old === undefined) delete process.env.FORGE_RELEASE_PATH;
+      else process.env.FORGE_RELEASE_PATH = old;
+    }
   });
 });
