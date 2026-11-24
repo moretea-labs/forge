@@ -46,7 +46,7 @@ describe('AgentMail external provider authorization', () => {
     expect(before.calls).toEqual(['list_account_identities']);
   });
 
-  test('read/watch/draft grants are bound to one exact mailbox identity', async () => {
+  test('read/watch/draft/modify grants are bound to one exact mailbox identity', async () => {
     const policy = resolveExternalProviderPolicy(registration())!;
     const ctx = context([{ id: A, email: 'one@example.com', provider: 'qq' }, { id: B, email: 'two@example.com', provider: 'apple' }]);
     const a = await policy.resolveAuthorizationContext!(registration(), input('watch_next_event', { account_id: A }), ctx.value);
@@ -57,11 +57,17 @@ describe('AgentMail external provider authorization', () => {
     const changed = context([{ id: A, email: 'owner@example.com', provider: 'qq' }]);
     const c = await policy.resolveAuthorizationContext!(registration(), input('read_message', { account_id: A }), changed.value);
     expect(c?.target.identityFingerprint).not.toBe(a?.target.identityFingerprint);
+    const archived = await policy.resolveAuthorizationContext!(
+      registration(), input('archive_message', { account_id: A, provider_message_id: 'Inbox/42' }), changed.value,
+    );
+    expect(archived?.target).toMatchObject({ kind: 'mail-account', id: A });
   });
 
   test('missing, malformed, and unavailable account IDs fail closed', async () => {
     const policy = resolveExternalProviderPolicy(registration())!;
     await expect(policy.resolveAuthorizationContext!(registration(), input('read_message'), context([]).value))
+      .rejects.toThrow('AGENTMAIL_ACCOUNT_SCOPE_REQUIRED');
+    await expect(policy.resolveAuthorizationContext!(registration(), input('archive_message'), context([]).value))
       .rejects.toThrow('AGENTMAIL_ACCOUNT_SCOPE_REQUIRED');
     await expect(policy.resolveAuthorizationContext!(registration(), input('read_message', { account_id: 'all' }), context([]).value))
       .rejects.toThrow('AGENTMAIL_ACCOUNT_SCOPE_REQUIRED');

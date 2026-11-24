@@ -5,7 +5,7 @@ import type { AssistantPluginActionExecutionInput, AssistantPluginAuthorizationC
 import type { ExternalProviderPolicyContext } from './external-provider-policy-context';
 
 const ACCOUNT_ACTIONS = new Set([
-  'recent_messages', 'search_messages', 'read_message', 'read_thread',
+  'recent_messages', 'search_messages', 'read_message', 'read_thread', 'archive_message',
   'watch_rules', 'observe_watches', 'watch_next_event', 'acknowledge_watch_event',
   'create_draft', 'reply_draft',
 ]);
