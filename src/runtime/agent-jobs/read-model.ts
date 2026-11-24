@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "fs";
 import { join, relative } from "path";
 
 export const AGENT_JOB_ROOT = ".ai/harness/jobs";
-export const AGENT_RUN_INDEX_ROOT = ".ai/harness/controller/run-indexes";
+const AGENT_RUN_INDEX_ROOT = ".ai/harness/controller/run-indexes";
 
 export interface AgentRunIndexEntry<
   Status extends string = string,
@@ -19,7 +19,7 @@ export interface AgentRunIndexEntry<
   integratedSessionId?: string;
 }
 
-export interface AgentRunIndex<
+interface AgentRunIndex<
   Status extends string = string,
   ExecutionMode extends string = string,
 > {

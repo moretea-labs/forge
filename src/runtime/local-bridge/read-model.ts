@@ -69,7 +69,7 @@ export function readLocalBridgeJob(repoRoot: string, jobId: string): LocalBridge
   if (!existsSync(path)) throw new Error(`local bridge job not found: ${jobId}`);
   return readJson<LocalBridgeJob>(path);
 }
-export interface LocalBridgeJobSnapshotResult {
+interface LocalBridgeJobSnapshotResult {
   status: "ok" | "not_found" | "rejected";
   jobId: string;
   job?: LocalBridgeJob;
@@ -119,7 +119,7 @@ export function getLocalBridgeJobEventsSnapshot(
 }
 
 
-export interface LocalBridgeJobOutputResult {
+interface LocalBridgeJobOutputResult {
   jobId: string;
   jobStatus?: LocalBridgeJob["status"];
   stream: "stdout" | "stderr";
