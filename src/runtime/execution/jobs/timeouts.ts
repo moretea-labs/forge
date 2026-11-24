@@ -1,33 +1,4 @@
-import type {
-  ExecutionJob,
-  ExecutionJobStatus,
-  ExecutionTimeoutPolicy,
-} from './types';
-
-export const MIN_EXECUTION_TIMEOUT_MS = 1_000;
-export const MAX_EXECUTION_TIMEOUT_MS = 24 * 60 * 60_000;
-export const DEFAULT_EXECUTION_TIMEOUT_MS = 15 * 60_000;
-export const DEFAULT_INTERACTIVE_WAIT_MS = 15_000;
-
-function bounded(value: number | undefined, fallback: number): number {
-  const candidate = typeof value === 'number' && Number.isFinite(value)
-    ? Math.trunc(value)
-    : fallback;
-  return Math.max(MIN_EXECUTION_TIMEOUT_MS, Math.min(candidate, MAX_EXECUTION_TIMEOUT_MS));
-}
-
-export function normalizeExecutionTimeoutPolicy(
-  input: Partial<ExecutionTimeoutPolicy> | undefined,
-  fallbackExecutionMs = DEFAULT_EXECUTION_TIMEOUT_MS,
-): ExecutionTimeoutPolicy {
-  const executionTimeoutMs = bounded(input?.executionTimeoutMs, bounded(fallbackExecutionMs, DEFAULT_EXECUTION_TIMEOUT_MS));
-  return {
-    admissionTimeoutMs: bounded(input?.admissionTimeoutMs, executionTimeoutMs),
-    queueTimeoutMs: bounded(input?.queueTimeoutMs, executionTimeoutMs),
-    executionTimeoutMs,
-    interactiveWaitMs: bounded(input?.interactiveWaitMs, DEFAULT_INTERACTIVE_WAIT_MS),
-  };
-}
+import type { ExecutionJob, ExecutionJobStatus } from './types';
 
 export function deadlineAfter(startedAt: string, timeoutMs: number): string {
   return new Date(Date.parse(startedAt) + timeoutMs).toISOString();

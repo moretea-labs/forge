@@ -2364,6 +2364,11 @@ requireText('src/runtime/execution/jobs/types.ts', 'queueTimeoutMs: number');
 requireText('src/runtime/execution/jobs/types.ts', 'executionTimeoutMs: number');
 requireText('src/runtime/execution/jobs/types.ts', 'interactiveWaitMs: number');
 requireText('src/runtime/execution/jobs/timeouts.ts', 'executionTimeoutDecision');
+forbid(
+  'src/runtime/execution/jobs/timeouts.ts',
+  /normalizeExecutionTimeoutPolicy|MIN_EXECUTION_TIMEOUT_MS|MAX_EXECUTION_TIMEOUT_MS|DEFAULT_EXECUTION_TIMEOUT_MS|DEFAULT_INTERACTIVE_WAIT_MS/,
+  'retired ExecutionJob creation timeout policy must stay physically absent',
+);
 requireText('src/runtime/control-plane/facade/operation-digest.ts', 'operationId');
 requireText('src/runtime/control-plane/facade/operation-digest.ts', 'resultRef');
 requireText('src/runtime/control-plane/facade/operation-digest.ts', 'nextActions');
