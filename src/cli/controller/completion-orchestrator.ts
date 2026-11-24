@@ -861,7 +861,6 @@ function buildDirectEditCompletionReceipt(input: {
   return {
     schemaVersion: 1,
     receiptId: directEditReceiptId(input.editSessionId, input.integrationEvidence.targetRevision),
-    source: 'direct_edit',
     editSessionId: input.editSessionId,
     targetBranch: input.integrationEvidence.targetBranch,
     targetRevision: input.integrationEvidence.targetRevision,

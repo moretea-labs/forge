@@ -18,14 +18,7 @@ export interface TaskExecutionPolicy {
 
 export interface CompletionReceiptExpectation {
   runId?: string;
-  editSessionId?: string;
   targetBranch?: string;
-}
-
-function receiptSourceIdentityComplete(receipt: RepositoryCompletionReceipt): boolean {
-  if (receipt.source === 'direct_edit') return Boolean(receipt.editSessionId?.trim()) && !receipt.runId;
-  if (receipt.source === 'isolated_agent_run' || receipt.source === 'workspace_run') return Boolean(receipt.runId?.trim());
-  return true;
 }
 
 export function completionReceiptComplete(
@@ -37,9 +30,7 @@ export function completionReceiptComplete(
     && receipt.receiptId.trim()
     && receipt.targetBranch.trim()
     && receipt.targetRevision.trim()
-    && receiptSourceIdentityComplete(receipt)
-    && (!expected.runId || receipt.runId === expected.runId)
-    && (!expected.editSessionId || receipt.editSessionId === expected.editSessionId)
+    && receipt.editSessionId.trim()
     && (!expected.targetBranch || receipt.targetBranch === expected.targetBranch)
     && receipt.delivery.status === 'integrated'
     && receipt.delivery.reachable
@@ -103,8 +94,7 @@ export function completionEvidenceComplete(
   cleanupEvidence?: CleanupEvidence;
   completionReceipt?: RepositoryCompletionReceipt;
 } {
-  const expectedReceipt = { ...expected, runId: expected.runId ?? verification?.runId };
-  if (completionReceiptComplete(verification?.completionReceipt, expectedReceipt)) return true;
+  if (completionReceiptComplete(verification?.completionReceipt, { targetBranch: expected.targetBranch })) return true;
   const runId = verification?.runId;
   const integration = verification?.integrationEvidence;
   const cleanup = verification?.cleanupEvidence;

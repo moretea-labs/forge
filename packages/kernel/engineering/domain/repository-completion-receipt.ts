@@ -30,9 +30,7 @@ export interface CompletionResourceBlocker {
 export interface RepositoryCompletionReceipt {
   schemaVersion: 1;
   receiptId: string;
-  source: 'direct_edit' | 'isolated_agent_run' | 'workspace_run' | 'remote_no_change_execution';
-  runId?: string;
-  editSessionId?: string;
+  editSessionId: string;
   targetBranch: string;
   targetRevision: string;
   sourceRevision?: string;

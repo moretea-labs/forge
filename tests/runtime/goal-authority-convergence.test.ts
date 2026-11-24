@@ -36,7 +36,7 @@ function completionReceipt(receiptKey: string, targetRevision: string) {
   return {
     schemaVersion: 1 as const,
     receiptId: `receipt-${receiptKey}`,
-    source: 'direct_edit' as const,
+    editSessionId: `EDIT-${receiptKey}`,
     targetBranch: 'main',
     targetRevision,
     changedPaths: ['src/example.ts'],

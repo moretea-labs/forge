@@ -303,7 +303,6 @@ function summarizeVerification(verification?: TaskVerification) {
     completionReceipt: verification.completionReceipt
       ? {
           receiptId: verification.completionReceipt.receiptId,
-          source: verification.completionReceipt.source,
           targetBranch: verification.completionReceipt.targetBranch,
           targetRevision: verification.completionReceipt.targetRevision,
           changedPathCount: verification.completionReceipt.changedPaths.length,
