@@ -345,14 +345,10 @@ function summarizeEffectiveTaskView(task: ReturnType<typeof projectIssueEffectiv
   };
 }
 
-export function getIssueEffectiveView(repoRoot: string, id: string) {
-  return projectIssueEffectiveView(repoRoot, getIssue(repoRoot, id));
-}
-
 export function getIssueReadView(repoRoot: string, id: string, detailLevel: 'summary' | 'full' = 'summary') {
   const frozen = frozenLegacyIssueProjection(repoRoot, id, detailLevel);
   if (frozen) return frozen;
-  const full = getIssueEffectiveView(repoRoot, id);
+  const full = projectIssueEffectiveView(repoRoot, getIssue(repoRoot, id));
   if (detailLevel === 'full') return { ...full, detailLevel };
   return {
     ...full,
@@ -360,11 +356,6 @@ export function getIssueReadView(repoRoot: string, id: string, detailLevel: 'sum
     tasks: full.tasks.map(summarizeEffectiveTaskView),
     next: 'Call get_issue with detail_level=full only when full notes, verification evidence, or run history is required.',
   };
-}
-
-export function listIssueEffectiveViews(repoRoot: string) {
-  if (legacyIssueAuthorityRetired(repoRoot)) return listFrozenLegacyIssueProjections(repoRoot);
-  return listIssues(repoRoot).map((issue) => projectIssueEffectiveView(repoRoot, issue));
 }
 
 function assertIssueExecutionActive(issue: ControllerIssue, operation: string): void {

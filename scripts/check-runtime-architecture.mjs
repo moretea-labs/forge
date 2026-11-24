@@ -2197,6 +2197,11 @@ requireMissing('src/runtime/execution/jobs/legacy-adapter.ts');
 requireMissing('src/cli/controller/migrated-issue-decision.ts');
 forbid(
   'src/cli/controller/issue-store.ts',
+  /export function (?:getIssueEffectiveView|listIssueEffectiveViews)/,
+  'zero-consumer legacy Issue projection wrappers must stay physically absent',
+);
+forbid(
+  'src/cli/controller/issue-store.ts',
   /export function (?:setTaskDependencies|archiveIssue|restoreIssue)/,
   'zero-consumer legacy Issue mutation APIs must stay physically absent',
 );
