@@ -68,7 +68,6 @@ import {
   type ControllerContextImpactDomain,
 } from '../../../src/runtime/context/context-pack-contract';
 import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
-import { buildControllerOperationalPlan } from '../../../src/cli/controller/operational-plan';
 import {
   listControllerChecks,
   readLatestControllerCheckEvidence,
@@ -270,7 +269,6 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
   const git = contextRecord(payload.git);
   const repository = contextRecord(payload.repository);
   const ledger = contextRecord(payload.taskLedger);
-  const operationalPlan = contextRecord(payload.operationalPlan);
   const ready = contextRecord(payload.controllerReady);
   const runtimeProjection = contextRecord(payload.runtimeProjection);
   const runtimeProjectionState = contextRecord(payload.runtimeProjectionState);
@@ -396,21 +394,6 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
         strategy: contextRecord(ledger.contextContract).strategy,
         rawCodeRequiredForImplementation: true,
       },
-    },
-    operationalPlan: {
-      schemaVersion: operationalPlan.schemaVersion,
-      source: operationalPlan.source,
-      generatedAt: operationalPlan.generatedAt,
-      status: operationalPlan.status,
-      completedCapabilities: (Array.isArray(operationalPlan.completedCapabilities)
-        ? operationalPlan.completedCapabilities
-        : []
-      ).slice(0, 5),
-      remainingDecisionPoints: (Array.isArray(operationalPlan.remainingDecisionPoints)
-        ? operationalPlan.remainingDecisionPoints
-        : []
-      ).slice(0, 5),
-      validationStrategy: operationalPlan.validationStrategy,
     },
     // Required keys for cache-completeness and legacy readers (deprecated).
     runtimeStorage: payload.runtimeStorage,
@@ -964,9 +947,6 @@ export async function callRuntimeObservationAdapter(
           const gitStartedAt = performance.now();
           const liveGit = gitSnapshot(repository.canonicalRoot);
           markPhase('build.git', gitStartedAt);
-          const operationalPlanStartedAt = performance.now();
-          const operationalPlan = buildControllerOperationalPlan(repository.canonicalRoot, taskLedger, liveGit);
-          markPhase('build.operational_plan', operationalPlanStartedAt);
           const currentIssueRecord = board?.currentIssueId
             ? board.issues.find((issue) => issue.id === board.currentIssueId)
             : undefined;
@@ -1072,7 +1052,6 @@ export async function callRuntimeObservationAdapter(
             currentIssue,
             taskLedger,
             taskLedgerStatus: taskLedger.status,
-            operationalPlan,
             readyTasks: (board?.readyTasks ?? taskLedger.readyTasks).slice(0, 20),
             activeRuns,
             activeJobCount: activeLocalJobs,

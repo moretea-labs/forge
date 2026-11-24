@@ -2853,11 +2853,6 @@ forbid(
   'TaskLedger projection schema must be owned by Runtime projections, not the CLI builder',
 );
 forbid(
-  'src/cli/controller/operational-plan.ts',
-  /Current Work/,
-  'current controller UI projection must expose Current Run, not Current Work',
-);
-forbid(
   'src/runtime/evidence/result-store.ts',
   /writeControllerResult\([\s\S]{0,500}\bworkId\??:|readControllerResult\([\s\S]{0,500}\bworkId\??:|searchControllerResult\([\s\S]{0,500}\bworkId\??:/,
   'current Result Store API must remain session/principal scoped, not Work-scoped',
