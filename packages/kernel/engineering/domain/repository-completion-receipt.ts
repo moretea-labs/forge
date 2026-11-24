@@ -1,13 +1,3 @@
-export type CompletionReceiptSource =
-  | 'direct_edit'
-  | 'isolated_agent_run'
-  | 'workspace_run'
-  | 'remote_no_change_execution';
-
-export type CompletionReceiptDeliveryKind = 'commit' | 'no_change' | 'remote' | 'superseded';
-export type CompletionReceiptDeliveryStatus = 'integrated' | 'blocked';
-export type CompletionReceiptCleanupStatus = 'complete' | 'maintenance_warning' | 'blocked';
-
 export interface CompletionMaintenanceWarning {
   code:
     | 'worktree_cleanup_failed'
@@ -40,7 +30,7 @@ export interface CompletionResourceBlocker {
 export interface RepositoryCompletionReceipt {
   schemaVersion: 1;
   receiptId: string;
-  source: CompletionReceiptSource;
+  source: 'direct_edit' | 'isolated_agent_run' | 'workspace_run' | 'remote_no_change_execution';
   issueId: string;
   taskId: string;
   runId?: string;
@@ -51,14 +41,14 @@ export interface RepositoryCompletionReceipt {
   baseRevision?: string;
   changedPaths: string[];
   delivery: {
-    kind: CompletionReceiptDeliveryKind;
-    status: CompletionReceiptDeliveryStatus;
+    kind: 'commit' | 'no_change' | 'remote' | 'superseded';
+    status: 'integrated' | 'blocked';
     strategy: 'edit_session_commit' | 'already_integrated' | 'no_change' | 'remote';
     reachable: boolean;
     recordedAt: string;
   };
   cleanup: {
-    status: CompletionReceiptCleanupStatus;
+    status: 'complete' | 'maintenance_warning' | 'blocked';
     warnings: CompletionMaintenanceWarning[];
     blockers: CompletionResourceBlocker[];
     recordedAt: string;

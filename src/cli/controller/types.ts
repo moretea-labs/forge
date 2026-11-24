@@ -10,10 +10,6 @@ export type { TaskRisk };
 export type {
   CompletionMaintenanceWarning,
   RepositoryCompletionReceipt,
-  CompletionReceiptCleanupStatus,
-  CompletionReceiptDeliveryKind,
-  CompletionReceiptDeliveryStatus,
-  CompletionReceiptSource,
   CompletionResourceBlocker,
 } from '../../../packages/kernel/engineering/api/index';
 
