@@ -29,12 +29,13 @@ Main pane header (32pt): conversation title | status | inspector toggle
 +------+--------------+------------------------------------------+
 ~~~
 
-Default visible columns: icon rail + list + main. The 288pt left glass (52 + 236) and main glass share an 8pt transparent gap. No outer native split divider. Closed inspector consumes zero width; opened inspector splits the main workspace when at least 840pt is available after the 16pt outer inset, otherwise replaces the conversation presentation without unmounting it. Preserve draft, attachments, scroll, selected tab and running tasks. The transcript starts at 8pt top inset and 24pt horizontal inset; empty state uses only its intrinsic height plus 20pt top spacing.
+Default visible columns: icon rail + list + main. The left glass is responsive: 228pt compact minimum (52 + 176), grows with window width, and caps at the existing 288pt desktop ideal (52 + 236). The left and main glass share an 8pt transparent gap. No outer native split divider. Closed inspector consumes zero width; opened inspector splits the main workspace when at least 840pt is available after the 16pt outer inset, otherwise replaces the conversation presentation without unmounting it. Preserve draft, attachments, scroll, selected tab and running tasks. The transcript starts at 8pt top inset and 24pt horizontal inset; empty state uses only its intrinsic height plus 20pt top spacing.
 
 ## 2. Toolbar ownership
 
 - **No titlebar content band.** `.toolbarBackground(.hidden)` — traffic lights sit on the same surface as content. Do not host breadcrumb/status in a filled toolbar strip.
 - **Main pane header:** `agent.inspector.toggle` is the sole Agent tool opener, pinned to the trailing edge. The same compact header displays the conversation title and honest workspace status; no centered native toolbar items.
+- **Transcript and composer geometry:** both use one centered reading-column rule (760pt cap, 20pt horizontal gutter). Their left/right edges stay aligned at compact and desktop widths.
 - **Inspector:** tabs 改动 / 附件 / 规划 / 知识 are available only when opened. Maximize and close live in its header. Unavailable tabs remain disabled; reopening restores the last available tab or falls back to 附件. Browser remains deferred.
 - **List header (会话):** New Chat, Search, Inbox — New Chat uses `sidebar.thread.new`; icons share `ForgeClientDesign.Icon`.
 - **Composer:** provider/model/attachments/voice/send; chrome icons share the same 13/28 optical size; focus ring only while focused.
@@ -68,7 +69,7 @@ NO decorative card/capsule/softFill wrapping every toolbar, rail, tab, commit fo
 1. Cold start shows Agent with right pane closed.
 2. Icon rail switches 会话 / 项目 / 看板 without losing draft or return context.
 3. The Agent header exposes a single trailing inspector opener (`agent.inspector.toggle`); no permanent right rail or hidden panel tabs in the closed state. List header exposes New Chat (`sidebar.thread.new`).
-4. Open inspector, switch 改动/附件/规划/知识, close/reopen the same available tab, resize wide → compact → wide, maximize/restore/close without losing chat state. Verify header context and reduced top whitespace in both empty and populated conversations.
+4. Open inspector, switch 改动/附件/规划/知识, close/reopen the same available tab, resize wide → compact → wide, maximize/restore/close without losing chat state. Verify header context, responsive sidebar width (228pt @ 860, 265pt @ 1260, 288pt @ 1800), aligned transcript/composer edges, and reduced top whitespace in both empty and populated conversations.
 5. `swift test` / `swift build`; GUI/AX at 860 / 1100 / 1260 / 1440 / 1800+ when authorized. The app remains Dark Glass under either macOS Light or Dark system appearance; system appearance is never changed. At 860 and 1260 the outer left/main glass panels must remain divider-free and readable; a high-contrast/purple backdrop must visibly sample through the shell rather than reveal an opaque gray canvas.
 
 Do not replace the installed App or activate Runtime without separate authorization.

@@ -165,8 +165,7 @@ struct AgentPane: View {
             inspectorToggle
         }
         .padding(.horizontal,16)
-        .padding(.top,4)
-        .frame(height:32)
+        .frame(height:ForgeClientDesign.Shell.workspaceHeaderHeight)
         .accessibilityElement(children:.contain)
         .accessibilityIdentifier("agent.conversation.header")
     }
@@ -702,9 +701,8 @@ struct AgentPane: View {
                             .id("pending")
                         }
                     }
-                    .frame(maxWidth:ForgeClientDesign.Shell.readingColumn,alignment:.leading)
-                    .frame(maxWidth:.infinity)
-                    .padding(.horizontal,24).padding(.top,8).padding(.bottom,18)
+                    .forgeConversationColumn()
+                    .padding(.top,4).padding(.bottom,14)
                     .background {
                         GeometryReader { content in
                             Color.clear.preference(
@@ -1044,9 +1042,8 @@ struct AgentPane: View {
             } isTargeted: { targeted in
                 isComposerDropTarget = targeted && !model.busy && !model.zenRefinementActive
             }
-                    .frame(maxWidth:ForgeClientDesign.Shell.readingColumn + 16)
-                    .padding(.horizontal,14).padding(.bottom,12)
-                    .frame(maxWidth:.infinity)
+                    .forgeConversationColumn()
+                    .padding(.bottom,10)
                 }
                 // Compact and maximized work surfaces replace the *presentation*,
                 // not the mounted Agent transcript or its input state.

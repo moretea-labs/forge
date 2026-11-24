@@ -40,9 +40,10 @@ struct ForgeWorkspaceView: View {
     @SceneStorage("forge.shell.v5.rail") private var primaryRailRaw = "agent"
 
     var body: some View {
+        GeometryReader { geometry in
         HStack(spacing:8) {
             unifiedSidebar
-                .frame(width:ForgeClientDesign.Shell.sidebarIdeal)
+                .frame(width:ForgeClientDesign.Shell.sidebarWidth(windowWidth:geometry.size.width))
                 .padding(.leading,8)
                 .padding(.bottom,8)
                 .background(Color.clear)
@@ -136,6 +137,8 @@ struct ForgeWorkspaceView: View {
             .padding(.trailing,8)
             .padding(.bottom,8)
             .forgePanelGlass(cornerRadius:20)
+        }
+        .frame(maxWidth:.infinity,maxHeight:.infinity)
         }
         .forgeWindowMaterial()
         .toolbar {
@@ -300,7 +303,8 @@ struct ForgeWorkspaceView: View {
             Spacer(minLength:0)
             sidebarDestinationButton(.settings)
         }
-        .padding(.vertical,10)
+        .padding(.top,3)
+        .padding(.bottom,10)
         .frame(width:ForgeClientDesign.Shell.iconRailWidth)
         .frame(maxHeight:.infinity)
         .background(ForgePalette.railTint)
@@ -312,8 +316,7 @@ struct ForgeWorkspaceView: View {
         VStack(alignment:.leading,spacing:0) {
             projectSwitcher
                 .padding(.horizontal,10)
-                .padding(.top,8)
-                .padding(.bottom,4)
+                .frame(height:ForgeClientDesign.Shell.workspaceHeaderHeight)
 
             // Keep contextual panes mounted across destination changes so
             // conversation search, thread scroll, and Zen state survive.
@@ -1198,18 +1201,25 @@ struct ForgeWorkspaceView: View {
                     .font(.system(size:11.5,weight:.medium))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(ForgePalette.secondary.opacity(0.82))
-                Text(model.project?.label ?? "选择代码工作区")
-                    .font(.system(size:11.75,weight:.medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .layoutPriority(1)
-                if let branch = model.checkoutBranch, model.project != nil {
-                    Text(branch)
-                        .font(.system(size:10.25,weight:.regular,design:.monospaced))
-                        .foregroundStyle(ForgePalette.secondary.opacity(0.66))
+                ViewThatFits(in:.horizontal) {
+                    HStack(spacing:5) {
+                        Text(model.project?.label ?? "选择代码工作区")
+                            .font(.system(size:11.75,weight:.medium))
+                            .lineLimit(1)
+                        if let branch = model.checkoutBranch, model.project != nil {
+                            Text(branch)
+                                .font(.system(size:10.25,weight:.regular,design:.monospaced))
+                                .foregroundStyle(ForgePalette.secondary.opacity(0.66))
+                                .lineLimit(1)
+                        }
+                    }
+                    .fixedSize(horizontal:true,vertical:false)
+                    Text(model.project?.label ?? "选择代码工作区")
+                        .font(.system(size:11.75,weight:.medium))
                         .lineLimit(1)
-                        .layoutPriority(0)
+                        .truncationMode(.middle)
                 }
+                .layoutPriority(1)
                 Spacer(minLength:4)
                 Image(systemName:"chevron.down")
                     .font(.system(size:7.5,weight:.semibold))
@@ -1228,6 +1238,7 @@ struct ForgeWorkspaceView: View {
               : "\(model.project?.label ?? "") · \(projectSwitcherSummary)")
         .accessibilityLabel("代码工作区：\(model.project?.label ?? "未选择")")
         .accessibilityValue(projectSwitcherSummary)
+        .accessibilityIdentifier("forge.workspace.switcher")
         .popover(isPresented:$projectPickerShown,arrowEdge:.trailing) {
             projectPicker
         }
