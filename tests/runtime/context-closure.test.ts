@@ -1,6 +1,12 @@
 import { spawnSync } from 'child_process';
 import { chmodSync } from 'fs';
-import { freshGitIdentity, freshGitIdentityAsync } from '../../src/runtime/repositories/inspector';
+import {
+  cachedGitIdentityAsync,
+  clearGitIdentityCacheForTest,
+  freshGitIdentity,
+  freshGitIdentityAsync,
+  gitIdentityPerformanceSnapshot,
+} from '../../src/runtime/repositories/inspector';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -318,4 +324,38 @@ test('fresh source identity sampling yields while a real Git fsmonitor is slow',
   } finally {
     clearTimeout(timer);
   }
+});
+
+test('coalesces concurrent async Git identity samples and reuses the warm sample', async () => {
+  const root = temp('forge-context-coalesced-git-');
+  const git = (...args: string[]) => {
+    const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+    if (result.status !== 0) throw new Error(result.stderr);
+  };
+  git('init', '-b', 'main');
+  git('config', 'user.name', 'Context Test');
+  git('config', 'user.email', 'context@example.test');
+  writeFileSync(join(root, 'tracked.txt'), 'original');
+  git('add', 'tracked.txt');
+  git('commit', '-m', 'fixture');
+  const monitor = join(root, '.git', 'slow-monitor');
+  writeFileSync(monitor, '#!/bin/sh\nsleep 0.25\nprintf "token\\0"\n');
+  chmodSync(monitor, 0o755);
+  git('config', 'core.fsmonitor', monitor);
+  writeFileSync(join(root, 'tracked.txt'), 'modified');
+
+  clearGitIdentityCacheForTest();
+  const before = gitIdentityPerformanceSnapshot();
+  const [first, second, cached] = await Promise.all([
+    freshGitIdentityAsync(root),
+    freshGitIdentityAsync(root),
+    cachedGitIdentityAsync(root),
+  ]);
+  const after = gitIdentityPerformanceSnapshot();
+
+  expect(first.workingTreeFingerprint).toBe(second.workingTreeFingerprint);
+  expect(first.workingTreeFingerprint).toBe(cached.workingTreeFingerprint);
+  expect(after.samples - before.samples).toBe(1);
+  expect(after.subprocesses - before.subprocesses).toBe(1);
+  expect(after.cacheHits - before.cacheHits).toBeGreaterThanOrEqual(2);
 });

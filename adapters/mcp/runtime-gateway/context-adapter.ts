@@ -11,7 +11,11 @@ import { result } from './result-adapter';
 import { boundedRuntimeResult } from './bounded-result-runtime';
 import { selected } from './shared-adapter';
 import { resolveMcpPath } from '../../../src/runtime/safe-tooling/path-policy';
-import { freshGitIdentityAsync, type CachedGitIdentity } from '../../../src/runtime/repositories/inspector';
+import {
+  cachedGitIdentityAsync,
+  freshGitIdentityAsync,
+  type CachedGitIdentity,
+} from '../../../src/runtime/repositories/inspector';
 import { repositorySummary, resolveRepositorySelection } from '../../../src/runtime/repositories/registry';
 import { getExecutionJob, listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
 import {
@@ -375,9 +379,11 @@ async function rhContextSemanticNavigation(
           .digest('hex')
           .slice(0, 24))
       : undefined;
-  // Semantic providers are targeted/optional, so pay the stronger fresh identity
-  // sampling cost only when semantic evidence was explicitly requested.
-  const sourceBefore = requests.length > 0 ? await freshGitIdentityAsync(repoRoot) : undefined;
+  // Semantic providers are targeted/optional. Reuse a short-lived identity sample at
+  // query start, while the post-query fence below remains explicitly fresh. This
+  // preserves change-during-query detection without spawning two Git processes for
+  // repeated semantic reads inside the identity TTL.
+  const sourceBefore = requests.length > 0 ? await cachedGitIdentityAsync(repoRoot) : undefined;
   const sourceFingerprintBefore = fingerprintOf(sourceBefore);
   const indexedRequests: Array<{ index: number; request: SemanticNavigationRequest }> = [];
 

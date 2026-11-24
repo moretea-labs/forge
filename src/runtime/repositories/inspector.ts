@@ -54,6 +54,8 @@ export interface GitIdentityPerformanceSnapshot {
 const GIT_IDENTITY_SAMPLE_TTL_MS = Math.max(1_000, Number(process.env.FORGE_GIT_IDENTITY_SAMPLE_TTL_MS ?? 3_000));
 const GIT_IDENTITY_CACHE_MAX_ENTRIES = 128;
 const gitIdentityCache = new Map<string, CachedGitIdentity>();
+const gitIdentityInFlight = new Map<string, Promise<CachedGitIdentity>>();
+const gitIdentityInvalidationEpoch = new Map<string, number>();
 const gitIdentityPerformance: GitIdentityPerformanceSnapshot = {
   cacheHits: 0,
   samples: 0,
@@ -158,26 +160,43 @@ export function freshGitIdentity(repoRoot: string): CachedGitIdentity {
   return entry;
 }
 
-/** Fresh source fence for asynchronous Runtime callers. */
+/** Fresh source fence for asynchronous Runtime callers. Concurrent callers in the same
+ * repository epoch share one bounded Git sample instead of spawning duplicate processes. */
 export async function freshGitIdentityAsync(repoRoot: string): Promise<CachedGitIdentity> {
   const root = resolve(repoRoot);
-  gitIdentityPerformance.samples += 1;
-  gitIdentityPerformance.subprocesses += 1;
-  let sampled: Omit<CachedGitIdentity, 'sampledAt'>;
-  try {
-    const result = await runBoundedChild('git', ['status', '--porcelain=v2', '--branch', '--untracked-files=all'], {
-      cwd: root, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024,
-    });
-    sampled = result.status === 0 && !result.timedOut && !result.failureCode
-      ? gitIdentityFromStatus(root, result.stdout)
-      : { head: null, branch: null, dirty: false };
-  } catch {
-    sampled = { head: null, branch: null, dirty: false };
+  const existing = gitIdentityInFlight.get(root);
+  if (existing) {
+    gitIdentityPerformance.cacheHits += 1;
+    return existing;
   }
-  const entry: CachedGitIdentity = { ...sampled, sampledAt: Date.now() };
-  gitIdentityCache.set(root, entry);
-  pruneGitIdentityCache();
-  return entry;
+  const epoch = gitIdentityInvalidationEpoch.get(root) ?? 0;
+  const sample = (async (): Promise<CachedGitIdentity> => {
+    gitIdentityPerformance.samples += 1;
+    gitIdentityPerformance.subprocesses += 1;
+    let sampled: Omit<CachedGitIdentity, 'sampledAt'>;
+    try {
+      const result = await runBoundedChild('git', ['status', '--porcelain=v2', '--branch', '--untracked-files=all'], {
+        cwd: root, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024,
+      });
+      sampled = result.status === 0 && !result.timedOut && !result.failureCode
+        ? gitIdentityFromStatus(root, result.stdout)
+        : { head: null, branch: null, dirty: false };
+    } catch {
+      sampled = { head: null, branch: null, dirty: false };
+    }
+    const entry: CachedGitIdentity = { ...sampled, sampledAt: Date.now() };
+    if ((gitIdentityInvalidationEpoch.get(root) ?? 0) === epoch) {
+      gitIdentityCache.set(root, entry);
+      pruneGitIdentityCache();
+    }
+    return entry;
+  })();
+  gitIdentityInFlight.set(root, sample);
+  try {
+    return await sample;
+  } finally {
+    if (gitIdentityInFlight.get(root) === sample) gitIdentityInFlight.delete(root);
+  }
 }
 
 export function cachedGitIdentity(repoRoot: string): CachedGitIdentity {
@@ -191,6 +210,18 @@ export function cachedGitIdentity(repoRoot: string): CachedGitIdentity {
   return freshGitIdentity(root);
 }
 
+/** Async cache-aware identity read for event-loop-sensitive MCP hot paths. */
+export async function cachedGitIdentityAsync(repoRoot: string): Promise<CachedGitIdentity> {
+  const root = resolve(repoRoot);
+  const now = Date.now();
+  const existing = gitIdentityCache.get(root);
+  if (existing && now - existing.sampledAt < GIT_IDENTITY_SAMPLE_TTL_MS) {
+    gitIdentityPerformance.cacheHits += 1;
+    return existing;
+  }
+  return freshGitIdentityAsync(root);
+}
+
 /**
  * Successful Forge-owned mutations invalidate observations derived from the
  * previous source state. This is intentionally lazy: no graph rebuild, check,
@@ -198,6 +229,8 @@ export function cachedGitIdentity(repoRoot: string): CachedGitIdentity {
  */
 export function invalidateRepositoryReadCaches(repoRoot: string): void {
   const root = resolve(repoRoot);
+  gitIdentityInvalidationEpoch.set(root, (gitIdentityInvalidationEpoch.get(root) ?? 0) + 1);
+  gitIdentityInFlight.delete(root);
   gitIdentityCache.delete(root);
   gitSnapshotCache.delete(root);
   for (const key of [...searchFileInventoryCache.keys()]) {
@@ -215,6 +248,8 @@ export function invalidateRepositoryReadCaches(repoRoot: string): void {
 
 export function clearGitIdentityCacheForTest(): void {
   gitIdentityCache.clear();
+  gitIdentityInFlight.clear();
+  gitIdentityInvalidationEpoch.clear();
   gitIdentityPerformance.cacheHits = 0;
   gitIdentityPerformance.samples = 0;
   gitIdentityPerformance.subprocesses = 0;
