@@ -41,8 +41,8 @@ enum AgentWorkSurface: String, CaseIterable, Identifiable, Equatable {
     }
 }
 
-/// The sole default Agent tool opener is the inspector toggle.
-enum AgentConversationToolbarContract {
+/// The conversation header owns one persistent Inspector toggle for both open and close.
+enum AgentConversationHeaderContract {
     static let inspectorIdentifier = "agent.inspector.toggle"
     static let changesIdentifier = "agent.changes"
     static let filesIdentifier = "agent.files"
@@ -93,32 +93,25 @@ enum AgentCapabilityExtension: String, CaseIterable, Identifiable {
     }
 }
 
-/// Dock both panes only when each has usable reading space.
-/// Narrow windows use the same workspace as a full-width detail view.
+/// The normal Inspector is a trailing overlay; only an explicit maximize replaces chat.
 enum AgentWorkSurfaceLayout {
-    static let conversationMinimumWidth: CGFloat = 440
-    static let workSurfaceMinimumWidth: CGFloat = 440
-    static let dividerWidth: CGFloat = 10
+    static let conversationMinimumWidth: CGFloat = 420
+    static let workSurfaceMinimumWidth: CGFloat = 340
+    static let workSurfaceMaximumWidth: CGFloat = 420
 
     enum Presentation: Equatable {
         case conversationOnly
-        case docked
+        case overlay
         case replacement
     }
 
-    static func canDock(availableWidth: CGFloat) -> Bool {
-        availableWidth >= conversationMinimumWidth + dividerWidth + workSurfaceMinimumWidth
-    }
-
-    static func presentation(isVisible: Bool, isMaximized: Bool, availableWidth: CGFloat) -> Presentation {
+    static func presentation(isVisible: Bool, isMaximized: Bool) -> Presentation {
         guard isVisible else { return .conversationOnly }
-        return isMaximized || !canDock(availableWidth:availableWidth) ? .replacement : .docked
+        return isMaximized ? .replacement : .overlay
     }
 
-    static func dockedWidth(availableWidth: CGFloat, preferredWidth: CGFloat? = nil) -> CGFloat {
-        guard canDock(availableWidth:availableWidth) else { return max(0,availableWidth) }
-        return min(availableWidth - dividerWidth - conversationMinimumWidth,
-                   max(workSurfaceMinimumWidth, preferredWidth ?? (availableWidth - dividerWidth) * 0.5))
+    static func overlayWidth(availableWidth: CGFloat) -> CGFloat {
+        min(workSurfaceMaximumWidth, max(workSurfaceMinimumWidth, availableWidth * 0.38))
     }
 }
 
@@ -158,9 +151,6 @@ struct AgentPane: View {
     @StateObject private var voiceDictation = AgentVoiceDictation()
     @State private var voiceBaseDraft = ""
     @State private var restoreComposerFocusAfterWorkSurface = false
-    @State private var inspectorPreferredWidth: CGFloat?
-    @GestureState private var inspectorDragOffset: CGFloat = 0
-    @State private var inspectorDividerHovered = false
     @State private var fileSelectedRepoId = ""
     @State private var fileShowLocalResources = true
     @State private var fileShowRemoteImages = true
@@ -208,12 +198,10 @@ struct AgentPane: View {
             Spacer(minLength:8)
             agentWorkspaceStatusChip
                 .frame(width:ForgeClientDesign.Shell.workspaceStatusSlotWidth,alignment:.trailing)
-            if !workSurfaceVisible {
-                inspectorOpenButton
-            }
+            inspectorToggleButton
         }
         .padding(.horizontal,16)
-        .frame(height:ForgeClientDesign.Shell.workspaceHeaderHeight)
+        .frame(height:ForgeClientDesign.Shell.conversationHeaderHeight)
         .accessibilityElement(children:.contain)
         .accessibilityIdentifier("agent.conversation.header")
     }
@@ -258,23 +246,27 @@ struct AgentPane: View {
         )
     }
 
-    /// The conversation header only opens the work surface.
-    /// Once open, the inspector header owns the sole close action.
-    private var inspectorOpenButton: some View {
+    /// The same control remains in place while open, so users never have to hunt for close.
+    private var inspectorToggleButton: some View {
         Button {
-            openWorkSurface(AgentWorkSurface.preferredTab(
-                selected:selectedWorkSurface, available:availableWorkSurfaces))
+            if workSurfaceVisible {
+                closeWorkSurface()
+            } else {
+                openWorkSurface(AgentWorkSurface.preferredTab(
+                    selected:selectedWorkSurface, available:availableWorkSurfaces))
+            }
         } label: {
-            ForgeGlyph(.inspector)
-                .forgeChromeSurface(cornerRadius:8)
+            ForgeGlyph(.inspector,active:workSurfaceVisible)
+                .forgeChromeSurface(selected:workSurfaceVisible,cornerRadius:8)
         }
         .buttonStyle(.plain)
-        .help("显示工作面板")
-        .accessibilityLabel("显示工作面板")
-        .accessibilityIdentifier(AgentConversationToolbarContract.inspectorIdentifier)
+        .help(workSurfaceVisible ? "关闭 Inspector" : "打开 Inspector")
+        .accessibilityLabel(workSurfaceVisible ? "关闭 Inspector" : "打开 Inspector")
+        .accessibilityValue(workSurfaceVisible ? selectedWorkSurface.title : "已关闭")
+        .accessibilityIdentifier(AgentConversationHeaderContract.inspectorIdentifier)
     }
 
-    private func inspectorHeader(canDock: Bool) -> some View {
+    private var inspectorHeader: some View {
         HStack(spacing:3) {
             ForEach(AgentWorkSurface.allCases) { surface in
                 let selected = selectedWorkSurface == surface
@@ -294,28 +286,19 @@ struct AgentPane: View {
                 .accessibilityIdentifier("agent.\(surface.rawValue)")
             }
             Spacer(minLength:2)
-            if canDock {
-                Button {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
-                        workSurfaceMaximized.toggle()
-                    }
-                } label: {
-                    ForgeGlyph(workSurfaceMaximized ? .restore : .expand)
-                        .forgeChromeSurface(cornerRadius:8)
+            Button {
+                withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
+                    workSurfaceMaximized.toggle()
                 }
-                .buttonStyle(.plain)
-                .help(workSurfaceMaximized ? "恢复分栏" : "展开工作区")
-                .accessibilityLabel(workSurfaceMaximized ? "恢复分栏" : "展开工作区")
-                .accessibilityIdentifier("agent.work-surface.maximize")
-            }
-            Button { closeWorkSurface() } label: {
-                ForgeGlyph(.close)
+            } label: {
+                ForgeGlyph(workSurfaceMaximized ? .restore : .expand)
                     .forgeChromeSurface(cornerRadius:8)
             }
             .buttonStyle(.plain)
-            .help("关闭工作面板")
-            .accessibilityLabel("关闭工作面板")
-            .accessibilityIdentifier("agent.work-surface.close")
+            .help(workSurfaceMaximized ? "恢复浮动面板" : "最大化工作面板")
+            .accessibilityLabel(workSurfaceMaximized ? "恢复浮动面板" : "最大化工作面板")
+            .accessibilityIdentifier("agent.work-surface.maximize")
+
         }
         .padding(.horizontal,10)
         .padding(.vertical,3)
@@ -325,25 +308,13 @@ struct AgentPane: View {
 
     private func agentContent(availableWidth:CGFloat) -> some View {
         let splitWidth = max(0, availableWidth - 16)
-        let canDock = AgentWorkSurfaceLayout.canDock(availableWidth:splitWidth)
         let workSurfacePresentation = AgentWorkSurfaceLayout.presentation(
             isVisible:workSurfaceVisible,
-            isMaximized:workSurfaceMaximized,
-            availableWidth:splitWidth)
-        let baseInspectorWidth = AgentWorkSurfaceLayout.dockedWidth(
-            availableWidth:splitWidth, preferredWidth:inspectorPreferredWidth)
-        let inspectorWidth = AgentWorkSurfaceLayout.dockedWidth(
-            availableWidth:splitWidth, preferredWidth:baseInspectorWidth - inspectorDragOffset)
-        let docked = workSurfacePresentation == .docked
-        let conversationWidth = docked
-            ? splitWidth - inspectorWidth - AgentWorkSurfaceLayout.dividerWidth
-            : splitWidth
+            isMaximized:workSurfaceMaximized)
         let compactComposer = ForgeClientDesign.Shell.composerUsesTwoControlRows(
-            conversationWidth:conversationWidth)
-        let layout = workSurfacePresentation == .replacement
-            ? AnyLayout(ZStackLayout())
-            : AnyLayout(HStackLayout(spacing:0))
-        return layout {
+            conversationWidth:splitWidth)
+        return ZStack(alignment:.trailing) {
+            ZStack {
                     // Keep the composer and transcript mounted during review.
                     // The compact workspace header owns context and the single inspector toggle.
                     VStack(spacing:0) {
@@ -853,6 +824,17 @@ struct AgentPane: View {
                         reader.scrollTo("pending",anchor:.bottom)
                     }
                 }
+                // Restrict the Inspector to the transcript viewport; the Composer stays visible.
+                .overlay(alignment:.trailing) {
+                    if workSurfacePresentation == .overlay {
+                        workSurfaceContent()
+                            .frame(width:AgentWorkSurfaceLayout.overlayWidth(availableWidth:splitWidth))
+                            .frame(maxHeight:.infinity)
+                            .forgeFloatingGlass(cornerRadius:18)
+                            .transition(reduceMotion ? .identity : .move(edge:.trailing).combined(with:.opacity))
+                            .zIndex(2)
+                    }
+                }
             }
             VStack(alignment:.leading,spacing:0) {
                 ZStack(alignment:.topLeading) {
@@ -1027,12 +1009,14 @@ struct AgentPane: View {
                             guard !voiceDictation.blocksSend else { return }
                             Task { await model.send() }
                         } label: {
-                            ForgeGlyphShape(kind:.send)
-                                .stroke(style:StrokeStyle(lineWidth:1.5,lineCap:.round,lineJoin:.round))
+                            ForgeGlyph(
+                                .send,
+                                role:.inline,
+                                tint:sendDisabled
+                                    ? ForgePalette.secondary.opacity(0.50)
+                                    : Color(nsColor:.windowBackgroundColor)
+                            )
                                 .frame(width:15,height:15)
-                                .foregroundStyle(sendDisabled
-                                                 ? ForgePalette.secondary.opacity(0.50)
-                                                 : Color(nsColor:.windowBackgroundColor))
                                 .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
                                 .background(sendDisabled
                                             ? ForgePalette.softFill
@@ -1105,61 +1089,22 @@ struct AgentPane: View {
                     .forgeConversationColumn()
                     .padding(.bottom,10)
                 }
-            // Switching layouts preserves the mounted transcript and Composer.
-            .frame(width:conversationWidth)
-            .frame(maxHeight:.infinity)
-            .opacity(workSurfacePresentation == .replacement ? 0 : 1)
-            .allowsHitTesting(workSurfacePresentation != .replacement)
-            .accessibilityHidden(workSurfacePresentation == .replacement)
+                // Keep chat mounted and at its original width beneath the Inspector.
+                .opacity(workSurfacePresentation == .replacement ? 0 : 1)
+                .allowsHitTesting(workSurfacePresentation != .replacement)
+                .accessibilityHidden(workSurfacePresentation == .replacement)
 
-            if docked {
-                Rectangle()
-                    .fill(inspectorDividerHovered || inspectorDragOffset != 0
-                          ? ForgePalette.secondary.opacity(0.18)
-                          : Color.clear)
-                    .frame(width:1)
-                    .frame(width:AgentWorkSurfaceLayout.dividerWidth)
-                    .frame(maxHeight:.infinity)
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance:0,coordinateSpace:.global)
-                            .updating($inspectorDragOffset) { value, state, _ in
-                                state = value.translation.width
-                            }
-                            .onEnded { value in
-                                inspectorPreferredWidth = AgentWorkSurfaceLayout.dockedWidth(
-                                    availableWidth:splitWidth,
-                                    preferredWidth:baseInspectorWidth - value.translation.width)
-                            }
-                    )
-                    .onHover { hovering in
-                        inspectorDividerHovered = hovering
-                        if hovering { NSCursor.resizeLeftRight.set() } else { NSCursor.arrow.set() }
-                    }
-                    .animation(reduceMotion ? nil : .easeOut(duration:0.12),value:inspectorDividerHovered)
-                    .accessibilityLabel("工作面板宽度")
-                    .accessibilityValue("\(Int(inspectorWidth)) 点")
-                    .accessibilityIdentifier("agent.inspector.resize")
-                    .accessibilityAdjustableAction { direction in
-                        let change: CGFloat
-                        switch direction {
-                        case .increment: change = 40
-                        case .decrement: change = -40
-                        @unknown default: return
-                        }
-                        inspectorPreferredWidth = AgentWorkSurfaceLayout.dockedWidth(
-                            availableWidth:splitWidth, preferredWidth:inspectorWidth + change)
-                    }
+                if workSurfacePresentation == .replacement {
+                    workSurfaceContent()
+                        .transition(reduceMotion ? .identity : .opacity)
+                }
             }
+            .frame(minWidth:AgentWorkSurfaceLayout.conversationMinimumWidth)
+            .frame(maxWidth:.infinity,maxHeight:.infinity)
 
-            if workSurfaceVisible {
-                workSurfaceContent(canDock:canDock)
-                    .frame(width:docked ? inspectorWidth : splitWidth)
-                    .frame(maxHeight:.infinity)
-            }
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
-        .padding(8)
+        .padding(.horizontal,8).padding(.top,4).padding(.bottom,8)
         .background(ForgePalette.canvas)
         .animation(reduceMotion ? nil : .easeOut(duration:0.16),
                    value:workSurfacePresentation)
@@ -1275,9 +1220,9 @@ struct AgentPane: View {
         workSurfaceMaximized = false
     }
 
-    private func workSurfaceContent(canDock: Bool) -> some View {
+    private func workSurfaceContent() -> some View {
         VStack(spacing:0) {
-            inspectorHeader(canDock:canDock)
+            inspectorHeader
             ZStack {
             AgentChangesPane(model:model)
                 .opacity(selectedWorkSurface == .changes ? 1 : 0)

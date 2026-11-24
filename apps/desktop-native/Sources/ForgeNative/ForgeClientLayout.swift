@@ -3,11 +3,20 @@ import SwiftUI
 /// Geometry shared by the shell and conversation; visual tokens remain in ForgeClientDesign.
 extension ForgeClientDesign.Shell {
   static let workspaceHeaderHeight: CGFloat = 30
+  static let conversationHeaderHeight: CGFloat = 30
   static let workspaceStatusSlotWidth: CGFloat = 28
   static let composerTextHeight: CGFloat = 38
-  static let readingGutter: CGFloat = 18
+  static let readingGutter: CGFloat = 20
   static let composerControlInset: CGFloat = 13
-  static let composerControlHeight: CGFloat = 28
+  static let composerControlHeight: CGFloat = 30
+
+  static func shouldShowWindowToolbar(
+    canNavigateBack: Bool,
+    isAgentPage: Bool,
+    inspectorVisible: Bool
+  ) -> Bool {
+    canNavigateBack && !(isAgentPage && inspectorVisible)
+  }
 
   // The reading cap and gutters determine the actual Composer width.
   static func composerUsesTwoControlRows(conversationWidth: CGFloat) -> Bool {

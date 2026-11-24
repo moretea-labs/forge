@@ -1,45 +1,51 @@
+import Foundation
 import XCTest
 
 @testable import ForgeNative
 
 final class AgentWorkSurfaceLayoutTests: XCTestCase {
-  func testInspectorDocksWhenBothPanesFitAndUsesFullWidthInCompactWindows() {
+  func testInspectorUsesTrailingOverlayUntilExplicitlyMaximized() {
     let widths: [CGFloat] = [560, 889, 890, 958, 1400]
-    let presentations = widths.map {
-      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: false, availableWidth: $0)
+    let presentations = widths.map { _ in
+      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: false)
     }
-    XCTAssertEqual(presentations, [.replacement, .replacement, .docked, .docked, .docked])
+    XCTAssertEqual(presentations, Array(repeating: .overlay, count: widths.count))
   }
 
-  func testDockedWidthDefaultsToHalfAndClampsDragWithoutSacrificingEitherPane() {
-    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 560), 560)
-    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 890), 440)
-    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 958), 474)
-    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 1400), 695)
-    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 1400, preferredWidth: 100), 440)
-    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 1400, preferredWidth: 1200), 950)
+  func testOverlayWidthStaysWithinReadableBounds() {
+    XCTAssertEqual(AgentWorkSurfaceLayout.conversationMinimumWidth, 420)
+    XCTAssertEqual(AgentWorkSurfaceLayout.workSurfaceMinimumWidth, 340)
+    XCTAssertEqual(AgentWorkSurfaceLayout.workSurfaceMaximumWidth, 420)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 560), 340)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 890), 340)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 958), 364.04, accuracy: 0.001)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 1400), 420)
   }
 
   func testClosedAndMaximizedWorkSurfacePresentationIsExplicit() {
     XCTAssertEqual(
-      AgentWorkSurfaceLayout.presentation(isVisible: false, isMaximized: false, availableWidth: 1400),
+      AgentWorkSurfaceLayout.presentation(isVisible: false, isMaximized: false),
       .conversationOnly
     )
     XCTAssertEqual(
-      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: true, availableWidth: 1400),
+      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: false),
+      .overlay
+    )
+    XCTAssertEqual(
+      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: true),
       .replacement
     )
   }
 
-  func testWindowToolbarExposesOnlyInspectorByDefault() {
+  func testConversationHeaderExposesSingleInspectorToggleByDefault() {
     XCTAssertEqual(
-      AgentConversationToolbarContract.requiredActionIdentifiers, ["agent.inspector.toggle"])
+      AgentConversationHeaderContract.requiredActionIdentifiers, ["agent.inspector.toggle"])
     XCTAssertEqual(
       AgentWorkSurface.allCases.map(\.rawValue),
       ["changes", "files", "planning", "knowledge", "capabilities"])
-    XCTAssertEqual(AgentConversationToolbarContract.filesIdentifier, "agent.files")
+    XCTAssertEqual(AgentConversationHeaderContract.filesIdentifier, "agent.files")
     XCTAssertFalse(
-      AgentConversationToolbarContract.requiredActionIdentifiers.contains("agent.changes"))
+      AgentConversationHeaderContract.requiredActionIdentifiers.contains("agent.changes"))
   }
 
   func testCapabilityExtensionSlotsKeepStableBackendIndependentIdentity() {
@@ -76,4 +82,45 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
     XCTAssertEqual(
       AgentWorkSurface.preferredTab(selected: .capabilities, available: noWorkspace), .capabilities)
   }
+
+  func testInspectorOpensAndClosesFromTheSamePersistentControl() throws {
+    let testFile = URL(fileURLWithPath: #filePath)
+    let packageRoot = testFile
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let sourceURL = packageRoot.appendingPathComponent("Sources/ForgeNative/AgentWorkbenchViews.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    XCTAssertTrue(source.contains("private var inspectorToggleButton"))
+    XCTAssertTrue(source.contains("if workSurfaceVisible {"))
+    XCTAssertTrue(source.contains("closeWorkSurface()"))
+    XCTAssertFalse(source.contains(#".accessibilityIdentifier("agent.work-surface.close")"#))
+  }
+
+  func testInspectorOverlayIsBoundToTranscriptViewportAndNeverCoversComposer() throws {
+    let testFile = URL(fileURLWithPath: #filePath)
+    let packageRoot = testFile
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let sourceURL = packageRoot.appendingPathComponent("Sources/ForgeNative/AgentWorkbenchViews.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    let scrollReader = try XCTUnwrap(source.range(of: "ScrollViewReader { reader in"))
+    let composer = try XCTUnwrap(
+      source.range(
+        of: "VStack(alignment:.leading,spacing:0) {",
+        range: scrollReader.upperBound..<source.endIndex
+      )
+    )
+    XCTAssertNotNil(
+      source.range(
+        of: ".overlay(alignment:.trailing) {",
+        range: scrollReader.upperBound..<composer.lowerBound
+      )
+    )
+    XCTAssertFalse(source[composer.upperBound...].contains("if workSurfacePresentation == .overlay"))
+  }
+
 }

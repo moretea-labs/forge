@@ -36,7 +36,7 @@ struct ProjectCheckoutChoice: Identifiable {
   }
 }
 
-/// Primary rail destinations for the four-column shell.
+/// Primary destinations for the icon-only rail beside the workspace list.
 /// 会话 / 项目 / 看板 are first-class; tool destinations stay visible in-rail.
 enum ForgeSidebarDestination: String, CaseIterable {
   case agent, projects, workbench, automations, resources, analytics, settings
@@ -53,6 +53,8 @@ enum ForgeSidebarDestination: String, CaseIterable {
     }
   }
 
+  var accessibilityIdentifier: String { "forge.nav.\(rawValue)" }
+
   var glyph: ForgeGlyphKind {
     switch self {
     case .agent: return .chat
@@ -62,19 +64,6 @@ enum ForgeSidebarDestination: String, CaseIterable {
     case .resources: return .library
     case .analytics: return .analytics
     case .settings: return .settings
-    }
-  }
-
-  /// Native rail symbols keep the shell optically consistent with macOS tooling.
-  var railSystemImage: String {
-    switch self {
-    case .agent: return "bubble.left"
-    case .projects: return "folder"
-    case .workbench: return "rectangle.3.group"
-    case .automations: return "checklist"
-    case .resources: return "paperclip"
-    case .analytics: return "chart.xyaxis.line"
-    case .settings: return "slider.horizontal.3"
     }
   }
 

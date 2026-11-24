@@ -44,22 +44,18 @@ enum ForgePalette {
 }
 
 extension ForgeClientDesign {
-  /// One optical size for chrome icons (rail / window toolbar / sidebar / composer).
+  /// One optical size for downloaded chrome icons; rail glyphs stay deliberately quiet.
   enum Icon {
     static let point: CGFloat = 13
-    static let railPoint: CGFloat = 14
-    static let railGlyphHeight: CGFloat = 18
-    static let railLabel: CGFloat = 9.5
-    static let hit: CGFloat = 28
+    static let railPoint: CGFloat = 13
+    static let hit: CGFloat = 30
     static let weight: Font.Weight = .regular
     static var font: Font { .system(size: point, weight: weight) }
-    static var railFont: Font { .system(size: railPoint, weight: weight) }
-    static var railLabelFont: Font { .system(size: railLabel, weight: .regular) }
   }
 }
 
 extension Image {
-  /// Toolbar / sidebar / composer glyph with shared optical size.
+  /// Native SF Symbols remain available for incidental metadata and system menus.
   func forgeChromeIcon(active: Bool = false) -> some View {
     self
       .font(ForgeClientDesign.Icon.font)
@@ -67,14 +63,6 @@ extension Image {
       .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
       .frame(width: ForgeClientDesign.Icon.hit, height: ForgeClientDesign.Icon.hit)
       .contentShape(Rectangle())
-  }
-
-  func forgeRailIcon(active: Bool) -> some View {
-    self
-      .font(ForgeClientDesign.Icon.railFont)
-      .symbolRenderingMode(.monochrome)
-      .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
-      .frame(width: 24, height: ForgeClientDesign.Icon.railGlyphHeight)
   }
 }
 

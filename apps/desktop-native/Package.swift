@@ -5,7 +5,7 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [.executable(name: "ForgeNative", targets: ["ForgeNative"])],
     targets: [
-        .executableTarget(name: "ForgeNative"),
+        .executableTarget(name: "ForgeNative", resources: [.copy("Resources/Tabler")]),
         .testTarget(name: "ForgeNativeTests", dependencies: ["ForgeNative"])
     ]
 )

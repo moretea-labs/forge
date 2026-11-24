@@ -4,24 +4,21 @@ import XCTest
 @testable import ForgeNative
 
 final class NativeWorkspaceTests: XCTestCase {
-  func testAgentWorkSurfaceNormalOpenReservesDisjointPaneGeometry() {
-    for width: CGFloat in [890, 958, 1400] {
+  func testAgentWorkSurfaceNormalOpenUsesTrailingOverlay() {
+    for width: CGFloat in [560, 890, 958, 1400] {
       XCTAssertEqual(
-        AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: false, availableWidth: width),
-        .docked)
-      let inspector = AgentWorkSurfaceLayout.dockedWidth(availableWidth: width)
-      let conversation = width - inspector - AgentWorkSurfaceLayout.dividerWidth
+        AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: false),
+        .overlay)
+      let inspector = AgentWorkSurfaceLayout.overlayWidth(availableWidth: width)
       XCTAssertGreaterThanOrEqual(inspector, AgentWorkSurfaceLayout.workSurfaceMinimumWidth)
-      XCTAssertGreaterThanOrEqual(conversation, AgentWorkSurfaceLayout.conversationMinimumWidth)
-      XCTAssertEqual(inspector, conversation, accuracy: 0.001)
-      XCTAssertEqual(conversation + inspector + AgentWorkSurfaceLayout.dividerWidth, width)
+      XCTAssertLessThanOrEqual(inspector, AgentWorkSurfaceLayout.workSurfaceMaximumWidth)
     }
   }
 
-  func testAgentWorkSurfaceUsesBalancedDefaultDockedWidth() {
-    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 890), 440)
-    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 958), 474, accuracy: 0.001)
-    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 1400), 695, accuracy: 0.001)
+  func testAgentWorkSurfaceOverlayWidthStaysBounded() {
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 890), 340)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 958), 364.04, accuracy: 0.001)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 1400), 420)
   }
 
   @MainActor

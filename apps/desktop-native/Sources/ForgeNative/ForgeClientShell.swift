@@ -33,6 +33,7 @@ struct ForgeWorkspaceView: View {
     @State private var inboxDismissRequestId: String?
     @State private var expandedInboxRequestIds: Set<String> = []
     @FocusState private var sidebarSearchFocused: Bool
+    @State private var clientNoticePresented = false
     // Restore the last tab, but open every new window with the inspector closed.
     @SceneStorage("forge.shell.v5.surface.tab") private var selectedWorkSurfaceRaw = "changes"
     @State private var workSurfaceVisible = false
@@ -148,6 +149,7 @@ struct ForgeWorkspaceView: View {
         }
         // Hide the toolbar fill so traffic lights sit on the same surface as content.
         .toolbarBackground(.hidden, for:.windowToolbar)
+        .toolbar(showsWindowToolbar ? .visible : .hidden, for:.windowToolbar)
         .task {
             if model.zenMode { model.show(.requirement) }
         }
@@ -171,9 +173,17 @@ struct ForgeWorkspaceView: View {
         }
     }
 
+    private var showsWindowToolbar: Bool {
+        ForgeClientDesign.Shell.shouldShowWindowToolbar(
+            canNavigateBack:model.canNavigateBack,
+            isAgentPage:model.page == .agent,
+            inspectorVisible:workSurfaceVisible
+        )
+    }
+
     @ViewBuilder
     private var unifiedWindowToolbarActions: some View {
-        if model.canNavigateBack && !(model.page == .agent && workSurfaceVisible) {
+        if showsWindowToolbar {
             Button { model.goBack() } label: {
                 ForgeGlyph(.back)
                     .forgeChromeSurface(cornerRadius:8)
@@ -219,26 +229,17 @@ struct ForgeWorkspaceView: View {
         return Button {
             openSidebarDestination(destination)
         } label: {
-            VStack(spacing:1) {
-                Image(systemName:destination.railSystemImage)
-                    .forgeRailIcon(active:selected)
-                Text(destination.title)
-                    .font(ForgeClientDesign.Icon.railLabelFont)
-                    .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-                    .fixedSize(horizontal:false,vertical:true)
-            }
-            .frame(width:48,height:ForgeClientDesign.Shell.destinationRowHeight)
-            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
-            .forgeChromeSurface(selected:selected,cornerRadius:8)
-            .frame(width:52,height:ForgeClientDesign.Shell.destinationRowHeight)
+            ForgeGlyph(destination.glyph,role:.rail,active:selected)
+                .forgeChromeSurface(selected:selected,cornerRadius:8)
+                .frame(width:ForgeClientDesign.Shell.iconRailWidth,
+                       height:ForgeClientDesign.Shell.destinationRowHeight)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(destination.title)
         .accessibilityLabel(destination.title)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
-        .accessibilityIdentifier("forge.nav.\(destination.rawValue)")
+        .accessibilityIdentifier(destination.accessibilityIdentifier)
     }
 
     private func utilitySidebarButton(_ title:String,icon:String,page:NativePage) -> some View {
@@ -277,6 +278,83 @@ struct ForgeWorkspaceView: View {
         .padding(.bottom,4)
     }
 
+    private var settingsRailButton: some View {
+        sidebarDestinationButton(.settings)
+            .overlay(alignment:.bottomTrailing) {
+                if model.error != nil {
+                    Button {
+                        clientNoticePresented.toggle()
+                    } label: {
+                        Text("!")
+                            .font(.system(size:8,weight:.bold))
+                            .foregroundStyle(Color.orange)
+                            .frame(width:13,height:13)
+                            .background(ForgePalette.canvas,in:Circle())
+                            .overlay {
+                                Circle().strokeBorder(ForgePalette.floatingStroke,lineWidth:0.6)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .offset(x:-4,y:-4)
+                    .help("查看客户端提醒")
+                    .accessibilityLabel("查看客户端提醒")
+                    .accessibilityHint("打开提醒详情")
+                    .accessibilityValue(model.error ?? "")
+                    .accessibilityIdentifier("forge.settings.notice")
+                    .popover(isPresented:$clientNoticePresented,arrowEdge:.trailing) {
+                        clientNoticePopover
+                    }
+                }
+            }
+            .onChange(of:model.error) { error in
+                if error == nil { clientNoticePresented = false }
+            }
+    }
+
+    private var clientNoticePopover: some View {
+        VStack(alignment:.leading,spacing:9) {
+            HStack(spacing:6) {
+                Label("客户端提醒",systemImage:"exclamationmark.circle.fill")
+                    .font(.system(size:12,weight:.semibold))
+                    .foregroundStyle(ForgePalette.ink)
+                Spacer(minLength:8)
+                Button {
+                    clientNoticePresented = false
+                } label: {
+                    Image(systemName:"xmark")
+                        .font(.system(size:9,weight:.semibold))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .frame(width:22,height:22)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭提醒详情")
+            }
+            if let error = model.error {
+                Text(error)
+                    .font(.system(size:11.5))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .fixedSize(horizontal:false,vertical:true)
+                    .textSelection(.enabled)
+            } else {
+                Text("当前没有需要处理的提醒。")
+                    .font(.system(size:11.5))
+                    .foregroundStyle(ForgePalette.secondary)
+            }
+            HStack {
+                Spacer()
+                Button("清除提醒") {
+                    model.error = nil
+                    clientNoticePresented = false
+                }
+                .buttonStyle(.forgeText)
+                .disabled(model.error == nil)
+                .accessibilityIdentifier("forge.settings.notice.clear")
+            }
+        }
+        .padding(12)
+        .frame(width:280,alignment:.leading)
+    }
+
     private var iconRail: some View {
         VStack(spacing:3) {
             ForEach(ForgeSidebarDestination.primaryRail, id: \.self) { destination in
@@ -287,7 +365,7 @@ struct ForgeWorkspaceView: View {
                 sidebarDestinationButton(destination)
             }
             Spacer(minLength:0)
-            sidebarDestinationButton(.settings)
+            settingsRailButton
         }
         .padding(.top,4)
         .padding(.bottom,8)
@@ -1218,7 +1296,7 @@ struct ForgeWorkspaceView: View {
                     .foregroundStyle(ForgePalette.secondary.opacity(0.48))
             }
             .padding(.horizontal,7)
-            .frame(height:28)
+            .frame(height:ForgeClientDesign.Icon.hit)
             .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
             .forgeHoverFill(cornerRadius:8)
         }
@@ -1532,32 +1610,6 @@ struct ForgeWorkspaceView: View {
 
     private var main: some View {
         VStack(spacing:0) {
-            if let error = model.error, model.page != .schedule && model.page != .plugins {
-                HStack(spacing:7) {
-                    Image(systemName:"exclamationmark.circle")
-                        .font(.system(size:10.5,weight:.medium))
-                    Text(error)
-                        .font(.system(size:10.5))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(error)
-                    Spacer(minLength:8)
-                    Button { model.error = nil } label: {
-                        Image(systemName:"xmark")
-                            .font(.system(size:9,weight:.semibold))
-                            .frame(width:22,height:22)
-                    }
-                    .buttonStyle(.plain)
-                    .help("关闭")
-                    .accessibilityLabel("关闭错误提示")
-                }
-                .foregroundStyle(Color.orange.opacity(0.92))
-                .padding(.horizontal,10)
-                .frame(height:30)
-                .background(Color.orange.opacity(0.065),
-                            in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                .padding(.horizontal,10).padding(.top,4)
-            }
             switch model.page {
             case .agent:
                 AgentPane(

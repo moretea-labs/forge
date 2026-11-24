@@ -36,42 +36,46 @@ final class ForgeClientLayoutTests: XCTestCase {
     XCTAssertEqual(after - before, 0.21, accuracy: 0.001)
   }
 
-  func testChromeIconMetricsAndNavigationSymbolsAreConsistent() {
+  func testChromeIconMetricsAndNavigationAssetsAreConsistent() {
     XCTAssertEqual(ForgeClientDesign.Icon.point, 13)
-    XCTAssertEqual(ForgeClientDesign.Icon.hit, 28)
-    XCTAssertEqual(ForgeClientDesign.Icon.railPoint, 14)
-    XCTAssertEqual(ForgeClientDesign.Icon.railLabel, 9.5)
+    XCTAssertEqual(ForgeClientDesign.Icon.hit, 30)
+    XCTAssertEqual(ForgeClientDesign.Icon.railPoint, 13)
     XCTAssertEqual(ForgeClientDesign.Shell.iconRailWidth, 52)
     XCTAssertEqual(ForgeClientDesign.Shell.sidebarMin, 228)
     XCTAssertEqual(ForgeClientDesign.Shell.sidebarIdeal, 288)
     XCTAssertEqual(ForgeClientDesign.Shell.destinationRowHeight, 36)
     let glyphs = ForgeSidebarDestination.allCases.map(\.glyph)
     XCTAssertEqual(Set(glyphs).count, glyphs.count)
+    let navigationIdentifiers = ForgeSidebarDestination.allCases.map(\.accessibilityIdentifier)
+    XCTAssertEqual(navigationIdentifiers, [
+      "forge.nav.agent", "forge.nav.projects", "forge.nav.workbench",
+      "forge.nav.automations", "forge.nav.resources", "forge.nav.analytics", "forge.nav.settings",
+    ])
+    XCTAssertEqual(Set(navigationIdentifiers).count, navigationIdentifiers.count)
+
     XCTAssertEqual(glyphs, [.chat, .folder, .board, .tasks, .library, .analytics, .settings])
 
-    let railSymbols = ForgeSidebarDestination.allCases.map(\.railSystemImage)
-    XCTAssertEqual(Set(railSymbols).count, railSymbols.count)
-    XCTAssertTrue(railSymbols.allSatisfy { !$0.isEmpty })
+    let assetNames = ForgeSidebarDestination.allCases.map { ForgeGlyph.assetName(for: $0.glyph) }
+    XCTAssertEqual(Set(assetNames).count, assetNames.count)
+    XCTAssertTrue(assetNames.allSatisfy { !$0.isEmpty })
   }
 
-  func testEveryCustomGlyphFitsTheSharedOutlineGrid() {
+  func testEveryTablerGlyphResolvesFromTheBundledAssetSet() {
     for glyph in ForgeGlyphKind.allCases {
-      for size: CGFloat in [16, 18, 22, 24] {
-        let rect = CGRect(x: 0, y: 0, width: size, height: size)
-        let path = ForgeGlyphShape(kind: glyph).path(in: rect)
-        XCTAssertFalse(path.isEmpty, glyph.rawValue)
-        XCTAssertTrue(rect.contains(path.boundingRect), glyph.rawValue)
-        XCTAssertGreaterThan(path.boundingRect.width, size * 0.2, glyph.rawValue)
-        XCTAssertGreaterThan(path.boundingRect.height, size * 0.2, glyph.rawValue)
-      }
+      XCTAssertNotNil(ForgeGlyph.assetURL(for: glyph), glyph.rawValue)
     }
+    XCTAssertEqual(
+      ForgeGlyph.assetName(for: .inspector, active: true),
+      "layout-sidebar-right-collapse"
+    )
+    XCTAssertNotNil(ForgeGlyph.assetURL(for: .inspector, active: true))
   }
 
   func testComposerUsesSeparateConfigurationRowInNarrowConversation() {
-    for width: CGFloat in [0, 440, 474, 600, 625] {
+    for width: CGFloat in [0, 440, 474, 600, 629] {
       XCTAssertTrue(ForgeClientDesign.Shell.composerUsesTwoControlRows(conversationWidth: width))
     }
-    for width: CGFloat in [626, 695, 760, 1400] {
+    for width: CGFloat in [630, 695, 760, 1400] {
       XCTAssertFalse(ForgeClientDesign.Shell.composerUsesTwoControlRows(conversationWidth: width))
     }
     XCTAssertEqual(ForgeClientDesign.Shell.composerControlHeight, ForgeClientDesign.Icon.hit)
@@ -89,9 +93,11 @@ final class ForgeClientLayoutTests: XCTestCase {
 
   func testHeaderAndReadingGutterHaveSharedMetrics() {
     XCTAssertEqual(ForgeClientDesign.Shell.workspaceHeaderHeight, 30)
+    XCTAssertEqual(ForgeClientDesign.Shell.conversationHeaderHeight, 30)
     XCTAssertEqual(ForgeClientDesign.Shell.workspaceStatusSlotWidth, 28)
     XCTAssertEqual(ForgeClientDesign.Shell.composerTextHeight, 38)
-    XCTAssertEqual(ForgeClientDesign.Shell.readingGutter, 18)
+    XCTAssertEqual(ForgeClientDesign.Shell.readingGutter, 20)
+    XCTAssertEqual(ForgeClientDesign.Shell.composerControlHeight, 30)
   }
 
   func testDropdownsDoNotRegressToRaisedPopupPickers() throws {
@@ -147,4 +153,38 @@ final class ForgeClientLayoutTests: XCTestCase {
       "Text fields must use forgeInputSurface or another flat shared surface, not .roundedBorder: \(raisedTextFieldFiles)"
     )
   }
+
+  func testClientNoticeLivesBesideSettingsInsteadOfConsumingTopSpace() throws {
+    let testFile = URL(fileURLWithPath: #filePath)
+    let packageRoot = testFile
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let shellURL = packageRoot.appendingPathComponent("Sources/ForgeNative/ForgeClientShell.swift")
+    let source = try String(contentsOf: shellURL, encoding: .utf8)
+
+    XCTAssertTrue(source.contains("forge.settings.notice"))
+    XCTAssertTrue(source.contains("private var clientNoticePopover"))
+    XCTAssertFalse(
+      source.contains("if let error = model.error, model.page != .schedule && model.page != .plugins"),
+      "Client errors must not consume a persistent row above the main workspace."
+    )
+  }
+
+
+  func testWindowToolbarOnlyReservesSpaceForAnAvailableBackAction() {
+    XCTAssertFalse(
+      ForgeClientDesign.Shell.shouldShowWindowToolbar(
+        canNavigateBack: false, isAgentPage: false, inspectorVisible: false))
+    XCTAssertTrue(
+      ForgeClientDesign.Shell.shouldShowWindowToolbar(
+        canNavigateBack: true, isAgentPage: false, inspectorVisible: false))
+    XCTAssertFalse(
+      ForgeClientDesign.Shell.shouldShowWindowToolbar(
+        canNavigateBack: true, isAgentPage: true, inspectorVisible: true))
+    XCTAssertTrue(
+      ForgeClientDesign.Shell.shouldShowWindowToolbar(
+        canNavigateBack: true, isAgentPage: true, inspectorVisible: false))
+  }
+
 }

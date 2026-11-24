@@ -534,7 +534,8 @@ struct ZenWorkspacePane: View {
                             model.clearRecordSelection()
                         }
                     } label: {
-                        Image(systemName:"chevron.left").frame(width:28,height:28)
+                        Image(systemName:"chevron.left")
+                            .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
                     }
                     .buttonStyle(.plain)
                     .help(model.projectDetailReturnContext == nil ? "返回看板" : "返回项目详情")
@@ -911,7 +912,7 @@ struct ZenWorkspacePane: View {
                                 Label(hideEmptyColumns ? "显示空列" : "隐藏空列",
                                       systemImage:hideEmptyColumns ? "rectangle.split.3x1" : "rectangle.split.3x1.fill")
                                     .labelStyle(.iconOnly)
-                                    .frame(width:28,height:28)
+                                    .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
                             }
                             .buttonStyle(.plain)
                             .help(hideEmptyColumns ? "显示所有状态列" : "隐藏空状态列")
@@ -1156,6 +1157,24 @@ struct ZenWorkspacePane: View {
         .accessibilityIdentifier("zen.requirement.list.\(item.recordId)")
     }
 
+    enum CanvasInspectorPresentation: Equatable {
+        case none
+        case overlay
+        case docked
+    }
+
+    static func canvasInspectorPresentation(
+        hasSelection: Bool,
+        viewportWidth: CGFloat
+    ) -> CanvasInspectorPresentation {
+        guard hasSelection else { return .none }
+        return viewportWidth < 920 ? .overlay : .docked
+    }
+
+    static func compactCanvasInspectorWidth(viewportWidth: CGFloat) -> CGFloat {
+        min(340, max(220, viewportWidth * 0.42))
+    }
+
     private var canvasContent: some View {
         Group {
             if let root = requirements.first(where:{$0.recordId == focusedRequirementId}) {
@@ -1164,26 +1183,54 @@ struct ZenWorkspacePane: View {
                         $0.id == model.selectedRecord
                         && ($0.id == root.id || $0.requirementId == root.recordId)
                     })
-                    // On compact windows the detail replaces the canvas instead of
-                    // shrinking a wide, interactive tree to an unusable strip.
-                    if viewport.size.width < 920, let selected {
-                        detailInspector(selected,compact:true)
+                    let canvas = ZenTreeCanvas(
+                        root:root,records:model.records,selectedId:model.selectedRecord,
+                        executionStatuses:model.planningAutopilotStatuses,
+                        hasRepository:model.projectRepositoryId != nil,
+                        executionBusy:model.autopilotLoading || model.autopilotControlPending,
+                        refinementActive:model.zenRefinementActive,
+                        unresolvedOutcomeRequirementIds:executionOutcomeUnknownRequirementIds,
+                        onSelect:{ item in
+                            Task { await model.openRecord(item.id) }
+                        },onAction:{ item,action in
+                            handleNodeAction(item,action)
+                        }
+                    )
+                    .accessibilityIdentifier("zen.requirement.canvas")
+
+                    switch Self.canvasInspectorPresentation(
+                        hasSelection:selected != nil,
+                        viewportWidth:viewport.size.width
+                    ) {
+                    case .none:
+                        canvas
                             .frame(maxWidth:.infinity,maxHeight:.infinity)
-                    } else {
+
+                    case .overlay:
+                        ZStack(alignment:.trailing) {
+                            canvas
+                                .frame(maxWidth:.infinity,maxHeight:.infinity)
+                            if let selected {
+                                detailInspector(selected,compact:true)
+                                    .frame(
+                                        width:Self.compactCanvasInspectorWidth(
+                                            viewportWidth:viewport.size.width
+                                        )
+                                    )
+                                    .frame(maxHeight:.infinity)
+                                    .forgeFloatingGlass(cornerRadius:14)
+                                    .padding(8)
+                                    .accessibilityIdentifier("zen.inspector.compactOverlay")
+                                    .transition(.move(edge:.trailing).combined(with:.opacity))
+                                    .zIndex(2)
+                            }
+                        }
+                        .frame(maxWidth:.infinity,maxHeight:.infinity)
+
+                    case .docked:
                         HStack(spacing:0) {
-                            ZenTreeCanvas(
-                                root:root,records:model.records,selectedId:model.selectedRecord,
-                                executionStatuses:model.planningAutopilotStatuses,
-                                hasRepository:model.projectRepositoryId != nil,
-                                executionBusy:model.autopilotLoading || model.autopilotControlPending,
-                                 refinementActive:model.zenRefinementActive,
-                                unresolvedOutcomeRequirementIds:executionOutcomeUnknownRequirementIds,
-                                onSelect:{ item in
-                                    Task { await model.openRecord(item.id) }
-                                },onAction:{ item,action in
-                                    handleNodeAction(item,action)
-                                }
-                            )
+                            canvas
+                                .frame(maxWidth:.infinity,maxHeight:.infinity)
                             if let selected {
                                 detailInspector(selected)
                                     .frame(width:304)
@@ -1252,7 +1299,7 @@ struct ZenWorkspacePane: View {
                             model.clearRecordSelection()
                         }
                     } label: {
-                        Image(systemName:compact ? "chevron.left" : "xmark").frame(width:26,height:26)
+                        ForgeGlyph(compact ? .back : .close,role:.chrome)
                     }
                     .buttonStyle(.plain)
                     .help(compact ? "返回画布" : "关闭详情")
@@ -3084,7 +3131,7 @@ struct ZenProjectDirectorySheet: View {
                     Task { await model.refreshSemanticProjects() }
                 } label: {
                     Image(systemName:"arrow.clockwise")
-                        .frame(width:28,height:28)
+                        .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -3277,7 +3324,7 @@ struct ZenProjectDirectorySheet: View {
                             Image(systemName:"chevron.right")
                                 .font(.system(size:10,weight:.semibold))
                                 .foregroundStyle(detailProjectId == project.projectId ? Color.primary : Color.secondary)
-                                .frame(width:28,height:28)
+                                .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -3335,7 +3382,7 @@ struct ZenProjectDirectorySheet: View {
                             }
                         } label: {
                             Image(systemName:"ellipsis")
-                                .frame(width:28,height:28)
+                                .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
                                 .contentShape(Rectangle())
                         }
                         .menuStyle(.borderlessButton).menuIndicator(.hidden)

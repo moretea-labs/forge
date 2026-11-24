@@ -2230,7 +2230,7 @@ struct PluginsPane: View {
                         else { searchFocused = true }
                     } label: {
                         Image(systemName:searchOpen ? "xmark" : "magnifyingglass")
-                            .frame(width:28,height:28)
+                            .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(searchOpen ? "关闭插件搜索" : "搜索插件")
@@ -3572,7 +3572,7 @@ struct SettingsPane: View {
                                         .accessibilityIdentifier("settings.profile.delete")
                                     } label: {
                                         Image(systemName:"ellipsis")
-                                            .frame(width:28,height:28)
+                                            .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
                                     }
                                     .menuStyle(.borderlessButton).menuIndicator(.hidden)
                                 }
