@@ -1,6 +1,5 @@
-import { execFile, type ChildProcess } from 'child_process';
+import type { ChildProcess } from 'child_process';
 import { resolve } from 'path';
-import { cpus, freemem, loadavg } from 'os';
 import { listRepositories } from '../../repositories/registry';
 import { writeAgentExecutableReadinessSnapshot } from '../../agents/executable-resolver';
 import {
@@ -82,66 +81,6 @@ export function schedulerActiveWaitDelayMs(input: {
     SCHEDULER_RECONCILIATION_INTERVAL_MS,
   );
 }
-const DARWIN_RECLAIMABLE_PAGE_LABELS = new Set([
-  'Pages free',
-  'Pages inactive',
-  'Pages speculative',
-  'Pages purgeable',
-]);
-
-export function parseDarwinAvailableMemoryMb(output: string): number | undefined {
-  const pageSizeMatch = /page size of\s+(\d+)\s+bytes/i.exec(output);
-  const pageSize = Number(pageSizeMatch?.[1]);
-  if (!Number.isFinite(pageSize) || pageSize <= 0) return undefined;
-
-  let reclaimablePages = 0;
-  let matched = false;
-  for (const rawLine of output.split('\n')) {
-    const match = /^([^:]+):\s+(\d+)\.?$/.exec(rawLine.trim());
-    if (!match || !DARWIN_RECLAIMABLE_PAGE_LABELS.has(match[1])) continue;
-    reclaimablePages += Number(match[2]);
-    matched = true;
-  }
-  if (!matched) return undefined;
-  return reclaimablePages * pageSize / (1024 * 1024);
-}
-
-export function isSchedulerResourcePressured(
-  snapshot: { freeMemoryMb: number; loadPerCpu: number },
-  limits: { minFreeMemoryMb: number; maxLoadPerCpu: number },
-): boolean {
-  return snapshot.freeMemoryMb < limits.minFreeMemoryMb || snapshot.loadPerCpu > limits.maxLoadPerCpu;
-}
-
-type DarwinMemorySampler = (
-  callback: (error: Error | null, stdout: string) => void,
-) => void;
-
-export function sampleDarwinAvailableMemoryMb(
-  fallback: number,
-  sampler: DarwinMemorySampler = (callback) => {
-    execFile('vm_stat', [], {
-      encoding: 'utf8',
-      timeout: 2_000,
-      maxBuffer: 64 * 1024,
-    }, (error, stdout) => callback(error, stdout));
-  },
-): Promise<number> {
-  return new Promise((resolve) => {
-    try {
-      sampler((error, stdout) => {
-        if (error) {
-          resolve(fallback);
-          return;
-        }
-        resolve(parseDarwinAvailableMemoryMb(stdout) ?? fallback);
-      });
-    } catch {
-      resolve(fallback);
-    }
-  });
-}
-
 export interface SchedulerRuntimeBinding {
   controllerPid?: number;
   runtimeSourceRoot?: string;

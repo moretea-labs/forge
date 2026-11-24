@@ -2398,6 +2398,16 @@ requireText('src/runtime/resources/leases/store.ts', 'expectedLeaseMap');
 requireText('src/runtime/resources/claims/conflicts.ts', "'repo-content:*'");
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'normalizeSchedulerConfig');
 requireText('src/runtime/control-plane/global-scheduler/config.ts', 'normalizeSchedulerConfig');
+forbid(
+  'src/runtime/control-plane/global-scheduler/scheduler.ts',
+  /parseDarwinAvailableMemoryMb|sampleDarwinAvailableMemoryMb|isSchedulerResourcePressured|FORGE_MIN_FREE_MEMORY_MB|FORGE_MAX_LOAD_PER_CPU/,
+  'retired Scheduler resource-pressure admission must stay physically absent',
+);
+forbid(
+  'src/runtime/control-plane/global-scheduler/config.ts',
+  /minFreeMemoryMb|maxLoadPerCpu|FORGE_MIN_FREE_MEMORY_MB|FORGE_MAX_LOAD_PER_CPU/,
+  'unused Scheduler resource-pressure config must stay physically absent',
+);
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeSchedulerHealthSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/state.ts', 'writeSchedulerHealthSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'refreshSchedulerRepositoryProjections');

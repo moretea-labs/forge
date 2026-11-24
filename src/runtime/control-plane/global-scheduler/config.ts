@@ -10,8 +10,6 @@ export interface SchedulerConfig {
   maxCodexProcesses: number;
   maxClaudeProcesses: number;
   maxGitHubProcesses: number;
-  minFreeMemoryMb: number;
-  maxLoadPerCpu: number;
 }
 
 export function normalizeSchedulerConfig(
@@ -38,7 +36,5 @@ export function normalizeSchedulerConfig(
     maxCodexProcesses: Math.max(1, config.maxCodexProcesses ?? Number(env.FORGE_MAX_CODEX_PROCESSES ?? 3)),
     maxClaudeProcesses: Math.max(1, config.maxClaudeProcesses ?? Number(env.FORGE_MAX_CLAUDE_PROCESSES ?? 2)),
     maxGitHubProcesses: Math.max(1, config.maxGitHubProcesses ?? Number(env.FORGE_MAX_GITHUB_PROCESSES ?? 2)),
-    minFreeMemoryMb: Math.max(64, config.minFreeMemoryMb ?? Number(env.FORGE_MIN_FREE_MEMORY_MB ?? 512)),
-    maxLoadPerCpu: Math.max(0.25, config.maxLoadPerCpu ?? Number(env.FORGE_MAX_LOAD_PER_CPU ?? 1.5)),
   };
 }

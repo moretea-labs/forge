@@ -211,8 +211,6 @@ describe('control-plane hardening', () => {
           idleBackoffMaxMs: 100,
           heartbeatIntervalMs: 10,
           heartbeatTimeoutMs: 500,
-          minFreeMemoryMb: 1,
-          maxLoadPerCpu: 0,
         },
         {},
       ),
@@ -222,8 +220,6 @@ describe('control-plane hardening', () => {
       idleBackoffMaxMs: 250,
       heartbeatIntervalMs: 25,
       heartbeatTimeoutMs: 1_000,
-      minFreeMemoryMb: 64,
-      maxLoadPerCpu: 0.25,
     });
 
     expect(
