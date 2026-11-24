@@ -184,25 +184,6 @@ export interface ExecutionJob {
   evidenceIds: string[];
 }
 
-export interface CreateExecutionJobInput {
-  repoId: string;
-  checkoutId?: string;
-  type: ExecutionJobType;
-  requestId: string;
-  semanticKey: string;
-  payload: ExecutionJobPayload;
-  origin: ExecutionJobOrigin;
-  priority?: ExecutionJobPriority;
-  resourceClaims?: ResourceClaimSpec[];
-  dependencies?: string[];
-  /** Legacy shorthand for timeoutPolicy.executionTimeoutMs. */
-  timeoutMs?: number;
-  timeoutPolicy?: Partial<ExecutionTimeoutPolicy>;
-  maxAttempts?: number;
-  operationMetadata?: ExecutionOperationMetadata;
-  resources?: ManagedResource[];
-}
-
 export interface ExecutionJobEvent {
   schemaVersion: 1;
   eventId: string;

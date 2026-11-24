@@ -18,7 +18,6 @@ import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from '../../ro
 import {
   ACTIVE_JOB_STATUSES,
   TERMINAL_JOB_STATUSES,
-  type CreateExecutionJobInput,
   type ExecutionJob,
   type ExecutionJobStatus,
 } from './types';
