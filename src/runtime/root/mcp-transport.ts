@@ -2,8 +2,8 @@ import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import type { Server as NodeHttpServer } from 'http';
 import type { AddressInfo, Socket } from 'net';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import type { Server } from "@modelcontextprotocol/server";
-import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import type { Server } from '@modelcontextprotocol/server';
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import type { RuntimeReadiness } from './types';
 import { mcpSessionLookupError } from '../shared/mcp-session-errors';
 
@@ -76,8 +76,9 @@ function principalId(token: string): string {
 
 function isInitialize(body: unknown): boolean {
   const values = Array.isArray(body) ? body : [body];
-  return values.some((value) => value && typeof value === 'object'
-    && (value as Record<string, unknown>).method === 'initialize');
+  return values.some(
+    (value) => value && typeof value === 'object' && (value as Record<string, unknown>).method === 'initialize',
+  );
 }
 
 /**
@@ -94,8 +95,12 @@ export function isLocalGatewayJsonResponseSession(body: unknown, remoteAddress?:
   const params = request.params;
   if (!params || typeof params !== 'object' || Array.isArray(params)) return false;
   const client = (params as Record<string, unknown>).clientInfo;
-  return Boolean(client && typeof client === 'object' && !Array.isArray(client)
-    && (client as Record<string, unknown>).name === 'forge-public-gateway-proxy');
+  return Boolean(
+    client &&
+      typeof client === 'object' &&
+      !Array.isArray(client) &&
+      (client as Record<string, unknown>).name === 'forge-public-gateway-proxy',
+  );
 }
 
 function observesToolSurface(body: unknown): boolean {
@@ -118,7 +123,9 @@ function runtimeMcpRequestIds(body: unknown): RuntimeMcpRequestId[] {
 
 function parseBody(body: unknown): unknown {
   if (!Buffer.isBuffer(body)) return body;
-  try { return JSON.parse(body.toString('utf8')); } catch {
+  try {
+    return JSON.parse(body.toString('utf8'));
+  } catch {
     throw new Error('MCP_REQUEST_JSON_INVALID');
   }
 }
@@ -162,7 +169,7 @@ function boundedRuntimeMcpMaximumSessions(value: number | undefined): number {
 
 function closeServer(server: NodeHttpServer): Promise<void> {
   return new Promise((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
+    server.close((error) => (error ? reject(error) : resolve()));
     // Stop keep-alive sockets that have no request in flight. Active requests
     // receive a bounded graceful drain before the shutdown path forces them.
     server.closeIdleConnections?.();
@@ -173,7 +180,11 @@ async function boundedDrain(wait: Promise<void>, timeoutMs: number): Promise<boo
   if (timeoutMs <= 0) return false;
   let drained = false;
   await Promise.race([
-    wait.then(() => { drained = true; }).catch(() => undefined),
+    wait
+      .then(() => {
+        drained = true;
+      })
+      .catch(() => undefined),
     new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
   ]);
   return drained;
@@ -205,7 +216,10 @@ export async function closeRuntimeMcpTransportResources(input: {
     await boundedDrain(requestDrain, CUTOVER_SETTLEMENT_DRAIN_TIMEOUT_MS);
   }
   const sessionDrain = Promise.allSettled(input.closeSessions.map(async (close) => await close()));
-  await boundedDrain(sessionDrain.then(() => undefined), Math.max(0, input.sessionCloseTimeoutMs ?? SESSION_CLOSE_TIMEOUT_MS));
+  await boundedDrain(
+    sessionDrain.then(() => undefined),
+    Math.max(0, input.sessionCloseTimeoutMs ?? SESSION_CLOSE_TIMEOUT_MS),
+  );
   input.forceCloseConnections?.();
   await listenerClose;
 }
@@ -279,9 +293,8 @@ export async function startRuntimeMcpTransport(
   // Only POST requests can represent an in-flight tool mutation/read result that
   // must settle before cutover. Long-lived GET/SSE streams are transport-only and
   // must not consume the cutover grace window.
-  const waitForRequestDrain = (): Promise<void> => activePosts.size === 0
-    ? Promise.resolve()
-    : new Promise<void>((resolve) => postDrainWaiters.add(resolve));
+  const waitForRequestDrain = (): Promise<void> =>
+    activePosts.size === 0 ? Promise.resolve() : new Promise<void>((resolve) => postDrainWaiters.add(resolve));
   app.get('/ready', (_req, res) => {
     const readiness = options.readiness();
     res.status(readiness.ready ? 200 : 503).json(readiness);
@@ -302,7 +315,9 @@ export async function startRuntimeMcpTransport(
     res.once('close', releasePostResponse);
     void (async () => {
       let body: unknown;
-      try { body = parseBody(req.body); } catch (error) {
+      try {
+        body = parseBody(req.body);
+      } catch (error) {
         res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
         return;
       }
@@ -311,30 +326,34 @@ export async function startRuntimeMcpTransport(
       const requestedSessionId = req.headers['mcp-session-id'];
       const sessionId = typeof requestedSessionId === 'string' ? requestedSessionId : undefined;
       if (isInitialize(body)) {
-        if (!await reserveInitialize()) {
+        if (!(await reserveInitialize())) {
           res.status(503).json({ error: 'mcp_session_capacity_exhausted' });
           return;
         }
         let transport: NodeStreamableHTTPServerTransport;
         let committedSessionId: string | undefined;
-        const forwardedPrincipalId = typeof req.headers['x-forge-forwarded-principal-id'] === 'string'
-          ? req.headers['x-forge-forwarded-principal-id'].trim().slice(0, 512)
-          : '';
-        const forwardedSessionId = typeof req.headers['x-forge-forwarded-session-id'] === 'string'
-          ? req.headers['x-forge-forwarded-session-id'].trim().slice(0, 512)
-          : '';
-        const forwardedControllerTypeRaw = typeof req.headers['x-forge-forwarded-controller-type'] === 'string'
-          ? req.headers['x-forge-forwarded-controller-type'].trim().toLowerCase()
-          : '';
+        const forwardedPrincipalId =
+          typeof req.headers['x-forge-forwarded-principal-id'] === 'string'
+            ? req.headers['x-forge-forwarded-principal-id'].trim().slice(0, 512)
+            : '';
+        const forwardedSessionId =
+          typeof req.headers['x-forge-forwarded-session-id'] === 'string'
+            ? req.headers['x-forge-forwarded-session-id'].trim().slice(0, 512)
+            : '';
+        const forwardedControllerTypeRaw =
+          typeof req.headers['x-forge-forwarded-controller-type'] === 'string'
+            ? req.headers['x-forge-forwarded-controller-type'].trim().toLowerCase()
+            : '';
         const forwardedControllerType = ['chatgpt', 'codex', 'claude', 'grok'].includes(forwardedControllerTypeRaw)
-          ? forwardedControllerTypeRaw as ForwardedControllerType
+          ? (forwardedControllerTypeRaw as ForwardedControllerType)
           : undefined;
         const principal = forwardedPrincipalId || principalId(options.authToken);
         const server = options.createServer(principal, forwardedSessionId || undefined, forwardedControllerType);
         transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
-          enableJsonResponse: options.enableGatewayJsonResponses === true
-            && isLocalGatewayJsonResponseSession(body, req.socket.remoteAddress),
+          enableJsonResponse:
+            options.enableGatewayJsonResponses === true &&
+            isLocalGatewayJsonResponseSession(body, req.socket.remoteAddress),
           onsessioninitialized: (createdSessionId) => {
             committedSessionId = createdSessionId;
             initializingSessions = Math.max(0, initializingSessions - 1);
@@ -377,15 +396,21 @@ export async function startRuntimeMcpTransport(
         return;
       }
       activePost.transport = managed.transport;
-      await withManagedSessionRequest(managed, 'post', async () => await managed.transport.handleRequest(req, res, body));
-    })().catch((error: unknown) => {
-      if (!res.headersSent) res.status(500).json({ error: 'mcp_request_failed' });
-      console.error('[forge-runtime mcp] request failed:', error);
-    }).finally(() => {
-      releasePostResponse();
-      res.off('finish', releasePostResponse);
-      res.off('close', releasePostResponse);
-    });
+      await withManagedSessionRequest(
+        managed,
+        'post',
+        async () => await managed.transport.handleRequest(req, res, body),
+      );
+    })()
+      .catch((error: unknown) => {
+        if (!res.headersSent) res.status(500).json({ error: 'mcp_request_failed' });
+        console.error('[forge-runtime mcp] request failed:', error);
+      })
+      .finally(() => {
+        releasePostResponse();
+        res.off('finish', releasePostResponse);
+        res.off('close', releasePostResponse);
+      });
   });
   app.get('/mcp', requireAuth, (req, res) => {
     void (async () => {
@@ -460,31 +485,37 @@ export async function startRuntimeMcpTransport(
         requestDrainTimeoutMs: options.requestDrainTimeoutMs,
         // Snapshot sessions only after the request drain: an initialize request
         // already in flight may register its session while shutdown is starting.
-        closeSessions: [async () => {
-          const activeSessions = [...sessions.values()];
-          await Promise.allSettled(activeSessions.map(async ({ transport }) => await transport.close().catch(() => undefined)));
-          sessions.clear();
-        }],
+        closeSessions: [
+          async () => {
+            const activeSessions = [...sessions.values()];
+            await Promise.allSettled(
+              activeSessions.map(async ({ transport }) => await transport.close().catch(() => undefined)),
+            );
+            sessions.clear();
+          },
+        ],
         settleActiveRequests: async () => {
           for (const active of activePosts.values()) {
             let protocolSettled = false;
             if (active.transport && active.requestIds.length > 0) {
-              const outcomes = await Promise.allSettled(active.requestIds.map(async (id) => {
-                await active.transport!.send({
-                  jsonrpc: '2.0',
-                  id,
-                  error: {
-                    code: -32000,
-                    message: RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN,
-                    data: {
-                      outcome: 'unknown',
-                      recoverable: true,
-                      retryable: false,
-                      action: 'reconcile',
+              const outcomes = await Promise.allSettled(
+                active.requestIds.map(async (id) => {
+                  await active.transport!.send({
+                    jsonrpc: '2.0',
+                    id,
+                    error: {
+                      code: -32000,
+                      message: RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN,
+                      data: {
+                        outcome: 'unknown',
+                        recoverable: true,
+                        retryable: false,
+                        action: 'reconcile',
+                      },
                     },
-                  },
-                });
-              }));
+                  });
+                }),
+              );
               protocolSettled = outcomes.some((outcome) => outcome.status === 'fulfilled');
             }
             if (protocolSettled) continue;
@@ -493,7 +524,8 @@ export async function startRuntimeMcpTransport(
             response.status(409).json({
               error: 'runtime_cutover_outcome_unknown',
               code: RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN,
-              message: 'Canonical Runtime entered cutover after this request was admitted. The request outcome is unknown; reconcile by request/effect identity before any retry.',
+              message:
+                'Canonical Runtime entered cutover after this request was admitted. The request outcome is unknown; reconcile by request/effect identity before any retry.',
               recoverable: true,
               retryable: false,
               action: 'reconcile',

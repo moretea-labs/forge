@@ -155,7 +155,8 @@ function tracedResult(
   )
     return value;
   const originalStructuredContent = value.structuredContent as Record<string, unknown>;
-  const forwardedMeta = originalStructuredContent.responseMeta &&
+  const forwardedMeta =
+    originalStructuredContent.responseMeta &&
     typeof originalStructuredContent.responseMeta === 'object' &&
     !Array.isArray(originalStructuredContent.responseMeta)
       ? (originalStructuredContent.responseMeta as Record<string, unknown>)

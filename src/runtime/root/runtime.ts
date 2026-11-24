@@ -3,7 +3,7 @@ import { statSync } from 'fs';
 import { writeJsonAtomic } from '../shared/json-files';
 import { ensureForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
 import { dirname, join } from 'path';
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { ControlPlaneDatabaseInspection } from '../control-plane/persistence/sqlite-store';
 import {
   disableControlPlaneReadConnectionReuse,
@@ -11,10 +11,7 @@ import {
   inspectControlPlaneDatabase,
 } from '../control-plane/persistence/sqlite-store';
 import { cancelAllLightweightProcesses } from '../execution/process-runtime/lightweight-managed';
-import {
-  collectRuntimeSourceIdentity,
-  rotateRuntimeGeneration,
-} from '../control-plane/runtime-generation';
+import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../control-plane/runtime-generation';
 import { RuntimeControllerServices } from './controller-services';
 import { createRuntimeGatewayServer, runtimeGatewayToolSurfaceFingerprint } from './gateway-adapter';
 import { startRuntimeMcpTransport, type RuntimeMcpTransportHandle } from './mcp-transport';
@@ -26,10 +23,21 @@ import { migrateReleaseDurableState } from '../release/release-state-migration';
 import { normalizeLegacyRequirementAcceptance } from '../control-plane/persistence/requirement-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaim } from './write-fence';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
-import { startActiveExecutionPowerAssertion, type RuntimePowerAssertionHandle } from './active-execution-power-assertion';
-import { closeRuntimeComputerChatgptExtension, ensureRuntimeComputerChatgptExtension } from './computer-chatgpt-extension';
+import {
+  startActiveExecutionPowerAssertion,
+  type RuntimePowerAssertionHandle,
+} from './active-execution-power-assertion';
+import {
+  closeRuntimeComputerChatgptExtension,
+  ensureRuntimeComputerChatgptExtension,
+} from './computer-chatgpt-extension';
 import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
-import { removeRuntimeStartupFailureEvidence, removeRuntimeStatusSnapshot, writeRuntimeStartupFailureEvidence, writeRuntimeStatusSnapshot } from './status';
+import {
+  removeRuntimeStartupFailureEvidence,
+  removeRuntimeStatusSnapshot,
+  writeRuntimeStartupFailureEvidence,
+  writeRuntimeStatusSnapshot,
+} from './status';
 import type {
   CanonicalRuntimeConfig,
   CanonicalRuntimeStatusSnapshot,
@@ -53,11 +61,18 @@ export interface CanonicalRuntimeDependencies {
   ensureReleaseAuthority(controllerHome: string, manifestPath: string): RuntimeReleaseAuthority;
   readReleaseAuthority(controllerHome: string): RuntimeReleaseAuthority | undefined;
   startReleaseAuthorityMonitor(observe: () => void): RuntimeReleaseAuthorityMonitor;
-  bindWriteClaim(input: { controllerHome: string; owner: RuntimeOwnershipHandle['record']; authority: RuntimeReleaseAuthority }): void;
+  bindWriteClaim(input: {
+    controllerHome: string;
+    owner: RuntimeOwnershipHandle['record'];
+    authority: RuntimeReleaseAuthority;
+  }): void;
   acquireOwnership(controllerHome: string, runtimeInstanceId: string): RuntimeOwnershipHandle;
   inspectDatabase(controllerHome: string): ControlPlaneDatabaseInspection;
   startScheduler(input: Parameters<typeof startInProcessScheduler>[0]): RuntimeSchedulerHandle;
-  startLocalBridge(input: { controllerHome: string; repositoryRoot?: string }): Promise<RuntimeLocalBridgeHandle | undefined>;
+  startLocalBridge(input: {
+    controllerHome: string;
+    repositoryRoot?: string;
+  }): Promise<RuntimeLocalBridgeHandle | undefined>;
   startPowerAssertion(input: { controllerHome: string; runtimePid: number }): RuntimePowerAssertionHandle;
   startTransport(options: Parameters<typeof startRuntimeMcpTransport>[0]): Promise<RuntimeMcpTransportHandle>;
   runMcpProbe(endpoint: string, authToken: string): Promise<void>;
@@ -151,11 +166,15 @@ async function captureDefaultJscSamplingProfile(options: { durationMs: number; s
   };
   const rawTraces = Array.isArray(rawStackTraces?.traces) ? rawStackTraces.traces : [];
   const traces = rawTraces.slice(-JSC_SAMPLING_TRACE_LIMIT).map((trace) => {
-    const record = trace && typeof trace === 'object' && !Array.isArray(trace)
-      ? trace as Record<string, unknown>
-      : {};
+    const record =
+      trace && typeof trace === 'object' && !Array.isArray(trace) ? (trace as Record<string, unknown>) : {};
     const frames = Array.isArray(record.frames)
-      ? record.frames.filter((frame): frame is Record<string, unknown> => Boolean(frame) && typeof frame === 'object' && !Array.isArray(frame)).slice(0, JSC_SAMPLING_FRAME_LIMIT)
+      ? record.frames
+          .filter(
+            (frame): frame is Record<string, unknown> =>
+              Boolean(frame) && typeof frame === 'object' && !Array.isArray(frame),
+          )
+          .slice(0, JSC_SAMPLING_FRAME_LIMIT)
       : [];
     return {
       timestamp: typeof record.timestamp === 'number' ? record.timestamp : null,
@@ -163,7 +182,12 @@ async function captureDefaultJscSamplingProfile(options: { durationMs: number; s
     };
   });
   const sources = Array.isArray(rawStackTraces?.sources)
-    ? rawStackTraces.sources.filter((source): source is Record<string, unknown> => Boolean(source) && typeof source === 'object' && !Array.isArray(source)).slice(0, JSC_SAMPLING_SOURCE_LIMIT)
+    ? rawStackTraces.sources
+        .filter(
+          (source): source is Record<string, unknown> =>
+            Boolean(source) && typeof source === 'object' && !Array.isArray(source),
+        )
+        .slice(0, JSC_SAMPLING_SOURCE_LIMIT)
     : [];
   return {
     requestedDurationMs: options.durationMs,
@@ -187,7 +211,9 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   ensureReleaseAuthority: ensureActiveRuntimeRelease,
   readReleaseAuthority: readRuntimeReleaseAuthority,
   startReleaseAuthorityMonitor: startDefaultReleaseAuthorityMonitor,
-  bindWriteClaim: (input) => { bindRuntimeWriteClaim(input); },
+  bindWriteClaim: (input) => {
+    bindRuntimeWriteClaim(input);
+  },
   acquireOwnership: acquireRuntimeOwnership,
   inspectDatabase: inspectControlPlaneDatabase,
   startScheduler: startInProcessScheduler,
@@ -221,7 +247,9 @@ export class CanonicalForgeRuntime {
   private releaseAuthorityMonitor?: RuntimeReleaseAuthorityMonitor;
   private stopPromise?: Promise<void>;
   private stoppedResolve!: () => void;
-  private readonly stopped = new Promise<void>((resolve) => { this.stoppedResolve = resolve; });
+  private readonly stopped = new Promise<void>((resolve) => {
+    this.stoppedResolve = resolve;
+  });
   private started = false;
   private stopping = false;
   private jscHeapDiagnosticsSignalHandler?: () => void;
@@ -266,52 +294,58 @@ export class CanonicalForgeRuntime {
     const handler = () => {
       if (this.jscHeapDiagnosticsCaptureInFlight) return;
       this.jscHeapDiagnosticsCaptureInFlight = true;
-      void import('bun:jsc').then(({ fullGC, heapStats, memoryUsage }) => {
-        const gcStartedAt = performance.now();
-        const fullGcResult = fullGC();
-        const fullGcDurationMs = Math.max(0, performance.now() - gcStartedAt);
-        const heap = heapStats();
-        const topTypes = (counts: Record<string, number>, limit: number) => Object.entries(counts)
-          .sort((left, right) => right[1] - left[1])
-          .slice(0, limit)
-          .map(([type, count]) => ({ type, count }));
-        writeJsonAtomic(join(this.config.controllerHome, 'diagnostics', 'jsc-heap.json'), {
-          schemaVersion: 1,
-          capturedAt: new Date().toISOString(),
-          pid: process.pid,
-          runtimeInstanceId: this.runtimeInstanceId,
-          releaseId: this.release?.releaseId,
-          gc: {
-            forced: true,
-            kind: 'full',
-            durationMs: fullGcDurationMs,
-            result: fullGcResult,
-          },
-          heap: {
-            heapSize: heap.heapSize,
-            heapCapacity: heap.heapCapacity,
-            extraMemorySize: heap.extraMemorySize,
-            objectCount: heap.objectCount,
-            protectedObjectCount: heap.protectedObjectCount,
-            globalObjectCount: heap.globalObjectCount,
-            protectedGlobalObjectCount: heap.protectedGlobalObjectCount,
-            objectTypeCount: Object.keys(heap.objectTypeCounts).length,
-            protectedObjectTypeCount: Object.keys(heap.protectedObjectTypeCounts).length,
-            topObjectTypes: topTypes(heap.objectTypeCounts, 100),
-            topProtectedObjectTypes: topTypes(heap.protectedObjectTypeCounts, 50),
-          },
-          memoryUsage: memoryUsage(),
+      void import('bun:jsc')
+        .then(({ fullGC, heapStats, memoryUsage }) => {
+          const gcStartedAt = performance.now();
+          const fullGcResult = fullGC();
+          const fullGcDurationMs = Math.max(0, performance.now() - gcStartedAt);
+          const heap = heapStats();
+          const topTypes = (counts: Record<string, number>, limit: number) =>
+            Object.entries(counts)
+              .sort((left, right) => right[1] - left[1])
+              .slice(0, limit)
+              .map(([type, count]) => ({ type, count }));
+          writeJsonAtomic(join(this.config.controllerHome, 'diagnostics', 'jsc-heap.json'), {
+            schemaVersion: 1,
+            capturedAt: new Date().toISOString(),
+            pid: process.pid,
+            runtimeInstanceId: this.runtimeInstanceId,
+            releaseId: this.release?.releaseId,
+            gc: {
+              forced: true,
+              kind: 'full',
+              durationMs: fullGcDurationMs,
+              result: fullGcResult,
+            },
+            heap: {
+              heapSize: heap.heapSize,
+              heapCapacity: heap.heapCapacity,
+              extraMemorySize: heap.extraMemorySize,
+              objectCount: heap.objectCount,
+              protectedObjectCount: heap.protectedObjectCount,
+              globalObjectCount: heap.globalObjectCount,
+              protectedGlobalObjectCount: heap.protectedGlobalObjectCount,
+              objectTypeCount: Object.keys(heap.objectTypeCounts).length,
+              protectedObjectTypeCount: Object.keys(heap.protectedObjectTypeCounts).length,
+              topObjectTypes: topTypes(heap.objectTypeCounts, 100),
+              topProtectedObjectTypes: topTypes(heap.protectedObjectTypeCounts, 50),
+            },
+            memoryUsage: memoryUsage(),
+          });
+        })
+        .catch((error) => {
+          process.stderr.write(
+            `${JSON.stringify({
+              event: 'forge_runtime_jsc_heap_diagnostics_failed',
+              runtimeInstanceId: this.runtimeInstanceId,
+              message: error instanceof Error ? error.message : String(error),
+              observedAt: new Date().toISOString(),
+            })}\n`,
+          );
+        })
+        .finally(() => {
+          this.jscHeapDiagnosticsCaptureInFlight = false;
         });
-      }).catch((error) => {
-        process.stderr.write(`${JSON.stringify({
-          event: 'forge_runtime_jsc_heap_diagnostics_failed',
-          runtimeInstanceId: this.runtimeInstanceId,
-          message: error instanceof Error ? error.message : String(error),
-          observedAt: new Date().toISOString(),
-        })}\n`);
-      }).finally(() => {
-        this.jscHeapDiagnosticsCaptureInFlight = false;
-      });
     };
     process.on('SIGUSR2', handler);
     this.jscHeapDiagnosticsSignalHandler = handler;
@@ -329,40 +363,48 @@ export class CanonicalForgeRuntime {
     const handler = () => {
       if (this.jscSamplingProfileCaptureInFlight) return;
       this.jscSamplingProfileCaptureInFlight = true;
-      void this.dependencies.captureJscSamplingProfile({
-        durationMs: JSC_SAMPLING_DURATION_MS,
-        sampleIntervalUs: JSC_SAMPLING_INTERVAL_US,
-      }).then((sampling) => {
-        const path = join(this.config.controllerHome, 'diagnostics', 'jsc-sampling-profile.json');
-        writeJsonAtomic(path, {
-          schemaVersion: 1,
-          capturedAt: new Date().toISOString(),
-          pid: process.pid,
-          runtimeInstanceId: this.runtimeInstanceId,
-          releaseId: this.release?.releaseId,
-          bounded: true,
-          ...sampling,
+      void this.dependencies
+        .captureJscSamplingProfile({
+          durationMs: JSC_SAMPLING_DURATION_MS,
+          sampleIntervalUs: JSC_SAMPLING_INTERVAL_US,
+        })
+        .then((sampling) => {
+          const path = join(this.config.controllerHome, 'diagnostics', 'jsc-sampling-profile.json');
+          writeJsonAtomic(path, {
+            schemaVersion: 1,
+            capturedAt: new Date().toISOString(),
+            pid: process.pid,
+            runtimeInstanceId: this.runtimeInstanceId,
+            releaseId: this.release?.releaseId,
+            bounded: true,
+            ...sampling,
+          });
+          process.stderr.write(
+            `${JSON.stringify({
+              event: 'forge_runtime_jsc_sampling_profile_captured',
+              runtimeInstanceId: this.runtimeInstanceId,
+              path,
+              requestedDurationMs: sampling.requestedDurationMs,
+              elapsedMs: sampling.elapsedMs,
+              sampleIntervalUs: sampling.sampleIntervalUs,
+              retainedTraceCount: sampling.stackTraces.retainedTraceCount,
+              observedAt: new Date().toISOString(),
+            })}\n`,
+          );
+        })
+        .catch((error) => {
+          process.stderr.write(
+            `${JSON.stringify({
+              event: 'forge_runtime_jsc_sampling_profile_failed',
+              runtimeInstanceId: this.runtimeInstanceId,
+              message: error instanceof Error ? error.message : String(error),
+              observedAt: new Date().toISOString(),
+            })}\n`,
+          );
+        })
+        .finally(() => {
+          this.jscSamplingProfileCaptureInFlight = false;
         });
-        process.stderr.write(`${JSON.stringify({
-          event: 'forge_runtime_jsc_sampling_profile_captured',
-          runtimeInstanceId: this.runtimeInstanceId,
-          path,
-          requestedDurationMs: sampling.requestedDurationMs,
-          elapsedMs: sampling.elapsedMs,
-          sampleIntervalUs: sampling.sampleIntervalUs,
-          retainedTraceCount: sampling.stackTraces.retainedTraceCount,
-          observedAt: new Date().toISOString(),
-        })}\n`);
-      }).catch((error) => {
-        process.stderr.write(`${JSON.stringify({
-          event: 'forge_runtime_jsc_sampling_profile_failed',
-          runtimeInstanceId: this.runtimeInstanceId,
-          message: error instanceof Error ? error.message : String(error),
-          observedAt: new Date().toISOString(),
-        })}\n`);
-      }).finally(() => {
-        this.jscSamplingProfileCaptureInFlight = false;
-      });
     };
     process.on('SIGUSR1', handler);
     this.jscSamplingProfilerSignalHandler = handler;
@@ -429,10 +471,11 @@ export class CanonicalForgeRuntime {
       if (!authority) return;
       const active = authority.active;
       if (
-        active.releaseId === release.releaseId
-        && active.artifactIdentity === release.artifactIdentity
-        && active.workerProtocolVersion === release.workerProtocolVersion
-      ) return;
+        active.releaseId === release.releaseId &&
+        active.artifactIdentity === release.artifactIdentity &&
+        active.workerProtocolVersion === release.workerProtocolVersion
+      )
+        return;
       const reasonCode = 'RUNTIME_RELEASE_SUPERSEDED';
       this.readinessState.setDiagnostic('releaseCoherence', 'fail', reasonCode);
       this.failCore(
@@ -446,7 +489,16 @@ export class CanonicalForgeRuntime {
     if (this.started) throw new Error('RUNTIME_ALREADY_STARTED');
     this.started = true;
     this.readinessState.markNotReady();
-    let stage: 'release' | 'ownership' | 'source' | 'database' | 'computerProvider' | 'scheduler' | 'localBridge' | 'transport' | 'probe' = 'release';
+    let stage:
+      | 'release'
+      | 'ownership'
+      | 'source'
+      | 'database'
+      | 'computerProvider'
+      | 'scheduler'
+      | 'localBridge'
+      | 'transport'
+      | 'probe' = 'release';
     try {
       this.release = this.dependencies.loadReleaseManifest(this.config.releaseManifestPath, this.config.controllerHome);
 
@@ -455,7 +507,10 @@ export class CanonicalForgeRuntime {
 
       stage = 'release';
       this.dependencies.migrateReleaseState(this.config.controllerHome);
-      const releaseAuthority = this.dependencies.ensureReleaseAuthority(this.config.controllerHome, this.config.releaseManifestPath);
+      const releaseAuthority = this.dependencies.ensureReleaseAuthority(
+        this.config.controllerHome,
+        this.config.releaseManifestPath,
+      );
       stage = 'source';
       // A compiled release is a closed execution surface. Fail before Scheduler
       // composition if a stale/corrupt manifest omits any immutable component;
@@ -469,14 +524,16 @@ export class CanonicalForgeRuntime {
       // explicit repositoryRoot behavior so development-mode Runtime drift
       // remains live.
       const materializedRelease = Boolean(
-        this.release.releaseRevision
-        && (this.release.sourceCommit || this.release.releaseRevision.startsWith('package:')),
+        this.release.releaseRevision &&
+          (this.release.sourceCommit || this.release.releaseRevision.startsWith('package:')),
       );
       const runtimeSourceRoot = materializedRelease
         ? dirname(this.config.releaseManifestPath)
         : this.config.repositoryRoot;
       if (!runtimeSourceRoot) {
-        throw new Error('RUNTIME_CONFIG_REQUIRED: repositoryRoot is required only for non-materialized development Runtime');
+        throw new Error(
+          'RUNTIME_CONFIG_REQUIRED: repositoryRoot is required only for non-materialized development Runtime',
+        );
       }
       const runtimeSource = this.dependencies.collectRuntimeSourceIdentity(runtimeSourceRoot);
       this.dependencies.rotateRuntimeGeneration(this.config.controllerHome, runtimeSource);
@@ -514,27 +571,27 @@ export class CanonicalForgeRuntime {
       await ensureRuntimeComputerChatgptExtension(this.config.controllerHome);
 
       stage = 'scheduler';
-      const standaloneReleaseRoot = this.release.executionMode === 'standalone-binary'
-        ? dirname(this.config.releaseManifestPath)
-        : undefined;
+      const standaloneReleaseRoot =
+        this.release.executionMode === 'standalone-binary' ? dirname(this.config.releaseManifestPath) : undefined;
       // A package release keeps its executable source snapshot under
       // `<release>/package`. Scheduler workers, periodic cleanup, and the
       // gateway tool context must resolve there, not at the release wrapper.
-      const executionSourceRoot = materializedRelease
-        && this.release.executionMode !== 'standalone-binary'
-        && this.release.packageRoot
-        ? join(dirname(this.config.releaseManifestPath), this.release.packageRoot)
-        : runtimeSourceRoot;
+      const executionSourceRoot =
+        materializedRelease && this.release.executionMode !== 'standalone-binary' && this.release.packageRoot
+          ? join(dirname(this.config.releaseManifestPath), this.release.packageRoot)
+          : runtimeSourceRoot;
       this.scheduler = this.dependencies.startScheduler({
         controllerHome: this.config.controllerHome,
         readyTimeoutMs: this.config.schedulerReadyTimeoutMs,
         runtimeSourceRoot: standaloneReleaseRoot ? undefined : executionSourceRoot,
-        workerExecutable: standaloneReleaseRoot && this.release.schedulerWorkerEntrypoint
-          ? join(standaloneReleaseRoot, this.release.schedulerWorkerEntrypoint)
-          : undefined,
-        periodicCleanupExecutable: standaloneReleaseRoot && this.release.periodicCleanupEntrypoint
-          ? join(standaloneReleaseRoot, this.release.periodicCleanupEntrypoint)
-          : undefined,
+        workerExecutable:
+          standaloneReleaseRoot && this.release.schedulerWorkerEntrypoint
+            ? join(standaloneReleaseRoot, this.release.schedulerWorkerEntrypoint)
+            : undefined,
+        periodicCleanupExecutable:
+          standaloneReleaseRoot && this.release.periodicCleanupEntrypoint
+            ? join(standaloneReleaseRoot, this.release.periodicCleanupEntrypoint)
+            : undefined,
       });
       await this.scheduler.ready;
       this.readinessState.setDiagnostic('scheduler', 'pass');
@@ -563,13 +620,14 @@ export class CanonicalForgeRuntime {
         enableGatewayJsonResponses: process.env.FORGE_RUNTIME_GATEWAY_JSON_RESPONSES === '1',
         authToken: this.config.authToken,
         readiness: () => this.readiness(),
-        createServer: (principalId, sessionId, controllerType) => createRuntimeGatewayServer(this.controller!, principalId, {
-          controllerHome: this.config.controllerHome,
-          runtimeInstanceId: this.runtimeInstanceId,
-          runtimeSourceRoot: executionSourceRoot,
-          sessionId,
-          controllerType,
-        }),
+        createServer: (principalId, sessionId, controllerType) =>
+          createRuntimeGatewayServer(this.controller!, principalId, {
+            controllerHome: this.config.controllerHome,
+            runtimeInstanceId: this.runtimeInstanceId,
+            runtimeSourceRoot: executionSourceRoot,
+            sessionId,
+            controllerType,
+          }),
         onToolSurfaceObservation: () => this.refreshToolSurfaceFingerprint(executionSourceRoot),
         onFatal: (error) => this.failCore('MCP_TRANSPORT_FAILED', error.message),
       });
@@ -594,10 +652,12 @@ export class CanonicalForgeRuntime {
           stage,
           reasonCode: reason,
           message,
-          ...(this.release ? {
-            releaseId: this.release.releaseId,
-            artifactIdentity: this.release.artifactIdentity,
-          } : {}),
+          ...(this.release
+            ? {
+                releaseId: this.release.releaseId,
+                artifactIdentity: this.release.artifactIdentity,
+              }
+            : {}),
           observedAt: new Date().toISOString(),
         });
       } catch {
@@ -626,20 +686,23 @@ export class CanonicalForgeRuntime {
       this.readinessState.setDiagnostic('releaseCoherence', 'fail', reason);
     } else if (stage === 'database') this.readinessState.setDiagnostic('database', 'fail', reason);
     else if (stage === 'scheduler') this.readinessState.setDiagnostic('scheduler', 'fail', reason);
-    else if (stage === 'transport' || stage === 'probe') this.readinessState.setDiagnostic('mcpEndToEnd', 'fail', reason);
+    else if (stage === 'transport' || stage === 'probe')
+      this.readinessState.setDiagnostic('mcpEndToEnd', 'fail', reason);
     this.readinessState.addReason(reason);
     this.publishStatus();
   }
 
   private failCore(reasonCode: string, message: string): void {
     if (this.stopping || this.lastExit) return;
-    process.stderr.write(`${JSON.stringify({
-      event: 'forge_runtime_core_failure',
-      runtimeInstanceId: this.runtimeInstanceId,
-      reasonCode,
-      message,
-      observedAt: new Date().toISOString(),
-    })}\n`);
+    process.stderr.write(
+      `${JSON.stringify({
+        event: 'forge_runtime_core_failure',
+        runtimeInstanceId: this.runtimeInstanceId,
+        reasonCode,
+        message,
+        observedAt: new Date().toISOString(),
+      })}\n`,
+    );
     if (reasonCode.startsWith('SCHEDULER_')) this.readinessState.setDiagnostic('scheduler', 'fail', reasonCode);
     if (reasonCode.startsWith('MCP_')) this.readinessState.setDiagnostic('mcpEndToEnd', 'fail', reasonCode);
     this.readinessState.addReason(reasonCode);
@@ -655,7 +718,11 @@ export class CanonicalForgeRuntime {
       this.publishStatus();
       // Stop the release observer before withdrawing MCP work so no second
       // supersession callback can race the teardown sequence.
-      try { this.releaseAuthorityMonitor?.stop(); } catch { /* cleanup is best effort */ }
+      try {
+        this.releaseAuthorityMonitor?.stop();
+      } catch {
+        /* cleanup is best effort */
+      }
       this.releaseAuthorityMonitor = undefined;
       this.removeJscHeapDiagnosticsSignal();
       this.removeJscSamplingProfilerSignal();
@@ -667,7 +734,11 @@ export class CanonicalForgeRuntime {
       await this.dependencies.stopContextReadHelpers().catch(() => undefined);
       await this.localBridge?.close().catch(() => undefined);
       await this.scheduler?.stop().catch(() => undefined);
-      try { this.powerAssertion?.stop(); } catch { /* power assertion cleanup is best effort */ }
+      try {
+        this.powerAssertion?.stop();
+      } catch {
+        /* power assertion cleanup is best effort */
+      }
       this.powerAssertion = undefined;
       disableControlPlaneReadConnectionReuse(this.config.controllerHome);
       const ownerPid = this.ownership?.record.pid;

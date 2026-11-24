@@ -4,7 +4,12 @@ import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/proce
 import { mcpToolDefinitionToSdk } from '../../packages/protocols/mcp/tool-contract';
 import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
 import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
-import { createCanonicalRuntimeProxy, createMcpToolContext, deriveCanonicalForwardingTiming, projectGatewayProxyResponseMeta } from '../../adapters/mcp/server';
+import {
+  createCanonicalRuntimeProxy,
+  createMcpToolContext,
+  deriveCanonicalForwardingTiming,
+  projectGatewayProxyResponseMeta,
+} from '../../adapters/mcp/server';
 import { Server } from '@modelcontextprotocol/server';
 import { startRuntimeMcpTransport } from '../../src/runtime/root/mcp-transport';
 import express from 'express';
@@ -17,15 +22,32 @@ import { EventEmitter } from 'events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from '@modelcontextprotocol/server';
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
+  PROTOCOL_VERSION_META_KEY,
+} from '@modelcontextprotocol/server';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { loadMcpServiceLocalConfig, mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath, writeMcpServiceLocalConfig, writeMcpServiceRuntimeState } from '../../adapters/mcp/auth';
+import {
+  loadMcpServiceLocalConfig,
+  mcpControllerHomeOAuthPath,
+  mcpControllerHomeTokenPath,
+  writeMcpServiceLocalConfig,
+  writeMcpServiceRuntimeState,
+} from '../../adapters/mcp/auth';
 import { runMcpSetupChatgpt } from '../../adapters/mcp/setup';
 import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../adapters/mcp/proxy-env';
 import { McpSessionRegistry } from '../../adapters/mcp/transports/session-registry';
 import { admitMcpPost, createMcpHttpSessionRegistry, mcpRequestError } from '../../adapters/mcp/transports/http';
-import { recentMcpTransportEvidence, registerMcpHttpObservationRoutes } from '../../adapters/mcp/transports/http-observation';
-import { flushMcpDiagnostics, readRecentMcpTransportEvents, recordMcpTransportEvent } from '../../src/runtime/diagnostics/mcp-timing';
+import {
+  recentMcpTransportEvidence,
+  registerMcpHttpObservationRoutes,
+} from '../../adapters/mcp/transports/http-observation';
+import {
+  flushMcpDiagnostics,
+  readRecentMcpTransportEvents,
+  recordMcpTransportEvent,
+} from '../../src/runtime/diagnostics/mcp-timing';
 import { readExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import { readRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import {
@@ -98,10 +120,7 @@ async function stopMcpServerProcess(proc: Bun.Subprocess<'ignore', 'ignore', 'pi
   await proc.exited.catch(() => undefined);
 }
 
-function isolatedMcpProcessEnv(
-  controllerHome: string,
-  overrides: Record<string, string> = {},
-): NodeJS.ProcessEnv {
+function isolatedMcpProcessEnv(controllerHome: string, overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of [
     'FORGE_MCP_PUBLIC_ORIGIN',
@@ -138,7 +157,8 @@ describe('mcp http transport', () => {
       body: {
         error: 'runtime_cutover_outcome_unknown',
         code: 'MCP_RUNTIME_CUTOVER_OUTCOME_UNKNOWN',
-        message: 'The Canonical Runtime changed after this request was admitted. Reconcile the original request/effect identity before retrying.',
+        message:
+          'The Canonical Runtime changed after this request was admitted. Reconcile the original request/effect identity before retrying.',
         recoverable: true,
         retryable: false,
         sessionPreserved: true,
@@ -148,7 +168,12 @@ describe('mcp http transport', () => {
   });
 
   test('bounds MCP POST ingress with one shared capacity authority', () => {
-    const stats = { initializing: 0, activePostStartedAt: new Map<import('express').Response, number>(), rejectedOverload: 0, authFailures: { total: 0, bearer: 0, oauth: 0 } };
+    const stats = {
+      initializing: 0,
+      activePostStartedAt: new Map<import('express').Response, number>(),
+      rejectedOverload: 0,
+      authFailures: { total: 0, bearer: 0, oauth: 0 },
+    };
     for (let i = 0; i < 31; i++) stats.activePostStartedAt.set({} as import('express').Response, Date.now() - 1_000);
     const response = () => {
       const emitter = new EventEmitter();
@@ -231,10 +256,17 @@ describe('mcp http transport', () => {
       // Candidate or rollback rebind changes installedAt before strict MCP
       // verification, so the replacement process is not trapped behind the
       // predecessor's drain marker even when it serves the same endpoint.
-      writeFileSync(connectorPaths.authorityPath, `${JSON.stringify({
-        ...connectorAuthority,
-        installedAt: '2026-10-09T20:01:00.000Z',
-      }, null, 2)}\n`);
+      writeFileSync(
+        connectorPaths.authorityPath,
+        `${JSON.stringify(
+          {
+            ...connectorAuthority,
+            installedAt: '2026-10-09T20:01:00.000Z',
+          },
+          null,
+          2,
+        )}\n`,
+      );
       const rebound = response();
       expect(admitMcpPost(stats, rebound.res, { controllerHome, connectorEndpoint: endpoint })).toBe(true);
       expect(stats.activePostStartedAt.size).toBe(32);
@@ -291,11 +323,20 @@ describe('mcp http transport', () => {
       const res = Object.assign(emitter, {
         headersSent: false,
         setHeader: () => undefined,
-        status() { return res; },
-        json() { return res; },
-        destroy() { emitter.emit('close'); },
+        status() {
+          return res;
+        },
+        json() {
+          return res;
+        },
+        destroy() {
+          emitter.emit('close');
+        },
       });
-      return { res: res as unknown as import('express').Response, admitted: admitMcpPost(stats, res as unknown as import('express').Response) };
+      return {
+        res: res as unknown as import('express').Response,
+        admitted: admitMcpPost(stats, res as unknown as import('express').Response),
+      };
     };
 
     // A fresh in-flight POST is retained.
@@ -313,7 +354,12 @@ describe('mcp http transport', () => {
     expect(stats.activePostStartedAt.size).toBe(1);
     for (const entry of stalled) {
       expect(entry.statusCode()).toBe(504);
-      expect(entry.body()).toMatchObject({ code: 'MCP_ACTIVE_POST_STALLED', retryable: false, action: 'reconcile', executionOutcome: 'unknown' });
+      expect(entry.body()).toMatchObject({
+        code: 'MCP_ACTIVE_POST_STALLED',
+        retryable: false,
+        action: 'reconcile',
+        executionOutcome: 'unknown',
+      });
     }
 
     // A streaming POST (for example subscriptions/listen) is retained within
@@ -347,7 +393,11 @@ describe('mcp http transport', () => {
       const registry = createMcpHttpSessionRegistry<{ close(): void }, { sessionId: string; controllerHome: string }>();
       registry.register({
         sessionId: 'mcp-transport-session',
-        transport: { close: () => { transportClosed += 1; } },
+        transport: {
+          close: () => {
+            transportClosed += 1;
+          },
+        },
         toolContext: { sessionId: execution.sessionId, controllerHome },
         route: '/mcp',
         principalId: 'transport-test-principal',
@@ -359,11 +409,13 @@ describe('mcp http transport', () => {
 
       expect(transportClosed).toBe(1);
       expect(registry.get('mcp-transport-session')).toBeUndefined();
-      expect(readExecutionSession(controllerHome, {
-        sessionId: execution.sessionId,
-        principalId: execution.principalId,
-        controllerInstanceId: 'runtime-after-transport-close',
-      })).toMatchObject({
+      expect(
+        readExecutionSession(controllerHome, {
+          sessionId: execution.sessionId,
+          principalId: execution.principalId,
+          controllerInstanceId: 'runtime-after-transport-close',
+        }),
+      ).toMatchObject({
         sessionId: execution.sessionId,
         principalId: execution.principalId,
         controllerInstanceId: 'runtime-after-transport-close',
@@ -373,20 +425,25 @@ describe('mcp http transport', () => {
     }
   });
 
-
   test('health keeps current transport health separate from recent interruption and recovery evidence', () => {
     const startedAt = '2026-09-22T09:50:00.000Z';
     const now = Date.parse('2026-09-22T10:10:00.000Z');
-    const interrupted = recentMcpTransportEvidence([{
-      schemaVersion: 1,
-      at: '2026-09-22T10:00:00.000Z',
-      kind: 'interruption',
-      sessionId: 'session-a',
-      connectionId: 'connection-a',
-      route: '/mcp',
-      principalId: 'controller-http-client',
-      reason: 'transport_close',
-    }], startedAt, now);
+    const interrupted = recentMcpTransportEvidence(
+      [
+        {
+          schemaVersion: 1,
+          at: '2026-09-22T10:00:00.000Z',
+          kind: 'interruption',
+          sessionId: 'session-a',
+          connectionId: 'connection-a',
+          route: '/mcp',
+          principalId: 'controller-http-client',
+          reason: 'transport_close',
+        },
+      ],
+      startedAt,
+      now,
+    );
     expect(interrupted).toMatchObject({
       current: 'healthy',
       recentStatus: 'recovering',
@@ -395,24 +452,31 @@ describe('mcp http transport', () => {
       lastSessionClose: { sessionId: 'session-a', reason: 'transport_close' },
     });
 
-    const recovered = recentMcpTransportEvidence([{
-      schemaVersion: 1,
-      at: '2026-09-22T10:00:05.000Z',
-      kind: 'session_initialized',
-      sessionId: 'session-b',
-      connectionId: 'connection-a',
-      route: '/mcp',
-      principalId: 'controller-http-client',
-    }, {
-      schemaVersion: 1,
-      at: '2026-09-22T10:00:00.000Z',
-      kind: 'interruption',
-      sessionId: 'session-a',
-      connectionId: 'connection-a',
-      route: '/mcp',
-      principalId: 'controller-http-client',
-      reason: 'transport_close',
-    }], startedAt, now);
+    const recovered = recentMcpTransportEvidence(
+      [
+        {
+          schemaVersion: 1,
+          at: '2026-09-22T10:00:05.000Z',
+          kind: 'session_initialized',
+          sessionId: 'session-b',
+          connectionId: 'connection-a',
+          route: '/mcp',
+          principalId: 'controller-http-client',
+        },
+        {
+          schemaVersion: 1,
+          at: '2026-09-22T10:00:00.000Z',
+          kind: 'interruption',
+          sessionId: 'session-a',
+          connectionId: 'connection-a',
+          route: '/mcp',
+          principalId: 'controller-http-client',
+          reason: 'transport_close',
+        },
+      ],
+      startedAt,
+      now,
+    );
     expect(recovered).toMatchObject({
       current: 'healthy',
       recentStatus: 'recovered',
@@ -423,24 +487,31 @@ describe('mcp http transport', () => {
   test('does not attribute another connection initialization to an interrupted MCP connection', () => {
     const startedAt = '2026-09-22T09:50:00.000Z';
     const now = Date.parse('2026-09-22T10:10:00.000Z');
-    const evidence = recentMcpTransportEvidence([{
-      schemaVersion: 1,
-      at: '2026-09-22T10:00:05.000Z',
-      kind: 'session_initialized',
-      sessionId: 'other-session',
-      connectionId: 'connection-b',
-      route: '/mcp',
-      principalId: 'controller-http-client',
-    }, {
-      schemaVersion: 1,
-      at: '2026-09-22T10:00:00.000Z',
-      kind: 'interruption',
-      sessionId: 'session-a',
-      connectionId: 'connection-a',
-      route: '/mcp',
-      principalId: 'controller-http-client',
-      reason: 'transport_close',
-    }], startedAt, now);
+    const evidence = recentMcpTransportEvidence(
+      [
+        {
+          schemaVersion: 1,
+          at: '2026-09-22T10:00:05.000Z',
+          kind: 'session_initialized',
+          sessionId: 'other-session',
+          connectionId: 'connection-b',
+          route: '/mcp',
+          principalId: 'controller-http-client',
+        },
+        {
+          schemaVersion: 1,
+          at: '2026-09-22T10:00:00.000Z',
+          kind: 'interruption',
+          sessionId: 'session-a',
+          connectionId: 'connection-a',
+          route: '/mcp',
+          principalId: 'controller-http-client',
+          reason: 'transport_close',
+        },
+      ],
+      startedAt,
+      now,
+    );
 
     expect(evidence).toMatchObject({ current: 'healthy', recentStatus: 'recovering' });
     expect(evidence.lastRecoveryAt).toBeUndefined();
@@ -469,16 +540,16 @@ describe('mcp http transport', () => {
       // Read through a fresh Controller Home so no process-local event cache can
       // make this assertion pass; this is the same durable path after restart.
       const events = readRecentMcpTransportEvents(restartedHome);
-      expect(events).toMatchObject([{
-        kind: 'session_closed',
-        sessionId: 'session-idle',
-        reason: 'idle_ttl',
-      }]);
-      expect(recentMcpTransportEvidence(
-        events,
-        '2026-09-22T09:50:00.000Z',
-        Date.parse('2026-09-22T10:10:00.000Z'),
-      )).toMatchObject({
+      expect(events).toMatchObject([
+        {
+          kind: 'session_closed',
+          sessionId: 'session-idle',
+          reason: 'idle_ttl',
+        },
+      ]);
+      expect(
+        recentMcpTransportEvidence(events, '2026-09-22T09:50:00.000Z', Date.parse('2026-09-22T10:10:00.000Z')),
+      ).toMatchObject({
         current: 'healthy',
         recentStatus: 'stable',
         lastSessionClose: {
@@ -502,7 +573,24 @@ describe('mcp http transport', () => {
       await withTestControllerHome(workingDirectory, async (controllerHome) => {
         runMcpSetupChatgpt({ repo: workingDirectory, port: String(port) });
         proc = Bun.spawn(
-          ['bun', join(process.cwd(), 'src/cli/index.ts'), 'mcp', 'serve', '--controller-home', controllerHome, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'controller', '--auth', 'bearer'],
+          [
+            'bun',
+            join(process.cwd(), 'src/cli/index.ts'),
+            'mcp',
+            'serve',
+            '--controller-home',
+            controllerHome,
+            '--transport',
+            'http',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(port),
+            '--profile',
+            'controller',
+            '--auth',
+            'bearer',
+          ],
           {
             cwd: workingDirectory,
             stdout: 'ignore',
@@ -567,21 +655,31 @@ describe('mcp http transport', () => {
 
         const initializedNotification = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2024-11-05' },
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-protocol-version': '2024-11-05',
+          },
           body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
         });
         expect(initializedNotification.status).toBe(202);
 
         const toolsList = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2024-11-05' },
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-protocol-version': '2024-11-05',
+          },
           body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
         });
         expect(toolsList.status).toBe(200);
         expect(toolsList.headers.get('mcp-session-id')).toBeNull();
         const toolsListText = await toolsList.text();
         const toolsListData = toolsListText.split(/\r?\n/).find((line) => line.startsWith('data:'));
-        const toolsListBody = JSON.parse(toolsListData ? toolsListData.slice(5).trim() : toolsListText) as { result?: { tools?: unknown[] } };
+        const toolsListBody = JSON.parse(toolsListData ? toolsListData.slice(5).trim() : toolsListText) as {
+          result?: { tools?: unknown[] };
+        };
         expect(toolsListBody.result?.tools?.length).toBeGreaterThan(0);
 
         for (let index = 0; index < 70; index += 1) {
@@ -625,7 +723,9 @@ describe('mcp http transport', () => {
         expect(sessionfulToolsList.status).toBe(200);
         const sessionfulToolsText = await sessionfulToolsList.text();
         const sessionfulToolsData = sessionfulToolsText.split(/\r?\n/).find((line) => line.startsWith('data:'));
-        const sessionfulToolsBody = JSON.parse(sessionfulToolsData ? sessionfulToolsData.slice(5).trim() : sessionfulToolsText) as { result?: { tools?: unknown[] } };
+        const sessionfulToolsBody = JSON.parse(
+          sessionfulToolsData ? sessionfulToolsData.slice(5).trim() : sessionfulToolsText,
+        ) as { result?: { tools?: unknown[] } };
         expect(sessionfulToolsBody.result?.tools?.length).toBeGreaterThan(0);
 
         const sessionfulDelete = await fetch('http://127.0.0.1:' + port + '/mcp', {
@@ -650,7 +750,10 @@ describe('mcp http transport', () => {
     expect(setupIndex).toBeGreaterThanOrEqual(0);
     expect(suppressPackageConnectorIndex).toBeGreaterThan(setupIndex);
     expect(installPackageIndex).toBeGreaterThan(suppressPackageConnectorIndex);
-    const authGate = script.slice(script.indexOf('case \"$MCP_AUTH_MODE\" in'), script.indexOf('mkdir -p \"$TUNNEL_DIR\"'));
+    const authGate = script.slice(
+      script.indexOf('case \"$MCP_AUTH_MODE\" in'),
+      script.indexOf('mkdir -p \"$TUNNEL_DIR\"'),
+    );
     expect(authGate).toContain('oauth)');
     expect(authGate).toContain('/.well-known/oauth-authorization-server');
     expect(authGate).toContain('none)');
@@ -771,7 +874,9 @@ describe('mcp http transport', () => {
           body: initializeBody(),
         });
         expect(invalidAuth.status).toBe(401);
-        const bearerAuthEvidence = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
+        const bearerAuthEvidence = await fetch('http://127.0.0.1:' + port + '/health').then((response) =>
+          response.json(),
+        );
         expect(bearerAuthEvidence.authFailures).toMatchObject({
           total: 2,
           bearer: 2,
@@ -800,21 +905,31 @@ describe('mcp http transport', () => {
         const modernProbe = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
           headers: { ...modernHeaders, 'mcp-method': 'server/discover' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 'discover-1', method: 'server/discover', params: { _meta: modernMeta } }),
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 'discover-1',
+            method: 'server/discover',
+            params: { _meta: modernMeta },
+          }),
         });
         expect(modernProbe.status).toBe(200);
         expect(modernProbe.headers.get('mcp-session-id')).toBeNull();
-        const modernDiscover = await modernProbe.json() as { result?: { supportedVersions?: string[] } };
+        const modernDiscover = (await modernProbe.json()) as { result?: { supportedVersions?: string[] } };
         expect(modernDiscover.result?.supportedVersions).toContain('2026-07-28');
 
         const modernTools = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
           headers: { ...modernHeaders, 'mcp-method': 'tools/list' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 'tools-modern-1', method: 'tools/list', params: { _meta: modernMeta } }),
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 'tools-modern-1',
+            method: 'tools/list',
+            params: { _meta: modernMeta },
+          }),
         });
         expect(modernTools.status).toBe(200);
         expect(modernTools.headers.get('mcp-session-id')).toBeNull();
-        const modernToolsBody = await modernTools.json() as { result?: { tools?: unknown[] } };
+        const modernToolsBody = (await modernTools.json()) as { result?: { tools?: unknown[] } };
         expect(Array.isArray(modernToolsBody.result?.tools)).toBe(true);
 
         const postProbeHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
@@ -859,13 +974,20 @@ describe('mcp http transport', () => {
         // A tunnel/SSE stream interruption must not retire the MCP session.
         const tunnelReconnectedTools = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           method: 'POST',
-          headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-session-id': sessionId! },
+          headers: {
+            authorization: 'Bearer ' + token,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-session-id': sessionId!,
+          },
           body: JSON.stringify({ jsonrpc: '2.0', id: 'tunnel-reconnected-tools', method: 'tools/list' }),
         });
         expect(tunnelReconnectedTools.status).toBe(200);
         const tunnelToolsText = await tunnelReconnectedTools.text();
         const tunnelToolsData = tunnelToolsText.split(/\r?\n/).find((line) => line.startsWith('data:'));
-        const tunnelToolsBody = JSON.parse(tunnelToolsData ? tunnelToolsData.slice(5).trim() : tunnelToolsText) as { result?: { tools?: unknown[] } };
+        const tunnelToolsBody = JSON.parse(tunnelToolsData ? tunnelToolsData.slice(5).trim() : tunnelToolsText) as {
+          result?: { tools?: unknown[] };
+        };
         expect(tunnelToolsBody.result?.tools?.length).toBeGreaterThan(0);
 
         const deleted = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
@@ -876,7 +998,9 @@ describe('mcp http transport', () => {
           },
         });
         expect(deleted.status).toBe(200);
-        let deletedHealth: { sessions?: unknown; transportEvidence?: { lastSessionClose?: { reason?: string } | null } } | undefined;
+        let deletedHealth:
+          | { sessions?: unknown; transportEvidence?: { lastSessionClose?: { reason?: string } | null } }
+          | undefined;
         const closeDeadline = Date.now() + 2_000;
         while (Date.now() < closeDeadline) {
           deletedHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
@@ -915,7 +1039,11 @@ describe('mcp http transport', () => {
         expect(expiredSession.status).toBe(404);
         expect(expiredSession.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
         expect(expiredSession.headers.get('x-forge-session-reset')).toBe('reinitialize');
-        expect(await expiredSession.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+        expect(await expiredSession.json()).toMatchObject({
+          code: 'MCP_SESSION_EXPIRED',
+          recoverable: true,
+          action: 'reinitialize',
+        });
 
         const reinitialized = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
           method: 'POST',
@@ -944,7 +1072,9 @@ describe('mcp http transport', () => {
         expect(reinitializedTools.status).toBe(200);
         const reinitializedToolsText = await reinitializedTools.text();
         const reinitializedToolsData = reinitializedToolsText.split(/\r?\n/).find((line) => line.startsWith('data:'));
-        const reinitializedToolsBody = JSON.parse(reinitializedToolsData ? reinitializedToolsData.slice(5).trim() : reinitializedToolsText) as {
+        const reinitializedToolsBody = JSON.parse(
+          reinitializedToolsData ? reinitializedToolsData.slice(5).trim() : reinitializedToolsText,
+        ) as {
           result?: { tools?: unknown[] };
         };
         expect(Array.isArray(reinitializedToolsBody.result?.tools)).toBe(true);
@@ -975,7 +1105,24 @@ describe('mcp http transport', () => {
         const url = (path: string) => 'http://127.0.0.1:' + port + path;
 
         proc = Bun.spawn(
-          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          [
+            'bun',
+            'src/cli/index.ts',
+            'mcp',
+            'serve',
+            '--repo',
+            repoRoot,
+            '--transport',
+            'http',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(port),
+            '--profile',
+            'planner',
+            '--auth',
+            'bearer',
+          ],
           {
             cwd: process.cwd(),
             stdout: 'ignore',
@@ -987,7 +1134,11 @@ describe('mcp http transport', () => {
           },
         );
         await waitForHealth(port);
-        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const headers = {
+          authorization: 'Bearer ' + token,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        };
         const statefulInitialize = await fetch(url('/mcp-bearer'), {
           method: 'POST',
           headers,
@@ -1037,11 +1188,16 @@ describe('mcp http transport', () => {
         expect(toolsList.headers.get('mcp-session-id')).toBeNull();
         const toolsListText = await toolsList.text();
         const toolsListData = toolsListText.split(/\r?\n/).find((line) => line.startsWith('data:'));
-        const toolsListBody = JSON.parse(toolsListData ? toolsListData.slice(5).trim() : toolsListText) as { result?: { tools?: unknown[] } };
+        const toolsListBody = JSON.parse(toolsListData ? toolsListData.slice(5).trim() : toolsListText) as {
+          result?: { tools?: unknown[] };
+        };
         expect(toolsListBody.result?.tools?.length).toBeGreaterThan(0);
 
         const afterStatelessCalls = await fetch(url('/health')).then((response) => response.json());
-        expect(afterStatelessCalls.sessions).toMatchObject({ active: 1, closed: { principalCapacity: 0, capacityEviction: 0 } });
+        expect(afterStatelessCalls.sessions).toMatchObject({
+          active: 1,
+          closed: { principalCapacity: 0, capacityEviction: 0 },
+        });
 
         const deleted = await fetch(url('/mcp-bearer'), {
           method: 'DELETE',
@@ -1068,7 +1224,24 @@ describe('mcp http transport', () => {
         runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
         const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
         proc = Bun.spawn(
-          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          [
+            'bun',
+            'src/cli/index.ts',
+            'mcp',
+            'serve',
+            '--repo',
+            repoRoot,
+            '--transport',
+            'http',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(port),
+            '--profile',
+            'planner',
+            '--auth',
+            'bearer',
+          ],
           {
             cwd: process.cwd(),
             stdout: 'ignore',
@@ -1082,12 +1255,17 @@ describe('mcp http transport', () => {
         );
         await waitForHealth(port);
         const endpoint = 'http://127.0.0.1:' + port + '/mcp-bearer';
-        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
-        const post = (body: Record<string, unknown>, sessionId?: string) => fetch(endpoint, {
-          method: 'POST',
-          headers: { ...headers, ...(sessionId ? { 'mcp-session-id': sessionId } : {}) },
-          body: JSON.stringify(body),
-        });
+        const headers = {
+          authorization: 'Bearer ' + token,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        };
+        const post = (body: Record<string, unknown>, sessionId?: string) =>
+          fetch(endpoint, {
+            method: 'POST',
+            headers: { ...headers, ...(sessionId ? { 'mcp-session-id': sessionId } : {}) },
+            body: JSON.stringify(body),
+          });
         const initialize = async (clientName: string) => {
           const response = await post(JSON.parse(initializeBody(clientName)) as Record<string, unknown>);
           expect(response.status).toBe(200);
@@ -1110,7 +1288,11 @@ describe('mcp http transport', () => {
           expect(response.status).toBe(404);
           expect(response.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
           expect(response.headers.get('x-forge-session-reset')).toBe('reinitialize');
-          expect(await response.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+          expect(await response.json()).toMatchObject({
+            code: 'MCP_SESSION_EXPIRED',
+            recoverable: true,
+            action: 'reinitialize',
+          });
         };
         const waitForClose = async (
           counter: 'idleTtl' | 'streamLease' | 'absoluteLifetime',
@@ -1120,27 +1302,40 @@ describe('mcp http transport', () => {
           const deadline = Date.now() + 5_000;
           let latest: {
             sessions?: { closed?: Record<string, number> };
-            transportEvidence?: { lastSessionClose?: { reason?: string; sessionId?: string; route?: string; kind?: string } | null };
+            transportEvidence?: {
+              lastSessionClose?: { reason?: string; sessionId?: string; route?: string; kind?: string } | null;
+            };
           } = {};
           while (Date.now() < deadline) {
             latest = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
             const close = latest.transportEvidence?.lastSessionClose;
-            if ((latest.sessions?.closed?.[counter] ?? 0) >= 1
-              && close?.reason === expectedReason
-              && close.sessionId === sessionId
-              && close.route === '/mcp-bearer'
-              && close.kind === 'session_closed') return;
+            if (
+              (latest.sessions?.closed?.[counter] ?? 0) >= 1 &&
+              close?.reason === expectedReason &&
+              close.sessionId === sessionId &&
+              close.route === '/mcp-bearer' &&
+              close.kind === 'session_closed'
+            )
+              return;
             await Bun.sleep(25);
           }
-          throw new Error('session close evidence mismatch for ' + counter + ': ' + JSON.stringify({
-            counters: latest.sessions?.closed,
-            lastSessionClose: latest.transportEvidence?.lastSessionClose,
-          }));
+          throw new Error(
+            'session close evidence mismatch for ' +
+              counter +
+              ': ' +
+              JSON.stringify({
+                counters: latest.sessions?.closed,
+                lastSessionClose: latest.transportEvidence?.lastSessionClose,
+              }),
+          );
         };
         const reinitializeAndVerify = async (clientName: string) => {
           const nextSession = await initialize(clientName);
           await toolsList(nextSession);
-          const deleted = await fetch(endpoint, { method: 'DELETE', headers: { authorization: 'Bearer ' + token, 'mcp-session-id': nextSession } });
+          const deleted = await fetch(endpoint, {
+            method: 'DELETE',
+            headers: { authorization: 'Bearer ' + token, 'mcp-session-id': nextSession },
+          });
           expect(deleted.status).toBe(200);
         };
 
@@ -1165,8 +1360,14 @@ describe('mcp http transport', () => {
         const absoluteSession = await initialize('absolute-lifetime-client');
         const absoluteDeadline = Date.now() + 2_500;
         while (Date.now() < absoluteDeadline) {
-          const response = await post({ jsonrpc: '2.0', id: 'keepalive-' + Date.now(), method: 'tools/list' }, absoluteSession);
-          if (response.status === 404) { await response.body?.cancel(); break; }
+          const response = await post(
+            { jsonrpc: '2.0', id: 'keepalive-' + Date.now(), method: 'tools/list' },
+            absoluteSession,
+          );
+          if (response.status === 404) {
+            await response.body?.cancel();
+            break;
+          }
           expect(response.status).toBe(200);
           await response.body?.cancel();
           await Bun.sleep(100);
@@ -1191,12 +1392,34 @@ describe('mcp http transport', () => {
         writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
         runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
         const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
-        const startGateway = () => Bun.spawn(
-          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
-          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
-        );
+        const startGateway = () =>
+          Bun.spawn(
+            [
+              'bun',
+              'src/cli/index.ts',
+              'mcp',
+              'serve',
+              '--repo',
+              repoRoot,
+              '--transport',
+              'http',
+              '--host',
+              '127.0.0.1',
+              '--port',
+              String(port),
+              '--profile',
+              'planner',
+              '--auth',
+              'bearer',
+            ],
+            { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
+          );
         const endpoint = 'http://127.0.0.1:' + port + '/mcp-bearer';
-        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const headers = {
+          authorization: 'Bearer ' + token,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        };
         const initialize = async (clientName: string) => {
           const response = await fetch(endpoint, { method: 'POST', headers, body: initializeBody(clientName) });
           expect(response.status).toBe(200);
@@ -1234,12 +1457,19 @@ describe('mcp http transport', () => {
         expect(expired.status).toBe(404);
         expect(expired.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
         expect(expired.headers.get('x-forge-session-reset')).toBe('reinitialize');
-        expect(await expired.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+        expect(await expired.json()).toMatchObject({
+          code: 'MCP_SESSION_EXPIRED',
+          recoverable: true,
+          action: 'reinitialize',
+        });
 
         const newSessionId = await initialize('gateway-after-restart');
         expect(newSessionId).not.toBe(oldSessionId);
         await toolsList(newSessionId);
-        const deleted = await fetch(endpoint, { method: 'DELETE', headers: { authorization: 'Bearer ' + token, 'mcp-session-id': newSessionId } });
+        const deleted = await fetch(endpoint, {
+          method: 'DELETE',
+          headers: { authorization: 'Bearer ' + token, 'mcp-session-id': newSessionId },
+        });
         expect(deleted.status).toBe(200);
       });
     } finally {
@@ -1258,7 +1488,9 @@ describe('mcp http transport', () => {
         mkdirSync(join(repoRoot, '.ai/harness'), { recursive: true });
         writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
         runMcpSetupChatgpt({ repo: repoRoot, port: String(runtimePort) });
-        const token = (JSON.parse(readFileSync(mcpControllerHomeTokenPath(controllerHome), 'utf8')) as { bearerToken: string }).bearerToken;
+        const token = (
+          JSON.parse(readFileSync(mcpControllerHomeTokenPath(controllerHome), 'utf8')) as { bearerToken: string }
+        ).bearerToken;
         expect(token.length).toBeGreaterThan(0);
         const localConfig = loadMcpServiceLocalConfig(controllerHome) ?? {};
         writeMcpServiceLocalConfig(controllerHome, {
@@ -1270,37 +1502,56 @@ describe('mcp http transport', () => {
         mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
         writeFileSync(runtimeTokenFile, `${token}\n`, { encoding: 'utf8', mode: 0o600 });
         const releaseManifestPath = join(repoRoot, 'runtime-release.json');
-        writeFileSync(releaseManifestPath, `${JSON.stringify({
-          schemaVersion: 1,
-          releaseId: 'mcp-runtime-process-restart',
-          artifactIdentity: 'sha256:mcp-runtime-process-restart',
-          entrypoint: 'forge-runtime',
-          arguments: [],
-          configurationSchemaVersion: 1,
-          controllerHome,
-          databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-          workerProtocolVersion: 1,
-          createdAt: new Date().toISOString(),
-        }, null, 2)}\n`, 'utf8');
+        writeFileSync(
+          releaseManifestPath,
+          `${JSON.stringify(
+            {
+              schemaVersion: 1,
+              releaseId: 'mcp-runtime-process-restart',
+              artifactIdentity: 'sha256:mcp-runtime-process-restart',
+              entrypoint: 'forge-runtime',
+              arguments: [],
+              configurationSchemaVersion: 1,
+              controllerHome,
+              databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+              workerProtocolVersion: 1,
+              createdAt: new Date().toISOString(),
+            },
+            null,
+            2,
+          )}\n`,
+          'utf8',
+        );
 
         const childEnv = isolatedMcpProcessEnv(controllerHome, { FORGE_MCP_TOKEN: token });
-        const startRuntime = () => Bun.spawn([
-          process.execPath,
-          join(process.cwd(), 'src/cli/runtime/entry.ts'),
-          '--controller-home', controllerHome,
-          '--repo', repoRoot,
-          '--release-manifest', releaseManifestPath,
-          '--host', '127.0.0.1',
-          '--port', String(runtimePort),
-          '--auth-token-file', runtimeTokenFile,
-        ], { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: childEnv });
+        const startRuntime = () =>
+          Bun.spawn(
+            [
+              process.execPath,
+              join(process.cwd(), 'src/cli/runtime/entry.ts'),
+              '--controller-home',
+              controllerHome,
+              '--repo',
+              repoRoot,
+              '--release-manifest',
+              releaseManifestPath,
+              '--host',
+              '127.0.0.1',
+              '--port',
+              String(runtimePort),
+              '--auth-token-file',
+              runtimeTokenFile,
+            ],
+            { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: childEnv },
+          );
         const waitForRuntimeReady = async (proc: Bun.Subprocess<'ignore', 'ignore', 'pipe'>) => {
           let lastObservation = 'not observed';
           for (let attempt = 0; attempt < 400; attempt += 1) {
-            if (proc.exitCode !== null) throw new Error(`RUNTIME_EXITED_BEFORE_READY: ${proc.exitCode}; ${lastObservation}`);
+            if (proc.exitCode !== null)
+              throw new Error(`RUNTIME_EXITED_BEFORE_READY: ${proc.exitCode}; ${lastObservation}`);
             try {
               const response = await fetch(`http://127.0.0.1:${runtimePort}/ready`);
-              const readiness = await response.json() as { ready?: boolean; reasonCodes?: string[] };
+              const readiness = (await response.json()) as { ready?: boolean; reasonCodes?: string[] };
               lastObservation = `HTTP ${response.status}: ${JSON.stringify(readiness)}`;
               if (response.ok && readiness.ready === true) return;
             } catch (error) {
@@ -1359,7 +1610,11 @@ describe('mcp http transport', () => {
         expect(expiredSession.status).toBe(404);
         expect(expiredSession.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
         expect(expiredSession.headers.get('x-forge-session-reset')).toBe('reinitialize');
-        expect(await expiredSession.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+        expect(await expiredSession.json()).toMatchObject({
+          code: 'MCP_SESSION_EXPIRED',
+          recoverable: true,
+          action: 'reinitialize',
+        });
         await firstClient.close().catch(() => undefined);
 
         const reinitializedTransport = new StreamableHTTPClientTransport(new URL(endpoint), {
@@ -1416,13 +1671,38 @@ describe('mcp http transport', () => {
         writeRuntimeStatusSnapshot(controllerHome, snapshot('runtime-before-restart', process.pid, 'surface-before'));
         const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
         proc = Bun.spawn(
-          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          [
+            'bun',
+            'src/cli/index.ts',
+            'mcp',
+            'serve',
+            '--repo',
+            repoRoot,
+            '--transport',
+            'http',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(port),
+            '--profile',
+            'planner',
+            '--auth',
+            'bearer',
+          ],
           { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
         );
         await waitForHealth(port);
         const endpoint = 'http://127.0.0.1:' + port + '/mcp-bearer';
-        const headers = { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
-        const initialized = await fetch(endpoint, { method: 'POST', headers, body: initializeBody('runtime-restart-session') });
+        const headers = {
+          authorization: 'Bearer ' + token,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        };
+        const initialized = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: initializeBody('runtime-restart-session'),
+        });
         expect(initialized.status).toBe(200);
         const sessionId = initialized.headers.get('mcp-session-id');
         expect(sessionId).toBeTruthy();
@@ -1468,7 +1748,9 @@ describe('mcp http transport', () => {
         writeFileSync(join(repoRoot, '.ai/harness/policy.json'), '{}\n');
         expect(spawnSync('git', ['init', repoRoot], { encoding: 'utf8' }).status).toBe(0);
         runMcpSetupChatgpt({ repo: repoRoot, port: String(port) });
-        const token = (JSON.parse(await Bun.file(mcpControllerHomeTokenPath(controllerHome)).text()) as { bearerToken: string }).bearerToken;
+        const token = (
+          JSON.parse(await Bun.file(mcpControllerHomeTokenPath(controllerHome)).text()) as { bearerToken: string }
+        ).bearerToken;
         const localConfig = loadMcpServiceLocalConfig(controllerHome) ?? {};
         writeMcpServiceLocalConfig(controllerHome, {
           ...localConfig,
@@ -1478,33 +1760,50 @@ describe('mcp http transport', () => {
         mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
         writeFileSync(runtimeTokenFile, token + '\n', { encoding: 'utf8', mode: 0o600 });
         const releaseManifestPath = join(repoRoot, 'runtime-release.json');
-        writeFileSync(releaseManifestPath, JSON.stringify({
-          schemaVersion: 1,
-          releaseId: 'mcp-http-process-session-replacement',
-          artifactIdentity: 'sha256:mcp-http-process-session-replacement',
-          entrypoint: 'forge-runtime',
-          arguments: [],
-          configurationSchemaVersion: 1,
-          controllerHome,
-          databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-          workerProtocolVersion: 1,
-          createdAt: new Date().toISOString(),
-        }, null, 2) + '\n', 'utf8');
-        runtimeProc = Bun.spawn([
-          process.execPath,
-          join(process.cwd(), 'src/cli/runtime/entry.ts'),
-          '--controller-home', controllerHome,
-          '--repo', repoRoot,
-          '--release-manifest', releaseManifestPath,
-          '--host', '127.0.0.1',
-          '--port', String(port),
-          '--auth-token-file', runtimeTokenFile,
-        ], {
-          cwd: process.cwd(),
-          stdout: 'ignore',
-          stderr: 'pipe',
-          env: isolatedMcpProcessEnv(controllerHome, { FORGE_MCP_TOKEN: token }),
-        });
+        writeFileSync(
+          releaseManifestPath,
+          JSON.stringify(
+            {
+              schemaVersion: 1,
+              releaseId: 'mcp-http-process-session-replacement',
+              artifactIdentity: 'sha256:mcp-http-process-session-replacement',
+              entrypoint: 'forge-runtime',
+              arguments: [],
+              configurationSchemaVersion: 1,
+              controllerHome,
+              databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+              workerProtocolVersion: 1,
+              createdAt: new Date().toISOString(),
+            },
+            null,
+            2,
+          ) + '\n',
+          'utf8',
+        );
+        runtimeProc = Bun.spawn(
+          [
+            process.execPath,
+            join(process.cwd(), 'src/cli/runtime/entry.ts'),
+            '--controller-home',
+            controllerHome,
+            '--repo',
+            repoRoot,
+            '--release-manifest',
+            releaseManifestPath,
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(port),
+            '--auth-token-file',
+            runtimeTokenFile,
+          ],
+          {
+            cwd: process.cwd(),
+            stdout: 'ignore',
+            stderr: 'pipe',
+            env: isolatedMcpProcessEnv(controllerHome, { FORGE_MCP_TOKEN: token }),
+          },
+        );
         const runtimeProcess = runtimeProc;
         if (!runtimeProcess) throw new Error('Canonical Runtime child process was not created');
         let lastObservation = 'not observed';
@@ -1516,9 +1815,12 @@ describe('mcp http transport', () => {
           }
           try {
             const response = await fetch('http://127.0.0.1:' + port + '/ready');
-            const readiness = await response.json() as { ready?: boolean; reasonCodes?: string[] };
+            const readiness = (await response.json()) as { ready?: boolean; reasonCodes?: string[] };
             lastObservation = 'HTTP ' + response.status + ': ' + JSON.stringify(readiness);
-            if (response.ok && readiness.ready === true) { runtimeReady = true; break; }
+            if (response.ok && readiness.ready === true) {
+              runtimeReady = true;
+              break;
+            }
           } catch (error) {
             lastObservation = error instanceof Error ? error.message : String(error);
           }
@@ -1540,23 +1842,32 @@ describe('mcp http transport', () => {
         expect(toolNames).toContain('process_get');
         expect(toolNames).toContain('process_wait');
 
-        writeFileSync(join(repoRoot, 'http-session-process.mjs'), [
-          "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
-          "appendFileSync(" + JSON.stringify(invocationsPath) + ", 'x');",
-          "writeFileSync(" + JSON.stringify(startedPath) + ", 'x');",
-          "const releasePath = " + JSON.stringify(releasePath) + ";",
-          'const deadline = Date.now() + 10_000;',
-          'const finish = () => {',
-          "  if (existsSync(releasePath)) { console.log('http-session-replacement-ok'); process.exit(0); }",
-          "  if (Date.now() >= deadline) { console.error('release marker was not written'); process.exit(70); }",
-          '  setTimeout(finish, 10);',
-          '};',
-          'finish();',
-        ].join('\n') + '\n');
+        writeFileSync(
+          join(repoRoot, 'http-session-process.mjs'),
+          [
+            "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
+            'appendFileSync(' + JSON.stringify(invocationsPath) + ", 'x');",
+            'writeFileSync(' + JSON.stringify(startedPath) + ", 'x');",
+            'const releasePath = ' + JSON.stringify(releasePath) + ';',
+            'const deadline = Date.now() + 10_000;',
+            'const finish = () => {',
+            "  if (existsSync(releasePath)) { console.log('http-session-replacement-ok'); process.exit(0); }",
+            "  if (Date.now() >= deadline) { console.error('release marker was not written'); process.exit(70); }",
+            '  setTimeout(finish, 10);',
+            '};',
+            'finish();',
+          ].join('\n') + '\n',
+        );
         const registration = await firstClient.callTool({ name: 'repository_register', arguments: { path: repoRoot } });
-        const registrationPayload = registration.structuredContent as { repository?: { repoId?: string }; repoId?: string };
+        const registrationPayload = registration.structuredContent as {
+          repository?: { repoId?: string };
+          repoId?: string;
+        };
         const repoId = String(registrationPayload.repository?.repoId ?? registrationPayload.repoId ?? '');
-        if (registration.isError || !repoId) throw new Error('repository_register failed: ' + JSON.stringify(registration.structuredContent ?? registration.content));
+        if (registration.isError || !repoId)
+          throw new Error(
+            'repository_register failed: ' + JSON.stringify(registration.structuredContent ?? registration.content),
+          );
         const args = {
           repo_id: repoId,
           command: [process.execPath, 'http-session-process.mjs'],
@@ -1565,19 +1876,28 @@ describe('mcp http transport', () => {
           request_id: 'mcp-http-session-replacement-process',
         };
         const first = await firstClient.callTool({ name: 'execute_command', arguments: args });
-        if (first.isError) throw new Error('execute_command failed: ' + JSON.stringify(first.structuredContent ?? first.content));
+        if (first.isError)
+          throw new Error('execute_command failed: ' + JSON.stringify(first.structuredContent ?? first.content));
         const firstPayload = first.structuredContent as Record<string, unknown>;
         expect(firstPayload).toMatchObject({ path: 'process_managed', status: 'running' });
         const processId = String(firstPayload.processId ?? '');
 
         const startDeadline = Date.now() + 5_000;
         const markerExists = () => {
-          try { readFileSync(startedPath, 'utf8'); return true; } catch { return false; }
+          try {
+            readFileSync(startedPath, 'utf8');
+            return true;
+          } catch {
+            return false;
+          }
         };
         while (!markerExists() && Date.now() < startDeadline) await Bun.sleep(10);
         expect(markerExists()).toBe(true);
 
-        const deletedSession = await fetch(endpoint, { method: 'DELETE', headers: { ...headers, 'mcp-session-id': firstSessionId! } });
+        const deletedSession = await fetch(endpoint, {
+          method: 'DELETE',
+          headers: { ...headers, 'mcp-session-id': firstSessionId! },
+        });
         expect(deletedSession.status).toBe(200);
         await firstClient.close().catch(() => undefined);
         const expiredSession = await fetch(endpoint, {
@@ -1592,10 +1912,17 @@ describe('mcp http transport', () => {
         });
         expect(expiredSession.status).toBe(404);
         expect(expiredSession.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
-        expect(await expiredSession.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+        expect(await expiredSession.json()).toMatchObject({
+          code: 'MCP_SESSION_EXPIRED',
+          recoverable: true,
+          action: 'reinitialize',
+        });
 
         const replacementTransport = new StreamableHTTPClientTransport(endpoint, { requestInit: { headers } });
-        const replacementClient = new Client({ name: 'forge-http-process-session-after-replacement', version: '1.0.0' });
+        const replacementClient = new Client({
+          name: 'forge-http-process-session-after-replacement',
+          version: '1.0.0',
+        });
         clients.push(replacementClient);
         await replacementClient.connect(replacementTransport);
         expect(replacementTransport.sessionId).not.toBe(firstSessionId);
@@ -1643,13 +1970,34 @@ describe('mcp http transport', () => {
         runMcpSetupChatgpt({ repo: repoRoot, port: String(gatewayPort) });
         const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
         gatewayProc = Bun.spawn(
-          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(gatewayPort), '--profile', 'planner', '--auth', 'bearer'],
+          [
+            'bun',
+            'src/cli/index.ts',
+            'mcp',
+            'serve',
+            '--repo',
+            repoRoot,
+            '--transport',
+            'http',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(gatewayPort),
+            '--profile',
+            'planner',
+            '--auth',
+            'bearer',
+          ],
           { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
         );
         await waitForHealth(gatewayPort);
 
         const endpoint = 'http://127.0.0.1:' + gatewayPort + '/mcp-bearer';
-        const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const headers = {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        };
         const transport = new StreamableHTTPClientTransport(new URL(endpoint), { requestInit: { headers } });
         client = new Client({ name: 'forge-sdk-session-reset-reconnect', version: '1.0.0' });
         await client.connect(transport);
@@ -1673,7 +2021,11 @@ describe('mcp http transport', () => {
         expect(reset.status).toBe(404);
         expect(reset.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
         expect(reset.headers.get('x-forge-session-reset')).toBe('reinitialize');
-        expect(await reset.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+        expect(await reset.json()).toMatchObject({
+          code: 'MCP_SESSION_EXPIRED',
+          recoverable: true,
+          action: 'reinitialize',
+        });
 
         await client.close().catch(() => undefined);
         const replacementTransport = new StreamableHTTPClientTransport(new URL(endpoint), { requestInit: { headers } });
@@ -1708,12 +2060,29 @@ describe('mcp http transport', () => {
         runMcpSetupChatgpt({ repo: repoRoot, port: String(gatewayPort) });
         const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
         gatewayProc = Bun.spawn(
-          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(gatewayPort), '--profile', 'planner', '--auth', 'bearer'],
+          [
+            'bun',
+            'src/cli/index.ts',
+            'mcp',
+            'serve',
+            '--repo',
+            repoRoot,
+            '--transport',
+            'http',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(gatewayPort),
+            '--profile',
+            'planner',
+            '--auth',
+            'bearer',
+          ],
           { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
         );
         await waitForHealth(gatewayPort);
         const tunnelSource = [
-          "Bun.serve({",
+          'Bun.serve({',
           "  hostname: '127.0.0.1',",
           '  port: ' + tunnelPort + ',',
           '  async fetch(request) {',
@@ -1729,12 +2098,19 @@ describe('mcp http transport', () => {
           '  },',
           '});',
         ].join('\n');
-        const startTunnel = () => Bun.spawn(
-          ['bun', '-e', tunnelSource],
-          { cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome) },
-        );
+        const startTunnel = () =>
+          Bun.spawn(['bun', '-e', tunnelSource], {
+            cwd: process.cwd(),
+            stdout: 'ignore',
+            stderr: 'pipe',
+            env: isolatedMcpProcessEnv(controllerHome),
+          });
         const endpoint = 'http://127.0.0.1:' + tunnelPort + '/mcp-bearer';
-        const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+        const headers = {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        };
 
         tunnelProc = startTunnel();
         await waitForHealth(tunnelPort);
@@ -1782,7 +2158,24 @@ describe('mcp http transport', () => {
         const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
 
         proc = Bun.spawn(
-          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          [
+            'bun',
+            'src/cli/index.ts',
+            'mcp',
+            'serve',
+            '--repo',
+            repoRoot,
+            '--transport',
+            'http',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(port),
+            '--profile',
+            'planner',
+            '--auth',
+            'bearer',
+          ],
           {
             cwd: process.cwd(),
             stdout: 'ignore',
@@ -1796,19 +2189,21 @@ describe('mcp http transport', () => {
         );
         await waitForHealth(port);
 
-        const burst = await Promise.all(Array.from({ length: 32 }, async (_, index) => {
-          const response = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
-            method: 'POST',
-            headers: {
-              authorization: `Bearer ${token}`,
-              'content-type': 'application/json',
-              accept: 'application/json, text/event-stream',
-            },
-            body: initializeBody(`burst-${index}`),
-          });
-          await response.body?.cancel().catch(() => undefined);
-          return response.status;
-        }));
+        const burst = await Promise.all(
+          Array.from({ length: 32 }, async (_, index) => {
+            const response = await fetch(`http://127.0.0.1:${port}/mcp-bearer`, {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${token}`,
+                'content-type': 'application/json',
+                accept: 'application/json, text/event-stream',
+              },
+              body: initializeBody(`burst-${index}`),
+            });
+            await response.body?.cancel().catch(() => undefined);
+            return response.status;
+          }),
+        );
         expect(burst.filter((status) => status === 200).length).toBeGreaterThanOrEqual(9);
         expect(burst.every((status) => status === 200 || status === 503)).toBe(true);
         const burstHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
@@ -1842,7 +2237,6 @@ describe('mcp http transport', () => {
           expect(stream.status).toBe(200);
           streamController.abort();
           await stream.body?.cancel().catch(() => undefined);
-
         }
 
         await Bun.sleep(50);
@@ -1910,7 +2304,10 @@ describe('mcp http transport', () => {
         );
         await waitForHealth(port);
 
-        const initialize = async (route: '/mcp' | '/mcp-grok' | '/mcp-bearer', clientName: string): Promise<string | null> => {
+        const initialize = async (
+          route: '/mcp' | '/mcp-grok' | '/mcp-bearer',
+          clientName: string,
+        ): Promise<string | null> => {
           const response = await fetch(`http://127.0.0.1:${port}${route}`, {
             method: 'POST',
             headers: {
@@ -1966,19 +2363,30 @@ describe('mcp http transport', () => {
         expect(evicted.status).toBe(404);
         expect(evicted.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
         expect(evicted.headers.get('x-forge-session-reset')).toBe('reinitialize');
-        expect(await evicted.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+        expect(await evicted.json()).toMatchObject({
+          code: 'MCP_SESSION_EXPIRED',
+          recoverable: true,
+          action: 'reinitialize',
+        });
 
         const reconnectedSessionId = (await initialize('/mcp-grok', 'client-a-after-capacity-eviction'))!;
         expect(reconnectedSessionId).not.toBe(oldestSessionId);
         const reconnectedTools = await fetch(`http://127.0.0.1:${port}/mcp-grok`, {
           method: 'POST',
-          headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-session-id': reconnectedSessionId },
+          headers: {
+            authorization: 'Bearer ' + token,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-session-id': reconnectedSessionId,
+          },
           body: JSON.stringify({ jsonrpc: '2.0', id: 'capacity-reconnected-tools', method: 'tools/list' }),
         });
         expect(reconnectedTools.status).toBe(200);
         const reconnectedToolsText = await reconnectedTools.text();
         const reconnectedToolsData = reconnectedToolsText.split(/\r?\n/).find((line) => line.startsWith('data:'));
-        const reconnectedToolsBody = JSON.parse(reconnectedToolsData ? reconnectedToolsData.slice(5).trim() : reconnectedToolsText) as { result?: { tools?: unknown[] } };
+        const reconnectedToolsBody = JSON.parse(
+          reconnectedToolsData ? reconnectedToolsData.slice(5).trim() : reconnectedToolsText,
+        ) as { result?: { tools?: unknown[] } };
         expect(reconnectedToolsBody.result?.tools?.length).toBeGreaterThan(0);
       });
     } finally {
@@ -1989,7 +2397,9 @@ describe('mcp http transport', () => {
 
   test('capacity eviction releases initialize admission before slow transport cleanup completes', async () => {
     let releaseClose!: () => void;
-    const blockedClose = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const blockedClose = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
     const registry = new McpSessionRegistry<{ close(): Promise<void> }, { id: string }>({
       maximumSessions: 1,
       maximumSessionsPerPrincipal: 1,
@@ -2121,7 +2531,24 @@ describe('mcp http transport', () => {
         const token = (await Bun.file(mcpControllerHomeTokenPath(controllerHome)).json()).bearerToken;
 
         proc = Bun.spawn(
-          ['bun', 'src/cli/index.ts', 'mcp', 'serve', '--repo', repoRoot, '--transport', 'http', '--host', '127.0.0.1', '--port', String(port), '--profile', 'planner', '--auth', 'bearer'],
+          [
+            'bun',
+            'src/cli/index.ts',
+            'mcp',
+            'serve',
+            '--repo',
+            repoRoot,
+            '--transport',
+            'http',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(port),
+            '--profile',
+            'planner',
+            '--auth',
+            'bearer',
+          ],
           {
             cwd: process.cwd(),
             stdout: 'ignore',
@@ -2366,7 +2793,9 @@ describe('mcp http transport', () => {
           body: initializeBody(),
         });
         expect(invalidOAuth.status).toBe(401);
-        const oauthAuthEvidence = await fetch('http://127.0.0.1:' + port + '/health').then((response) => response.json());
+        const oauthAuthEvidence = await fetch('http://127.0.0.1:' + port + '/health').then((response) =>
+          response.json(),
+        );
         expect(oauthAuthEvidence.authFailures).toMatchObject({
           total: 1,
           bearer: 0,
@@ -2402,7 +2831,7 @@ describe('mcp http transport', () => {
           }),
         });
         expect(registered.status).toBe(201);
-        const client = await registered.json() as { client_id: string };
+        const client = (await registered.json()) as { client_id: string };
         expect(typeof client.client_id).toBe('string');
 
         const verifier = randomBytes(32).toString('base64url');
@@ -2439,7 +2868,7 @@ describe('mcp http transport', () => {
           }),
         });
         expect(token.status).toBe(200);
-        const tokenJson = await token.json() as { access_token: string; token_type: string };
+        const tokenJson = (await token.json()) as { access_token: string; token_type: string };
         expect(tokenJson.token_type).toBe('Bearer');
 
         // A single authenticated ChatGPT OAuth client may open many independent
@@ -2473,7 +2902,9 @@ describe('mcp http transport', () => {
         expect(toolsList.headers.get('mcp-session-id')).toBeNull();
         const toolsListText = await toolsList.text();
         const toolsListData = toolsListText.split(/\r?\n/).find((line) => line.startsWith('data:'));
-        const toolsListBody = JSON.parse(toolsListData ? toolsListData.slice(5).trim() : toolsListText) as { result?: { tools?: unknown[] } };
+        const toolsListBody = JSON.parse(toolsListData ? toolsListData.slice(5).trim() : toolsListText) as {
+          result?: { tools?: unknown[] };
+        };
         expect(toolsListBody.result?.tools?.length).toBeGreaterThan(0);
         const parallelHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
         expect(parallelHealth.sessions.active).toBe(0);
@@ -2607,7 +3038,7 @@ describe('mcp http transport', () => {
           }),
         });
         expect(fallbackToken.status).toBe(200);
-        const fallbackTokenJson = await fallbackToken.json() as { access_token: string; token_type: string };
+        const fallbackTokenJson = (await fallbackToken.json()) as { access_token: string; token_type: string };
         expect(fallbackTokenJson.token_type).toBe('Bearer');
 
         const fallbackInitializedGrok = await fetch(`http://127.0.0.1:${port}/mcp`, {
@@ -2687,10 +3118,17 @@ describe('mcp http transport', () => {
 
 test('shutdown preserves admitted HTTP response before closing transport', async () => {
   const app = express();
-  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, authFailures: { total: 0, bearer: 0, oauth: 0 } };
+  const stats = {
+    activePostStartedAt: new Map(),
+    initializing: 0,
+    rejectedOverload: 0,
+    authFailures: { total: 0, bearer: 0, oauth: 0 },
+  };
   let release!: () => void;
   let admitted!: () => void;
-  const admission = new Promise<void>(resolve => { admitted = resolve; });
+  const admission = new Promise<void>((resolve) => {
+    admitted = resolve;
+  });
   let response: express.Response;
   app.post('/mcp', (_req, res) => {
     response = res;
@@ -2699,13 +3137,18 @@ test('shutdown preserves admitted HTTP response before closing transport', async
     admitted();
   });
   const server = app.listen(0, '127.0.0.1');
-  await new Promise<void>(resolve => server.once('listening', resolve));
+  await new Promise<void>((resolve) => server.once('listening', resolve));
   const port = (server.address() as { port: number }).port;
   try {
-    const result = fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' }).then(r => r.json()).catch(() => null);
+    const result = fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' })
+      .then((r) => r.json())
+      .catch(() => null);
     await admission;
     let closed = false;
-    const draining = drainMcpPosts(stats, async () => { closed = true; response.destroy(); });
+    const draining = drainMcpPosts(stats, async () => {
+      closed = true;
+      response.destroy();
+    });
     expect(closed).toBe(false);
     release();
     expect(await result).toEqual({ result: 'original-result' });
@@ -2713,18 +3156,29 @@ test('shutdown preserves admitted HTTP response before closing transport', async
     expect(closed).toBe(true);
   } finally {
     server.closeAllConnections();
-    await new Promise<void>(resolve => server.close(() => resolve()));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
 
 test('shutdown rejects unadmitted requests without consuming capacity', () => {
-  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, draining: true, authFailures: { total: 0, bearer: 0, oauth: 0 } };
+  const stats = {
+    activePostStartedAt: new Map(),
+    initializing: 0,
+    rejectedOverload: 0,
+    draining: true,
+    authFailures: { total: 0, bearer: 0, oauth: 0 },
+  };
   let body: unknown;
   let status: number;
   const res = {
     setHeader() {},
-    status(code: number) { status = code; return this; },
-    json(value: unknown) { body = value; },
+    status(code: number) {
+      status = code;
+      return this;
+    },
+    json(value: unknown) {
+      body = value;
+    },
   } as unknown as express.Response;
   expect(admitMcpPost(stats, res)).toBe(false);
   expect(status!).toBe(503);
@@ -2734,9 +3188,16 @@ test('shutdown rejects unadmitted requests without consuming capacity', () => {
 
 test('shutdown deadline reports observation unknown before transport closes', async () => {
   const app = express();
-  const stats = { activePostStartedAt: new Map(), initializing: 0, rejectedOverload: 0, authFailures: { total: 0, bearer: 0, oauth: 0 } };
+  const stats = {
+    activePostStartedAt: new Map(),
+    initializing: 0,
+    rejectedOverload: 0,
+    authFailures: { total: 0, bearer: 0, oauth: 0 },
+  };
   let admitted!: () => void;
-  const admission = new Promise<void>(resolve => { admitted = resolve; });
+  const admission = new Promise<void>((resolve) => {
+    admitted = resolve;
+  });
   let response!: express.Response;
   app.post('/mcp', (_req, res) => {
     response = res;
@@ -2744,19 +3205,29 @@ test('shutdown deadline reports observation unknown before transport closes', as
     admitted();
   });
   const server = app.listen(0, '127.0.0.1');
-  await new Promise<void>(resolve => server.once('listening', resolve));
+  await new Promise<void>((resolve) => server.once('listening', resolve));
   try {
     const port = (server.address() as { port: number }).port;
     const result = fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' });
     await admission;
-    const draining = drainMcpPosts(stats, async () => { expect(response.writableFinished).toBe(true); }, 10);
+    const draining = drainMcpPosts(
+      stats,
+      async () => {
+        expect(response.writableFinished).toBe(true);
+      },
+      10,
+    );
     const reply = await result;
     expect(reply.status).toBe(503);
-    expect(await reply.json()).toMatchObject({ code: 'MCP_GATEWAY_SHUTDOWN_OUTCOME_UNKNOWN', retryable: false, action: 'reconcile' });
+    expect(await reply.json()).toMatchObject({
+      code: 'MCP_GATEWAY_SHUTDOWN_OUTCOME_UNKNOWN',
+      retryable: false,
+      action: 'reconcile',
+    });
     await draining;
   } finally {
     server.closeAllConnections();
-    await new Promise<void>(resolve => server.close(() => resolve()));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
 
@@ -2769,14 +3240,33 @@ test('real Gateway SIGTERM drains admitted MCP tool result and rejects new reque
   writeFileSync(join(controllerHome, 'mcp', 'runtime-token'), token);
   let admitted!: () => void;
   let release!: () => void;
-  const admission = new Promise<void>(resolve => { admitted = resolve; });
-  const gate = new Promise<void>(resolve => { release = resolve; });
-  const readiness = { ready: true, reasonCodes: [], observedAt: new Date().toISOString(), diagnostics: { database: { outcome: 'pass' as const }, scheduler: { outcome: 'pass' as const }, releaseCoherence: { outcome: 'pass' as const }, mcpEndToEnd: { outcome: 'pass' as const } } };
+  const admission = new Promise<void>((resolve) => {
+    admitted = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const readiness = {
+    ready: true,
+    reasonCodes: [],
+    observedAt: new Date().toISOString(),
+    diagnostics: {
+      database: { outcome: 'pass' as const },
+      scheduler: { outcome: 'pass' as const },
+      releaseCoherence: { outcome: 'pass' as const },
+      mcpEndToEnd: { outcome: 'pass' as const },
+    },
+  };
   const runtime = await startRuntimeMcpTransport({
-    host: '127.0.0.1', port: 0, authToken: token, readiness: () => readiness,
+    host: '127.0.0.1',
+    port: 0,
+    authToken: token,
+    readiness: () => readiness,
     createServer: () => {
       const server = new Server({ name: 'shutdown-fixture', version: '1' }, { capabilities: { tools: {} } });
-      server.setRequestHandler('tools/list', async () => ({ tools: [{ name: 'controller_ready', inputSchema: { type: 'object' as const } }] }));
+      server.setRequestHandler('tools/list', async () => ({
+        tools: [{ name: 'controller_ready', inputSchema: { type: 'object' as const } }],
+      }));
       server.setRequestHandler('tools/call', async () => {
         admitted();
         await gate;
@@ -2787,16 +3277,34 @@ test('real Gateway SIGTERM drains admitted MCP tool result and rejects new reque
   });
   const now = new Date().toISOString();
   writeRuntimeStatusSnapshot(controllerHome, {
-    schemaVersion: 1, runtimeInstanceId: 'shutdown-fixture', pid: process.pid,
-    releaseId: 'shutdown-fixture', artifactIdentity: 'shutdown-fixture',
-    endpoint: runtime.endpoint, readiness, startedAt: now, updatedAt: now,
+    schemaVersion: 1,
+    runtimeInstanceId: 'shutdown-fixture',
+    pid: process.pid,
+    releaseId: 'shutdown-fixture',
+    artifactIdentity: 'shutdown-fixture',
+    endpoint: runtime.endpoint,
+    readiness,
+    startedAt: now,
+    updatedAt: now,
   });
-  const proc = Bun.spawn(['bun', '-e', `import { startMcpHttp } from './adapters/mcp/transports/http'; await startMcpHttp({host:'127.0.0.1',port:${port},profile:'controller',auth:'none'});`], {
-    cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome),
-  });
+  const proc = Bun.spawn(
+    [
+      'bun',
+      '-e',
+      `import { startMcpHttp } from './adapters/mcp/transports/http'; await startMcpHttp({host:'127.0.0.1',port:${port},profile:'controller',auth:'none'});`,
+    ],
+    {
+      cwd: process.cwd(),
+      stdout: 'ignore',
+      stderr: 'pipe',
+      env: isolatedMcpProcessEnv(controllerHome),
+    },
+  );
   const client = new Client({ name: 'shutdown-client', version: '1' }, { capabilities: {} });
   try {
-    try { await waitForHealth(port); } catch (error) {
+    try {
+      await waitForHealth(port);
+    } catch (error) {
       if (proc.exitCode !== null) throw new Error(await new Response(proc.stderr).text());
       throw error;
     }
@@ -2807,9 +3315,16 @@ test('real Gateway SIGTERM drains admitted MCP tool result and rejects new reque
     // Health is still served during drain; synchronize on explicit admission refusal.
     let rejected = false;
     for (let i = 0; i < 40; i++) {
-      const response = await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-      const body = await response.json() as { code?: string };
-      if (body.code === 'MCP_GATEWAY_DRAINING') { rejected = true; break; }
+      const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      const body = (await response.json()) as { code?: string };
+      if (body.code === 'MCP_GATEWAY_DRAINING') {
+        rejected = true;
+        break;
+      }
       await Bun.sleep(5);
     }
     expect(rejected).toBe(true);
@@ -2819,7 +3334,10 @@ test('real Gateway SIGTERM drains admitted MCP tool result and rejects new reque
   } finally {
     release();
     await client.close();
-    if (proc.exitCode === null) { proc.kill('SIGKILL'); await proc.exited; }
+    if (proc.exitCode === null) {
+      proc.kill('SIGKILL');
+      await proc.exited;
+    }
     await runtime.close();
     rmSync(root, { recursive: true, force: true });
   }
@@ -2839,27 +3357,56 @@ test('retired Runtime sockets cannot initialize sessions after same-endpoint rep
   else process.env.FORGE_CANONICAL_RUNTIME_PROXY_LANES = previousLaneLimit;
   let admitted!: () => void;
   let release!: () => void;
-  const admission = new Promise<void>(resolve => { admitted = resolve; });
-  const gate = new Promise<void>(resolve => { release = resolve; });
-  const readiness = { ready: true, reasonCodes: [], observedAt: new Date().toISOString(), diagnostics: { database: { outcome: 'pass' as const }, scheduler: { outcome: 'pass' as const }, releaseCoherence: { outcome: 'pass' as const }, mcpEndToEnd: { outcome: 'pass' as const } } };
+  const admission = new Promise<void>((resolve) => {
+    admitted = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const readiness = {
+    ready: true,
+    reasonCodes: [],
+    observedAt: new Date().toISOString(),
+    diagnostics: {
+      database: { outcome: 'pass' as const },
+      scheduler: { outcome: 'pass' as const },
+      releaseCoherence: { outcome: 'pass' as const },
+      mcpEndToEnd: { outcome: 'pass' as const },
+    },
+  };
   const start = async (port: number, generation: string) => {
     const transport = await startRuntimeMcpTransport({
-      host: '127.0.0.1', port, authToken: token, readiness: () => readiness,
+      host: '127.0.0.1',
+      port,
+      authToken: token,
+      readiness: () => readiness,
       createServer: () => {
         const server = new Server({ name: generation, version: '1' }, { capabilities: { tools: {} } });
         server.setRequestHandler('tools/list', async () => ({ tools: [] }));
-        server.setRequestHandler('tools/call', async request => {
-          if (request.params.arguments?.block) { admitted(); await gate; }
-          return { content: [{ type: 'text' as const, text: generation }], structuredContent: { responseMeta: { traceId: '30a0144f-1c29-4b01-8a4a-c34a36b197a5' } } };
+        server.setRequestHandler('tools/call', async (request) => {
+          if (request.params.arguments?.block) {
+            admitted();
+            await gate;
+          }
+          return {
+            content: [{ type: 'text' as const, text: generation }],
+            structuredContent: { responseMeta: { traceId: '30a0144f-1c29-4b01-8a4a-c34a36b197a5' } },
+          };
         });
         return server;
       },
     });
     const now = new Date().toISOString();
     writeRuntimeStatusSnapshot(root, {
-      schemaVersion: 1, runtimeInstanceId: generation, pid: process.pid,
-      releaseId: generation, artifactIdentity: generation, endpoint: transport.endpoint,
-      readiness, startedAt: now, updatedAt: now,
+      schemaVersion: 1,
+      runtimeInstanceId: generation,
+      pid: process.pid,
+      releaseId: generation,
+      artifactIdentity: generation,
+      endpoint: transport.endpoint,
+      readiness,
+      startedAt: now,
+      updatedAt: now,
     });
     return transport;
   };
@@ -2879,7 +3426,9 @@ test('retired Runtime sockets cannot initialize sessions after same-endpoint rep
     await runtime.close();
     runtime = await start(port, 'replacement');
     const replacementTiming: NonNullable<Parameters<typeof proxy.callTool>[3]> = {};
-    expect((await proxy.callTool(context, 'controller_ready', {}, replacementTiming)).content).toEqual([{ type: 'text', text: 'replacement' }]);
+    expect((await proxy.callTool(context, 'controller_ready', {}, replacementTiming)).content).toEqual([
+      { type: 'text', text: 'replacement' },
+    ]);
     expect(replacementTiming.gatewayProxyCanonicalTraceId).toBe('30a0144f-1c29-4b01-8a4a-c34a36b197a5');
     expect(runtime.sessionSnapshot?.().active).toBe(1);
   } finally {
@@ -2890,28 +3439,37 @@ test('retired Runtime sockets cannot initialize sessions after same-endpoint rep
   }
 }, 10_000);
 
-
 test('Gateway transport failures cannot authorize replay of an admitted mutation', () => {
-  for (const reason of ['HTTP 502', 'ECONNRESET', 'ETIMEDOUT', 'CANONICAL_RUNTIME_TIMEOUT', 'unexpected transport EOF']) {
+  for (const reason of [
+    'HTTP 502',
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'CANONICAL_RUNTIME_TIMEOUT',
+    'unexpected transport EOF',
+  ]) {
     expect(mcpRequestError(new Error(reason)).body).toMatchObject({
-      recoverable: true, retryable: false, action: 'reconcile', executionOutcome: 'unknown',
+      recoverable: true,
+      retryable: false,
+      action: 'reconcile',
+      executionOutcome: 'unknown',
     });
   }
 });
-
 
 test('stalled admitted HTTP observation reports unknown while original execution completes', async () => {
   const app = express();
   let executions = 0;
   let completed!: () => void;
-  const execution = new Promise<void>(resolve => { completed = resolve; });
+  const execution = new Promise<void>((resolve) => {
+    completed = resolve;
+  });
   app.post('/mcp', (_req, res) => {
     executions += 1;
     setTimeout(completed, 10);
     terminateReclaimedMcpPost(res);
   });
   const server = app.listen(0, '127.0.0.1');
-  await new Promise<void>(resolve => server.once('listening', resolve));
+  await new Promise<void>((resolve) => server.once('listening', resolve));
   try {
     const port = (server.address() as { port: number }).port;
     const response = await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' });
@@ -2921,148 +3479,229 @@ test('stalled admitted HTTP observation reports unknown while original execution
     expect(executions).toBe(1);
   } finally {
     server.closeAllConnections();
-    await new Promise<void>(resolve => server.close(() => resolve()));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
 
 for (const loseReceipt of [false, true]) {
-test(`durable Process survives real Gateway process replacement (lost receipt=${loseReceipt})`, async () => {
-  const root = mkdtempSync(join(tmpdir(), 'forge-durable-gateway-replacement-'));
-  const controllerHome = join(root, 'controller');
-  const repoRoot = join(root, 'repo');
-  mkdirSync(join(repoRoot, '.forge'), { recursive: true });
-  for (const args of [['init', '-b', 'main'], ['config', 'user.name', 'Gateway Test'], ['config', 'user.email', 'gateway@example.test']]) {
-    const result = spawnSync('git', args, { cwd: repoRoot });
-    if (result.status !== 0) throw new Error(result.stderr.toString());
-  }
-  writeFileSync(join(repoRoot, 'README.md'), 'Gateway replacement fixture\n');
-  for (const args of [['add', 'README.md'], ['commit', '-m', 'fixture']]) {
-    const result = spawnSync('git', args, { cwd: repoRoot });
-    if (result.status !== 0) throw new Error(result.stderr.toString());
-  }
-  const gate = join(root, 'release-process');
-  const marker = join(root, 'effects');
-  writeFileSync(join(repoRoot, '.forge', 'checks.json'), JSON.stringify({ version: 1, checks: {
-    survival: {
-      description: 'Gateway-independent durable execution',
-      command: [process.execPath, '-e', `const fs=require('node:fs'); const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(gate)})){clearInterval(timer);fs.appendFileSync(${JSON.stringify(marker)},'1');console.log('completed');}},20);`],
-      timeoutMs: 15_000,
-    },
-  } }));
-  const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
-  const context = { ...createMcpToolContext({ controllerHome, profile: 'controller', repo: repoRoot }),
-    principalId: 'gateway-replacement-fixture', sessionId: 'runtime-fixture', controllerInstanceId: 'runtime-fixture', controllerType: 'chatgpt' as const };
-  const definitions = processToolDefinitions.filter(tool => ['run_check', 'process_get', 'process_wait'].includes(tool.name));
-  const readiness = { ready: true, reasonCodes: [], observedAt: new Date().toISOString(), diagnostics: { database: { outcome: 'pass' as const }, scheduler: { outcome: 'pass' as const }, releaseCoherence: { outcome: 'pass' as const }, mcpEndToEnd: { outcome: 'pass' as const } } };
-  let processId: string | undefined;
-  let firstSubmission = true;
-  let accepted!: () => void;
-  let releaseReceipt!: () => void;
-  const admission = new Promise<void>(resolve => { accepted = resolve; });
-  const receiptGate = new Promise<void>(resolve => { releaseReceipt = resolve; });
-  const token = 'gateway-replacement-fixture-token';
-  mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
-  writeFileSync(join(controllerHome, 'mcp', 'runtime-token'), token);
-  const runtime = await startRuntimeMcpTransport({
-    host: '127.0.0.1', port: 0, authToken: token, readiness: () => readiness,
-    createServer: () => {
-      const server = new Server({ name: 'durable-runtime-fixture', version: '1' }, { capabilities: { tools: {} } });
-      server.setRequestHandler('tools/list', async () => ({ tools: definitions.map(mcpToolDefinitionToSdk) }));
-      server.setRequestHandler('tools/call', async request => {
-        const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-        const result = request.params.name === 'run_check'
-          ? await routeDurableMcpCall(context, request.params.name, args)
-          : await callProcessTool(context, request.params.name, args);
-        if (!result) throw new Error('unhandled fixture tool');
-        if (request.params.name === 'run_check' && firstSubmission) {
-          firstSubmission = false;
-          processId = String((result.structuredContent as Record<string, unknown>).processId);
-          accepted();
-          if (loseReceipt) await receiptGate;
-        }
-        return result;
-      });
-      return server;
-    },
-  });
-  const now = new Date().toISOString();
-  writeRuntimeStatusSnapshot(controllerHome, { schemaVersion: 1, runtimeInstanceId: 'durable-runtime-fixture', pid: process.pid,
-    releaseId: 'durable-runtime-fixture', artifactIdentity: 'durable-runtime-fixture', endpoint: runtime.endpoint,
-    readiness, startedAt: now, updatedAt: now });
-  const port = await freePort();
-  const gateways: Bun.Subprocess<'ignore', 'ignore', 'pipe'>[] = [];
-  const clients: Client[] = [];
-  const connect = async () => {
-    const proc = Bun.spawn(['bun', '-e', `import { startMcpHttp } from './adapters/mcp/transports/http';await startMcpHttp({host:'127.0.0.1',port:${port},profile:'controller',auth:'none'});`], {
-      cwd: process.cwd(), stdout: 'ignore', stderr: 'pipe', env: isolatedMcpProcessEnv(controllerHome),
+  test(`durable Process survives real Gateway process replacement (lost receipt=${loseReceipt})`, async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-durable-gateway-replacement-'));
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+    for (const args of [
+      ['init', '-b', 'main'],
+      ['config', 'user.name', 'Gateway Test'],
+      ['config', 'user.email', 'gateway@example.test'],
+    ]) {
+      const result = spawnSync('git', args, { cwd: repoRoot });
+      if (result.status !== 0) throw new Error(result.stderr.toString());
+    }
+    writeFileSync(join(repoRoot, 'README.md'), 'Gateway replacement fixture\n');
+    for (const args of [
+      ['add', 'README.md'],
+      ['commit', '-m', 'fixture'],
+    ]) {
+      const result = spawnSync('git', args, { cwd: repoRoot });
+      if (result.status !== 0) throw new Error(result.stderr.toString());
+    }
+    const gate = join(root, 'release-process');
+    const marker = join(root, 'effects');
+    writeFileSync(
+      join(repoRoot, '.forge', 'checks.json'),
+      JSON.stringify({
+        version: 1,
+        checks: {
+          survival: {
+            description: 'Gateway-independent durable execution',
+            command: [
+              process.execPath,
+              '-e',
+              `const fs=require('node:fs'); const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(gate)})){clearInterval(timer);fs.appendFileSync(${JSON.stringify(marker)},'1');console.log('completed');}},20);`,
+            ],
+            timeoutMs: 15_000,
+          },
+        },
+      }),
+    );
+    const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+    const context = {
+      ...createMcpToolContext({ controllerHome, profile: 'controller', repo: repoRoot }),
+      principalId: 'gateway-replacement-fixture',
+      sessionId: 'runtime-fixture',
+      controllerInstanceId: 'runtime-fixture',
+      controllerType: 'chatgpt' as const,
+    };
+    const definitions = processToolDefinitions.filter((tool) =>
+      ['run_check', 'process_get', 'process_wait'].includes(tool.name),
+    );
+    const readiness = {
+      ready: true,
+      reasonCodes: [],
+      observedAt: new Date().toISOString(),
+      diagnostics: {
+        database: { outcome: 'pass' as const },
+        scheduler: { outcome: 'pass' as const },
+        releaseCoherence: { outcome: 'pass' as const },
+        mcpEndToEnd: { outcome: 'pass' as const },
+      },
+    };
+    let processId: string | undefined;
+    let firstSubmission = true;
+    let accepted!: () => void;
+    let releaseReceipt!: () => void;
+    const admission = new Promise<void>((resolve) => {
+      accepted = resolve;
     });
-    gateways.push(proc);
-    await waitForHealth(port);
-    const client = new Client({ name: 'durable-gateway-client', version: '1' }, { capabilities: {} });
-    clients.push(client);
-    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
-    return { proc, client };
-  };
-  const args = { repo_id: repository.repoId, check_id: 'survival', request_id: 'gateway-replacement-original', interactive_wait_ms: 25 };
-  try {
-    const first = await connect();
-    if (loseReceipt) {
-      // Inject a caller observation deadline; it never changes Process execution.
-      const observation = first.client.callTool({ name: 'run_check', arguments: args }, { timeout: 1_000 }).then(
-        result => ({ result, failed: false, error: undefined }),
-        error => ({ failed: true, error }),
+    const receiptGate = new Promise<void>((resolve) => {
+      releaseReceipt = resolve;
+    });
+    const token = 'gateway-replacement-fixture-token';
+    mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+    writeFileSync(join(controllerHome, 'mcp', 'runtime-token'), token);
+    const runtime = await startRuntimeMcpTransport({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: token,
+      readiness: () => readiness,
+      createServer: () => {
+        const server = new Server({ name: 'durable-runtime-fixture', version: '1' }, { capabilities: { tools: {} } });
+        server.setRequestHandler('tools/list', async () => ({ tools: definitions.map(mcpToolDefinitionToSdk) }));
+        server.setRequestHandler('tools/call', async (request) => {
+          const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+          const result =
+            request.params.name === 'run_check'
+              ? await routeDurableMcpCall(context, request.params.name, args)
+              : await callProcessTool(context, request.params.name, args);
+          if (!result) throw new Error('unhandled fixture tool');
+          if (request.params.name === 'run_check' && firstSubmission) {
+            firstSubmission = false;
+            processId = String((result.structuredContent as Record<string, unknown>).processId);
+            accepted();
+            if (loseReceipt) await receiptGate;
+          }
+          return result;
+        });
+        return server;
+      },
+    });
+    const now = new Date().toISOString();
+    writeRuntimeStatusSnapshot(controllerHome, {
+      schemaVersion: 1,
+      runtimeInstanceId: 'durable-runtime-fixture',
+      pid: process.pid,
+      releaseId: 'durable-runtime-fixture',
+      artifactIdentity: 'durable-runtime-fixture',
+      endpoint: runtime.endpoint,
+      readiness,
+      startedAt: now,
+      updatedAt: now,
+    });
+    const port = await freePort();
+    const gateways: Bun.Subprocess<'ignore', 'ignore', 'pipe'>[] = [];
+    const clients: Client[] = [];
+    const connect = async () => {
+      const proc = Bun.spawn(
+        [
+          'bun',
+          '-e',
+          `import { startMcpHttp } from './adapters/mcp/transports/http';await startMcpHttp({host:'127.0.0.1',port:${port},profile:'controller',auth:'none'});`,
+        ],
+        {
+          cwd: process.cwd(),
+          stdout: 'ignore',
+          stderr: 'pipe',
+          env: isolatedMcpProcessEnv(controllerHome),
+        },
       );
-      await admission;
-      first.proc.kill('SIGKILL');
-      await first.proc.exited;
+      gateways.push(proc);
+      await waitForHealth(port);
+      const client = new Client({ name: 'durable-gateway-client', version: '1' }, { capabilities: {} });
+      clients.push(client);
+      await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+      return { proc, client };
+    };
+    const args = {
+      repo_id: repository.repoId,
+      check_id: 'survival',
+      request_id: 'gateway-replacement-original',
+      interactive_wait_ms: 25,
+    };
+    try {
+      const first = await connect();
+      if (loseReceipt) {
+        // Inject a caller observation deadline; it never changes Process execution.
+        const observation = first.client.callTool({ name: 'run_check', arguments: args }, { timeout: 1_000 }).then(
+          (result) => ({ result, failed: false, error: undefined }),
+          (error) => ({ failed: true, error }),
+        );
+        await admission;
+        first.proc.kill('SIGKILL');
+        await first.proc.exited;
+        releaseReceipt();
+        const lost = await observation;
+        expect(lost.failed).toBe(true);
+        expect('result' in lost).toBe(false);
+        // SIGKILL removes the only process capable of emitting an HTTP timeout
+        // response. The transport failure is intentionally outcome-unknown;
+        // the same durable request key below must reconcile it without replay.
+        expect(lost.error).toBeInstanceOf(Error);
+      } else {
+        const started = await first.client.callTool({ name: 'run_check', arguments: args });
+        expect(started.isError).not.toBe(true);
+        expect(started.structuredContent).toMatchObject({ path: 'process_managed', completed: false, processId });
+        first.proc.kill('SIGTERM');
+        expect(await first.proc.exited).toBe(0);
+      }
+      expect(processId).toBeTruthy();
+      expect(existsSync(marker)).toBe(false);
+      await first.client.close();
+
+      const second = await connect();
+      expect(second.proc.pid).not.toBe(first.proc.pid);
+      // Recover by the caller's original key even when no Process ID reached it.
+      const reconciled = await second.client.callTool({ name: 'run_check', arguments: args });
+      expect(reconciled.isError).not.toBe(true);
+      expect(reconciled.structuredContent).toMatchObject({ processId });
+      const recoveredProcessId = String((reconciled.structuredContent as Record<string, unknown>).processId);
+      const running = await second.client.callTool({
+        name: 'process_get',
+        arguments: { repo_id: repository.repoId, process_id: recoveredProcessId },
+      });
+      expect(running.structuredContent).toMatchObject({ process: { processId, status: 'running', completed: false } });
+      writeFileSync(gate, 'release');
+      const terminal = await second.client.callTool({
+        name: 'process_wait',
+        arguments: { repo_id: repository.repoId, process_id: processId, timeout_ms: 10_000 },
+      });
+      expect(terminal.structuredContent).toMatchObject({
+        synchronization: 'terminal_result_available',
+        process: { processId, completed: true, ok: true },
+      });
+      const replayed = await second.client.callTool({ name: 'run_check', arguments: args });
+      expect(replayed.structuredContent).toMatchObject({ processId });
+      expect(readFileSync(marker, 'utf8')).toBe('1');
+    } finally {
       releaseReceipt();
-      const lost = await observation;
-      expect(lost.failed).toBe(true);
-      expect('result' in lost).toBe(false);
-      // SIGKILL removes the only process capable of emitting an HTTP timeout
-      // response. The transport failure is intentionally outcome-unknown;
-      // the same durable request key below must reconcile it without replay.
-      expect(lost.error).toBeInstanceOf(Error);
-    } else {
-      const started = await first.client.callTool({ name: 'run_check', arguments: args });
-      expect(started.isError).not.toBe(true);
-      expect(started.structuredContent).toMatchObject({ path: 'process_managed', completed: false, processId });
-      first.proc.kill('SIGTERM');
-      expect(await first.proc.exited).toBe(0);
+      writeFileSync(gate, 'release');
+      if (processId)
+        await callProcessTool(context, 'process_wait', {
+          repo_id: repository.repoId,
+          process_id: processId,
+          timeout_ms: 5_000,
+        }).catch(() => undefined);
+      for (const client of clients) await client.close().catch(() => undefined);
+      for (const proc of gateways) {
+        if (proc.exitCode === null) {
+          proc.kill('SIGKILL');
+          await proc.exited;
+        }
+      }
+      await runtime.close();
+      rmSync(root, { recursive: true, force: true });
     }
-    expect(processId).toBeTruthy();
-    expect(existsSync(marker)).toBe(false);
-    await first.client.close();
-
-    const second = await connect();
-    expect(second.proc.pid).not.toBe(first.proc.pid);
-    // Recover by the caller's original key even when no Process ID reached it.
-    const reconciled = await second.client.callTool({ name: 'run_check', arguments: args });
-    expect(reconciled.isError).not.toBe(true);
-    expect(reconciled.structuredContent).toMatchObject({ processId });
-    const recoveredProcessId = String((reconciled.structuredContent as Record<string, unknown>).processId);
-    const running = await second.client.callTool({ name: 'process_get', arguments: { repo_id: repository.repoId, process_id: recoveredProcessId } });
-    expect(running.structuredContent).toMatchObject({ process: { processId, status: 'running', completed: false } });
-    writeFileSync(gate, 'release');
-    const terminal = await second.client.callTool({ name: 'process_wait', arguments: { repo_id: repository.repoId, process_id: processId, timeout_ms: 10_000 } });
-    expect(terminal.structuredContent).toMatchObject({ synchronization: 'terminal_result_available', process: { processId, completed: true, ok: true } });
-    const replayed = await second.client.callTool({ name: 'run_check', arguments: args });
-    expect(replayed.structuredContent).toMatchObject({ processId });
-    expect(readFileSync(marker, 'utf8')).toBe('1');
-  } finally {
-    releaseReceipt();
-    writeFileSync(gate, 'release');
-    if (processId) await callProcessTool(context, 'process_wait', { repo_id: repository.repoId, process_id: processId, timeout_ms: 5_000 }).catch(() => undefined);
-    for (const client of clients) await client.close().catch(() => undefined);
-    for (const proc of gateways) {
-      if (proc.exitCode === null) { proc.kill('SIGKILL'); await proc.exited; }
-    }
-    await runtime.close();
-    rmSync(root, { recursive: true, force: true });
-  }
-}, 20_000);
+  }, 20_000);
 }
-
 
 test('Gateway response timing keeps canonical trace and actual handler time distinct from proxy waits', () => {
   const canonicalTraceId = '30a0144f-1c29-4b01-8a4a-c34a36b197a5';
@@ -3093,12 +3732,18 @@ test('Gateway response timing keeps canonical trace and actual handler time dist
 
 test('proxy audit correlation retains Canonical trace identity without requiring timing fields', () => {
   const traceId = '30a0144f-1c29-4b01-8a4a-c34a36b197a5';
-  expect(deriveCanonicalForwardingTiming({
-    gatewayCallStartedAtMs: 0, gatewayCallDurationMs: 5,
-    response: { content: [], structuredContent: { responseMeta: { traceId } } },
-  })).toEqual({ gatewayProxyCanonicalTraceId: traceId });
-  expect(deriveCanonicalForwardingTiming({
-    gatewayCallStartedAtMs: 0, gatewayCallDurationMs: 5,
-    response: { content: [], structuredContent: { responseMeta: { traceId: 'untrusted arbitrary data' } } },
-  })).toEqual({});
+  expect(
+    deriveCanonicalForwardingTiming({
+      gatewayCallStartedAtMs: 0,
+      gatewayCallDurationMs: 5,
+      response: { content: [], structuredContent: { responseMeta: { traceId } } },
+    }),
+  ).toEqual({ gatewayProxyCanonicalTraceId: traceId });
+  expect(
+    deriveCanonicalForwardingTiming({
+      gatewayCallStartedAtMs: 0,
+      gatewayCallDurationMs: 5,
+      response: { content: [], structuredContent: { responseMeta: { traceId: 'untrusted arbitrary data' } } },
+    }),
+  ).toEqual({});
 });

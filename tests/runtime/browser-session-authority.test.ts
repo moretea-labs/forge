@@ -22,7 +22,10 @@ import {
   setMacOsBrowserRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
-import { authorizeCredentialUse, revokeCredentialUse } from '../../src/runtime/safe-tooling/managed-credential-authorization';
+import {
+  authorizeCredentialUse,
+  revokeCredentialUse,
+} from '../../src/runtime/safe-tooling/managed-credential-authorization';
 import {
   resolveBrowserHandoffHostPath,
   browserHandoffHostAvailable,
@@ -38,7 +41,10 @@ import {
   saveBrowserSession,
   tombstoneBrowserSession,
 } from '../../src/runtime/plugins/browser-session-authority';
-import { browserSessionOwnerToken, findBrowserSession as findComputerBackedBrowserSession } from '../../src/runtime/plugins/browser-session-store';
+import {
+  browserSessionOwnerToken,
+  findBrowserSession as findComputerBackedBrowserSession,
+} from '../../src/runtime/plugins/browser-session-store';
 import { readLegacyBrowserSessionMigrationEntries } from '../../src/runtime/plugins/browser-session-legacy-migration';
 import { withRuntimeBrowserSessionExecutionContext } from '../../src/runtime/root/browser-session-composition';
 import {
@@ -78,12 +84,25 @@ test('reclaims only Forge-owned isolated browser profiles with no live owner', (
   const signals: Array<{ pid: number; signal: string }> = [];
   setBrowserPluginRuntimeHooksForTest({
     listProcesses: () => [
-      { pid: 11, command: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${repoProfile}` },
-      { pid: 12, command: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --type=renderer --user-data-dir=${repoProfile}` },
-      { pid: 13, command: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/Users/example/Library/Application Support/Google/Chrome' },
+      {
+        pid: 11,
+        command: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${repoProfile}`,
+      },
+      {
+        pid: 12,
+        command: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --type=renderer --user-data-dir=${repoProfile}`,
+      },
+      {
+        pid: 13,
+        command:
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/Users/example/Library/Application Support/Google/Chrome',
+      },
       { pid: 14, command: `/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --user-data-dir=${foreignProfile}` },
     ],
-    signalProcess: (pid, signal) => { signals.push({ pid, signal }); return true; },
+    signalProcess: (pid, signal) => {
+      signals.push({ pid, signal });
+      return true;
+    },
   });
   const roots = browserProfileRootsForRuntime({ controllerHome, repoRoots: [fx.repoA] });
   const result = reclaimOrphanedIsolatedBrowserProfiles({ profileRoots: roots, graceMs: 0 });
@@ -94,24 +113,30 @@ test('reclaims only Forge-owned isolated browser profiles with no live owner', (
   expect(signals.map((entry) => entry.pid)).toEqual([11]);
 });
 
-const SUPERVISOR_EXTENSION_KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxFzo1eixjsWsZbN1pBuyzdKinJSAAuzTRavD0xFQFwrTIEQ7hxxueEBEhifpGq9nplNnmxmZvIL7PJycEAYT8mrbyXBLCPR1jQBuL4YR775phnlNVpF3dHX5OWDHLWRnHRgOO1FibQ54fM2rKylr66+x+J6/4C7a9dpiSMuxf3fOStXA6wJb0d7A4E22Q1+GGfWgs0NCyVI5k4aczK+J5Ao61ZXKBr8Qw/FCmwhCcDgQdIpURgoMHkyvQH3ryYWocucjRhMVsU8H65adIIKFHkEhPJCiVY64L6bu6kNR2fpf0yJ1GvI5ota6Hf4NAEi7Yt7PL7i3ISyv3pPQWW1nIwIDAQAB';
+const SUPERVISOR_EXTENSION_KEY =
+  'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxFzo1eixjsWsZbN1pBuyzdKinJSAAuzTRavD0xFQFwrTIEQ7hxxueEBEhifpGq9nplNnmxmZvIL7PJycEAYT8mrbyXBLCPR1jQBuL4YR775phnlNVpF3dHX5OWDHLWRnHRgOO1FibQ54fM2rKylr66+x+J6/4C7a9dpiSMuxf3fOStXA6wJb0d7A4E22Q1+GGfWgs0NCyVI5k4aczK+J5Ao61ZXKBr8Qw/FCmwhCcDgQdIpURgoMHkyvQH3ryYWocucjRhMVsU8H65adIIKFHkEhPJCiVY64L6bu6kNR2fpf0yJ1GvI5ota6Hf4NAEi7Yt7PL7i3ISyv3pPQWW1nIwIDAQAB';
 const SUPERVISOR_EXTENSION_ID = 'glinahpcibpcfcimdcceplmfkgcjehin';
 
 function extensionFixture(repoRoot: string): string {
   const extensionPath = join(repoRoot, 'extension-fixture');
   mkdirSync(extensionPath, { recursive: true });
-  writeFileSync(join(extensionPath, 'manifest.json'), JSON.stringify({
-    manifest_version: 3, name: 'Forge extension fixture', version: '1.0.0',
-    key: SUPERVISOR_EXTENSION_KEY, background: { service_worker: 'background.js' },
-  }));
+  writeFileSync(
+    join(extensionPath, 'manifest.json'),
+    JSON.stringify({
+      manifest_version: 3,
+      name: 'Forge extension fixture',
+      version: '1.0.0',
+      key: SUPERVISOR_EXTENSION_KEY,
+      background: { service_worker: 'background.js' },
+    }),
+  );
   writeFileSync(join(extensionPath, 'background.js'), 'console.log("fixture");\n');
   return extensionPath;
 }
 
 function computerBackedSession(controllerHome: string, repoId: string, repoRoot: string, sessionId: string) {
-  return withRuntimeBrowserSessionExecutionContext(
-    { controllerHome, repoId },
-    () => findComputerBackedBrowserSession(repoRoot, sessionId),
+  return withRuntimeBrowserSessionExecutionContext({ controllerHome, repoId }, () =>
+    findComputerBackedBrowserSession(repoRoot, sessionId),
   );
 }
 
@@ -119,7 +144,11 @@ function session(
   sessionId: string,
   updatedAt: string,
   options: {
-    native?: boolean; windowId?: string; tabId?: string; repoMarker?: string; product?: 'chrome' | 'vivaldi';
+    native?: boolean;
+    windowId?: string;
+    tabId?: string;
+    repoMarker?: string;
+    product?: 'chrome' | 'vivaldi';
     mode?: 'attach_preferred' | 'managed_persistent' | 'isolated';
     activeMode?: 'attach_preferred' | 'managed_persistent' | 'isolated';
     ownership?: 'plugin_owned' | 'user_owned';
@@ -134,81 +163,131 @@ function session(
     title: sessionId,
     createdAt: '2026-08-24T00:00:00.000Z',
     updatedAt,
-    browser: options.native ? {
-      mode,
-      activeMode,
-      provider: 'macos-apple-events',
-      browserProduct: options.product ?? 'chrome',
-      tab: {
-        key: sessionId,
-        index: 0,
-        url: `https://example.com/${sessionId}`,
-        matchedBy: 'saved_url',
-        inventoryCount: 1,
-        capturedAt: updatedAt,
-        ownership: options.ownership ?? 'user_owned',
-        windowId: options.windowId ?? '7',
-        tabId: options.tabId ?? '9',
-      },
-    } : {
-      mode,
-      activeMode,
-      provider: 'playwright-persistent-context',
-    },
+    browser: options.native
+      ? {
+          mode,
+          activeMode,
+          provider: 'macos-apple-events',
+          browserProduct: options.product ?? 'chrome',
+          tab: {
+            key: sessionId,
+            index: 0,
+            url: `https://example.com/${sessionId}`,
+            matchedBy: 'saved_url',
+            inventoryCount: 1,
+            capturedAt: updatedAt,
+            ownership: options.ownership ?? 'user_owned',
+            windowId: options.windowId ?? '7',
+            tabId: options.tabId ?? '9',
+          },
+        }
+      : {
+          mode,
+          activeMode,
+          provider: 'playwright-persistent-context',
+        },
   };
 }
 
 describe('Browser vs Chrome environment boundary', () => {
   test('rejects switching an existing native Chrome session into an isolated profile before provider execution', async () => {
     const { controllerHome, repoA } = fixture();
-    saveBrowserSession(controllerHome, 'repo-a', repoA, session('owned-chrome', '2026-08-24T01:00:00.000Z', { native: true }));
-    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => { throw new Error('unexpected provider discovery'); } });
+    saveBrowserSession(
+      controllerHome,
+      'repo-a',
+      repoA,
+      session('owned-chrome', '2026-08-24T01:00:00.000Z', { native: true }),
+    );
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => {
+        throw new Error('unexpected provider discovery');
+      },
+    });
 
-    await expect(executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      actionId: 'create_session', requestId: 'cross-mode-native-to-isolated',
-      origin: { surface: 'mcp', actor: 'test' },
-      args: { session_id: 'owned-chrome', url: 'https://example.com/owned-chrome', browser_mode: 'isolated' },
-    })).rejects.toMatchObject({
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        actionId: 'create_session',
+        requestId: 'cross-mode-native-to-isolated',
+        origin: { surface: 'mcp', actor: 'test' },
+        args: { session_id: 'owned-chrome', url: 'https://example.com/owned-chrome', browser_mode: 'isolated' },
+      }),
+    ).rejects.toMatchObject({
       code: 'PLUGIN_BROWSER_SESSION_PROVIDER_MISMATCH',
       details: { sessionId: 'owned-chrome', savedMode: 'attach_preferred', requestedMode: 'isolated' },
     });
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'owned-chrome')?.browser?.provider).toBe('macos-apple-events');
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'owned-chrome')?.browser?.provider).toBe(
+      'macos-apple-events',
+    );
   });
 
   test('rejects switching an existing managed session into the user Chrome provider', async () => {
     const { controllerHome, repoA } = fixture();
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('managed-owned', '2026-08-24T01:00:00.000Z'));
-    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => { throw new Error('unexpected provider discovery'); } });
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => {
+        throw new Error('unexpected provider discovery');
+      },
+    });
 
-    await expect(executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      actionId: 'get_text', requestId: 'cross-mode-managed-to-chrome',
-      origin: { surface: 'mcp', actor: 'test' },
-      args: { session_id: 'managed-owned', browser_mode: 'attach_preferred' },
-    })).rejects.toMatchObject({
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        actionId: 'get_text',
+        requestId: 'cross-mode-managed-to-chrome',
+        origin: { surface: 'mcp', actor: 'test' },
+        args: { session_id: 'managed-owned', browser_mode: 'attach_preferred' },
+      }),
+    ).rejects.toMatchObject({
       code: 'PLUGIN_BROWSER_SESSION_PROVIDER_MISMATCH',
       details: { sessionId: 'managed-owned', savedMode: 'managed_persistent', requestedMode: 'attach_preferred' },
     });
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'managed-owned')?.browser?.provider).toBe('playwright-persistent-context');
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'managed-owned')?.browser?.provider).toBe(
+      'playwright-persistent-context',
+    );
   });
 
   test('pins the requested session mode when attach_preferred previously resolved to a managed provider', async () => {
     const { controllerHome, repoA } = fixture();
-    saveBrowserSession(controllerHome, 'repo-a', repoA, session('attach-fallback-owned', '2026-08-24T01:00:00.000Z', {
-      mode: 'attach_preferred',
-      activeMode: 'managed_persistent',
-    }));
-    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => { throw new Error('unexpected provider discovery'); } });
+    saveBrowserSession(
+      controllerHome,
+      'repo-a',
+      repoA,
+      session('attach-fallback-owned', '2026-08-24T01:00:00.000Z', {
+        mode: 'attach_preferred',
+        activeMode: 'managed_persistent',
+      }),
+    );
+    setBrowserPluginRuntimeHooksForTest({
+      moduleAvailable: () => {
+        throw new Error('unexpected provider discovery');
+      },
+    });
 
-    await expect(executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      actionId: 'get_text', requestId: 'cross-mode-attach-fallback-to-managed',
-      origin: { surface: 'mcp', actor: 'test' },
-      args: { session_id: 'attach-fallback-owned', browser_mode: 'managed_persistent' },
-    })).rejects.toMatchObject({
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        actionId: 'get_text',
+        requestId: 'cross-mode-attach-fallback-to-managed',
+        origin: { surface: 'mcp', actor: 'test' },
+        args: { session_id: 'attach-fallback-owned', browser_mode: 'managed_persistent' },
+      }),
+    ).rejects.toMatchObject({
       code: 'PLUGIN_BROWSER_SESSION_PROVIDER_MISMATCH',
-      details: { sessionId: 'attach-fallback-owned', savedMode: 'attach_preferred', requestedMode: 'managed_persistent' },
+      details: {
+        sessionId: 'attach-fallback-owned',
+        savedMode: 'attach_preferred',
+        requestedMode: 'managed_persistent',
+      },
     });
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'attach-fallback-owned')?.browser).toMatchObject({
       mode: 'attach_preferred',
@@ -219,13 +298,34 @@ describe('Browser vs Chrome environment boundary', () => {
 
   test('native click with unknown mutation outcome keeps the typed error instead of retryable PLUGIN_ACTION_FAILED', async () => {
     const { controllerHome, repoA } = fixture();
-    saveBrowserSession(controllerHome, 'repo-a', repoA, session('native-click-unknown', '2026-08-24T01:00:00.000Z', { native: true }));
+    saveBrowserSession(
+      controllerHome,
+      'repo-a',
+      repoA,
+      session('native-click-unknown', '2026-08-24T01:00:00.000Z', { native: true }),
+    );
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
-      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto',
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
     });
     const nativeSeparator = String.fromCharCode(30);
-    const metadata = ['false', 'https://example.com/native-click-unknown', 'Native Click', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+    const metadata = [
+      'false',
+      'https://example.com/native-click-unknown',
+      'Native Click',
+      '0',
+      '0',
+      '1200',
+      '800',
+      '7',
+      '9',
+      'false',
+      'false',
+    ].join(nativeSeparator);
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
       appExists: () => true,
@@ -235,19 +335,29 @@ describe('Browser vs Chrome environment boundary', () => {
           throw new AssistantPluginError(
             'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
             'Process-bound Chrome Apple Event failed: The operation couldn’t be completed. (OSStatus error -1712.)',
-            { retryable: false, effectOutcome: 'outcome_unknown', details: { causeCode: 'EXTERNAL_PLUGIN_TIMEOUT', stage: 'response_read' } },
+            {
+              retryable: false,
+              effectOutcome: 'outcome_unknown',
+              details: { causeCode: 'EXTERNAL_PLUGIN_TIMEOUT', stage: 'response_read' },
+            },
           );
         }
         return metadata;
       },
     });
 
-    await expect(executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      actionId: 'click', requestId: 'native-click-outcome-unknown-guard',
-      origin: { surface: 'mcp', actor: 'test' },
-      args: { session_id: 'native-click-unknown', selector: '[data-testid="send-button"]' },
-    })).rejects.toMatchObject({
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        actionId: 'click',
+        requestId: 'native-click-outcome-unknown-guard',
+        origin: { surface: 'mcp', actor: 'test' },
+        args: { session_id: 'native-click-unknown', selector: '[data-testid="send-button"]' },
+      }),
+    ).rejects.toMatchObject({
       code: 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
       retryable: false,
       effectOutcome: 'outcome_unknown',
@@ -264,45 +374,72 @@ describe('browser session compatibility on Computer target authority', () => {
     writeFileSync(join(legacyRoot, 'one.json'), JSON.stringify(session('legacy-one', '2026-08-24T01:00:00.000Z')));
 
     expect(ensureLegacyBrowserSessionsImported(controllerHome, 'repo-a', repoA)).toBe(1);
-    expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual(['legacy-one']);
+    expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual([
+      'legacy-one',
+    ]);
     expect(existsSync(join(legacyRoot, 'one.json'))).toBe(false);
 
     writeFileSync(join(legacyRoot, 'two.json'), JSON.stringify(session('legacy-two', '2026-08-24T02:00:00.000Z')));
     expect(ensureLegacyBrowserSessionsImported(controllerHome, 'repo-a', repoA)).toBe(0);
-    expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual(['legacy-one']);
+    expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual([
+      'legacy-one',
+    ]);
     expect(existsSync(join(legacyRoot, 'two.json'))).toBe(false);
   });
 
   test('deduplicates one native tab globally while keeping managed sessions repository-bound', () => {
     const { controllerHome, repoA, repoB } = fixture();
-    const first = saveBrowserSession(controllerHome, 'repo-a', repoA, session('native-a', '2026-08-24T01:00:00.000Z', { native: true }));
-    const second = saveBrowserSession(controllerHome, 'repo-b', repoB, session('native-b', '2026-08-24T02:00:00.000Z', { native: true }));
+    const first = saveBrowserSession(
+      controllerHome,
+      'repo-a',
+      repoA,
+      session('native-a', '2026-08-24T01:00:00.000Z', { native: true }),
+    );
+    const second = saveBrowserSession(
+      controllerHome,
+      'repo-b',
+      repoB,
+      session('native-b', '2026-08-24T02:00:00.000Z', { native: true }),
+    );
     expect(first.sessionId).toBe('native-a');
     expect(second.sessionId).toBe('native-a');
     expect(findBrowserSession(controllerHome, 'repo-b', repoB, 'native-b')?.sessionId).toBe('native-a');
-    expect(listBrowserSessions(controllerHome, 'repo-b', repoB).sessions.map((entry) => entry.sessionId)).toEqual(['native-a']);
+    expect(listBrowserSessions(controllerHome, 'repo-b', repoB).sessions.map((entry) => entry.sessionId)).toEqual([
+      'native-a',
+    ]);
 
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('managed-a', '2026-08-24T03:00:00.000Z'));
-    expect(listBrowserSessions(controllerHome, 'repo-b', repoB).sessions.map((entry) => entry.sessionId)).toEqual(['native-a']);
-    expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual(['managed-a', 'native-a']);
+    expect(listBrowserSessions(controllerHome, 'repo-b', repoB).sessions.map((entry) => entry.sessionId)).toEqual([
+      'native-a',
+    ]);
+    expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual([
+      'managed-a',
+      'native-a',
+    ]);
   });
 
   test('plugin-owned native tabs cannot be aliased by a different session owner', () => {
     const { controllerHome, repoA, repoB } = fixture();
-    const first = saveBrowserSession(controllerHome, 'repo-a', repoA, session(
-      'native-owned-a',
-      '2026-08-24T01:00:00.000Z',
-      { native: true, ownership: 'plugin_owned' },
-    ));
+    const first = saveBrowserSession(
+      controllerHome,
+      'repo-a',
+      repoA,
+      session('native-owned-a', '2026-08-24T01:00:00.000Z', { native: true, ownership: 'plugin_owned' }),
+    );
     const ownerToken = browserSessionOwnerToken('native-owned-a');
     expect(first.browser?.tab).toMatchObject({ ownership: 'plugin_owned', ownerToken });
-    expect(computerBackedSession(controllerHome, 'repo-a', repoA, 'native-owned-a')?.browser?.tab?.ownerToken).toBe(ownerToken);
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, 'native-owned-a')?.browser?.tab?.ownerToken).toBe(
+      ownerToken,
+    );
 
-    expect(() => saveBrowserSession(controllerHome, 'repo-b', repoB, session(
-      'native-owned-b',
-      '2026-08-24T02:00:00.000Z',
-      { native: true, ownership: 'plugin_owned' },
-    ))).toThrow('COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT');
+    expect(() =>
+      saveBrowserSession(
+        controllerHome,
+        'repo-b',
+        repoB,
+        session('native-owned-b', '2026-08-24T02:00:00.000Z', { native: true, ownership: 'plugin_owned' }),
+      ),
+    ).toThrow('COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT');
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-owned-a')?.sessionId).toBe('native-owned-a');
     expect(findBrowserSession(controllerHome, 'repo-b', repoB, 'native-owned-b')).toBeUndefined();
   });
@@ -320,8 +457,18 @@ describe('browser session compatibility on Computer target authority', () => {
 
   test('tombstones canonical native identities across aliases', () => {
     const { controllerHome, repoA, repoB } = fixture();
-    saveBrowserSession(controllerHome, 'repo-a', repoA, session('native-a', '2026-08-24T01:00:00.000Z', { native: true }));
-    saveBrowserSession(controllerHome, 'repo-b', repoB, session('native-b', '2026-08-24T02:00:00.000Z', { native: true }));
+    saveBrowserSession(
+      controllerHome,
+      'repo-a',
+      repoA,
+      session('native-a', '2026-08-24T01:00:00.000Z', { native: true }),
+    );
+    saveBrowserSession(
+      controllerHome,
+      'repo-b',
+      repoB,
+      session('native-b', '2026-08-24T02:00:00.000Z', { native: true }),
+    );
     expect(tombstoneBrowserSession(controllerHome, 'repo-b', repoB, 'native-b')).toBe(true);
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-a')).toBeUndefined();
     expect(findBrowserSession(controllerHome, 'repo-b', repoB, 'native-b')).toBeUndefined();
@@ -329,14 +476,20 @@ describe('browser session compatibility on Computer target authority', () => {
 
   test('legacy import may observe but cannot resurrect a tombstoned native identity from another repository', () => {
     const { controllerHome, repoA, repoB } = fixture();
-    saveBrowserSession(controllerHome, 'repo-a', repoA, session('native-a', '2026-08-24T01:00:00.000Z', { native: true }));
+    saveBrowserSession(
+      controllerHome,
+      'repo-a',
+      repoA,
+      session('native-a', '2026-08-24T01:00:00.000Z', { native: true }),
+    );
     expect(tombstoneBrowserSession(controllerHome, 'repo-a', repoA, 'native-a')).toBe(true);
 
     const legacyRoot = join(repoB, '.forge', 'browser', 'sessions');
     mkdirSync(legacyRoot, { recursive: true });
-    writeFileSync(join(legacyRoot, 'native-b.json'), JSON.stringify(
-      session('native-b', '2026-08-24T02:00:00.000Z', { native: true }),
-    ));
+    writeFileSync(
+      join(legacyRoot, 'native-b.json'),
+      JSON.stringify(session('native-b', '2026-08-24T02:00:00.000Z', { native: true })),
+    );
 
     expect(ensureLegacyBrowserSessionsImported(controllerHome, 'repo-b', repoB)).toBe(1);
     expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-a')).toBeUndefined();
@@ -392,8 +545,12 @@ describe('browser session compatibility on Computer target authority', () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
-      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto',
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
     });
     const updatedAt = '2026-08-24T01:00:00.000Z';
     const legacySession = session('legacy-numeric-native', updatedAt, { native: true });
@@ -402,20 +559,39 @@ describe('browser session compatibility on Computer target authority', () => {
     legacyTab.tabId = 2_095_923_553;
     withControlPlaneTransaction(controllerHome, (database) => {
       writeControlPlaneRecordWithinTransaction(database, {
-        namespace: 'browser_session', scope: 'controller', key: 'legacy-numeric-native', schemaVersion: 1,
-        expectedRevision: null, action: 'test_seed',
-        value: { schemaVersion: 1, status: 'active', session: legacySession, aliases: ['legacy-numeric-native'], repositoryIds: ['repo-a'] },
+        namespace: 'browser_session',
+        scope: 'controller',
+        key: 'legacy-numeric-native',
+        schemaVersion: 1,
+        expectedRevision: null,
+        action: 'test_seed',
+        value: {
+          schemaVersion: 1,
+          status: 'active',
+          session: legacySession,
+          aliases: ['legacy-numeric-native'],
+          repositoryIds: ['repo-a'],
+        },
       });
     });
 
     const listed = await executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser', requestId: 'legacy-numeric-list',
-      origin: { surface: 'mcp', actor: 'test' }, actionId: 'list_sessions', args: {},
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'legacy-numeric-list',
+      origin: { surface: 'mcp', actor: 'test' },
+      actionId: 'list_sessions',
+      args: {},
     });
-    const migrated = (listed.sessions as Array<{ sessionId: string; browser?: { tab?: { windowId?: string; tabId?: string } } }>).find((entry) => entry.sessionId === 'legacy-numeric-native');
+    const migrated = (
+      listed.sessions as Array<{ sessionId: string; browser?: { tab?: { windowId?: string; tabId?: string } } }>
+    ).find((entry) => entry.sessionId === 'legacy-numeric-native');
     expect(migrated?.browser?.tab).toMatchObject({ windowId: '2095923550', tabId: '2095923553' });
-    expect(computerBackedSession(controllerHome, 'repo-a', repoA, 'legacy-numeric-native')?.browser?.tab)
-      .toMatchObject({ windowId: '2095923550', tabId: '2095923553' });
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, 'legacy-numeric-native')?.browser?.tab).toMatchObject(
+      { windowId: '2095923550', tabId: '2095923553' },
+    );
   });
 
   test('legacy migration rejects malformed nested native ids with the Browser corruption contract', () => {
@@ -425,14 +601,28 @@ describe('browser session compatibility on Computer target authority', () => {
     legacyTab.windowId = { unexpected: true };
     withControlPlaneTransaction(controllerHome, (database) => {
       writeControlPlaneRecordWithinTransaction(database, {
-        namespace: 'browser_session', scope: 'controller', key: 'legacy-malformed-native', schemaVersion: 1,
-        expectedRevision: null, action: 'test_seed',
-        value: { schemaVersion: 1, status: 'active', session: legacySession, aliases: ['legacy-malformed-native'], repositoryIds: ['repo-a'] },
+        namespace: 'browser_session',
+        scope: 'controller',
+        key: 'legacy-malformed-native',
+        schemaVersion: 1,
+        expectedRevision: null,
+        action: 'test_seed',
+        value: {
+          schemaVersion: 1,
+          status: 'active',
+          session: legacySession,
+          aliases: ['legacy-malformed-native'],
+          repositoryIds: ['repo-a'],
+        },
       });
     });
 
     let failure: unknown;
-    try { readLegacyBrowserSessionMigrationEntries({ controllerHome, repoId: 'repo-a', repoRoot: repoA }); } catch (error) { failure = error; }
+    try {
+      readLegacyBrowserSessionMigrationEntries({ controllerHome, repoId: 'repo-a', repoRoot: repoA });
+    } catch (error) {
+      failure = error;
+    }
     expect(failure).toBeInstanceOf(AssistantPluginError);
     expect((failure as AssistantPluginError).code).toBe('PLUGIN_BROWSER_SESSION_STATE_CORRUPT');
     expect((failure as AssistantPluginError).details?.field).toBe('browser.tab.windowId');
@@ -451,8 +641,15 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     const legacyRoot = join(repoA, '.forge', 'browser', 'sessions');
     mkdirSync(legacyRoot, { recursive: true });
-    for (const [id, at] of [['one', '2026-08-24T01:00:00.000Z'], ['two', '2026-08-24T02:00:00.000Z'], ['three', '2026-08-24T03:00:00.000Z']] as const) {
-      writeFileSync(join(legacyRoot, `${id}.json`), JSON.stringify(session(id, at, id === 'three' ? { native: true } : {})));
+    for (const [id, at] of [
+      ['one', '2026-08-24T01:00:00.000Z'],
+      ['two', '2026-08-24T02:00:00.000Z'],
+      ['three', '2026-08-24T03:00:00.000Z'],
+    ] as const) {
+      writeFileSync(
+        join(legacyRoot, `${id}.json`),
+        JSON.stringify(session(id, at, id === 'three' ? { native: true } : {})),
+      );
     }
     const baseInput = {
       controllerHome,
@@ -467,7 +664,11 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(first.totalCount).toBe(3);
     expect((first.sessions as Array<{ sessionId: string }>).map((entry) => entry.sessionId)).toEqual(['three', 'two']);
     expect(first.nextCursor).toBeTruthy();
-    const second = await executeBrowserPluginAction({ ...baseInput, actionId: 'list_sessions', args: { limit: 2, cursor: first.nextCursor } });
+    const second = await executeBrowserPluginAction({
+      ...baseInput,
+      actionId: 'list_sessions',
+      args: { limit: 2, cursor: first.nextCursor },
+    });
     expect((second.sessions as Array<{ sessionId: string }>).map((entry) => entry.sessionId)).toEqual(['one']);
 
     const computerList = await executeBrowserPluginAction({
@@ -490,8 +691,10 @@ describe('browser session compatibility on Computer target authority', () => {
       totalCount: 1,
     });
     expect((computerList.sessions as Array<{ sessionId: string }>).map((entry) => entry.sessionId)).toEqual(['three']);
-    expect((computerList.sessions as Array<{ liveness: string; livenessEvidence: string }>)[0])
-      .toMatchObject({ liveness: 'unverified', livenessEvidence: 'liveness_not_checked' });
+    expect((computerList.sessions as Array<{ liveness: string; livenessEvidence: string }>)[0]).toMatchObject({
+      liveness: 'unverified',
+      livenessEvidence: 'liveness_not_checked',
+    });
 
     const auth = await resolveBrowserPluginAuthorizationContext({
       ...baseInput,
@@ -556,9 +759,9 @@ describe('browser session compatibility on Computer target authority', () => {
     const repository = registerRepository({ path: repoA, controllerHome, displayName: 'browser-projection-lock' });
     const separator = String.fromCharCode(30);
     const url = 'https://example.com/projection-lock';
-    const metadata = [
-      'false', url, 'Projection Lock', '0', '0', '1200', '800', '7', '9', 'true', 'false',
-    ].join(separator);
+    const metadata = ['false', url, 'Projection Lock', '0', '0', '1200', '800', '7', '9', 'true', 'false'].join(
+      separator,
+    );
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
@@ -608,9 +811,9 @@ describe('browser session compatibility on Computer target authority', () => {
 
     const separator = String.fromCharCode(30);
     const url = 'https://example.com/native-adoption';
-    const metadata = [
-      'false', url, 'Native Adoption', '0', '0', '1200', '800', '7', '9', 'true', 'false',
-    ].join(separator);
+    const metadata = ['false', url, 'Native Adoption', '0', '0', '1200', '800', '7', '9', 'true', 'false'].join(
+      separator,
+    );
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
@@ -642,12 +845,14 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(connection).toMatchObject({ provider: 'macos-apple-events', browserProduct: 'chrome' });
     expect(connection.sessionResume?.reason).toContain('system-frontmost authority was not established');
 
-    await expect(executeBrowserPluginAction({
-      ...baseInput,
-      requestId: 'native-adoption-strict',
-      actionId: 'create_session',
-      args: { url, native_active_tab: true },
-    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE' });
+    await expect(
+      executeBrowserPluginAction({
+        ...baseInput,
+        requestId: 'native-adoption-strict',
+        actionId: 'create_session',
+        args: { url, native_active_tab: true },
+      }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE' });
   });
 
   test('explicit Chrome adoption refreshes cached exact-tab URL before matching', async () => {
@@ -677,9 +882,7 @@ describe('browser session compatibility on Computer target authority', () => {
       runAppleScript: async (script) => {
         scripts.push(script);
         metadataReads += 1;
-        return [
-          'false', currentUrl, 'ChatGPT', '0', '0', '1200', '800', '7', '9', 'false', 'false',
-        ].join(separator);
+        return ['false', currentUrl, 'ChatGPT', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(separator);
       },
     });
 
@@ -721,22 +924,24 @@ describe('browser session compatibility on Computer target authority', () => {
     // Refreshing metadata does not weaken URL matching: a different live URL
     // on the same exact tab remains a terminal adoption mismatch.
     currentUrl = 'https://example.com/unrelated';
-    await expect(executeBrowserPluginAction({
-      controllerHome,
-      repoId: 'repo-a',
-      repoRoot: repoA,
-      pluginId: 'browser',
-      actionId: 'create_session',
-      requestId: 'native-adoption-rejects-refreshed-unrelated-url',
-      args: {
-        url: actualUrl,
-        session_id: 'native-adoption-rejects-refreshed-unrelated-url',
-        native_browser_product: 'chrome',
-        native_window_id: ref.windowId,
-        native_tab_id: ref.tabId,
-      },
-      origin: { surface: 'mcp', actor: 'test' },
-    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH' });
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        actionId: 'create_session',
+        requestId: 'native-adoption-rejects-refreshed-unrelated-url',
+        args: {
+          url: actualUrl,
+          session_id: 'native-adoption-rejects-refreshed-unrelated-url',
+          native_browser_product: 'chrome',
+          native_window_id: ref.windowId,
+          native_tab_id: ref.tabId,
+        },
+        origin: { surface: 'mcp', actor: 'test' },
+      }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH' });
     expect(metadataReads).toBeGreaterThanOrEqual(3);
     expect(scripts.some((script) => script.includes('set URL of targetTab'))).toBe(false);
   });
@@ -753,8 +958,11 @@ describe('browser session compatibility on Computer target authority', () => {
     const userTab = { windowId: '7', tabId: '3', active: true, url, title: 'Existing User Tab' };
     const ownedTab = { windowId: '7', tabId: '9', active: false, url, title: 'Forge Owned' };
     const inventoryRaw = () => {
-      const records = [`7${fieldSeparator}3${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Existing User Tab`];
-      if (created) records.push(`7${fieldSeparator}9${fieldSeparator}false${fieldSeparator}${url}${fieldSeparator}Forge Owned`);
+      const records = [
+        `7${fieldSeparator}3${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Existing User Tab`,
+      ];
+      if (created)
+        records.push(`7${fieldSeparator}9${fieldSeparator}false${fieldSeparator}${url}${fieldSeparator}Forge Owned`);
       return `false${separator}${records.join(separator)}`;
     };
 
@@ -780,11 +988,24 @@ describe('browser session compatibility on Computer target authority', () => {
           return '';
         }
         if (script.includes('execute targetTab javascript')) {
-          return JSON.stringify({ ok: true, value: { url, title: 'Forge Owned' }, page: { url, title: 'Forge Owned' } });
+          return JSON.stringify({
+            ok: true,
+            value: { url, title: 'Forge Owned' },
+            page: { url, title: 'Forge Owned' },
+          });
         }
         return [
-          'false', url, created ? 'Forge Owned' : 'Existing User Tab',
-          '0', '0', '1200', '800', '7', created ? '9' : '3', 'true', 'false',
+          'false',
+          url,
+          created ? 'Forge Owned' : 'Existing User Tab',
+          '0',
+          '0',
+          '1200',
+          '800',
+          '7',
+          created ? '9' : '3',
+          'true',
+          'false',
         ].join(separator);
       },
     });
@@ -823,14 +1044,18 @@ describe('browser session compatibility on Computer target authority', () => {
       nativeBrowserCandidates: ['chrome'],
     });
     const url = 'https://example.com/native-serialization-busy';
-    saveBrowserSession(controllerHome, 'repo-a', repoA, session(
-      'native-serialization-busy', '2026-08-24T04:00:00.000Z', { native: true, ownership: 'plugin_owned' },
-    ));
+    saveBrowserSession(
+      controllerHome,
+      'repo-a',
+      repoA,
+      session('native-serialization-busy', '2026-08-24T04:00:00.000Z', { native: true, ownership: 'plugin_owned' }),
+    );
 
     let reloadCalls = 0;
     let closeCalls = 0;
     const separator = String.fromCharCode(30);
-    const metadata = () => ['false', url, 'Native Serialization Busy', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(separator);
+    const metadata = () =>
+      ['false', url, 'Native Serialization Busy', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(separator);
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
@@ -846,30 +1071,37 @@ describe('browser session compatibility on Computer target authority', () => {
           return '';
         }
         if (script.includes('execute targetTab javascript')) {
-          return JSON.stringify({ ok: true, value: { url, title: 'Native Serialization Busy' }, page: { url, title: 'Native Serialization Busy' } });
+          return JSON.stringify({
+            ok: true,
+            value: { url, title: 'Native Serialization Busy' },
+            page: { url, title: 'Native Serialization Busy' },
+          });
         }
         return metadata();
       },
     });
 
-    await expect(executeBrowserPluginAction({
-      controllerHome,
-      repoId: 'repo-a',
-      repoRoot: repoA,
-      pluginId: 'browser',
-      actionId: 'reload',
-      requestId: 'native-serialization-busy-after-open',
-      args: { session_id: 'native-serialization-busy' },
-      origin: { surface: 'mcp', actor: 'test' },
-    })).rejects.toMatchObject({
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        actionId: 'reload',
+        requestId: 'native-serialization-busy-after-open',
+        args: { session_id: 'native-serialization-busy' },
+        origin: { surface: 'mcp', actor: 'test' },
+      }),
+    ).rejects.toMatchObject({
       code: 'BROWSER_AUTOMATION_SERIALIZATION_BUSY',
       retryable: true,
       effectOutcome: 'failed',
     });
     expect(reloadCalls).toBe(1);
     expect(closeCalls).toBe(0);
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-serialization-busy')?.browser?.tab)
-      .toMatchObject({ ownership: 'plugin_owned', windowId: '7', tabId: '9' });
+    expect(
+      findBrowserSession(controllerHome, 'repo-a', repoA, 'native-serialization-busy')?.browser?.tab,
+    ).toMatchObject({ ownership: 'plugin_owned', windowId: '7', tabId: '9' });
   });
 
   test('native handoff owns the exact live tab target without materializing a browser profile', async () => {
@@ -885,7 +1117,9 @@ describe('browser session compatibility on Computer target authority', () => {
       nativeBrowserCandidates: ['chrome'],
     });
     const nativeSession = session('native-handoff', '2026-08-24T04:00:00.000Z', {
-      native: true, windowId: '7', tabId: '9',
+      native: true,
+      windowId: '7',
+      tabId: '9',
     });
     saveBrowserSession(controllerHome, 'repo-a', repoA, nativeSession);
 
@@ -927,11 +1161,18 @@ describe('browser session compatibility on Computer target authority', () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
-      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
     });
     const nativeSession = session('handoff-status-read', '2026-11-13T00:00:00.000Z', {
-      native: true, windowId: '7', tabId: '9',
+      native: true,
+      windowId: '7',
+      tabId: '9',
     });
     saveBrowserSession(controllerHome, 'repo-a', repoA, nativeSession);
     const interactionId = 'completed-handoff-status-read';
@@ -949,26 +1190,44 @@ describe('browser session compatibility on Computer target authority', () => {
       updatedAt: '2026-11-13T00:01:00.000Z',
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const surfaceRevisions = () => listControlPlaneRecords(controllerHome, {
-      namespace: 'computer_interaction_target', limit: 100,
-    }).map(({ key, revision }) => ({ key, revision })).sort((left, right) => left.key.localeCompare(right.key));
+    const surfaceRevisions = () =>
+      listControlPlaneRecords(controllerHome, {
+        namespace: 'computer_interaction_target',
+        limit: 100,
+      })
+        .map(({ key, revision }) => ({ key, revision }))
+        .sort((left, right) => left.key.localeCompare(right.key));
     const before = surfaceRevisions();
     expect(before).toHaveLength(1);
 
-    const observe = (requestId: string) => executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser', requestId,
-      origin: { surface: 'mcp', actor: 'test' },
-      actionId: 'get_handoff_status', args: { interaction_id: interactionId },
-    });
+    const observe = (requestId: string) =>
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        requestId,
+        origin: { surface: 'mcp', actor: 'test' },
+        actionId: 'get_handoff_status',
+        args: { interaction_id: interactionId },
+      });
     const first = await observe('handoff-status-first-observation');
-    expect(first.handoff).toMatchObject({ status: 'completed', result: { url: 'https://example.com/finished', title: 'Finished' } });
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, nativeSession.sessionId))
-      .toMatchObject({ url: 'https://example.com/finished', title: 'Finished' });
+    expect(first.handoff).toMatchObject({
+      status: 'completed',
+      result: { url: 'https://example.com/finished', title: 'Finished' },
+    });
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, nativeSession.sessionId)).toMatchObject({
+      url: 'https://example.com/finished',
+      title: 'Finished',
+    });
     const afterFirst = surfaceRevisions();
     expect(afterFirst[0].revision).toBe(before[0].revision + 1);
 
     const second = await observe('handoff-status-second-observation');
-    expect(second.handoff).toMatchObject({ status: 'completed', result: { url: 'https://example.com/finished', title: 'Finished' } });
+    expect(second.handoff).toMatchObject({
+      status: 'completed',
+      result: { url: 'https://example.com/finished', title: 'Finished' },
+    });
     expect(surfaceRevisions()).toEqual(afterFirst);
   });
 
@@ -995,10 +1254,22 @@ describe('browser session compatibility on Computer target authority', () => {
     let metadataTitle = 'Native Foreground';
     const activations: string[] = [];
     const trustedRefs: Array<{ product?: string; windowId?: string; tabId?: string }> = [];
-    const metadata = () => [
-      frontmost ? 'true' : 'false', url, metadataTitle, '0', '0', '1200', '800', '7', '9', 'true', nativeLoading ? 'true' : 'false',
-    ].join(separator);
-    const inventory = () => `false${separator}7${fieldSeparator}9${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Native Foreground`;
+    const metadata = () =>
+      [
+        frontmost ? 'true' : 'false',
+        url,
+        metadataTitle,
+        '0',
+        '0',
+        '1200',
+        '800',
+        '7',
+        '9',
+        'true',
+        nativeLoading ? 'true' : 'false',
+      ].join(separator);
+    const inventory = () =>
+      `false${separator}7${fieldSeparator}9${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Native Foreground`;
 
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => false,
@@ -1035,10 +1306,19 @@ describe('browser session compatibility on Computer target authority', () => {
       url,
       title: 'Native Foreground',
       browser: {
-        ...session('native-foreground', '2026-08-24T04:00:00.000Z', { native: true, windowId: '7', tabId: '9' }).browser,
+        ...session('native-foreground', '2026-08-24T04:00:00.000Z', { native: true, windowId: '7', tabId: '9' })
+          .browser,
         tab: {
-          key: 'native-foreground', index: 0, url, title: 'Native Foreground', matchedBy: 'saved_url', inventoryCount: 1,
-          capturedAt: '2026-08-24T04:00:00.000Z', ownership: 'user_owned', windowId: '7', tabId: '9',
+          key: 'native-foreground',
+          index: 0,
+          url,
+          title: 'Native Foreground',
+          matchedBy: 'saved_url',
+          inventoryCount: 1,
+          capturedAt: '2026-08-24T04:00:00.000Z',
+          ownership: 'user_owned',
+          windowId: '7',
+          tabId: '9',
         },
       },
     });
@@ -1093,19 +1373,19 @@ describe('browser session compatibility on Computer target authority', () => {
       args: { session_id: 'native-foreground', post_action_wait_ms: 1 },
     });
     expect(identityEvaluations - beforeTitleRead).toBe(1);
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-foreground')?.title)
-      .toBe('Native Foreground');
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-foreground')?.title).toBe('Native Foreground');
 
     // A later action is never allowed to reuse the activation's URL receipt.
 
-
     // An explicit load-state request must still honor its requested deadline.
-    await expect(executeBrowserPluginAction({
-      ...baseInput,
-      requestId: 'native-foreground-explicit-load-state',
-      actionId: 'wait_for_load_state',
-      args: { session_id: 'native-foreground', timeout_ms: 250 },
-    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_LOAD_STATE_TIMEOUT' });
+    await expect(
+      executeBrowserPluginAction({
+        ...baseInput,
+        requestId: 'native-foreground-explicit-load-state',
+        actionId: 'wait_for_load_state',
+        args: { session_id: 'native-foreground', timeout_ms: 250 },
+      }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_LOAD_STATE_TIMEOUT' });
 
     const identityBeforeMutation = identityEvaluations;
     await executeBrowserPluginAction({
@@ -1122,35 +1402,52 @@ describe('browser session compatibility on Computer target authority', () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
-      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
     });
     const url = 'https://login.example.com/sign-in';
     const separator = String.fromCharCode(30);
     const fieldSeparator = String.fromCharCode(31);
     const metadata = () => ['true', url, 'Sign in', '0', '0', '1200', '800', '7', '9', 'true', 'false'].join(separator);
-    const inventory = () => `false${separator}7${fieldSeparator}9${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Sign in`;
+    const inventory = () =>
+      `false${separator}7${fieldSeparator}9${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Sign in`;
     const clicks: Array<{ x: number; y: number; windowId?: string; tabId?: string }> = [];
     let providerCalls = 0;
     let filledByOS = false;
     let visibleUsername = 'authorized@example.com';
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     setMacOsBrowserRuntimeHooksForTest({
-      platform: 'darwin', appExists: () => true, processRunning: async () => true,
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
       runAppleScript: async (script, args) => {
         providerCalls += 1;
         if (script.includes('set outputText to "false"')) return inventory();
         if (script.includes('execute targetTab javascript')) {
           if (args[0]?.includes('accountBinding.selector')) {
-            return JSON.stringify({ ok: true, value: {
-              count: 1, matches: args[0]?.includes(JSON.stringify(visibleUsername)) === true,
-            } });
+            return JSON.stringify({
+              ok: true,
+              value: {
+                count: 1,
+                matches: args[0]?.includes(JSON.stringify(visibleUsername)) === true,
+              },
+            });
           }
           if (args[0]?.includes('querySelectorAll') && args[0]?.includes('password')) {
-            return JSON.stringify({ ok: true, value: {
-              count: 1, password: true, filled: filledByOS,
-              bounds: { x: 30, y: 40, visible: true },
-            } });
+            return JSON.stringify({
+              ok: true,
+              value: {
+                count: 1,
+                password: true,
+                filled: filledByOS,
+                bounds: { x: 30, y: 40, visible: true },
+              },
+            });
           }
           return JSON.stringify({ ok: true, value: { url, title: 'Sign in' } });
         }
@@ -1158,40 +1455,70 @@ describe('browser session compatibility on Computer target authority', () => {
       },
       trustedInput: async (request) => {
         if (request.input.kind !== 'click') throw new Error('Only OS pointer click is allowed for saved autofill');
-        clicks.push({ x: request.input.x, y: request.input.y,
-          windowId: request.ref.windowId, tabId: request.ref.tabId });
+        clicks.push({
+          x: request.input.x,
+          y: request.input.y,
+          windowId: request.ref.windowId,
+          tabId: request.ref.tabId,
+        });
         filledByOS = true;
       },
     });
-    const saved = session('saved-login', '2026-11-13T00:00:00.000Z',
-      { native: true, windowId: '7', tabId: '9' });
+    const saved = session('saved-login', '2026-11-13T00:00:00.000Z', { native: true, windowId: '7', tabId: '9' });
     saveBrowserSession(controllerHome, 'repo-a', repoA, {
-      ...saved, url, title: 'Sign in',
+      ...saved,
+      url,
+      title: 'Sign in',
       browser: {
         ...saved.browser,
-        tab: { key: 'saved-login', index: 0, url, title: 'Sign in', matchedBy: 'saved_url',
-          inventoryCount: 1, capturedAt: '2026-11-13T00:00:00.000Z',
-          ownership: 'user_owned', windowId: '7', tabId: '9' },
+        tab: {
+          key: 'saved-login',
+          index: 0,
+          url,
+          title: 'Sign in',
+          matchedBy: 'saved_url',
+          inventoryCount: 1,
+          capturedAt: '2026-11-13T00:00:00.000Z',
+          ownership: 'user_owned',
+          windowId: '7',
+          tabId: '9',
+        },
       },
     });
     const base = {
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      actionId: 'autofill_saved_password', origin: { surface: 'mcp' as const, actor: 'test' },
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      actionId: 'autofill_saved_password',
+      origin: { surface: 'mcp' as const, actor: 'test' },
     };
-    await expect(executeBrowserPluginAction({
-      ...base, requestId: 'password-wrong-site',
-      args: { session_id: 'saved-login', expected_origin: 'https://evil.example.com', selector: 'input[type=password]' },
-    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_ORIGIN_MISMATCH' });
+    await expect(
+      executeBrowserPluginAction({
+        ...base,
+        requestId: 'password-wrong-site',
+        args: {
+          session_id: 'saved-login',
+          expected_origin: 'https://evil.example.com',
+          selector: 'input[type=password]',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_ORIGIN_MISMATCH' });
     expect(clicks).toHaveLength(0);
     expect(providerCalls).toBe(0); // A wrong origin cannot even attach/read the unrelated tab.
-    await expect(executeBrowserPluginAction({
-      ...base, requestId: 'password-without-credential-grant',
-      args: {
-        session_id: 'saved-login', expected_origin: 'https://login.example.com',
-        selector: 'input[type=password]', username_selector: 'input[type=email]',
-        credential_ref: 'cred_saved_login',
-      },
-    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_CREDENTIAL_NOT_AUTHORIZED' });
+    await expect(
+      executeBrowserPluginAction({
+        ...base,
+        requestId: 'password-without-credential-grant',
+        args: {
+          session_id: 'saved-login',
+          expected_origin: 'https://login.example.com',
+          selector: 'input[type=password]',
+          username_selector: 'input[type=email]',
+          credential_ref: 'cred_saved_login',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_CREDENTIAL_NOT_AUTHORIZED' });
     expect(clicks).toHaveLength(0);
 
     authorizeCredentialUse({
@@ -1204,42 +1531,58 @@ describe('browser session compatibility on Computer target authority', () => {
     });
 
     visibleUsername = 'other@example.com';
-    await expect(executeBrowserPluginAction({
-      ...base, requestId: 'password-wrong-account',
-      args: {
-        session_id: 'saved-login', expected_origin: 'https://login.example.com',
-        selector: 'input[type=password]', username_selector: 'input[type=email]',
-        credential_ref: 'cred_saved_login',
-      },
-    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_ACCOUNT_MISMATCH' });
+    await expect(
+      executeBrowserPluginAction({
+        ...base,
+        requestId: 'password-wrong-account',
+        args: {
+          session_id: 'saved-login',
+          expected_origin: 'https://login.example.com',
+          selector: 'input[type=password]',
+          username_selector: 'input[type=email]',
+          credential_ref: 'cred_saved_login',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_ACCOUNT_MISMATCH' });
     expect(clicks).toHaveLength(0);
 
     visibleUsername = 'authorized@example.com';
     const outcome = await executeBrowserPluginAction({
-      ...base, requestId: 'password-exact-site',
+      ...base,
+      requestId: 'password-exact-site',
       args: {
-        session_id: 'saved-login', expected_origin: 'https://login.example.com',
-        selector: 'input[type=password]', username_selector: 'input[type=email]',
+        session_id: 'saved-login',
+        expected_origin: 'https://login.example.com',
+        selector: 'input[type=password]',
+        username_selector: 'input[type=email]',
         credential_ref: 'cred_saved_login',
       },
     });
     expect(outcome).toMatchObject({
-      sessionId: 'saved-login', origin: 'https://login.example.com',
+      sessionId: 'saved-login',
+      origin: 'https://login.example.com',
       accountMatched: true,
-      passwordFieldFilled: true, nextAction: 'verify_login',
-      credentialMaterialReturned: false, loginVerified: false,
+      passwordFieldFilled: true,
+      nextAction: 'verify_login',
+      credentialMaterialReturned: false,
+      loginVerified: false,
     });
     expect(JSON.stringify(outcome)).not.toContain('password-value');
     expect(clicks).toEqual([{ x: 30, y: 40, windowId: '7', tabId: '9' }]);
     revokeCredentialUse({ controllerHome, credentialRef: 'cred_saved_login' });
-    await expect(executeBrowserPluginAction({
-      ...base, requestId: 'password-after-revoke',
-      args: {
-        session_id: 'saved-login', expected_origin: 'https://login.example.com',
-        selector: 'input[type=password]', username_selector: 'input[type=email]',
-        credential_ref: 'cred_saved_login',
-      },
-    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_CREDENTIAL_NOT_AUTHORIZED' });
+    await expect(
+      executeBrowserPluginAction({
+        ...base,
+        requestId: 'password-after-revoke',
+        args: {
+          session_id: 'saved-login',
+          expected_origin: 'https://login.example.com',
+          selector: 'input[type=password]',
+          username_selector: 'input[type=email]',
+          credential_ref: 'cred_saved_login',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_CREDENTIAL_NOT_AUTHORIZED' });
     expect(clicks).toHaveLength(1);
   });
 
@@ -1262,9 +1605,20 @@ describe('browser session compatibility on Computer target authority', () => {
     let inventoryCalls = 0;
     let createCalls = 0;
     let closeCalls = 0;
-    const metadata = () => [
-      'false', url, 'Legacy Inventory', '0', '0', '1200', '800', '7', tabExists ? '9' : '3', tabExists ? 'false' : 'true', 'false',
-    ].join(separator);
+    const metadata = () =>
+      [
+        'false',
+        url,
+        'Legacy Inventory',
+        '0',
+        '0',
+        '1200',
+        '800',
+        '7',
+        tabExists ? '9' : '3',
+        tabExists ? 'false' : 'true',
+        'false',
+      ].join(separator);
 
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     setMacOsBrowserRuntimeHooksForTest({
@@ -1274,7 +1628,11 @@ describe('browser session compatibility on Computer target authority', () => {
       runAppleScript: async (script) => {
         if (script.includes('set outputText to "false"')) {
           inventoryCalls += 1;
-          throw new AssistantPluginError('BROWSER_AUTOMATION_ACTION_UNSUPPORTED', 'list_tabs is unavailable in the legacy broker.', { retryable: false });
+          throw new AssistantPluginError(
+            'BROWSER_AUTOMATION_ACTION_UNSUPPORTED',
+            'list_tabs is unavailable in the legacy broker.',
+            { retryable: false },
+          );
         }
         if (script.includes('make new tab at end of tabs of targetWindow')) {
           createCalls += 1;
@@ -1287,7 +1645,11 @@ describe('browser session compatibility on Computer target authority', () => {
           return '';
         }
         if (script.includes('execute targetTab javascript')) {
-          return JSON.stringify({ ok: true, value: { url, title: 'Legacy Inventory' }, page: { url, title: 'Legacy Inventory' } });
+          return JSON.stringify({
+            ok: true,
+            value: { url, title: 'Legacy Inventory' },
+            page: { url, title: 'Legacy Inventory' },
+          });
         }
         if (script.includes('set targetTabId to "9"') && !tabExists) {
           throw new Error('Google Chrome got an error: Can’t get tab whose id = "9". Invalid index. (-1719)');
@@ -1307,9 +1669,17 @@ describe('browser session compatibility on Computer target authority', () => {
       ...baseInput,
       requestId: 'legacy-inventory-open',
       actionId: 'create_session',
-      args: { url, browser_mode: 'attach_preferred', native_browser_candidates: ['chrome'], cdp_attach_fallback: 'fail_closed' },
+      args: {
+        url,
+        browser_mode: 'attach_preferred',
+        native_browser_candidates: ['chrome'],
+        cdp_attach_fallback: 'fail_closed',
+      },
     });
-    const openedSession = opened.session as { sessionId: string; browser?: { provider?: string; tab?: { ownership?: string; windowId?: string; tabId?: string } } };
+    const openedSession = opened.session as {
+      sessionId: string;
+      browser?: { provider?: string; tab?: { ownership?: string; windowId?: string; tabId?: string } };
+    };
     expect(openedSession.browser?.provider).toBe('macos-apple-events');
     expect(openedSession.browser?.tab).toMatchObject({ ownership: 'plugin_owned', windowId: '7', tabId: '9' });
     expect(createCalls).toBe(1);
@@ -1327,8 +1697,10 @@ describe('browser session compatibility on Computer target authority', () => {
       liveNativeSessionCount: 0,
       unverifiedSessionCount: 1,
     });
-    expect((listed.sessions as Array<{ liveness: string; livenessEvidence: string }>)[0])
-      .toMatchObject({ liveness: 'unverified', livenessEvidence: 'liveness_not_checked' });
+    expect((listed.sessions as Array<{ liveness: string; livenessEvidence: string }>)[0]).toMatchObject({
+      liveness: 'unverified',
+      livenessEvidence: 'liveness_not_checked',
+    });
     expect(inventoryCalls).toBe(0);
 
     const reconciled = await executeBrowserPluginAction({
@@ -1371,14 +1743,27 @@ describe('browser session compatibility on Computer target authority', () => {
     let ownedTabId = '';
     let ownedExists = false;
     let createCalls = 0;
-    const metadata = () => [
-      'false', ownedExists ? url : userUrl, ownedExists ? 'Forge Owned' : 'User Tab',
-      '0', '0', '1200', '800', '7', ownedExists ? ownedTabId : '3', ownedExists ? 'false' : 'true', 'false',
-    ].join(separator);
+    const metadata = () =>
+      [
+        'false',
+        ownedExists ? url : userUrl,
+        ownedExists ? 'Forge Owned' : 'User Tab',
+        '0',
+        '0',
+        '1200',
+        '800',
+        '7',
+        ownedExists ? ownedTabId : '3',
+        ownedExists ? 'false' : 'true',
+        'false',
+      ].join(separator);
     const userTab = () => ({ windowId: '7', tabId: '3', active: true, url: userUrl, title: 'User Tab' });
     const inventoryRaw = () => {
       const records = [`7${fieldSeparator}3${fieldSeparator}true${fieldSeparator}${userUrl}${fieldSeparator}User Tab`];
-      if (ownedExists) records.push(`7${fieldSeparator}${ownedTabId}${fieldSeparator}false${fieldSeparator}${url}${fieldSeparator}Forge Owned`);
+      if (ownedExists)
+        records.push(
+          `7${fieldSeparator}${ownedTabId}${fieldSeparator}false${fieldSeparator}${url}${fieldSeparator}Forge Owned`,
+        );
       return `false${separator}${records.join(separator)}`;
     };
 
@@ -1391,10 +1776,7 @@ describe('browser session compatibility on Computer target authority', () => {
         product: 'chrome',
         truncated: false,
         tabs: ownedExists
-          ? [
-              userTab(),
-              { windowId: '7', tabId: ownedTabId, active: false, url, title: 'Forge Owned' },
-            ]
+          ? [userTab(), { windowId: '7', tabId: ownedTabId, active: false, url, title: 'Forge Owned' }]
           : [userTab()],
       }),
       runAppleScript: async (script, args = []) => {
@@ -1433,29 +1815,48 @@ describe('browser session compatibility on Computer target authority', () => {
       ...baseInput,
       requestId: 'stale-owned-open',
       actionId: 'create_session',
-      args: { url, browser_mode: 'attach_preferred', native_browser_candidates: ['chrome'], cdp_attach_fallback: 'fail_closed' },
+      args: {
+        url,
+        browser_mode: 'attach_preferred',
+        native_browser_candidates: ['chrome'],
+        cdp_attach_fallback: 'fail_closed',
+      },
     });
     const sessionId = String((opened.session as { sessionId: string }).sessionId);
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
-    expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({
+      ownership: 'plugin_owned',
+      tabId: '9',
+    });
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({
+      ownership: 'plugin_owned',
+      tabId: '9',
+    });
 
     ownedExists = false;
     // Even an exact URL now exists in the unrelated user tab. URL equality
     // must not replace the lost physical session binding.
     userUrl = url;
     invalidateMacOsBrowserPageHandles();
-    await expect(executeBrowserPluginAction({
-      ...baseInput,
-      requestId: 'stale-owned-read',
-      actionId: 'get_text',
-      args: { session_id: sessionId, selector: 'body' },
-    })).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
+    await expect(
+      executeBrowserPluginAction({
+        ...baseInput,
+        requestId: 'stale-owned-read',
+        actionId: 'get_text',
+        args: { session_id: sessionId, selector: 'body' },
+      }),
+    ).rejects.toThrow('PLUGIN_BROWSER_SESSION_STATE_LOST');
 
     // A read-only action does not create a replacement in another Chrome
     // profile or mutate the user's open tab when the original tab vanished.
     expect(createCalls).toBe(1);
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
-    expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', tabId: '9' });
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({
+      ownership: 'plugin_owned',
+      tabId: '9',
+    });
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({
+      ownership: 'plugin_owned',
+      tabId: '9',
+    });
   });
 
   test('native cold rebind reports and persists the live same-origin URL after external drift', async () => {
@@ -1476,9 +1877,8 @@ describe('browser session compatibility on Computer target authority', () => {
     const driftedUrl = 'https://example.com/native-drift/changed';
     let currentUrl = originalUrl;
     let tabExists = false;
-    const metadata = () => [
-      'false', currentUrl, 'Native Drift', '0', '0', '1200', '800', '7', '9', 'false', 'false',
-    ].join(separator);
+    const metadata = () =>
+      ['false', currentUrl, 'Native Drift', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(separator);
 
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     setMacOsBrowserRuntimeHooksForTest({
@@ -1487,7 +1887,9 @@ describe('browser session compatibility on Computer target authority', () => {
       processRunning: async () => true,
       runAppleScript: async (script, args = []) => {
         if (script.includes('set outputText to "false"')) {
-          throw new AssistantPluginError('BROWSER_AUTOMATION_ACTION_UNSUPPORTED', 'list_tabs is unavailable.', { retryable: false });
+          throw new AssistantPluginError('BROWSER_AUTOMATION_ACTION_UNSUPPORTED', 'list_tabs is unavailable.', {
+            retryable: false,
+          });
         }
         if (script.includes('make new tab at end of tabs of targetWindow')) {
           tabExists = true;
@@ -1527,7 +1929,12 @@ describe('browser session compatibility on Computer target authority', () => {
       ...baseInput,
       requestId: 'native-drift-open',
       actionId: 'create_session',
-      args: { url: originalUrl, browser_mode: 'attach_preferred', native_browser_candidates: ['chrome'], cdp_attach_fallback: 'fail_closed' },
+      args: {
+        url: originalUrl,
+        browser_mode: 'attach_preferred',
+        native_browser_candidates: ['chrome'],
+        cdp_attach_fallback: 'fail_closed',
+      },
     });
     const sessionId = String((opened.session as { sessionId: string }).sessionId);
 
@@ -1569,7 +1976,17 @@ describe('browser session compatibility on Computer target authority', () => {
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     const separator = String.fromCharCode(30);
     const metadata = [
-      'false', 'https://example.com/native-health', 'Native Health', '0', '0', '1200', '800', '7', '9', 'false', 'false',
+      'false',
+      'https://example.com/native-health',
+      'Native Health',
+      '0',
+      '0',
+      '1200',
+      '800',
+      '7',
+      '9',
+      'false',
+      'false',
     ].join(separator);
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
@@ -1582,7 +1999,9 @@ describe('browser session compatibility on Computer target authority', () => {
     const before = buildBrowserPluginManifest(1, undefined, repoA, manifestContext);
     expect(before.health.state).toBe('degraded');
     expect(before.health.ready).toBe(false);
-    expect(before.health.warnings).toContain('Native active-browser attach has not completed a live probe in this Runtime instance.');
+    expect(before.health.warnings).toContain(
+      'Native active-browser attach has not completed a live probe in this Runtime instance.',
+    );
 
     await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
 
@@ -1639,7 +2058,9 @@ describe('browser session compatibility on Computer target authority', () => {
           return '';
         },
         on: () => undefined,
-        close: async () => { closed = true; },
+        close: async () => {
+          closed = true;
+        },
         isClosed: () => closed,
       };
     }
@@ -1663,19 +2084,24 @@ describe('browser session compatibility on Computer target authority', () => {
         webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test',
         Browser: 'Chrome/157',
       }),
-      loadPlaywright: () => ({
-        chromium: {
-          launchPersistentContext: async () => { throw new Error('managed launch must not run'); },
-          connectOverCDP: async (endpoint: string) => {
-            connectedEndpoint = endpoint;
-            return {
-              contexts: () => [context],
-              newBrowserCDPSession: async () => ({ detach: async () => undefined }),
-              disconnect: () => { disconnects += 1; },
-            };
+      loadPlaywright: () =>
+        ({
+          chromium: {
+            launchPersistentContext: async () => {
+              throw new Error('managed launch must not run');
+            },
+            connectOverCDP: async (endpoint: string) => {
+              connectedEndpoint = endpoint;
+              return {
+                contexts: () => [context],
+                newBrowserCDPSession: async () => ({ detach: async () => undefined }),
+                disconnect: () => {
+                  disconnects += 1;
+                },
+              };
+            },
           },
-        },
-      } as never),
+        }) as never,
     });
 
     const baseInput = {
@@ -1700,8 +2126,10 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(pages).toHaveLength(2);
     expect(userPage.url()).toBe(url);
     expect(ownedPage.url()).toBe(url);
-    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab)
-      .toMatchObject({ ownership: 'plugin_owned', ownerToken });
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, sessionId)?.browser?.tab).toMatchObject({
+      ownership: 'plugin_owned',
+      ownerToken,
+    });
 
     const resumed = await executeBrowserPluginAction({
       ...baseInput,
@@ -1736,18 +2164,19 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(resumedAfterNavigation.text).toBe('CDP page body');
     const savedAfterNavigation = findBrowserSession(controllerHome, 'repo-a', repoA, sessionId);
     expect(savedAfterNavigation?.url).toBe(nextUrl);
-    expect(savedAfterNavigation?.browser?.tab)
-      .toMatchObject({ ownership: 'plugin_owned', ownerToken, url: nextUrl });
+    expect(savedAfterNavigation?.browser?.tab).toMatchObject({ ownership: 'plugin_owned', ownerToken, url: nextUrl });
     expect(disconnects).toBe(4);
 
     // A missing owned page must not be replaced by the user's exact-URL tab.
     pages.splice(pages.indexOf(ownedPage), 1);
-    await expect(executeBrowserPluginAction({
-      ...baseInput,
-      requestId: 'cdp-owned-stale-read',
-      actionId: 'get_text',
-      args: { session_id: sessionId, selector: 'body' },
-    })).rejects.toThrow('PLUGIN_BROWSER_ATTACH_UNAVAILABLE');
+    await expect(
+      executeBrowserPluginAction({
+        ...baseInput,
+        requestId: 'cdp-owned-stale-read',
+        actionId: 'get_text',
+        args: { session_id: sessionId, selector: 'body' },
+      }),
+    ).rejects.toThrow('PLUGIN_BROWSER_ATTACH_UNAVAILABLE');
     expect(context.pages()).toHaveLength(1);
     expect(userPage.url()).toBe(url);
     expect(disconnects).toBe(5);
@@ -1771,9 +2200,15 @@ describe('browser session compatibility on Computer target authority', () => {
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
-      profileMode: 'repo_local', browserChannel: 'chrome', cdpEndpoint: 'http://127.0.0.1:9222',
-      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+      schemaVersion: 2,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      profileMode: 'repo_local',
+      browserChannel: 'chrome',
+      cdpEndpoint: 'http://127.0.0.1:9222',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
     });
     const canonicalExtensionPath = realpathSync(extensionPath);
     const methods: string[] = [];
@@ -1781,10 +2216,15 @@ describe('browser session compatibility on Computer target authority', () => {
     let connectedEndpoint = '';
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
-      fetchJson: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test', Browser: 'Chrome/153' }),
+      fetchJson: async () => ({
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test',
+        Browser: 'Chrome/153',
+      }),
       loadPlaywright: () => ({
         chromium: {
-          launchPersistentContext: async () => { throw new Error('managed launch must not run'); },
+          launchPersistentContext: async () => {
+            throw new Error('managed launch must not run');
+          },
           connectOverCDP: async (endpoint: string) => {
             connectedEndpoint = endpoint;
             return {
@@ -1797,26 +2237,47 @@ describe('browser session compatibility on Computer target authority', () => {
                     return { id: SUPERVISOR_EXTENSION_ID };
                   }
                   if (method === 'Extensions.getExtensions') {
-                    return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, name: 'Forge extension fixture', version: '1.0.0', path: canonicalExtensionPath, enabled: true }] };
+                    return {
+                      extensions: [
+                        {
+                          id: SUPERVISOR_EXTENSION_ID,
+                          name: 'Forge extension fixture',
+                          version: '1.0.0',
+                          path: canonicalExtensionPath,
+                          enabled: true,
+                        },
+                      ],
+                    };
                   }
                   throw new Error('unexpected method ' + method);
                 },
               }),
-              disconnect: () => { disconnected += 1; },
+              disconnect: () => {
+                disconnected += 1;
+              },
             };
           },
         },
       }),
     });
     const result = await executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'extension-cdp-install', actionId: 'install_unpacked_extension',
-      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'extension-cdp-install',
+      actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath },
+      origin: { surface: 'mcp', actor: 'test' },
     });
     expect(connectedEndpoint).toBe('http://127.0.0.1:9222');
     expect(methods).toEqual(['Extensions.loadUnpacked', 'Extensions.getExtensions']);
     expect(disconnected).toBe(1);
-    expect(result).toMatchObject({ provider: 'playwright-cdp', extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }, verified: true });
+    expect(result).toMatchObject({
+      provider: 'playwright-cdp',
+      extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true },
+      verified: true,
+    });
   });
 
   test('managed extension install removes Playwright extension suppression and verifies the exact runtime target', async () => {
@@ -1852,7 +2313,8 @@ describe('browser session compatibility on Computer target authority', () => {
       // A nonexistent release cannot supply a dependency anchor.
       process.env.FORGE_RELEASE_PATH = join(repoA, 'missing-release');
       expect(browserDependencyRequireAnchors(repoA, virtualBundleUrl)).not.toContain(
-        join(repoA, 'missing-release', 'package', 'package.json'));
+        join(repoA, 'missing-release', 'package', 'package.json'),
+      );
     } finally {
       if (oldReleasePath === undefined) delete process.env.FORGE_RELEASE_PATH;
       else process.env.FORGE_RELEASE_PATH = oldReleasePath;
@@ -1863,19 +2325,28 @@ describe('browser session compatibility on Computer target authority', () => {
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
-      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+      schemaVersion: 2,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+      browserChannel: 'chrome',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
     });
     const canonicalExtensionPath = realpathSync(extensionPath);
     const nativeHostPath = join(repoA, 'forge-native-host');
     writeFileSync(nativeHostPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    writeFileSync(join(extensionPath, 'forge-native-messaging-host.json'), JSON.stringify({
-      name: 'com.moretea.forge.fixture',
-      description: 'fixture',
-      path: nativeHostPath,
-      type: 'stdio',
-      allowed_origins: ['chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/'],
-    }));
+    writeFileSync(
+      join(extensionPath, 'forge-native-messaging-host.json'),
+      JSON.stringify({
+        name: 'com.moretea.forge.fixture',
+        description: 'fixture',
+        path: nativeHostPath,
+        type: 'stdio',
+        allowed_origins: ['chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/'],
+      }),
+    );
     let launchOptions: Record<string, unknown> | undefined;
     let launchedProfileDir = '';
     const methods: string[] = [];
@@ -1888,7 +2359,9 @@ describe('browser session compatibility on Computer target authority', () => {
             launchOptions = options;
             return {
               pages: () => [],
-              newPage: async () => { throw new Error('page creation is not required'); },
+              newPage: async () => {
+                throw new Error('page creation is not required');
+              },
               close: async () => undefined,
               browser: () => ({
                 contexts: () => [],
@@ -1896,9 +2369,13 @@ describe('browser session compatibility on Computer target authority', () => {
                   send: async (method: string) => {
                     methods.push(method);
                     if (method === 'Extensions.getExtensions') {
-                      return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }] };
+                      return {
+                        extensions: [{ id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }],
+                      };
                     }
-                    throw new Error('loadUnpacked must not run when the exact extension and runtime target are already present');
+                    throw new Error(
+                      'loadUnpacked must not run when the exact extension and runtime target are already present',
+                    );
                   },
                 }),
               }),
@@ -1909,17 +2386,22 @@ describe('browser session compatibility on Computer target authority', () => {
       }),
     });
     const result = await executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'extension-managed-install', actionId: 'install_unpacked_extension',
-      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'extension-managed-install',
+      actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath },
+      origin: { surface: 'mcp', actor: 'test' },
     });
     expect(launchOptions?.channel).toBeUndefined();
     expect(launchOptions?.ignoreDefaultArgs).toEqual(['--disable-extensions']);
-    expect(launchOptions?.args).toEqual([
-      '--enable-unsafe-extension-debugging',
-    ]);
+    expect(launchOptions?.args).toEqual(['--enable-unsafe-extension-debugging']);
     expect(methods).toEqual(['Extensions.getExtensions']);
-    const projectedHost = JSON.parse(readFileSync(join(launchedProfileDir, 'NativeMessagingHosts', 'com.moretea.forge.fixture.json'), 'utf8')) as Record<string, unknown>;
+    const projectedHost = JSON.parse(
+      readFileSync(join(launchedProfileDir, 'NativeMessagingHosts', 'com.moretea.forge.fixture.json'), 'utf8'),
+    ) as Record<string, unknown>;
     expect(projectedHost).toMatchObject({
       name: 'com.moretea.forge.fixture',
       path: realpathSync(nativeHostPath),
@@ -1939,8 +2421,14 @@ describe('browser session compatibility on Computer target authority', () => {
     const extensionPath = extensionFixture(repoA);
     const canonicalExtensionPath = realpathSync(extensionPath);
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
-      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+      schemaVersion: 2,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+      browserChannel: 'chrome',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
     });
     const methods: string[] = [];
     let detached = 0;
@@ -1954,7 +2442,9 @@ describe('browser session compatibility on Computer target authority', () => {
             launchOptions = options;
             return {
               pages: () => [],
-              newPage: async () => { throw new Error('page creation is not required'); },
+              newPage: async () => {
+                throw new Error('page creation is not required');
+              },
               close: async () => undefined,
               browser: () => ({
                 contexts: () => [],
@@ -1967,31 +2457,47 @@ describe('browser session compatibility on Computer target authority', () => {
                       return { id: SUPERVISOR_EXTENSION_ID };
                     }
                     if (method === 'Extensions.getExtensions') {
-                      return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, name: 'Forge extension fixture', version: '1.0.0', path: canonicalExtensionPath, enabled: true }] };
+                      return {
+                        extensions: [
+                          {
+                            id: SUPERVISOR_EXTENSION_ID,
+                            name: 'Forge extension fixture',
+                            version: '1.0.0',
+                            path: canonicalExtensionPath,
+                            enabled: true,
+                          },
+                        ],
+                      };
                     }
                     throw new Error('unexpected method ' + method);
                   },
-                  detach: async () => { detached += 1; },
+                  detach: async () => {
+                    detached += 1;
+                  },
                 }),
               }),
-              serviceWorkers: () => runtimeTargetVisible
-                ? [{ url: () => 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }]
-                : [],
+              serviceWorkers: () =>
+                runtimeTargetVisible
+                  ? [{ url: () => 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }]
+                  : [],
             };
           },
         },
       }),
     });
     const result = await executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'extension-managed-cdp-install', actionId: 'install_unpacked_extension',
-      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'extension-managed-cdp-install',
+      actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath },
+      origin: { surface: 'mcp', actor: 'test' },
     });
     expect(methods).toEqual(['Extensions.getExtensions', 'Extensions.loadUnpacked', 'Extensions.getExtensions']);
     expect(detached).toBe(1);
-    expect(launchOptions?.args).toEqual([
-      '--enable-unsafe-extension-debugging',
-    ]);
+    expect(launchOptions?.args).toEqual(['--enable-unsafe-extension-debugging']);
     expect(result).toMatchObject({
       provider: 'playwright-persistent-context',
       extension: {
@@ -2009,8 +2515,14 @@ describe('browser session compatibility on Computer target authority', () => {
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
-      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+      schemaVersion: 2,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+      browserChannel: 'chrome',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
     });
     let detached = 0;
     setBrowserPluginRuntimeHooksForTest({
@@ -2019,7 +2531,9 @@ describe('browser session compatibility on Computer target authority', () => {
         chromium: {
           launchPersistentContext: async () => ({
             pages: () => [],
-            newPage: async () => { throw new Error('page creation is not required'); },
+            newPage: async () => {
+              throw new Error('page creation is not required');
+            },
             close: async () => undefined,
             browser: () => ({
               contexts: () => [],
@@ -2029,7 +2543,9 @@ describe('browser session compatibility on Computer target authority', () => {
                   if (method === 'Extensions.loadUnpacked') return { id: 'a'.repeat(32) };
                   throw new Error('unexpected method ' + method);
                 },
-                detach: async () => { detached += 1; },
+                detach: async () => {
+                  detached += 1;
+                },
               }),
             }),
             serviceWorkers: () => [],
@@ -2037,11 +2553,18 @@ describe('browser session compatibility on Computer target authority', () => {
         },
       }),
     });
-    await expect(executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'extension-managed-cdp-id-mismatch', actionId: 'install_unpacked_extension',
-      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
-    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_EXTENSION_POSTCONDITION_FAILED', retryable: false });
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        requestId: 'extension-managed-cdp-id-mismatch',
+        actionId: 'install_unpacked_extension',
+        args: { extension_path: extensionPath },
+        origin: { surface: 'mcp', actor: 'test' },
+      }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_EXTENSION_POSTCONDITION_FAILED', retryable: false });
     expect(detached).toBe(1);
   });
 
@@ -2057,10 +2580,16 @@ describe('browser session compatibility on Computer target authority', () => {
     writeFileSync(join(userDataDir, 'DevToolsActivePort'), '49399\n/devtools/browser/stale\n');
     symlinkSync('test-host-3131', join(userDataDir, 'SingletonLock'));
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
-      profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
+      schemaVersion: 3,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'custom',
+      profileDir: userDataDir,
+      profileDirectory: 'Default',
       executablePath: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
-      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
     });
     const launched: Array<{ executable: string; args: string[] }> = [];
     const signalled: Array<[number, NodeJS.Signals]> = [];
@@ -2071,7 +2600,11 @@ describe('browser session compatibility on Computer target authority', () => {
       send: async (method: string, params?: Record<string, unknown>) => {
         methods.push(method);
         if (method === 'Extensions.getExtensions') {
-          return { extensions: runtimeTargetVisible ? [{ id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }] : [] };
+          return {
+            extensions: runtimeTargetVisible
+              ? [{ id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }]
+              : [],
+          };
         }
         if (method === 'Extensions.loadUnpacked') {
           expect(params).toEqual({ path: canonicalExtensionPath });
@@ -2079,16 +2612,25 @@ describe('browser session compatibility on Computer target authority', () => {
           return { id: SUPERVISOR_EXTENSION_ID };
         }
         if (method === 'Target.getTargets') {
-          return { targetInfos: runtimeTargetVisible ? [{ url: 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }] : [] };
+          return {
+            targetInfos: runtimeTargetVisible
+              ? [{ url: 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' }]
+              : [],
+          };
         }
         throw new Error('unexpected method ' + method);
       },
-      detach: async () => { detached += 1; },
+      detach: async () => {
+        detached += 1;
+      },
     };
     let existingOwnerAlive = true;
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => false,
-      listProcesses: () => existingOwnerAlive ? [{ pid: 3131, command: `/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --user-data-dir=${userDataDir}` }] : [],
+      listProcesses: () =>
+        existingOwnerAlive
+          ? [{ pid: 3131, command: `/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --user-data-dir=${userDataDir}` }]
+          : [],
       allocateLoopbackPort: async () => 9345,
       fetchJson: async (url) => {
         expect(url).toBe('http://127.0.0.1:9345/json/version');
@@ -2102,13 +2644,24 @@ describe('browser session compatibility on Computer target authority', () => {
         launched.push({ executable, args });
         return { pid: 4242 };
       },
-      signalProcess: (pid, signal) => { signalled.push([pid, signal]); if (pid === 3131) existingOwnerAlive = false; return true; },
-      loadPlaywright: () => { throw new Error('custom Vivaldi extension install must not load Playwright'); },
+      signalProcess: (pid, signal) => {
+        signalled.push([pid, signal]);
+        if (pid === 3131) existingOwnerAlive = false;
+        return true;
+      },
+      loadPlaywright: () => {
+        throw new Error('custom Vivaldi extension install must not load Playwright');
+      },
     });
     const result = await executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'vivaldi-custom-cdp-port-install', actionId: 'install_unpacked_extension',
-      args: { extension_path: extensionPath, timeout_ms: 5_000 }, origin: { surface: 'mcp', actor: 'test' },
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'vivaldi-custom-cdp-port-install',
+      actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath, timeout_ms: 5_000 },
+      origin: { surface: 'mcp', actor: 'test' },
     });
     expect(launched).toHaveLength(1);
     expect(launched[0]?.executable).toBe('/Applications/Vivaldi.app/Contents/MacOS/Vivaldi');
@@ -2118,12 +2671,25 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(launched[0]?.args).toContain('--enable-unsafe-extension-debugging');
     expect(launched[0]?.args).toContain('--profile-directory=Default');
     expect(launched[0]?.args.some((arg) => arg === '--remote-debugging-pipe')).toBe(false);
-    expect(methods).toEqual(['Extensions.getExtensions', 'Target.getTargets', 'Extensions.loadUnpacked', 'Extensions.getExtensions', 'Target.getTargets']);
+    expect(methods).toEqual([
+      'Extensions.getExtensions',
+      'Target.getTargets',
+      'Extensions.loadUnpacked',
+      'Extensions.getExtensions',
+      'Target.getTargets',
+    ]);
     expect(detached).toBe(1);
     expect(signalled).toEqual([[3131, 'SIGTERM']]);
     expect(result).toMatchObject({
-      provider: 'native-cdp-vivaldi-custom', endpoint: 'http://127.0.0.1:9345', verified: true,
-      extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true, runtimeTarget: 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js' },
+      provider: 'native-cdp-vivaldi-custom',
+      endpoint: 'http://127.0.0.1:9345',
+      verified: true,
+      extension: {
+        id: SUPERVISOR_EXTENSION_ID,
+        path: canonicalExtensionPath,
+        enabled: true,
+        runtimeTarget: 'chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/background.js',
+      },
     });
   });
 
@@ -2137,27 +2703,54 @@ describe('browser session compatibility on Computer target authority', () => {
     writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
     symlinkSync('test-host-6262', join(userDataDir, 'SingletonLock'));
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
-      profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
+      schemaVersion: 3,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'custom',
+      profileDir: userDataDir,
+      profileDirectory: 'Default',
       executablePath: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
-      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
     });
     const signalled: Array<[number, NodeJS.Signals]> = [];
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => false,
-      listProcesses: () => [{ pid: 6262, command: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --user-data-dir=/tmp/different-vivaldi-profile' }],
+      listProcesses: () => [
+        {
+          pid: 6262,
+          command: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --user-data-dir=/tmp/different-vivaldi-profile',
+        },
+      ],
       allocateLoopbackPort: async () => 9346,
-      fetchJson: async () => { throw new Error('not ready'); },
+      fetchJson: async () => {
+        throw new Error('not ready');
+      },
       launchProcess: () => ({ pid: 7272 }),
-      signalProcess: (pid, signal) => { signalled.push([pid, signal]); return true; },
-      connectBrowserCdp: async () => { throw new Error('must not attach without a reachable endpoint'); },
-      loadPlaywright: () => { throw new Error('custom Vivaldi extension install must not load Playwright'); },
+      signalProcess: (pid, signal) => {
+        signalled.push([pid, signal]);
+        return true;
+      },
+      connectBrowserCdp: async () => {
+        throw new Error('must not attach without a reachable endpoint');
+      },
+      loadPlaywright: () => {
+        throw new Error('custom Vivaldi extension install must not load Playwright');
+      },
     });
-    await expect(executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'vivaldi-custom-ambiguous-owner', actionId: 'install_unpacked_extension',
-      args: { extension_path: extensionPath, timeout_ms: 25 }, origin: { surface: 'mcp', actor: 'test' },
-    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE' });
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        requestId: 'vivaldi-custom-ambiguous-owner',
+        actionId: 'install_unpacked_extension',
+        args: { extension_path: extensionPath, timeout_ms: 25 },
+        origin: { surface: 'mcp', actor: 'test' },
+      }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE' });
     expect(signalled).toEqual([[7272, 'SIGTERM']]);
   });
 
@@ -2170,10 +2763,16 @@ describe('browser session compatibility on Computer target authority', () => {
     writeFileSync(join(userDataDir, 'Local State'), '{}');
     writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
-      profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
+      schemaVersion: 3,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'custom',
+      profileDir: userDataDir,
+      profileDirectory: 'Default',
       executablePath: '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
-      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
     });
     const signalled: Array<[number, NodeJS.Signals]> = [];
     setBrowserPluginRuntimeHooksForTest({
@@ -2183,16 +2782,30 @@ describe('browser session compatibility on Computer target authority', () => {
         expect(url).toBe('http://127.0.0.1:9456/json/version');
         return { Browser: 'Vivaldi/test', webSocketDebuggerUrl: 'ws://127.0.0.1:9456/devtools/browser/test' };
       },
-      connectBrowserCdp: async () => { throw new Error('attach failed'); },
+      connectBrowserCdp: async () => {
+        throw new Error('attach failed');
+      },
       launchProcess: () => ({ pid: 5252 }),
-      signalProcess: (pid, signal) => { signalled.push([pid, signal]); return true; },
-      loadPlaywright: () => { throw new Error('custom Vivaldi extension install must not load Playwright'); },
+      signalProcess: (pid, signal) => {
+        signalled.push([pid, signal]);
+        return true;
+      },
+      loadPlaywright: () => {
+        throw new Error('custom Vivaldi extension install must not load Playwright');
+      },
     });
-    await expect(executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'vivaldi-custom-cdp-port-install-failure', actionId: 'install_unpacked_extension',
-      args: { extension_path: extensionPath, timeout_ms: 5_000 }, origin: { surface: 'mcp', actor: 'test' },
-    })).rejects.toThrow('attach failed');
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        requestId: 'vivaldi-custom-cdp-port-install-failure',
+        actionId: 'install_unpacked_extension',
+        args: { extension_path: extensionPath, timeout_ms: 5_000 },
+        origin: { surface: 'mcp', actor: 'test' },
+      }),
+    ).rejects.toThrow('attach failed');
     expect(signalled).toEqual([[5252, 'SIGTERM']]);
   });
 
@@ -2206,8 +2819,12 @@ describe('browser session compatibility on Computer target authority', () => {
     writeFileSync(join(userDataDir, 'Local State'), '{}');
     writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
     const configured = await executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'extension-custom-profile-configure', actionId: 'configure',
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'extension-custom-profile-configure',
+      actionId: 'configure',
       args: {
         enabled: true,
         browser_mode: 'managed_persistent',
@@ -2231,13 +2848,16 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(configuredBrowser.browserChannel).toBeUndefined();
     const nativeHostPath = join(repoA, 'forge-native-host');
     writeFileSync(nativeHostPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    writeFileSync(join(extensionPath, 'forge-native-messaging-host.json'), JSON.stringify({
-      name: 'com.moretea.forge.fixture',
-      description: 'fixture',
-      path: nativeHostPath,
-      type: 'stdio',
-      allowed_origins: ['chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/'],
-    }));
+    writeFileSync(
+      join(extensionPath, 'forge-native-messaging-host.json'),
+      JSON.stringify({
+        name: 'com.moretea.forge.fixture',
+        description: 'fixture',
+        path: nativeHostPath,
+        type: 'stdio',
+        allowed_origins: ['chrome-extension://' + SUPERVISOR_EXTENSION_ID + '/'],
+      }),
+    );
     let launchOptions: Record<string, unknown> | undefined;
     let launchedProfileDir = '';
     const methods: string[] = [];
@@ -2250,7 +2870,9 @@ describe('browser session compatibility on Computer target authority', () => {
             launchOptions = options;
             return {
               pages: () => [],
-              newPage: async () => { throw new Error('page creation is not required'); },
+              newPage: async () => {
+                throw new Error('page creation is not required');
+              },
               close: async () => undefined,
               browser: () => ({
                 contexts: () => [],
@@ -2258,9 +2880,13 @@ describe('browser session compatibility on Computer target authority', () => {
                   send: async (method: string) => {
                     methods.push(method);
                     if (method === 'Extensions.getExtensions') {
-                      return { extensions: [{ id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }] };
+                      return {
+                        extensions: [{ id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true }],
+                      };
                     }
-                    throw new Error('loadUnpacked must not run when the exact extension and runtime target are already present');
+                    throw new Error(
+                      'loadUnpacked must not run when the exact extension and runtime target are already present',
+                    );
                   },
                 }),
               }),
@@ -2271,9 +2897,14 @@ describe('browser session compatibility on Computer target authority', () => {
       }),
     });
     const result = await executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'extension-custom-profile-install', actionId: 'install_unpacked_extension',
-      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'extension-custom-profile-install',
+      actionId: 'install_unpacked_extension',
+      args: { extension_path: extensionPath },
+      origin: { surface: 'mcp', actor: 'test' },
     });
     expect(methods).toEqual(['Extensions.getExtensions']);
     expect(launchedProfileDir).toBe(userDataDir);
@@ -2285,11 +2916,10 @@ describe('browser session compatibility on Computer target authority', () => {
       '--use-mock-keychain',
       '--password-store=basic',
     ]);
-    expect(launchOptions?.args).toEqual([
-      '--profile-directory=Default',
-      '--enable-unsafe-extension-debugging',
-    ]);
-    expect(((launchOptions?.args ?? []) as string[]).some((arg) => arg.startsWith('--disable-extensions-except='))).toBe(false);
+    expect(launchOptions?.args).toEqual(['--profile-directory=Default', '--enable-unsafe-extension-debugging']);
+    expect(
+      ((launchOptions?.args ?? []) as string[]).some((arg) => arg.startsWith('--disable-extensions-except=')),
+    ).toBe(false);
     expect(((launchOptions?.args ?? []) as string[]).some((arg) => arg.startsWith('--load-extension='))).toBe(false);
     expect(result).toMatchObject({
       provider: 'playwright-persistent-context',
@@ -2306,10 +2936,16 @@ describe('browser session compatibility on Computer target authority', () => {
     writeFileSync(join(userDataDir, 'Local State'), '{}');
     writeFileSync(join(userDataDir, 'Default', 'Preferences'), '{}');
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
-      profileMode: 'custom', profileDir: userDataDir, profileDirectory: 'Default',
+      schemaVersion: 3,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'custom',
+      profileDir: userDataDir,
+      profileDirectory: 'Default',
       executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
     });
     let launchOptions: Record<string, unknown> | undefined;
     let screenshotCalls = 0;
@@ -2327,14 +2963,23 @@ describe('browser session compatibility on Computer target authority', () => {
               title: async () => 'Example',
               goto: async () => undefined,
               evaluate: async <T>() => undefined as T,
-              screenshot: async () => { screenshotCalls += 1; return Buffer.from('fixture screenshot'); },
+              screenshot: async () => {
+                screenshotCalls += 1;
+                return Buffer.from('fixture screenshot');
+              },
               click: async (selector: string) => {
                 appliedSteps.push('click:' + selector);
                 if (selector === '#unknown-result') throw new Error('unverified click result');
               },
-              fill: async (selector: string, text: string) => { appliedSteps.push('fill:' + selector + ':' + text); },
-              press: async (selector: string, key: string) => { appliedSteps.push('press:' + selector + ':' + key); },
-              waitForSelector: async (selector: string) => { appliedSteps.push('wait:' + selector); },
+              fill: async (selector: string, text: string) => {
+                appliedSteps.push('fill:' + selector + ':' + text);
+              },
+              press: async (selector: string, key: string) => {
+                appliedSteps.push('press:' + selector + ':' + key);
+              },
+              waitForSelector: async (selector: string) => {
+                appliedSteps.push('wait:' + selector);
+              },
               bringToFront: async () => undefined,
               close: async () => undefined,
             };
@@ -2344,14 +2989,22 @@ describe('browser session compatibility on Computer target authority', () => {
       }),
     });
     await executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'ordinary-custom-profile-managed', actionId: 'create_session',
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'ordinary-custom-profile-managed',
+      actionId: 'create_session',
       args: { session_id: 'ordinary-custom-profile-managed', url: 'https://example.com/' },
       origin: { surface: 'mcp', actor: 'test' },
     });
     const normal = await executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'ordinary-custom-profile-fill', actionId: 'fill',
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'ordinary-custom-profile-fill',
+      actionId: 'fill',
       args: { session_id: 'ordinary-custom-profile-managed', selector: '#message', text: 'normal' },
       origin: { surface: 'mcp', actor: 'test' },
     });
@@ -2360,9 +3013,18 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(screenshotCalls).toBe(0);
 
     const withCapture = await executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'ordinary-custom-profile-fill-capture', actionId: 'fill',
-      args: { session_id: 'ordinary-custom-profile-managed', selector: '#message', text: 'capture', capture_after_action: true },
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'ordinary-custom-profile-fill-capture',
+      actionId: 'fill',
+      args: {
+        session_id: 'ordinary-custom-profile-managed',
+        selector: '#message',
+        text: 'capture',
+        capture_after_action: true,
+      },
       origin: { surface: 'mcp', actor: 'test' },
     });
     expect(withCapture.evidenceMode).toBe('screenshot');
@@ -2371,55 +3033,82 @@ describe('browser session compatibility on Computer target authority', () => {
 
     const beforeBatch = providerAttaches;
     const completed = await executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'ordinary-custom-profile-batch', actionId: 'run_steps',
-      args: { session_id: 'ordinary-custom-profile-managed', steps: [
-        { action: 'fill', selector: '#email', text: 'batch@example.com' },
-        { action: 'click', selector: '#next' },
-        { action: 'wait_for_selector', selector: '#ready', state: 'visible' },
-        { action: 'press', selector: '#search', key: 'Enter' },
-      ] },
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'ordinary-custom-profile-batch',
+      actionId: 'run_steps',
+      args: {
+        session_id: 'ordinary-custom-profile-managed',
+        steps: [
+          { action: 'fill', selector: '#email', text: 'batch@example.com' },
+          { action: 'click', selector: '#next' },
+          { action: 'wait_for_selector', selector: '#ready', state: 'visible' },
+          { action: 'press', selector: '#search', key: 'Enter' },
+        ],
+      },
       origin: { surface: 'mcp', actor: 'test' },
     });
     // A warm page handle may already be retained; batching must not attach once per step.
     expect(providerAttaches - beforeBatch).toBeLessThanOrEqual(1);
-    expect(completed).toMatchObject({ evidenceMode: 'summary',
-      action: { actionId: 'run_steps', completedSteps: 4 } });
+    expect(completed).toMatchObject({ evidenceMode: 'summary', action: { actionId: 'run_steps', completedSteps: 4 } });
     expect((completed.action as { steps: unknown[] }).steps).toHaveLength(4);
     expect(appliedSteps.slice(-4)).toEqual([
-      'fill:#email:batch@example.com', 'click:#next', 'wait:#ready', 'press:#search:Enter',
+      'fill:#email:batch@example.com',
+      'click:#next',
+      'wait:#ready',
+      'press:#search:Enter',
     ]);
     expect(screenshotCalls).toBe(1);
 
     const beforeInvalid = providerAttaches;
-    await expect(executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'ordinary-custom-profile-batch-invalid', actionId: 'run_steps',
-      args: { session_id: 'ordinary-custom-profile-managed', steps: [
-        { action: 'click', selector: '#next' },
-        { action: 'trusted_input', selector: '#unsafe' },
-      ] },
-      origin: { surface: 'mcp', actor: 'test' },
-    })).rejects.toMatchObject({ code: 'PLUGIN_ACTION_ARGUMENT_INVALID' });
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        requestId: 'ordinary-custom-profile-batch-invalid',
+        actionId: 'run_steps',
+        args: {
+          session_id: 'ordinary-custom-profile-managed',
+          steps: [
+            { action: 'click', selector: '#next' },
+            { action: 'trusted_input', selector: '#unsafe' },
+          ],
+        },
+        origin: { surface: 'mcp', actor: 'test' },
+      }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_ACTION_ARGUMENT_INVALID' });
     expect(providerAttaches).toBe(beforeInvalid);
 
     const beforeFailure = appliedSteps.length;
-    await expect(executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'ordinary-custom-profile-batch-unknown', actionId: 'run_steps',
-      args: { session_id: 'ordinary-custom-profile-managed', steps: [
-        { action: 'fill', selector: '#first', text: 'saved' },
-        { action: 'click', selector: '#unknown-result' },
-        { action: 'fill', selector: '#never', text: 'not-applied' },
-      ] },
-      origin: { surface: 'mcp', actor: 'test' },
-    })).rejects.toMatchObject({
-      code: 'PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN', retryable: false, effectOutcome: 'outcome_unknown',
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        requestId: 'ordinary-custom-profile-batch-unknown',
+        actionId: 'run_steps',
+        args: {
+          session_id: 'ordinary-custom-profile-managed',
+          steps: [
+            { action: 'fill', selector: '#first', text: 'saved' },
+            { action: 'click', selector: '#unknown-result' },
+            { action: 'fill', selector: '#never', text: 'not-applied' },
+          ],
+        },
+        origin: { surface: 'mcp', actor: 'test' },
+      }),
+    ).rejects.toMatchObject({
+      code: 'PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
+      retryable: false,
+      effectOutcome: 'outcome_unknown',
       details: { completedSteps: 1, failedIndex: 1 },
     });
-    expect(appliedSteps.slice(beforeFailure)).toEqual([
-      'fill:#first:saved', 'click:#unknown-result',
-    ]);
+    expect(appliedSteps.slice(beforeFailure)).toEqual(['fill:#first:saved', 'click:#unknown-result']);
 
     expect(launchOptions?.ignoreDefaultArgs).toEqual([
       '--disable-extensions',
@@ -2439,26 +3128,49 @@ describe('browser session compatibility on Computer target authority', () => {
     const extensionPath = extensionFixture(repoA);
     const nativeHostPath = join(repoA, 'forge-native-host');
     writeFileSync(nativeHostPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    writeFileSync(join(extensionPath, 'forge-native-messaging-host.json'), JSON.stringify({
-      name: 'com.moretea.forge.fixture',
-      path: nativeHostPath,
-      type: 'stdio',
-      allowed_origins: ['chrome-extension://' + 'a'.repeat(32) + '/'],
-    }));
+    writeFileSync(
+      join(extensionPath, 'forge-native-messaging-host.json'),
+      JSON.stringify({
+        name: 'com.moretea.forge.fixture',
+        path: nativeHostPath,
+        type: 'stdio',
+        allowed_origins: ['chrome-extension://' + 'a'.repeat(32) + '/'],
+      }),
+    );
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
-      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+      schemaVersion: 2,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+      browserChannel: 'chrome',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
     });
     let launched = false;
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
-      loadPlaywright: () => ({ chromium: { launchPersistentContext: async () => { launched = true; throw new Error('must not launch'); } } }),
+      loadPlaywright: () => ({
+        chromium: {
+          launchPersistentContext: async () => {
+            launched = true;
+            throw new Error('must not launch');
+          },
+        },
+      }),
     });
-    await expect(executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'extension-native-origin-mismatch', actionId: 'install_unpacked_extension',
-      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
-    })).rejects.toThrow(/exact stable extension origin/);
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        requestId: 'extension-native-origin-mismatch',
+        actionId: 'install_unpacked_extension',
+        args: { extension_path: extensionPath },
+        origin: { surface: 'mcp', actor: 'test' },
+      }),
+    ).rejects.toThrow(/exact stable extension origin/);
     expect(launched).toBe(false);
   });
 
@@ -2466,8 +3178,14 @@ describe('browser session compatibility on Computer target authority', () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'managed_persistent',
-      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
+      schemaVersion: 2,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'managed_persistent',
+      profileMode: 'repo_local',
+      browserChannel: 'chrome',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'disabled',
     });
     let launchOptions: Record<string, unknown> | undefined;
     setBrowserPluginRuntimeHooksForTest({
@@ -2495,8 +3213,12 @@ describe('browser session compatibility on Computer target authority', () => {
       }),
     });
     await executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'ordinary-managed-channel', actionId: 'create_session',
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'ordinary-managed-channel',
+      actionId: 'create_session',
       args: { session_id: 'ordinary-managed-channel', url: 'https://example.com/' },
       origin: { surface: 'mcp', actor: 'test' },
     });
@@ -2509,16 +3231,29 @@ describe('browser session compatibility on Computer target authority', () => {
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     const extensionPath = extensionFixture(repoA);
     writeControllerPluginConfig(controllerHome, 'browser', {
-      schemaVersion: 2, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
-      profileMode: 'repo_local', browserChannel: 'chrome', cdpAttachFallback: 'fail_closed',
-      nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+      schemaVersion: 2,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      profileMode: 'repo_local',
+      browserChannel: 'chrome',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
     });
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
-    await expect(executeBrowserPluginAction({
-      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
-      requestId: 'extension-native-fail-closed', actionId: 'install_unpacked_extension',
-      args: { extension_path: extensionPath }, origin: { surface: 'mcp', actor: 'test' },
-    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE' });
+    await expect(
+      executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'repo-a',
+        repoRoot: repoA,
+        pluginId: 'browser',
+        requestId: 'extension-native-fail-closed',
+        actionId: 'install_unpacked_extension',
+        args: { extension_path: extensionPath },
+        origin: { surface: 'mcp', actor: 'test' },
+      }),
+    ).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE' });
   });
 
   test('handoff host resolver refuses an immutable release missing the sidecar before any browser mutation (#212)', () => {
@@ -2526,8 +3261,7 @@ describe('browser session compatibility on Computer target authority', () => {
     const entry = join(root, 'release', 'runtime.js');
     const runtime = join(root, 'release', 'bun');
     const source = pathToFileURL(join(root, 'release', 'isolated-adapter.js')).href;
-    expect(() => resolveBrowserHandoffHostPath(runtime, entry, source))
-      .toThrow('PLUGIN_BROWSER_HANDOFF_HOST_MISSING');
+    expect(() => resolveBrowserHandoffHostPath(runtime, entry, source)).toThrow('PLUGIN_BROWSER_HANDOFF_HOST_MISSING');
     expect(browserHandoffHostAvailable(runtime, entry, source)).toBe(false);
     const present = join(root, 'release', 'browser-handoff-host.js');
     mkdirSync(join(root, 'release'), { recursive: true });
@@ -2545,7 +3279,9 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(manifest.actions.find((action) => action.actionId === 'activate_page')?.foregroundEffect).toBe('required');
     expect(manifest.health.details?.handoffHostReady).toBe(browserHandoffHostAvailable());
     expect(manifest.health.details?.humanHandoffSupported).toBe(browserHandoffHostAvailable());
-    expect(manifest.actions.find((action) => action.actionId === 'request_human_handoff')?.foregroundEffect).toBe('required');
+    expect(manifest.actions.find((action) => action.actionId === 'request_human_handoff')?.foregroundEffect).toBe(
+      'required',
+    );
     for (const action of manifest.actions) {
       expect(action.resourceClaims.some((claim) => claim.resource === 'repo-state')).toBe(false);
     }
@@ -2561,17 +3297,25 @@ describe('browser session compatibility on Computer target authority', () => {
   test('legacy ChatGPT profile state cannot become general Browser authority, while schema-v2 explicit Browser config remains authoritative', () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge'), { recursive: true });
-    writeFileSync(join(repoA, '.forge', 'chatgpt-browser.local.json'), JSON.stringify({
-      version: 1,
-      product: 'chatgpt',
-      profileDir: '/tmp/forge-live-chrome',
-      profileDirectory: 'Profile 1',
-      browserChannel: 'chromium',
-      chatgptUrl: 'https://chatgpt.com/',
-      updatedAt: '2026-08-24T00:00:00.000Z',
-    }));
+    writeFileSync(
+      join(repoA, '.forge', 'chatgpt-browser.local.json'),
+      JSON.stringify({
+        version: 1,
+        product: 'chatgpt',
+        profileDir: '/tmp/forge-live-chrome',
+        profileDirectory: 'Profile 1',
+        browserChannel: 'chromium',
+        chatgptUrl: 'https://chatgpt.com/',
+        updatedAt: '2026-08-24T00:00:00.000Z',
+      }),
+    );
 
-    const migrated = buildBrowserPluginManifest(1, undefined, repoA, { controllerHome, repoId: 'repo-a', repoRoot: repoA, controllerScoped: false });
+    const migrated = buildBrowserPluginManifest(1, undefined, repoA, {
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      controllerScoped: false,
+    });
     expect(migrated.health.details?.browserMode).toBe('attach_preferred');
     expect(migrated.health.details?.profileMode).toBe('repo_local');
     expect(migrated.health.details?.profileDir).toBeUndefined();
@@ -2597,7 +3341,12 @@ describe('browser session compatibility on Computer target authority', () => {
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: ['vivaldi'],
     });
-    const explicit = buildBrowserPluginManifest(1, undefined, repoA, { controllerHome, repoId: 'repo-a', repoRoot: repoA, controllerScoped: false });
+    const explicit = buildBrowserPluginManifest(1, undefined, repoA, {
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      controllerScoped: false,
+    });
     expect(explicit.health.details?.browserMode).toBe('managed_persistent');
     expect(explicit.health.details?.profileMode).toBe('custom');
     expect(explicit.health.details?.profileDir).toBe('/tmp/explicit-browser-profile');
@@ -2606,14 +3355,16 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(explicit.health.details?.cdpAttachFallback).toBe('managed_persistent');
     expect(explicit.health.details?.nativeBrowserCandidates).toEqual(['vivaldi']);
   });
-
 });
-
 
 test('Computer reuses exact-target actions for ChatGPT Project bootstrap and keeps observe conversation-only', () => {
   const manifest = computerPluginAdapter.buildManifest(0);
   const action = (id: string) => manifest.actions.find((entry) => entry.actionId === id)!;
-  expect(action('chatgpt_target_find_marker')).toMatchObject({ readOnly: true, risk: 'readonly', confirmation: 'none' });
+  expect(action('chatgpt_target_find_marker')).toMatchObject({
+    readOnly: true,
+    risk: 'readonly',
+    confirmation: 'none',
+  });
   expect(action('chatgpt_target_ensure').argumentsSchema.oneOf).toHaveLength(2);
   expect(action('chatgpt_target_observe').argumentsSchema).toMatchObject({ required: ['canonical_url'] });
   for (const id of ['chatgpt_target_prepare', 'chatgpt_target_dispatch']) {
@@ -2670,19 +3421,37 @@ test('Computer ChatGPT targets keep read, binding, and remote effects on their c
 test('Computer refuses a seventeenth owned native tab before provider creation', async () => {
   const { controllerHome, repoA } = fixture();
   writeControllerPluginConfig(controllerHome, 'browser', {
-    schemaVersion: 1, enabled: true, provider: 'playwright',
-    browserMode: 'attach_preferred', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto',
+    schemaVersion: 1,
+    enabled: true,
+    provider: 'playwright',
+    browserMode: 'attach_preferred',
+    cdpAttachFallback: 'fail_closed',
+    nativeAttachMode: 'auto',
   });
   const legacyRoot = join(repoA, '.forge', 'browser', 'sessions');
   mkdirSync(legacyRoot, { recursive: true });
   for (let i = 0; i < 16; i++) {
-    writeFileSync(join(legacyRoot, `owned-${i}.json`), JSON.stringify(session(`owned-${i}`, '2026-11-13T00:00:00Z', {
-      native: true, ownership: 'plugin_owned', tabId: String(i),
-    })));
+    writeFileSync(
+      join(legacyRoot, `owned-${i}.json`),
+      JSON.stringify(
+        session(`owned-${i}`, '2026-11-13T00:00:00Z', {
+          native: true,
+          ownership: 'plugin_owned',
+          tabId: String(i),
+        }),
+      ),
+    );
   }
-  await expect(computerPluginAdapter.executeAction({
-    controllerHome, repoRoot: repoA, repoId: 'repo-a', pluginId: 'computer',
-    actionId: 'create_session', requestId: 'capacity-seventeenth',
-    args: { url: 'https://example.com/new' }, origin: { surface: 'mcp', actor: 'test' },
-  })).rejects.toThrow('capacity reached');
+  await expect(
+    computerPluginAdapter.executeAction({
+      controllerHome,
+      repoRoot: repoA,
+      repoId: 'repo-a',
+      pluginId: 'computer',
+      actionId: 'create_session',
+      requestId: 'capacity-seventeenth',
+      args: { url: 'https://example.com/new' },
+      origin: { surface: 'mcp', actor: 'test' },
+    }),
+  ).rejects.toThrow('capacity reached');
 });
