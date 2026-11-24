@@ -3,7 +3,7 @@ import SwiftUI
 /// Geometry shared by the shell and conversation; visual tokens remain in ForgeClientDesign.
 extension ForgeClientDesign.Shell {
   static let workspaceHeaderHeight: CGFloat = 30
-  static let workspaceStatusSlotWidth: CGFloat = 100
+  static let workspaceStatusSlotWidth: CGFloat = 28
   static let composerTextHeight: CGFloat = 38
   static let readingGutter: CGFloat = 18
   static let composerControlInset: CGFloat = 13

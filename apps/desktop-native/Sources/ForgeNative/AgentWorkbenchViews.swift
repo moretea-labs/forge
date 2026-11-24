@@ -231,24 +231,18 @@ struct AgentPane: View {
         return ForgePalette.secondary
     }
 
-    /// Quiet status in the compact transparent workspace header.
+    /// Keep workspace health visible without spending toolbar width on persistent status text.
     private var agentWorkspaceStatusChip: some View {
         Button { Task { await model.refresh() } } label: {
-            HStack(spacing:5) {
-                Circle().fill(agentWorkspaceStatusColor).frame(width:5,height:5)
-                Text(model.agentWorkspaceStatusLabel)
-                    .font(.system(size:10))
-                    .foregroundStyle(ForgePalette.secondary.opacity(0.86))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            .padding(.horizontal,6)
-            .frame(height:24)
-            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
-            .forgeChromeSurface(cornerRadius:8)
+            Circle()
+                .fill(agentWorkspaceStatusColor)
+                .frame(width:6,height:6)
+                .frame(width:24,height:24)
+                .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+                .forgeHoverFill(cornerRadius:8)
         }
         .buttonStyle(.plain)
-        .help("\(agentScopeLabel.isEmpty ? model.agentWorkspaceStatusDetail : agentScopeLabel)\n\(model.agentWorkspaceStatusDetail)\n点击刷新")
+        .help("\(model.agentWorkspaceStatusLabel)\n\(agentScopeLabel.isEmpty ? model.agentWorkspaceStatusDetail : agentScopeLabel)\n\(model.agentWorkspaceStatusDetail)\n点击刷新")
         .accessibilityLabel("工作区")
         .accessibilityValue("\(agentScopeLabel.isEmpty ? (model.thread?.title ?? "Forge") : agentScopeLabel) · \(model.agentWorkspaceStatusLabel)")
         .accessibilityHint("点击刷新会话状态和模型服务")
