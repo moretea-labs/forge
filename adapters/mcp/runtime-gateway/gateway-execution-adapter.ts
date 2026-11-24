@@ -5,11 +5,6 @@ import { callRepositoryTool } from '../../../src/runtime/control-plane/facade/re
 import { resolveRepositorySelection } from '../../../src/runtime/repositories/registry';
 import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
 import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
-import {
-  resolveEditValidationRepository,
-  startOrJoinEditValidation,
-} from '../../../src/runtime/control-plane/execution/edit-validation-coordinator';
-import { assertEditSessionDurableBinding } from '../../../src/runtime/editing/edit-session';
 import { checkRequiresDurableWorkflow } from '../../../src/runtime/execution/process-runtime';
 import { runPersistedCheckViaProcessRuntime } from './persisted-check-process';
 import { buildCheckExecutionSchedule } from '../../../src/runtime/execution/process-runtime/check-scheduling';
@@ -19,41 +14,6 @@ import {
 } from '../../../src/runtime/diagnostics/process-facade';
 import { result } from './result-adapter';
 
-async function runEditSessionValidationViaProcessRuntime(
-  ctx: MultiRepositoryMcpToolContext,
-  repository: NonNullable<ReturnType<typeof resolveRepositorySelection>>,
-  editSessionId: string,
-  args: Record<string, unknown>,
-): Promise<CallToolResult> {
-  const resolved = resolveEditValidationRepository(repository, editSessionId);
-  // Historical EditSession Work provenance is audit-only. Validation binds to
-  // the physical repository/checkout plus authenticated principal.
-  const binding = ctx.principalId?.trim()
-    ? {
-        repoId: resolved.repository.repoId,
-        checkoutId: resolved.repository.activeCheckoutId,
-        principalId: ctx.principalId.trim(),
-      }
-    : undefined;
-  assertEditSessionDurableBinding(resolved.session, binding, { requireBoundIdentity: true });
-  const validation = await startOrJoinEditValidation(ctx.controllerHome, resolved.repository, {
-    editSessionId,
-    checkIds: Array.isArray(args.check_ids) ? args.check_ids.map(String) : undefined,
-    requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
-    validationRequestId: typeof args.validation_request_id === 'string' ? args.validation_request_id : undefined,
-    reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
-    note: typeof args.note === 'string' ? args.note : undefined,
-    timeoutMs:
-      typeof args.check_timeout_ms === 'number'
-        ? args.check_timeout_ms
-        : typeof args.timeout_ms === 'number'
-          ? args.timeout_ms
-          : undefined,
-    leaseWaitMs: typeof args.lease_wait_ms === 'number' ? args.lease_wait_ms : undefined,
-  });
-  return result(validation as unknown as Record<string, unknown>, validation.accepted === false);
-}
-
 export function requestsRepositorySafePatchValidation(args: Record<string, unknown>): boolean {
   return args.validation_only === true || (Array.isArray(args.check_ids) && args.check_ids.length > 0);
 }
@@ -62,6 +22,38 @@ export async function executeRepositorySafePatchComposite(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {
+  const unsupportedSessionFields = ['session_id', 'expected_revision', 'sessionless'].filter((field) =>
+    Object.prototype.hasOwnProperty.call(args, field),
+  );
+  if (unsupportedSessionFields.length > 0) {
+    return result(
+      {
+        accepted: false,
+        mode: 'reject',
+        path: 'reject',
+        error: {
+          code: 'SAFE_PATCH_ARGUMENTS_UNSUPPORTED',
+          message: 'unsupported repository edit arguments: ' + unsupportedSessionFields.join(', '),
+        },
+      },
+      true,
+    );
+  }
+  if (args.validation_only === true) {
+    return result(
+      {
+        accepted: false,
+        mode: 'reject',
+        path: 'reject',
+        error: {
+          code: 'SAFE_PATCH_VALIDATION_ONLY_RETIRED',
+          message: 'Session-bound validation_only is retired; run run_check with explicit repo_id and checkout_id.',
+        },
+      },
+      true,
+    );
+  }
+
   const repository = resolveRepositorySelection({
     repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
     checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
@@ -81,38 +73,23 @@ export async function executeRepositorySafePatchComposite(
     );
   }
 
-  if (args.validation_only === true) {
-    const editSessionId = String(args.session_id ?? '').trim();
-    if (!editSessionId) {
-      return result(
-        { accepted: false, mode: 'reject', path: 'reject', message: 'validation_only requires session_id' },
-        true,
-      );
-    }
-    const validation = await runEditSessionValidationViaProcessRuntime(ctx, repository, editSessionId, args);
-    const validationPayload = (validation.structuredContent ?? {}) as Record<string, unknown>;
-    return result(
-      {
-        operation: 'repository_safe_patch_apply',
-        validationOnly: true,
-        sessionId: editSessionId,
-        validation: validationPayload,
-        validationRequestId: validationPayload.validationRequestId,
-        completed: validationPayload.completed === true,
-        ok: validationPayload.ok,
-        acceptanceReady: validationPayload.completed === true && validationPayload.ok === true,
-        next:
-          validationPayload.completed === true
-            ? validationPayload.ok === true
-              ? 'Validation passed for the exact edit revision; delivery may proceed if policy and semantic review are satisfied.'
-              : 'Validation completed with failures; return the failure evidence to ChatGPT for repair reasoning.'
-            : validationPayload.next,
-      },
-      validation.isError === true,
-    );
-  }
+  const checkIds = Array.isArray(args.check_ids)
+    ? [...new Set(args.check_ids.map((value: unknown) => String(value).trim()).filter(Boolean))]
+    : [];
+  const {
+    check_ids: _checkIds,
+    validation_only: _validationOnly,
+    validation_request_id: _validationRequestId,
+    reviewer: _reviewer,
+    note: _note,
+    check_timeout_ms: _checkTimeoutMs,
+    lease_wait_ms: _leaseWaitMs,
+    interactive_wait_ms: _interactiveWaitMs,
+    timeout_ms: _timeoutMs,
+    ...patchArgs
+  } = args;
 
-  const applied = await callRepositoryTool(ctx.controllerHome, 'repository_safe_patch_apply', args, ctx);
+  const applied = await callRepositoryTool(ctx.controllerHome, 'repository_safe_patch_apply', patchArgs, ctx);
   if (!applied || applied.isError === true) {
     return (
       applied ??
@@ -128,31 +105,68 @@ export async function executeRepositorySafePatchComposite(
     );
   }
   const patchPayload = (applied.structuredContent ?? {}) as Record<string, unknown>;
-  if (patchPayload.status !== 'applied') return applied;
-  const session =
-    patchPayload.session && typeof patchPayload.session === 'object'
-      ? (patchPayload.session as Record<string, unknown>)
-      : undefined;
-  const editSessionId = typeof session?.sessionId === 'string' ? session.sessionId : '';
-  if (!editSessionId) return applied;
-  const validation = await runEditSessionValidationViaProcessRuntime(ctx, repository, editSessionId, args);
+  if (patchPayload.status !== 'applied' || checkIds.length === 0) return applied;
+
+  const explicitValidationRequestId =
+    typeof args.validation_request_id === 'string' ? args.validation_request_id.trim() : '';
+  const patchRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+  const validationRequestId =
+    explicitValidationRequestId || (patchRequestId ? patchRequestId + ':checks' : undefined);
+  const timeoutMs =
+    typeof args.check_timeout_ms === 'number'
+      ? args.check_timeout_ms
+      : typeof args.timeout_ms === 'number'
+        ? args.timeout_ms
+        : undefined;
+  const validation = await executeGatewayRoutedOperation(
+    ctx,
+    'run_check',
+    {
+      repo_id: repository.repoId,
+      checkout_id: repository.activeCheckoutId,
+      check_ids: checkIds,
+      ...(typeof timeoutMs === 'number' ? { timeout_ms: timeoutMs } : {}),
+      interactive_wait_ms: 0,
+      ...(validationRequestId ? { request_id: validationRequestId } : {}),
+    },
+    { path: 'fast', reasons: ['post_patch_process_checks'] },
+  );
+  if (!validation) {
+    return result(
+      {
+        accepted: false,
+        mode: 'reject',
+        path: 'reject',
+        error: {
+          code: 'POST_PATCH_CHECK_ROUTE_UNAVAILABLE',
+          message: 'The patch was applied, but the Process Runtime run_check route is unavailable.',
+        },
+        patch: patchPayload,
+      },
+      true,
+    );
+  }
+
   const validationPayload = (validation.structuredContent ?? {}) as Record<string, unknown>;
+  const validationStarted = validationPayload.accepted === true;
   const validationCompleted = validationPayload.completed === true;
   const validationPassed = validationCompleted && validationPayload.ok === true;
   return result(
     {
       ...patchPayload,
       validation: validationPayload,
-      validationStarted: true,
+      validationStarted,
       validationCompleted,
       validationPassed,
       acceptanceReady: validationPassed,
-      validationRequestId: validationPayload.validationRequestId,
+      ...(validationRequestId ? { validationRequestId } : {}),
       next: validationCompleted
         ? validationPassed
-          ? 'Patch review evidence and requested validation are complete; proceed to delivery only after ChatGPT semantic review is satisfied.'
-          : 'Patch applied but validation failed; return the failure evidence to ChatGPT before any delivery.'
-        : validationPayload.next,
+          ? 'Patch applied and the requested Process Runtime checks passed; proceed only after ChatGPT semantic review.'
+          : 'Patch applied but one or more checks failed; return the Process evidence for a targeted repair.'
+        : validationStarted
+          ? 'Patch applied and Process Runtime checks are running independently; attach to returned processes when their results become a dependency.'
+          : 'Patch applied; requested checks were rejected and must be corrected before delivery.',
     },
     validation.isError === true,
   );
@@ -215,17 +229,6 @@ export async function executeGatewayRoutedOperation(
         true,
       );
     }
-  }
-
-  // Stable Direct Edit composite: checks are opt-in. The same helper is also
-  // used by repository.direct_edit through capability_execute so the canonical
-  // capability and the compatibility top-level tool cannot drift.
-  if (
-    name === 'repository_safe_patch_apply' &&
-    classification.path === 'direct' &&
-    requestsRepositorySafePatchValidation(args)
-  ) {
-    return executeRepositorySafePatchComposite(ctx, args);
   }
 
   // run_check Process Runtime facade — execute here so legacy LocalBridgeJob path is skipped.

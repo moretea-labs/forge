@@ -9,27 +9,20 @@ import {
   gatewayRouteBehaviorSnapshot,
   routeDurableMcpCall,
 } from '../../adapters/mcp/runtime-gateway/router';
-import { executeGatewayRoutedOperation } from '../../adapters/mcp/runtime-gateway/gateway-execution-adapter';
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { createMcpToolContext } from '../../adapters/mcp/server';
-import { callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import {
   addRepositoryCheckout,
   getRepository,
-  refreshRepositoryCheckoutGitMetadata,
   registerRepository,
-  selectRepositoryCheckout,
-  setRepositoryCheckoutLifecycle,
 } from '../../src/runtime/repositories/registry';
-import { repositoryGitStatus } from '../../src/runtime/repositories/structured-git';
 import { commitSelectedPaths } from '../../src/runtime/repositories/selected-path-actions';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/runtime/local-bridge/read-model';
 import { listActiveAgentJobSnapshots } from '../../src/runtime/agent-jobs/read-model';
 import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
-import { callExecutionTool } from '../../adapters/mcp/runtime-gateway/execution-tools';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
@@ -46,8 +39,6 @@ import {
 } from '../../src/runtime/execution/thin-harness';
 import { getProcessRecord, listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
-import { readControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { runPersistedCheckViaProcessRuntime } from '../../src/runtime/execution/process-runtime/persisted-check';
 import { readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { resolveRepositoryCheckStorage } from '../../src/runtime/execution/process-runtime/check-storage';
 import {
@@ -55,7 +46,6 @@ import {
   listControllerWorklogEvents,
   resolveControllerWorklogStorage,
 } from '../../src/runtime/evidence/controller-worklog';
-import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 import { MCP_SERVER_INSTRUCTIONS } from '../../adapters/mcp/instructions';
 import {
@@ -70,26 +60,12 @@ import {
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { executeRepositoryBatch } from '../../src/runtime/execution/thin-harness/batch-executor';
 import {
-  reconcilePendingEditValidations,
   startOrJoinEditValidation,
 } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
-import { snapshotControllerCheck } from '../../src/runtime/execution/process-runtime/check-runner';
-import { principalFor } from '../../src/runtime/control-plane/execution/session-execution-support';
-import {
-  verificationInputFingerprint,
-  workspaceValidationFingerprint,
-} from '../../src/runtime/control-plane/execution/verification-evidence';
 import { resolveAuthorizationRequest } from '../../src/runtime/control-plane/governance/authorization';
 
 import {
-  startExecutionSession,
-  updateExecutionSession,
-  readExecutionSession,
-  type ExecutionSessionContext,
-} from '../../src/runtime/control-plane/execution/session-store';
-import {
   acquireExecutionLeases,
-  listActiveLeases,
   releaseExecutionLeases,
 } from '../../src/runtime/resources/leases/store';
 
@@ -258,7 +234,7 @@ describe('controller.plugins capability', () => {
 });
 
 describe('repository.direct_edit capability', () => {
-  test('explicit sessionless=false preserves the legacy Safe Patch/EditSession owner', async () => {
+  test('explicit sessionless=false is rejected without writing', async () => {
     const fx = fixture();
     roots.push(fx.root);
 
@@ -271,7 +247,7 @@ describe('repository.direct_edit capability', () => {
         action: 'apply',
         request_id: 'direct-edit-capability-apply',
         arguments: {
-          purpose: 'Exercise the canonical direct-edit capability route.',
+          purpose: 'Verify the retired sessionless=false compatibility input is rejected.',
           sessionless: false,
           operations: [
             {
@@ -284,19 +260,14 @@ describe('repository.direct_edit capability', () => {
       },
     );
 
-    if (edited?.isError) throw new Error(JSON.stringify(edited.structuredContent ?? edited));
-    const payload = edited?.structuredContent as {
-      status?: string;
-      reviewEvidence?: { source?: string; sessionId?: string; patchPreview?: string };
-    };
-    expect(payload.status).toBe('applied');
-    expect(payload.reviewEvidence).toMatchObject({ source: 'edit_session' });
-    expect(payload.reviewEvidence?.sessionId).toBeTruthy();
-    expect(payload.reviewEvidence?.patchPreview).toContain('export const n = 2;');
-    expect(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'), 'utf-8')).toBe('export const n = 2;\n');
+    expect(edited?.isError).toBe(true);
+    expect(edited?.structuredContent).toMatchObject({
+      error: { code: 'SAFE_PATCH_LEGACY_SESSION_RETIRED' },
+    });
+    expect(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'), 'utf-8')).toBe('export const n = 1;' + String.fromCharCode(10));
   });
 
-  test('runs and joins requested revision-bound validation through the canonical capability route', async () => {
+  test('direct-edit capability applies sessionlessly and validates through Process run_check', async () => {
     const fx = fixture();
     roots.push(fx.root);
     const ctx = { ...fx.ctx, principalId: 'direct-edit-validation-principal' };
@@ -308,7 +279,7 @@ describe('repository.direct_edit capability', () => {
       action: 'apply',
       request_id: 'direct-edit-capability-apply',
       arguments: {
-        purpose: 'Prove canonical direct-edit validation parity.',
+        purpose: 'Prove canonical sessionless direct-edit validation parity.',
         operations: [
           {
             type: 'replace',
@@ -321,10 +292,10 @@ describe('repository.direct_edit capability', () => {
       },
     });
 
-    if (edited?.isError) throw new Error(JSON.stringify(edited.structuredContent ?? edited));
+    expect(edited?.isError).not.toBe(true);
     const payload = edited?.structuredContent as Record<string, any>;
     expect(payload.status).toBe('applied');
-    expect(payload.reviewEvidence).toMatchObject({ source: 'edit_session' });
+    expect(payload.session).toBeUndefined();
     expect(payload.validationStarted).toBe(true);
     expect(payload.validationRequestId).toBe(validationRequestId);
     const validation = payload.validation as { processes: Array<{ processId: string }> };
@@ -333,29 +304,17 @@ describe('repository.direct_edit capability', () => {
       await waitForProcess(fx.controllerHome, fx.repository.repoId, process.processId, { timeoutMs: 10_000 });
     }
 
-    const sessionId = String(payload.session.sessionId);
-    const joined = await callCoreCapabilityAdapter(ctx, 'capability_execute', {
+    const joined = await routeDurableMcpCall(ctx, 'run_check', {
       repo_id: fx.repository.repoId,
-      capability_id: 'repository.direct_edit',
-      action: 'apply',
-      request_id: 'direct-edit-capability-validation-join',
-      arguments: {
-        session_id: sessionId,
-        validation_only: true,
-        check_ids: ['type-focused'],
-        validation_request_id: validationRequestId,
-      },
+      checkout_id: fx.repository.activeCheckoutId,
+      check_ids: ['type-focused'],
+      request_id: validationRequestId,
+      interactive_wait_ms: 0,
     });
-    if (joined?.isError) throw new Error(JSON.stringify(joined.structuredContent ?? joined));
+    expect(joined?.isError).not.toBe(true);
     const joinedPayload = joined?.structuredContent as Record<string, any>;
-    expect(joinedPayload).toMatchObject({
-      validationOnly: true,
-      sessionId,
-      completed: true,
-      ok: true,
-      acceptanceReady: true,
-    });
-    expect(joinedPayload.validation.validationRequestId).toBe(validationRequestId);
+    expect(joinedPayload.processes[0].processId).toBe(validation.processes[0]?.processId);
+    expect(joinedPayload.processes[0].deduplicated).toBe(true);
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId)).toHaveLength(0);
   });
 });
@@ -1708,124 +1667,6 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(existsSync(storage.physicalPath)).toBe(true);
     expect(existsSync(join(fx.repoRoot, '.ai', 'harness', 'controller', 'worklog.jsonl'))).toBe(false);
     expect(listControllerWorklogEvents(fx.repoRoot, { limit: 1 }, authority)[0]?.id).toBe(event.id);
-  });
-
-  test('safe patch starts opt-in validation and joins later without replaying the edit', async () => {
-    const fx = fixture();
-    roots.push(fx.root);
-    const editContext = { ...fx.ctx, principalId: 'validation-session-test-owner' };
-    writeFileSync(
-      join(fx.repoRoot, '.forge', 'checks.json'),
-      JSON.stringify(
-        {
-          version: 1,
-          checks: {
-            verify: {
-              description: 'managed direct-edit validation',
-              command: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 250)'],
-              timeoutMs: 10_000,
-              effects: { reads: ['src/lib.ts'] },
-            },
-          },
-        },
-        null,
-        2,
-      ),
-    );
-    const sourcePath = join(fx.repoRoot, 'src', 'lib.ts');
-    const before = readFileSync(sourcePath, 'utf8');
-    const validationRequestId = 'safe-patch-validation-smoke';
-
-    const started = await routeDurableMcpCall(editContext, 'repository_safe_patch_apply', {
-      repo_id: fx.repository.repoId,
-      checkout_id: fx.repository.activeCheckoutId,
-      purpose: 'safe patch with opt-in validation',
-      allowed_paths: ['src/**'],
-      operations: [
-        {
-          type: 'replace',
-          path: 'src/lib.ts',
-          expected_sha256: createHash('sha256').update(before).digest('hex'),
-          old_text: 'n = 1',
-          new_text: 'n = 2',
-        },
-      ],
-      check_ids: ['verify'],
-      validation_request_id: validationRequestId,
-      interactive_wait_ms: 0,
-    });
-    if (started?.isError) throw new Error(JSON.stringify(started.structuredContent ?? started));
-    const startedPayload = started?.structuredContent as Record<string, unknown>;
-    expect(startedPayload.status).toBe('applied');
-    expect(startedPayload.validationStarted).toBe(true);
-    expect(startedPayload.validationCompleted).toBe(false);
-    expect(startedPayload.acceptanceReady).toBe(false);
-    expect(startedPayload.reviewEvidence).toEqual(
-      expect.objectContaining({
-        source: 'edit_session',
-        semanticReviewAuthority: 'chatgpt',
-      }),
-    );
-    expect(startedPayload.validationRequestId).toBe(validationRequestId);
-    const validation = startedPayload.validation as { processes: Array<{ processId: string }> };
-    expect(validation.processes).toHaveLength(1);
-    await waitForProcess(fx.controllerHome, fx.repository.repoId, validation.processes[0]!.processId, {
-      timeoutMs: 10_000,
-    });
-    const afterEdit = readFileSync(sourcePath, 'utf8');
-    expect(afterEdit).toContain('n = 2');
-    const sessionId = String((startedPayload.session as { sessionId: string }).sessionId);
-    const originalCheckoutId = fx.repository.activeCheckoutId;
-    const rotatedRepoRoot = join(fx.root, 'rotated-checkout');
-    git(fx.repoRoot, ['worktree', 'add', '-b', 'validation-rotation', rotatedRepoRoot, 'HEAD']);
-    const rotatedRepository = addRepositoryCheckout({
-      repoId: fx.repository.repoId,
-      path: rotatedRepoRoot,
-      controllerHome: fx.controllerHome,
-      activate: true,
-    });
-    expect(rotatedRepository.activeCheckoutId).not.toBe(originalCheckoutId);
-
-    // Reproduce the production authority shape: the durable Work/edit root is
-    // still the original checkout while the repository registry's unrelated
-    // active checkout has rotated. Before the fix this returned
-    // EDIT_VALIDATION_CHECKOUT_CHANGED even though the original Process and
-    // edit session were still valid on their durable checkout.
-    const workBoundRepositoryView = {
-      ...rotatedRepository,
-      localRoot: fx.repoRoot,
-      canonicalRoot: fx.repoRoot,
-    };
-    const reconciled = await startOrJoinEditValidation(fx.controllerHome, workBoundRepositoryView, {
-      editSessionId: sessionId,
-      checkIds: ['verify'],
-      validationRequestId,
-    });
-    expect(reconciled.error?.code).not.toBe('EDIT_VALIDATION_CHECKOUT_CHANGED');
-    expect(reconciled.completed).toBe(true);
-    expect(reconciled.ok).toBe(true);
-    expect(reconciled.receipts?.[0]?.checkoutId).toBe(originalCheckoutId);
-
-    // validation_only intentionally omits checkout_id here. The gateway must
-    // recover the durable edit-session checkout instead of inheriting the
-    // unrelated active checkout from the repository registry.
-    const joined = await routeDurableMcpCall(editContext, 'repository_safe_patch_apply', {
-      repo_id: fx.repository.repoId,
-      session_id: sessionId,
-      validation_only: true,
-      check_ids: ['verify'],
-      validation_request_id: validationRequestId,
-      interactive_wait_ms: 0,
-    });
-    expect(joined?.isError).not.toBe(true);
-    const joinedPayload = joined?.structuredContent as Record<string, unknown>;
-    expect(joinedPayload.validationOnly).toBe(true);
-    expect(joinedPayload.completed).toBe(true);
-    expect(joinedPayload.ok).toBe(true);
-    expect(joinedPayload.acceptanceReady).toBe(true);
-    expect((joinedPayload.validation as Record<string, unknown>).validationRequestId).toBe(validationRequestId);
-    expect(getEditSession(fx.repoRoot, sessionId).status).toBe('checked');
-    expect(readFileSync(sourcePath, 'utf8')).toBe(afterEdit);
   });
 
   test('a checked ordinary edit reconciles after its verified after-image is committed', async () => {
