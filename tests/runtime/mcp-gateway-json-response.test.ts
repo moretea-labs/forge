@@ -61,6 +61,54 @@ async function createFixture(jsonOptIn: boolean) {
   });
 }
 
+async function isolatedResponseBurst(
+  jsonOptIn: boolean,
+  sizes: readonly number[],
+): Promise<
+  Array<{
+    mode: 'json' | 'sse';
+    concurrency: number;
+    batchMs: number;
+    p50Ms: number;
+    p95Ms: number;
+  }>
+> {
+  const runtime = await createFixture(jsonOptIn);
+  const client = new Client({ name: 'forge-public-gateway-proxy', version: '1.0.0' }, { capabilities: {} });
+  const transport = new StreamableHTTPClientTransport(new URL(runtime.endpoint), {
+    requestInit: { headers: { authorization: `Bearer ${bearer}` } },
+  });
+  try {
+    await client.connect(transport);
+    await client.callTool({ name: 'rh_status', arguments: {} });
+    const batches = [];
+    for (const concurrency of sizes) {
+      const started = performance.now();
+      const latencies = await Promise.all(
+        Array.from({ length: concurrency }, async () => {
+          const began = performance.now();
+          const result = await client.callTool({ name: 'rh_status', arguments: {} });
+          expect(result.structuredContent).toMatchObject({ status: 'ok' });
+          return performance.now() - began;
+        }),
+      );
+      const batchMs = performance.now() - started;
+      latencies.sort((a, b) => a - b);
+      batches.push({
+        mode: jsonOptIn ? ('json' as const) : ('sse' as const),
+        concurrency,
+        batchMs: Math.round(batchMs * 100) / 100,
+        p50Ms: Math.round(latencies[Math.floor((latencies.length - 1) * 0.5)]! * 100) / 100,
+        p95Ms: Math.round(latencies[Math.floor((latencies.length - 1) * 0.95)]! * 100) / 100,
+      });
+    }
+    return batches;
+  } finally {
+    await client.close().catch(() => undefined);
+    await runtime.close();
+  }
+}
+
 describe('Canonical Runtime opt-in Gateway JSON response', () => {
   test('requires a loopback single initialize from the Gateway client name', () => {
     const initialize = { method: 'initialize', params: { clientInfo: { name: 'forge-public-gateway-proxy' } } };
@@ -95,6 +143,27 @@ describe('Canonical Runtime opt-in Gateway JSON response', () => {
       await runtime.close();
     }
   }, 20_000);
+
+  test('keeps every request valid at 8 and 16 concurrency in isolated JSON/SSE A/B', async () => {
+    // ABBA balances host warmup, connection churn, and test-order effects.
+    // Neither mode shares a live Runtime session with the other.
+    const rounds = [false, true, true, false] as const;
+    const observations = [];
+    for (const [index, jsonOptIn] of rounds.entries()) {
+      const batches = await isolatedResponseBurst(jsonOptIn, [8, 16]);
+      expect(batches).toHaveLength(2);
+      for (const batch of batches) {
+        expect(batch.batchMs).toBeGreaterThan(0);
+        expect(batch.p95Ms).toBeGreaterThan(0);
+        observations.push({ round: index + 1, ...batch });
+      }
+    }
+    expect(observations).toHaveLength(8);
+    expect(observations.filter((batch) => batch.mode === 'sse')).toHaveLength(4);
+    expect(observations.filter((batch) => batch.mode === 'json')).toHaveLength(4);
+    // These are measurements, not fixed latency assertions: load can vary.
+    console.log('MCP_JSON_SSE_ISOLATED_ABBA', JSON.stringify(observations));
+  }, 45_000);
 
   test('disabled opt-in preserves SSE even for a Gateway client', async () => {
     const runtime = await createFixture(false);
