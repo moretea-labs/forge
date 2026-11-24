@@ -160,6 +160,7 @@ struct AgentPane: View {
     @State private var restoreComposerFocusAfterWorkSurface = false
     @State private var inspectorPreferredWidth: CGFloat?
     @GestureState private var inspectorDragOffset: CGFloat = 0
+    @State private var inspectorDividerHovered = false
     @State private var fileSelectedRepoId = ""
     @State private var fileShowLocalResources = true
     @State private var fileShowRemoteImages = true
@@ -1113,7 +1114,9 @@ struct AgentPane: View {
 
             if docked {
                 Rectangle()
-                    .fill(ForgePalette.secondary.opacity(0.16))
+                    .fill(inspectorDividerHovered || inspectorDragOffset != 0
+                          ? ForgePalette.secondary.opacity(0.18)
+                          : Color.clear)
                     .frame(width:1)
                     .frame(width:AgentWorkSurfaceLayout.dividerWidth)
                     .frame(maxHeight:.infinity)
@@ -1130,8 +1133,10 @@ struct AgentPane: View {
                             }
                     )
                     .onHover { hovering in
+                        inspectorDividerHovered = hovering
                         if hovering { NSCursor.resizeLeftRight.set() } else { NSCursor.arrow.set() }
                     }
+                    .animation(reduceMotion ? nil : .easeOut(duration:0.12),value:inspectorDividerHovered)
                     .accessibilityLabel("工作面板宽度")
                     .accessibilityValue("\(Int(inspectorWidth)) 点")
                     .accessibilityIdentifier("agent.inspector.resize")
