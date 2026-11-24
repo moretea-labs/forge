@@ -1,7 +1,7 @@
 import { statfsSync } from 'fs';
 import { cpus, freemem, hostname, loadavg, totalmem, uptime } from 'os';
 import { readForgeRuntimeStatus } from '../../runtime/control-plane/runtime-status-client';
-import { listExecutionJobs } from '../../runtime/execution/jobs/store';
+import { listActiveExecutionJobs, listExecutionJobs } from '../../runtime/execution/jobs/store';
 import type { ExecutionJob } from '../../runtime/execution/jobs/types';
 import { readRepositoryProjectionSnapshot } from '../../runtime/projections/materialized-view';
 
@@ -123,18 +123,18 @@ export function buildMobileMonitorSnapshot(input: {
   const daemon = readForgeRuntimeStatus(input.controllerHome);
   const projectionSnapshot = readRepositoryProjectionSnapshot(input.controllerHome, input.repoId);
   const projection = projectionSnapshot.projection;
-  const jobs = listExecutionJobs(input.controllerHome, input.repoId, 80);
-  const activeJobs = jobs
+  const activeJobs = listActiveExecutionJobs(input.controllerHome, input.repoId)
     .filter((job) => ACTIVE_STATUSES.has(job.status))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, 6);
+  const recentJobs = listExecutionJobs(input.controllerHome, input.repoId, 8);
 
   const attention: MobileMonitorAttention[] = projection.currentAttention.slice(0, 6).map((item) => ({
     id: item.jobId,
     severity: item.status === 'orphaned' || item.status === 'human_attention_required' ? 'critical' : 'warning',
     title: item.status === 'orphaned' ? '执行器失联' : item.status === 'stale' ? '任务心跳过期' : '需要人工处理',
     detail: boundedMessage(item.message),
-    occurredAt: jobs.find((job) => job.jobId === item.jobId)?.updatedAt,
+    occurredAt: activeJobs.find((job) => job.jobId === item.jobId)?.updatedAt,
   }));
 
   const daemonOnline = daemon.status === 'ready' || daemon.status === 'starting';
@@ -187,7 +187,7 @@ export function buildMobileMonitorSnapshot(input: {
       })),
     },
     attention,
-    recent: jobs
+    recent: recentJobs
       .filter((job) => Boolean(job.finishedAt))
       .sort((left, right) => (right.finishedAt ?? right.updatedAt).localeCompare(left.finishedAt ?? left.updatedAt))
       .slice(0, 8)

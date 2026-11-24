@@ -2,7 +2,7 @@ import type { McpToolDefinition, CallToolResult } from '../../../packages/protoc
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { boundedPluginArtifactImageContent, jsonPreview, result, resultWithPluginArtifactImages } from './result-adapter';
 import { expectedRevision, repositoryRootForRepoId, selected, stringList } from './shared-adapter';
-import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
+import { cancelExecutionJob, findExecutionJob, getExecutionJob } from '../../../src/runtime/execution/jobs/store';
 import { summarizeExecutionJob } from './runtime-tool-shared';
 
 

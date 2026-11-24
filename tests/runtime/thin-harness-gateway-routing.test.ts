@@ -830,6 +830,26 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(readEntry.stderr).toContain('DIAGNOSTIC_TOOL_UNSUPPORTED');
   });
 
+  test('runtime performance diagnostics reads the bounded active ExecutionJob index', () => {
+    const source = readFileSync(
+      join(process.cwd(), 'adapters/mcp/runtime-gateway/runtime-observation-adapter.ts'),
+      'utf8',
+    );
+    const start = source.indexOf("case 'runtime_performance_diagnostics':");
+    const end = source.indexOf("case '", start + 8);
+    const block = source.slice(start, end > start ? end : undefined);
+    expect(block).toContain('listActiveExecutionJobs(ctx.controllerHome, repository.repoId)');
+    expect(block).not.toContain('listExecutionJobs(ctx.controllerHome, repository.repoId, 100)');
+
+    const mobileMonitorSource = readFileSync(
+      join(process.cwd(), 'src/cli/local-bridge/mobile-monitor.ts'),
+      'utf8',
+    );
+    expect(mobileMonitorSource).toContain('listActiveExecutionJobs(input.controllerHome, input.repoId)');
+    expect(mobileMonitorSource).toContain('listExecutionJobs(input.controllerHome, input.repoId, 8)');
+    expect(mobileMonitorSource).not.toContain('listExecutionJobs(input.controllerHome, input.repoId, 80)');
+  });
+
   test('registered read-only isolated tools use Process Runtime without durable side effects', async () => {
     const fx = fixture();
     roots.push(fx.root);

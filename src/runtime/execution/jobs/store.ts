@@ -37,15 +37,6 @@ interface RecentJobIndex {
   jobs: Array<{ jobId: string; repoId: string; createdAt: string; updatedAt: string; status: ExecutionJobStatus }>;
 }
 
-interface RequestIndexRecord {
-  schemaVersion: 1;
-  requestId: string;
-  semanticKey: string;
-  jobId: string;
-  repoId: string;
-  createdAt: string;
-}
-
 function now(): string {
   return new Date().toISOString();
 }
@@ -67,9 +58,9 @@ function jobPath(controllerHome: string, repoId: string, jobId: string): string 
   return join(executionJobRootPath(controllerHome, repoId), 'records', `${sanitizeFileComponent(jobId)}.json`);
 }
 
-function requestPath(controllerHome: string, requestId: string): string {
+function legacyRequestIndexPath(controllerHome: string, requestId: string): string {
   const hash = createHash('sha256').update(requestId).digest('hex');
-  return join(resolveControllerHome(controllerHome), 'indexes', 'execution-jobs', 'requests', `${hash}.json`);
+  return join(resolveControllerHome(controllerHome), 'indexes', 'execution-jobs', 'requests', hash + '.json');
 }
 
 function activeIndexPath(controllerHome: string): string {
@@ -288,25 +279,6 @@ function persistJob(controllerHome: string, job: ExecutionJob): ExecutionJob {
 
 export function getExecutionJob(controllerHome: string, repoId: string, jobId: string): ExecutionJob {
   return readJsonFile<ExecutionJob>(jobPath(controllerHome, repoId, jobId));
-}
-
-export function getExecutionJobByRequestId(
-  controllerHome: string,
-  requestId: string,
-  expectedRepoId?: string,
-): ExecutionJob | undefined {
-  const normalizedRequestId = requestId.trim();
-  if (!normalizedRequestId) return undefined;
-  const recordPath = requestPath(controllerHome, normalizedRequestId);
-  if (!existsSync(recordPath)) return undefined;
-  try {
-    const record = readJsonFile<RequestIndexRecord>(recordPath);
-    if (record.requestId !== normalizedRequestId) return undefined;
-    if (expectedRepoId && record.repoId !== expectedRepoId) return undefined;
-    return getExecutionJob(controllerHome, record.repoId, record.jobId);
-  } catch {
-    return undefined;
-  }
 }
 
 export function findExecutionJob(controllerHome: string, jobId: string): ExecutionJob | undefined {
@@ -856,9 +828,9 @@ export function cleanupRetiredExecutionJobs(
         ),
       );
       const artifactCleanup = cleanupExecutionArtifactsForJob(controllerHome, repoId, current.jobId);
+      if (current.requestId) removeFile(legacyRequestIndexPath(controllerHome, current.requestId));
       blockers.push(...artifactCleanup.blockers.map((blocker) => `artifact:${current.jobId}:${blocker}`));
       if (artifactCleanup.scanTruncated) blockers.push(`artifact_scan_truncated:${current.jobId}`);
-      if (current.requestId) removeFile(requestPath(controllerHome, current.requestId));
       withControllerLock(
         controllerHome,
         { scope: 'global', resource: 'execution-index' },

@@ -7,6 +7,7 @@ import { repositoryControllerRoot } from '../../effects/controller-home';
 import { quarantineRuntimePath } from './quarantine-retention';
 import { findExecutionJob } from '../execution/jobs/store';
 import { isProcessAlive } from '../shared/process-tree';
+import { projectedExecutionJobId } from '../local-bridge/lifecycle';
 import type { LocalBridgeJob } from '../local-bridge/types';
 
 export type RuntimeStorageRepairCandidateKind =
@@ -106,12 +107,6 @@ function jobIdFromEntry(entry: string): string {
 
 function readJob(path: string): LocalBridgeJob {
   return JSON.parse(readFileSync(path, 'utf-8')) as LocalBridgeJob;
-}
-
-function projectedExecutionJobId(job: LocalBridgeJob): string | undefined {
-  return typeof job.result?.executionJobId === 'string' && job.result.executionJobId.trim()
-    ? job.result.executionJobId.trim()
-    : undefined;
 }
 
 function projectedExecutionControllerHome(job: LocalBridgeJob, fallbackControllerHome: string): string {

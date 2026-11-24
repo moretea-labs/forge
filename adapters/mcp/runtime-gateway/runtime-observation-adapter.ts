@@ -33,7 +33,7 @@ import {
   cancelExecutionJob,
   findExecutionJob,
   getExecutionJob,
-  getExecutionJobByRequestId,
+  listActiveExecutionJobs,
   listExecutionJobs,
 } from '../../../src/runtime/execution/jobs/store';
 import { waitForExecutionJob } from '../../../src/runtime/execution/jobs/wait';
@@ -1284,18 +1284,7 @@ export async function callRuntimeObservationAdapter(
         const runtime = loadMcpRuntimeState(repository.canonicalRoot);
         const inferredLocalBridge =
           args.include_processes === false ? undefined : inferLocalControllerProcess(repository.canonicalRoot);
-        const activeJobIds = listExecutionJobs(ctx.controllerHome, repository.repoId, 100)
-          .filter((job) =>
-            [
-              'queued',
-              'dispatched',
-              'running',
-              'waiting_for_dependency',
-              'waiting_for_workspace',
-              'waiting_for_heavy_check',
-              'waiting_for_integration',
-            ].includes(job.status),
-          )
+        const activeJobIds = listActiveExecutionJobs(ctx.controllerHome, repository.repoId)
           .map((job) => job.jobId);
         const diagnostics = collectRuntimePerformanceDiagnostics({
           repoId: repository.repoId,

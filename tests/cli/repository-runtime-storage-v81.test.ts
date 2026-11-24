@@ -10,7 +10,6 @@ import { listAssistantPluginManifests, listControllerPluginManifests } from '../
 import {
   listExecutionJobs,
   findExecutionJob,
-  getExecutionJobByRequestId,
 } from '../../src/runtime/execution/jobs/store';
 import { listRecoveryAuditRecords, listInstanceRecoveryAuditRecords } from '../../src/runtime/recovery/store';
 import { readHandoffInboxStore, handoffInboxPath } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -551,7 +550,6 @@ describe('v8.1 repository runtime storage isolation', () => {
       const absentHome = join(fixture.repoA.canonicalRoot, '.controller-home-read-only');
       expect(listExecutionJobs(absentHome, fixture.repoA.repoId, 20)).toEqual([]);
       expect(findExecutionJob(absentHome, 'missing-job')).toBeUndefined();
-      expect(getExecutionJobByRequestId(absentHome, 'missing-request', fixture.repoA.repoId)).toBeUndefined();
       expect(listRecoveryAuditRecords(absentHome, fixture.repoA.repoId)).toEqual([]);
       expect(listInstanceRecoveryAuditRecords(absentHome)).toEqual([]);
       expect(existsSync(absentHome)).toBe(false);
