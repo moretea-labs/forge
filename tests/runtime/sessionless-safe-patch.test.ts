@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { pathToFileURL } from 'url';
 import { spawnSync } from 'child_process';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
@@ -17,6 +18,14 @@ afterEach(() => {
 
 function hash(text: string): string {
   return createHash('sha256').update(text).digest('hex');
+}
+
+async function waitForFiles(paths: string[], timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!paths.every((path) => existsSync(path))) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for: ${paths.join(', ')}`);
+    await Bun.sleep(5);
+  }
 }
 
 function fixture() {
@@ -137,6 +146,105 @@ test('independent exact replacements continue after source and HEAD change witho
   expect(b.payload.status).toBe('applied');
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const n = 2;\nexport const label = 2;\n');
   expect(fx.sessions()).toHaveLength(0);
+});
+
+test('simultaneous processes preserve independent same-file edits through lock/CAS retry (#716)', async () => {
+  const fx = fixture();
+  const sourcePath = join(fx.repoRoot, 'source.ts');
+  const padded = `${fx.initial}// ${'x'.repeat(2 * 1024 * 1024)}\n`;
+  writeFileSync(sourcePath, padded);
+
+  const readyA = join(fx.repoRoot, '.race-a-ready');
+  const readyB = join(fx.repoRoot, '.race-b-ready');
+  const go = join(fx.repoRoot, '.race-go');
+  const workerSource = `
+    import { existsSync, writeFileSync } from 'fs';
+    const { applySessionlessSafePatch } = await import(${JSON.stringify(pathToFileURL(join(process.cwd(), 'src/runtime/repositories/safe-patch.ts')).href)});
+    const repoRoot = process.env.RACE_REPO_ROOT;
+    const ready = process.env.RACE_READY;
+    const go = process.env.RACE_GO;
+    const oldText = process.env.RACE_OLD;
+    const newText = process.env.RACE_NEW;
+    if (!repoRoot || !ready || !go || !oldText || !newText) throw new Error('missing race worker env');
+    const now = new Date().toISOString();
+    const checkoutId = 'race-' + process.pid;
+    const repository = {
+      schemaVersion: 1,
+      repoId: 'race-repo',
+      displayName: 'race-repo',
+      localRoot: repoRoot,
+      canonicalRoot: repoRoot,
+      activeCheckoutId: checkoutId,
+      checkouts: [{
+        checkoutId,
+        localRoot: repoRoot,
+        canonicalRoot: repoRoot,
+        worktree: false,
+        branch: 'main',
+        createdAt: now,
+        updatedAt: now,
+        lastSeenAt: now,
+      }],
+      repositoryType: 'local-git',
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+      lastSeenAt: now,
+      configurationPath: repoRoot + '/.ai/repository.json',
+      stateStorageStrategy: 'repository-local',
+    };
+    writeFileSync(ready, 'ready');
+    const waiter = new Int32Array(new SharedArrayBuffer(4));
+    while (!existsSync(go)) Atomics.wait(waiter, 0, 0, 1);
+    const result = applySessionlessSafePatch(repository, {
+      operations: [{
+        type: 'replace',
+        path: 'source.ts',
+        replacements: [{ old_text: oldText, new_text: newText }],
+      }],
+    });
+    process.stdout.write(JSON.stringify(result));
+  `;
+
+  const spawnWriter = (ready: string, oldText: string, newText: string) =>
+    Bun.spawn([process.execPath, '-e', workerSource], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        RACE_REPO_ROOT: fx.repoRoot,
+        RACE_READY: ready,
+        RACE_GO: go,
+        RACE_OLD: oldText,
+        RACE_NEW: newText,
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+  const writerA = spawnWriter(readyA, 'n = 1', 'n = 2');
+  const writerB = spawnWriter(readyB, 'label = 1', 'label = 2');
+  await waitForFiles([readyA, readyB]);
+  writeFileSync(go, 'go');
+
+  const [exitA, exitB] = await Promise.all([writerA.exited, writerB.exited]);
+  const [stdoutA, stdoutB, stderrA, stderrB] = await Promise.all([
+    new Response(writerA.stdout).text(),
+    new Response(writerB.stdout).text(),
+    new Response(writerA.stderr).text(),
+    new Response(writerB.stderr).text(),
+  ]);
+  if (exitA !== 0 || exitB !== 0) {
+    throw new Error(`race worker failed: A(${exitA}) ${stderrA}; B(${exitB}) ${stderrB}`);
+  }
+  const resultA = JSON.parse(stdoutA) as { status: string; sessionless?: boolean };
+  const resultB = JSON.parse(stdoutB) as { status: string; sessionless?: boolean };
+  expect(resultA).toMatchObject({ status: 'applied', sessionless: true });
+  expect(resultB).toMatchObject({ status: 'applied', sessionless: true });
+  const final = readFileSync(sourcePath, 'utf8');
+  expect(final).toContain('n = 2');
+  expect(final).toContain('label = 2');
+  expect(fx.sessions()).toHaveLength(0);
+  expect(existsSync(`${sourcePath}.forge.lock`)).toBe(false);
 });
 
 test('unversioned exact patch rejects ambiguous or changed targets without writing (#716)', async () => {

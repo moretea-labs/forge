@@ -180,12 +180,30 @@ function transactionDirFor(): string {
   return `${BACKUP_ROOT}/${Date.now()}-${process.pid}-${transactionSequence}`;
 }
 
-function withTargetLock<T>(targetPath: string, fn: () => T): T {
+const TARGET_LOCK_WAIT_STATE = new Int32Array(new SharedArrayBuffer(4));
+
+function acquireTargetLock(lockPath: string, busyRetries = 0, retryDelayMs = 0): number {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return openSync(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST' || attempt >= busyRetries) throw error;
+      Atomics.wait(TARGET_LOCK_WAIT_STATE, 0, 0, retryDelayMs);
+    }
+  }
+}
+
+function withTargetLock<T>(
+  targetPath: string,
+  fn: () => T,
+  options: { busyRetries?: number; retryDelayMs?: number } = {},
+): T {
   const lockPath = `${targetPath}${LOCK_SUFFIX}`;
   let fd: number | null = null;
   let locked = false;
   try {
-    fd = openSync(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    fd = acquireTargetLock(lockPath, options.busyRetries ?? 0, options.retryDelayMs ?? 0);
     locked = true;
     writeSync(fd, `${process.pid}\n`);
     fsyncSync(fd);
@@ -222,29 +240,33 @@ export function atomicCompareAndSwapText(
   if (!target.ok || !target.path) throw new Error(target.error ?? 'invalid path');
   const targetPath = target.path;
   if (!existsSync(targetPath)) throw new Error(`TARGET_MISSING: ${path}`);
-  return withTargetLock(targetPath, () => {
-    // A symlink target is not eligible for sessionless replacement: callers
-    // must not have a rename swap the symlink itself behind an alias.
-    const before = readFileSync(targetPath, 'utf-8');
-    const currentHash = createHash('sha256').update(before).digest('hex');
-    if (currentHash !== expectedSha256) {
-      throw new Error(`STALE_FILE_SHA: ${path}: expected ${expectedSha256}, got ${currentHash}`);
-    }
-    if (before === after) throw new Error(`NO_CHANGE: ${path}`);
-    const mode = statModeForCas(targetPath);
-    const temporary = resolve(dirname(targetPath), `.${basename(targetPath)}.${process.pid}.${Date.now()}.cas.tmp`);
-    try {
-      writeFileDurably(temporary, after, mode);
-      renameSync(temporary, targetPath);
-      fsyncDirectory(dirname(targetPath));
-    } finally {
-      rmSync(temporary, { force: true });
-    }
-    return {
-      beforeSha256: currentHash,
-      afterSha256: createHash('sha256').update(after).digest('hex'),
-    };
-  });
+  return withTargetLock(
+    targetPath,
+    () => {
+      // A symlink target is not eligible for sessionless replacement: callers
+      // must not have a rename swap the symlink itself behind an alias.
+      const before = readFileSync(targetPath, 'utf-8');
+      const currentHash = createHash('sha256').update(before).digest('hex');
+      if (currentHash !== expectedSha256) {
+        throw new Error(`STALE_FILE_SHA: ${path}: expected ${expectedSha256}, got ${currentHash}`);
+      }
+      if (before === after) throw new Error(`NO_CHANGE: ${path}`);
+      const mode = statModeForCas(targetPath);
+      const temporary = resolve(dirname(targetPath), `.${basename(targetPath)}.${process.pid}.${Date.now()}.cas.tmp`);
+      try {
+        writeFileDurably(temporary, after, mode);
+        renameSync(temporary, targetPath);
+        fsyncDirectory(dirname(targetPath));
+      } finally {
+        rmSync(temporary, { force: true });
+      }
+      return {
+        beforeSha256: currentHash,
+        afterSha256: createHash('sha256').update(after).digest('hex'),
+      };
+    },
+    { busyRetries: 12, retryDelayMs: 5 },
+  );
 }
 
 function statModeForCas(targetPath: string): number {
