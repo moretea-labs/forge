@@ -112,6 +112,22 @@ describe('cross-project Requirement dispatch selection (refs #707)', () => {
       writeControlPlaneRecord(controllerHome, {
         namespace: 'requirement',
         scope: 'controller',
+        key: 'REQ-BLOCKED-URGENT',
+        schemaVersion: 1,
+        value: requirement({
+          requirementId: 'REQ-BLOCKED-URGENT',
+          projectId: 'project-b',
+          title: 'Urgent but blocked',
+          state: 'active',
+          priority: 'urgent',
+          dependsOnRequirementIds: ['REQ-DEP'],
+          updatedAt: '2026-09-03T00:05:00.000Z',
+        }),
+        expectedRevision: null,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'requirement',
+        scope: 'controller',
         key: 'REQ-WAIT',
         schemaVersion: 1,
         value: requirement({
@@ -149,8 +165,29 @@ describe('cross-project Requirement dispatch selection (refs #707)', () => {
       const waiting = selection.candidates.find((entry) => entry.requirementId === 'REQ-WAIT');
       expect(waiting?.readiness).toBe('waiting_for_user');
       expect(selection.counts.ready).toBe(2);
-      expect(selection.counts.blocked).toBe(1);
+      expect(selection.counts.blocked).toBe(2);
       expect(selection.counts.waiting_for_user).toBe(1);
+
+      // The diagnostic page is intentionally dominated by the urgent blocked
+      // candidate. The dispatch view must still surface the runnable candidate
+      // that follows it, or a blocked top candidate can starve the whole tick.
+      const limited = selectCrossProjectRequirementCandidates({
+        controllerHome,
+        now: () => '2026-09-03T00:10:00.000Z',
+        limit: 1,
+      });
+      expect(limited.candidates.map((entry) => entry.requirementId)).toEqual([
+        'REQ-BLOCKED-URGENT',
+      ]);
+      expect(limited.ready.map((entry) => entry.requirementId)).toEqual(['REQ-URGENT']);
+      expect(limited.counts).toEqual({
+        ready: 2,
+        blocked: 2,
+        waiting_for_user: 1,
+        done: 0,
+        cancelled: 0,
+        unknown: 0,
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

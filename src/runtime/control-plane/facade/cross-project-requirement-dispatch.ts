@@ -166,8 +166,13 @@ export function selectCrossProjectRequirementCandidates(input: {
     cancelled: 0,
     unknown: 0,
   } satisfies Record<RequirementDispatchReadiness, number>;
-  for (const candidate of bounded) counts[candidate.readiness] += 1;
-  const ready = bounded.filter((candidate) => candidate.readiness === 'ready');
+  // Diagnostic ordering and dispatch eligibility are separate views. A page
+  // full of urgent-but-blocked Requirements must never hide lower-priority
+  // runnable work beyond the diagnostic candidate limit.
+  for (const candidate of candidates) counts[candidate.readiness] += 1;
+  const ready = candidates
+    .filter((candidate) => candidate.readiness === 'ready')
+    .slice(0, limit);
   return {
     schemaVersion: 1,
     generatedAt: input.now?.() ?? new Date().toISOString(),
