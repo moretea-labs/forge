@@ -5,6 +5,7 @@ import {
   fsyncSync,
   mkdirSync,
   lstatSync,
+  linkSync,
   openSync,
   readFileSync,
   renameSync,
@@ -252,6 +253,56 @@ function statModeForCas(targetPath: string): number {
   const stat = lstatSync(targetPath);
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`CAS_TARGET_NOT_REGULAR_FILE: ${targetPath}`);
   return stat.mode & 0o777;
+}
+
+/** Sessionless create with an atomic no-overwrite publish step. */
+export function atomicCreateText(repoRoot: string, path: string, content: string): { afterSha256: string } {
+  const target = resolveInsideRepo(repoRoot, path);
+  if (!target.ok || !target.path) throw new Error(target.error ?? 'invalid path');
+  const parentError = ensureParent(repoRoot, path);
+  if (parentError) throw new Error(parentError);
+  const targetPath = target.path;
+  return withTargetLock(targetPath, () => {
+    if (existsSync(targetPath)) throw new Error(`CREATE_TARGET_EXISTS: ${path}`);
+    const temporary = resolve(dirname(targetPath), `.${basename(targetPath)}.${process.pid}.${Date.now()}.create.tmp`);
+    try {
+      writeFileDurably(temporary, content);
+      try {
+        linkSync(temporary, targetPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`CREATE_TARGET_EXISTS: ${path}`);
+        throw error;
+      }
+      fsyncDirectory(dirname(targetPath));
+    } finally {
+      rmSync(temporary, { force: true });
+      fsyncDirectory(dirname(targetPath));
+    }
+    return { afterSha256: createHash('sha256').update(content).digest('hex') };
+  });
+}
+
+/** Sessionless strict delete. The file is removed only if its full-file CAS still matches. */
+export function atomicCompareAndDeleteText(
+  repoRoot: string,
+  path: string,
+  expectedSha256: string,
+): { beforeSha256: string } {
+  const target = resolveInsideRepo(repoRoot, path);
+  if (!target.ok || !target.path) throw new Error(target.error ?? 'invalid path');
+  const targetPath = target.path;
+  return withTargetLock(targetPath, () => {
+    if (!existsSync(targetPath)) throw new Error(`TARGET_MISSING: ${path}`);
+    statModeForCas(targetPath);
+    const before = readFileSync(targetPath, 'utf-8');
+    const currentHash = createHash('sha256').update(before).digest('hex');
+    if (currentHash !== expectedSha256) {
+      throw new Error(`STALE_FILE_SHA: ${path}: expected ${expectedSha256}, got ${currentHash}`);
+    }
+    rmSync(targetPath);
+    fsyncDirectory(dirname(targetPath));
+    return { beforeSha256: currentHash };
+  });
 }
 
 export interface AtomicWriteResult {

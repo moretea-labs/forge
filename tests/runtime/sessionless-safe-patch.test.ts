@@ -171,6 +171,64 @@ test('exact local edits omit whole-file CAS while full-file mutations require it
   );
 });
 
+test('single-file create/delete defaults to sessionless strict atomic mutations (#716)', async () => {
+  const fx = fixture();
+  const path = 'created.ts';
+  const content = 'export const created = true;\n';
+  const created = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [{ type: 'create', path, content }],
+  });
+  expect(created?.isError).not.toBe(true);
+  expect(created?.structuredContent).toMatchObject({
+    status: 'applied',
+    sessionless: true,
+    createdSession: false,
+    receipt: { path, afterSha256: hash(content) },
+  });
+  expect(readFileSync(join(fx.repoRoot, path), 'utf8')).toBe(content);
+  expect(fx.sessions()).toHaveLength(0);
+  expect(existsSync(join(fx.repoRoot, '.ai/harness/backups/fs-transaction'))).toBe(false);
+
+  const duplicate = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [{ type: 'create', path, content: 'do not overwrite\n' }],
+  });
+  expect(duplicate?.isError).toBe(true);
+  expect(duplicate?.structuredContent).toMatchObject({
+    status: 'failed',
+    sessionless: true,
+    failures: [{ code: 'CREATE_TARGET_EXISTS' }],
+  });
+  expect(readFileSync(join(fx.repoRoot, path), 'utf8')).toBe(content);
+
+  const staleDelete = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [{ type: 'delete', path, expected_sha256: hash('stale') }],
+  });
+  expect(staleDelete?.isError).toBe(true);
+  expect(staleDelete?.structuredContent).toMatchObject({
+    status: 'failed',
+    sessionless: true,
+    failures: [{ code: 'STALE_FILE_SHA', currentSha256: hash(content) }],
+  });
+  expect(readFileSync(join(fx.repoRoot, path), 'utf8')).toBe(content);
+
+  const deleted = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [{ type: 'delete', path, expected_sha256: hash(content) }],
+  });
+  expect(deleted?.isError).not.toBe(true);
+  expect(deleted?.structuredContent).toMatchObject({
+    status: 'applied',
+    sessionless: true,
+    createdSession: false,
+    receipt: { path, beforeSha256: hash(content) },
+  });
+  expect(existsSync(join(fx.repoRoot, path))).toBe(false);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
 test('sessionless Safe Patch refuses symlink targets and multi-file batches without source mutation', async () => {
   const fx = fixture();
   symlinkSync('source.ts', join(fx.repoRoot, 'alias.ts'));

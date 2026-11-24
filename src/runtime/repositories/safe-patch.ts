@@ -13,7 +13,7 @@ import {
 } from '../editing/edit-session';
 import { normalizeEditOperation, type EditOperation } from '../editing/edit-operation-contract';
 import { getToolPolicy } from '../control-plane/tool-policy';
-import { atomicCompareAndSwapText } from '../../effects/fs-transaction';
+import { atomicCompareAndDeleteText, atomicCompareAndSwapText, atomicCreateText } from '../../effects/fs-transaction';
 import { globMatches, resolveMcpPath } from '../safe-tooling/path-policy';
 import type { RepositoryRecord } from '../../core/repository/types';
 import { ensureRepositoryRuntimeStorageBinding } from './runtime-storage';
@@ -419,74 +419,197 @@ export function isSessionlessTextEditBatch(operations: unknown): boolean {
     operations.length === 1 &&
     typeof operations[0] === 'object' &&
     operations[0] !== null &&
-    ['replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after'].includes(
+    ['create', 'replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after', 'delete'].includes(
       String((operations[0] as Record<string, unknown>).type ?? ''),
     )
   );
 }
 
-export function applySessionlessSafePatch(
-  repository: RepositoryRecord,
-  input: {
-    operations: unknown;
-    allowedPaths?: unknown;
-    refreshFingerprints?: unknown;
-  },
-): {
+type SessionlessSafePatchResult = {
   status: 'applied' | 'failed';
   sessionless: true;
   createdSession: false;
   changedFiles: string[];
   appliedChunks: Array<{ index: number; operationCount: number; paths: string[] }>;
   failures: SafePatchPreflightFailure[];
-  receipt?: { path: string; beforeSha256: string; afterSha256: string };
+  receipt?: { path: string; beforeSha256?: string; afterSha256?: string };
   plan: SafePatchPlan;
-} {
-  const operations = normalizedSafePatchOperations(input.operations);
-  if (
-    operations.length !== 1 ||
-    !['replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after'].includes(operations[0]!.type)
-  ) {
-    throw new Error('SESSIONLESS_SAFE_PATCH_SINGLE_TEXT_OPERATION_REQUIRED');
-  }
-  const original = operations[0]!;
-  const policy = getToolPolicy('controller', { repoRoot: repository.canonicalRoot });
-  const resolved = resolveMcpPath(repository.canonicalRoot, original.path, policy, 'write');
-  if (!resolved.ok || !resolved.relativePath || !resolved.absolutePath)
-    throw new Error(`SAFE_PATCH_PATH_DENIED: ${resolved.reason ?? original.path}`);
-  const allowed = Array.isArray(input.allowedPaths)
-    ? input.allowedPaths.map((value) => String(value).trim()).filter(Boolean)
-    : [];
-  if (allowed.length && !allowed.some((pattern) => globMatches(pattern, resolved.relativePath!)))
-    throw new Error(`SAFE_PATCH_PATH_OUTSIDE_SCOPE: ${resolved.relativePath}`);
+};
 
-  const plan = buildSafePatchPlan(repository, { operations, chunkSize: 1 });
-  const failureResult = (failures: SafePatchPreflightFailure[]) => ({
-    status: 'failed' as const,
-    sessionless: true as const,
-    createdSession: false as const,
+function sessionlessFailure(plan: SafePatchPlan, failures: SafePatchPreflightFailure[]): SessionlessSafePatchResult {
+  return {
+    status: 'failed',
+    sessionless: true,
+    createdSession: false,
     changedFiles: [],
     appliedChunks: [],
     failures,
     plan,
-  });
-  const operation = original;
-  if (operation.type === 'create' || operation.type === 'delete')
-    throw new Error('SESSIONLESS_SAFE_PATCH_SINGLE_TEXT_OPERATION_REQUIRED');
-  const base = { chunkIndex: 1, operationIndex: 1, type: operation.type, path: resolved.relativePath };
-  const isLocal =
-    operation.type === 'replace' || operation.type === 'insert_before' || operation.type === 'insert_after';
-  // With no explicit whole-file condition, exact unique text is the semantic
-  // precondition. The fresh hash is only the mechanical CAS witness.
-  const retryLocal = isLocal && !operation.expectedSha256;
-  const needle =
-    operation.type === 'replace'
-      ? (operation.replacements[0]?.oldText ?? '')
-      : 'anchor' in operation
-        ? operation.anchor
-        : '';
+  };
+}
+
+function sessionlessSuccess(
+  plan: SafePatchPlan,
+  path: string,
+  receipt: { beforeSha256?: string; afterSha256?: string },
+): SessionlessSafePatchResult {
+  return {
+    status: 'applied',
+    sessionless: true,
+    createdSession: false,
+    changedFiles: [path],
+    appliedChunks: [{ index: 1, operationCount: 1, paths: [path] }],
+    failures: [],
+    receipt: { path, ...receipt },
+    plan,
+  };
+}
+
+function applySessionlessCreate(
+  repository: RepositoryRecord,
+  path: string,
+  operation: Extract<EditOperation, { type: 'create' }>,
+  plan: SafePatchPlan,
+): SessionlessSafePatchResult {
+  const base = { chunkIndex: 1, operationIndex: 1, type: operation.type, path };
+  const current = currentFile(repository, path);
+  if (current.exists)
+    return sessionlessFailure(plan, [
+      {
+        ...base,
+        code: 'CREATE_TARGET_EXISTS',
+        message: `create target already exists: ${path}`,
+        currentSha256: current.sha256,
+      },
+    ]);
+  try {
+    return sessionlessSuccess(plan, path, atomicCreateText(repository.canonicalRoot, path, operation.content));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code: SafePatchPreflightFailure['code'] = message.startsWith('CREATE_TARGET_EXISTS:')
+      ? 'CREATE_TARGET_EXISTS'
+      : 'APPLY_FAILED';
+    return sessionlessFailure(plan, [{ ...base, code, message, currentSha256: currentFile(repository, path).sha256 }]);
+  }
+}
+
+function applySessionlessDelete(
+  repository: RepositoryRecord,
+  path: string,
+  operation: Extract<EditOperation, { type: 'delete' }>,
+  plan: SafePatchPlan,
+): SessionlessSafePatchResult {
+  const base = { chunkIndex: 1, operationIndex: 1, type: operation.type, path };
+  const current = currentFile(repository, path);
+  if (!current.exists || !current.sha256)
+    return sessionlessFailure(plan, [{ ...base, code: 'TARGET_MISSING', message: 'target is no longer present' }]);
+  if (operation.expectedSha256 !== current.sha256)
+    return sessionlessFailure(plan, [
+      {
+        ...base,
+        code: 'STALE_FILE_SHA',
+        message: `stale file version for ${path}`,
+        currentSha256: current.sha256,
+        expectedSha256: operation.expectedSha256,
+        context: snippetAround(current.content, ''),
+      },
+    ]);
+  try {
+    return sessionlessSuccess(
+      plan,
+      path,
+      atomicCompareAndDeleteText(repository.canonicalRoot, path, operation.expectedSha256),
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code: SafePatchPreflightFailure['code'] = message.startsWith('STALE_FILE_SHA:')
+      ? 'STALE_FILE_SHA'
+      : message.startsWith('TARGET_MISSING:')
+        ? 'TARGET_MISSING'
+        : 'APPLY_FAILED';
+    const latest = currentFile(repository, path);
+    return sessionlessFailure(plan, [
+      {
+        ...base,
+        code,
+        message,
+        currentSha256: latest.sha256,
+        expectedSha256: operation.expectedSha256,
+        context: snippetAround(latest.content, ''),
+      },
+    ]);
+  }
+}
+
+type SessionlessTextOperation = Exclude<EditOperation, { type: 'create' | 'delete' }>;
+
+function sessionlessNeedle(operation: SessionlessTextOperation): string {
+  if (operation.type === 'replace') return operation.replacements[0]?.oldText ?? '';
+  if (operation.type === 'insert_before' || operation.type === 'insert_after') return operation.anchor;
+  return '';
+}
+
+function isRetryableLocalEdit(operation: SessionlessTextOperation): boolean {
+  return operation.type !== 'write' && !operation.expectedSha256;
+}
+
+function shouldRetrySessionlessCas(retryLocal: boolean, code: string, attempt: number): boolean {
+  return retryLocal && code === 'STALE_FILE_SHA' && attempt < 2;
+}
+
+function previewSessionlessText(
+  operation: SessionlessTextOperation,
+  currentContent: string,
+  currentSha256: string,
+  retryLocal: boolean,
+  base: Pick<SafePatchPreflightFailure, 'chunkIndex' | 'operationIndex' | 'type' | 'path'>,
+  needle: string,
+): { content: string } | { failure: SafePatchPreflightFailure } {
+  try {
+    const content =
+      operation.type === 'write' ? operation.content : applyTextPreview(operation, currentContent, retryLocal);
+    if (content === currentContent)
+      return {
+        failure: {
+          ...base,
+          code: 'NO_CHANGE',
+          message: 'edit operation produced no change',
+          currentSha256,
+        },
+      };
+    return { content };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const target =
+      operation.type === 'replace'
+        ? (operation.replacements.find((replacement) => !currentContent.includes(replacement.oldText))?.oldText ??
+          needle)
+        : needle;
+    return {
+      failure: {
+        ...base,
+        code: operation.type === 'replace' ? 'REPLACEMENT_TEXT_NOT_FOUND' : 'ANCHOR_NOT_FOUND',
+        message,
+        currentSha256,
+        context: snippetAround(currentContent, target),
+      },
+    };
+  }
+}
+
+function applySessionlessTextOperation(
+  repository: RepositoryRecord,
+  path: string,
+  operation: SessionlessTextOperation,
+  plan: SafePatchPlan,
+): SessionlessSafePatchResult {
+  const failureResult = (failures: SafePatchPreflightFailure[]) => sessionlessFailure(plan, failures);
+  const base = { chunkIndex: 1, operationIndex: 1, type: operation.type, path };
+  const retryLocal = isRetryableLocalEdit(operation);
+  const needle = sessionlessNeedle(operation);
+
   for (let attempt = 0; ; attempt++) {
-    const current = currentFile(repository, operation.path);
+    const current = currentFile(repository, path);
     if (!current.exists || !current.sha256)
       return failureResult([{ ...base, code: 'TARGET_MISSING', message: 'target is no longer present' }]);
     if (operation.expectedSha256 && operation.expectedSha256 !== current.sha256)
@@ -494,58 +617,27 @@ export function applySessionlessSafePatch(
         {
           ...base,
           code: 'STALE_FILE_SHA',
-          message: `stale file version for ${resolved.relativePath}`,
+          message: `stale file version for ${path}`,
           currentSha256: current.sha256,
           expectedSha256: operation.expectedSha256,
           context: snippetAround(current.content, needle),
         },
       ]);
-    let content: string;
+
+    const preview = previewSessionlessText(operation, current.content, current.sha256, retryLocal, base, needle);
+    if ('failure' in preview) return failureResult([preview.failure]);
+
     try {
-      content =
-        operation.type === 'write' ? operation.content : applyTextPreview(operation, current.content, retryLocal);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const target =
-        operation.type === 'replace'
-          ? (operation.replacements.find((r) => !current.content.includes(r.oldText))?.oldText ?? needle)
-          : needle;
-      return failureResult([
-        {
-          ...base,
-          code: operation.type === 'replace' ? 'REPLACEMENT_TEXT_NOT_FOUND' : 'ANCHOR_NOT_FOUND',
-          message,
-          currentSha256: current.sha256,
-          context: snippetAround(current.content, target),
-        },
-      ]);
-    }
-    if (content === current.content)
-      return failureResult([
-        { ...base, code: 'NO_CHANGE', message: 'edit operation produced no change', currentSha256: current.sha256 },
-      ]);
-    try {
-      const receipt = atomicCompareAndSwapText(
-        repository.canonicalRoot,
-        resolved.relativePath,
-        current.sha256,
-        content,
-      );
-      return {
-        status: 'applied',
-        sessionless: true,
-        createdSession: false,
-        changedFiles: [resolved.relativePath],
-        appliedChunks: [{ index: 1, operationCount: 1, paths: [resolved.relativePath] }],
-        failures: [],
-        receipt: { path: resolved.relativePath, ...receipt },
+      return sessionlessSuccess(
         plan,
-      };
+        path,
+        atomicCompareAndSwapText(repository.canonicalRoot, path, current.sha256, preview.content),
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const code = message.startsWith('STALE_FILE_SHA:') ? 'STALE_FILE_SHA' : 'APPLY_FAILED';
-      if (retryLocal && code === 'STALE_FILE_SHA' && attempt < 2) continue;
-      const latest = currentFile(repository, resolved.relativePath);
+      if (shouldRetrySessionlessCas(retryLocal, code, attempt)) continue;
+      const latest = currentFile(repository, path);
       return failureResult([
         {
           ...base,
@@ -558,6 +650,41 @@ export function applySessionlessSafePatch(
       ]);
     }
   }
+}
+
+export function applySessionlessSafePatch(
+  repository: RepositoryRecord,
+  input: {
+    operations: unknown;
+    allowedPaths?: unknown;
+    refreshFingerprints?: unknown;
+  },
+): SessionlessSafePatchResult {
+  const operations = normalizedSafePatchOperations(input.operations);
+  if (
+    operations.length !== 1 ||
+    !['create', 'replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after', 'delete'].includes(
+      operations[0]!.type,
+    )
+  ) {
+    throw new Error('SESSIONLESS_SAFE_PATCH_SINGLE_TEXT_OPERATION_REQUIRED');
+  }
+  const operation = operations[0]!;
+  const policy = getToolPolicy('controller', { repoRoot: repository.canonicalRoot });
+  const resolved = resolveMcpPath(repository.canonicalRoot, operation.path, policy, 'write');
+  if (!resolved.ok || !resolved.relativePath || !resolved.absolutePath)
+    throw new Error(`SAFE_PATCH_PATH_DENIED: ${resolved.reason ?? operation.path}`);
+  const path = resolved.relativePath;
+  const allowed = Array.isArray(input.allowedPaths)
+    ? input.allowedPaths.map((value) => String(value).trim()).filter(Boolean)
+    : [];
+  if (allowed.length && !allowed.some((pattern) => globMatches(pattern, path)))
+    throw new Error(`SAFE_PATCH_PATH_OUTSIDE_SCOPE: ${path}`);
+
+  const plan = buildSafePatchPlan(repository, { operations, chunkSize: 1 });
+  if (operation.type === 'create') return applySessionlessCreate(repository, path, operation, plan);
+  if (operation.type === 'delete') return applySessionlessDelete(repository, path, operation, plan);
+  return applySessionlessTextOperation(repository, path, operation, plan);
 }
 
 export function applySafePatch(
