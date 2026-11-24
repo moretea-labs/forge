@@ -109,7 +109,7 @@ import { resolveControllerHome, resolveRepoPreferredControllerHome } from '../..
 import { ensureRepositoryRuntimeStorage } from '../../runtime/repositories/runtime-storage';
 import { readForgeRuntimeStatus } from '../../runtime/control-plane/runtime-status-client';
 import { readRuntimeGeneration } from '../../runtime/control-plane/runtime-generation';
-import { findExecutionJob, listExecutionJobs } from '../../runtime/execution/jobs/store';
+import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../runtime/execution/jobs/store';
 import {
   rebuildRepositoryProjection,
   readRepositoryProjectionSnapshot,
@@ -318,7 +318,8 @@ function runtimeControllerSnapshot(repoRoot: string) {
     checkoutId: repository.activeCheckoutId,
     daemon: readForgeRuntimeStatus(controllerHome),
     projection: readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection,
-    executionJobs: listExecutionJobs(controllerHome, repository.repoId, 30),
+    activeExecutionJobs: listActiveExecutionJobs(controllerHome, repository.repoId),
+    recentExecutionJobs: listExecutionJobs(controllerHome, repository.repoId, 12),
   };
 }
 
@@ -357,7 +358,11 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
       };
   const taskLedger = buildControllerTaskLedgerProjection(repoRoot, legacyBoard, requirementBoard);
   const runtime = runtimeControllerSnapshot(repoRoot);
-  const executionJobs = 'executionJobs' in runtime ? (runtime.executionJobs ?? []) : [];
+  const activeExecutionJobs = 'activeExecutionJobs' in runtime ? (runtime.activeExecutionJobs ?? []) : [];
+  const recentExecutionJobs = 'recentExecutionJobs' in runtime ? (runtime.recentExecutionJobs ?? []) : [];
+  const executionJobs = [
+    ...new Map([...activeExecutionJobs, ...recentExecutionJobs].map((job) => [job.jobId, job] as const)).values(),
+  ];
   const controllerHome = resolveControllerHome();
   const normalizedAssistantRoot = repoRoot.replace(/\\/g, '/');
   const assistantRepository = loadRepositoryRegistry(controllerHome).repositories.find(
@@ -453,7 +458,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
           status: session.status,
           updatedAt: session.updatedAt,
         })),
-      ...executionJobs
+      ...activeExecutionJobs
         .filter((job) =>
           [
             'queued',
@@ -484,7 +489,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
           status: job.status,
           updatedAt: job.updatedAt,
         })),
-      ...executionJobs
+      ...activeExecutionJobs
         .filter((job) => job.status === 'human_attention_required')
         .map((job) => ({
           kind: 'work',
@@ -513,7 +518,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
           status: session.status,
           updatedAt: session.updatedAt,
         })),
-      ...executionJobs
+      ...recentExecutionJobs
         .filter((job) => ['succeeded', 'cancelled', 'timed_out'].includes(job.status))
         .map((job) => ({
           kind: 'work',

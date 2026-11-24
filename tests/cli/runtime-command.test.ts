@@ -289,6 +289,9 @@ describe('runtime command surface', () => {
     expect(snapshotBlock.match(/buildRequirementBoard\(/g)?.length).toBe(1);
     expect(snapshotBlock).toContain('buildControllerTaskLedgerProjection(repoRoot, legacyBoard, requirementBoard)');
     expect(snapshotBlock).toContain('inspectProjectGovernance(repoRoot, requirementBoard)');
+    expect(snapshotSource).toContain('listActiveExecutionJobs(controllerHome, repository.repoId)');
+    expect(snapshotSource).toContain('listExecutionJobs(controllerHome, repository.repoId, 12)');
+    expect(snapshotSource).not.toContain('listExecutionJobs(controllerHome, repository.repoId, 30)');
     expect(httpObservation).not.toContain('buildControllerTaskLedgerProjection');
     expect(runtimeReadinessObservation).not.toContain('buildControllerTaskLedgerProjection');
     expect(runtimeReadinessObservation).not.toContain('reconcileReadinessProjectionSource');
