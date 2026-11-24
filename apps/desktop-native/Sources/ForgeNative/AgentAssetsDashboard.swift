@@ -11,12 +11,24 @@ struct AgentAssetsDashboard: View {
   @Binding var showRemoteImages: Bool
   @Binding var searchQuery: String
   @Binding var selectedResourceID: String?
+  var threadScoped: Bool = false
+  var isActive: Bool = true
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var focusedResourceId: String?
 
   static func accessibilityIdentifier(for resourceID: String, control: String? = nil) -> String {
     let prefix = "agent.assets.resource.\(resourceID)"
     return control.map { "\(prefix).\($0)" } ?? prefix
+  }
+
+  static func scopedThreads(
+    from threads: [ChatThread],
+    selectedThreadId: String?,
+    threadScoped: Bool
+  ) -> [ChatThread] {
+    guard threadScoped else { return threads }
+    guard let selectedThreadId else { return [] }
+    return threads.filter { $0.id == selectedThreadId }
   }
 
   struct Resource: Identifiable {
@@ -134,16 +146,39 @@ struct AgentAssetsDashboard: View {
 
   private var resources: [Resource] {
     Self.makeResources(
-      from: model.threads,
+      from: Self.scopedThreads(
+        from: model.threads,
+        selectedThreadId: model.selectedThreadId,
+        threadScoped: threadScoped
+      ),
       projects: model.projects,
-      selectedRepoId: selectedRepoId,
-      showLocalResources: showLocalResources,
-      showRemoteImages: showRemoteImages,
+      selectedRepoId: threadScoped ? "" : selectedRepoId,
+      showLocalResources: threadScoped || showLocalResources,
+      showRemoteImages: threadScoped || showRemoteImages,
       searchQuery: searchQuery
     )
   }
 
   var body: some View {
+    Group {
+      if isActive {
+        activeContent
+      } else {
+        Color.clear
+      }
+    }
+    .accessibilityIdentifier(
+      threadScoped ? "agent.conversation.attachments" : "agent.assets.dashboard"
+    )
+    .onChange(of: model.selectedThreadId) { _ in
+      guard threadScoped else { return }
+      focusedResourceId = nil
+      selectedResourceID = nil
+      searchQuery = ""
+    }
+  }
+
+  private var activeContent: some View {
     GeometryReader { geometry in
       let items = resources
       let compact = geometry.size.width < 740
@@ -154,7 +189,10 @@ struct AgentAssetsDashboard: View {
         resourceToolbar(count: items.count, compact: geometry.size.width < 640)
 
         if items.isEmpty {
-          let filtered = hasQuery || !selectedRepoId.isEmpty || !showLocalResources || !showRemoteImages
+          let filtered =
+            hasQuery
+            || (!threadScoped
+              && (!selectedRepoId.isEmpty || !showLocalResources || !showRemoteImages))
           VStack(spacing: 10) {
             Image(systemName: "paperclip")
               .font(.system(size: 22, weight: .light))
@@ -164,11 +202,13 @@ struct AgentAssetsDashboard: View {
               .font(.system(size: 12.5, weight: .medium))
               .foregroundStyle(ForgePalette.secondary)
             if filtered {
-              Button("清除筛选") {
+              Button(threadScoped ? "清除搜索" : "清除筛选") {
                 searchQuery = ""
-                selectedRepoId = ""
-                showLocalResources = true
-                showRemoteImages = true
+                if !threadScoped {
+                  selectedRepoId = ""
+                  showLocalResources = true
+                  showRemoteImages = true
+                }
                 focusedResourceId = nil
               }
               .buttonStyle(.plain)
@@ -206,7 +246,6 @@ struct AgentAssetsDashboard: View {
           focusedResourceId = nil
         }
       }
-      .accessibilityIdentifier("agent.assets.dashboard")
     }
   }
 
@@ -214,7 +253,12 @@ struct AgentAssetsDashboard: View {
   /// search gets its own line instead of forcing 600pt of controls into 400pt.
   private func resourceToolbar(count: Int, compact: Bool) -> some View {
     Group {
-      if compact {
+      if threadScoped {
+        HStack(spacing: 8) {
+          resourceCount(count)
+          resourceSearch
+        }
+      } else if compact {
         VStack(alignment: .leading, spacing: 8) {
           HStack(spacing: 10) {
             resourceCount(count)
@@ -236,7 +280,9 @@ struct AgentAssetsDashboard: View {
     }
     .padding(.horizontal, compact ? 12 : 14)
     .padding(.vertical, 6)
-    .accessibilityIdentifier("agent.assets.toolbar")
+    .accessibilityIdentifier(
+      threadScoped ? "agent.conversation.attachments.toolbar" : "agent.assets.toolbar"
+    )
   }
 
   private func resourceCount(_ count: Int) -> some View {
@@ -251,11 +297,16 @@ struct AgentAssetsDashboard: View {
       Image(systemName: "magnifyingglass")
         .font(.system(size: 11))
         .foregroundStyle(.secondary)
-      TextField("搜索文件、图片或会话", text: $searchQuery)
-        .textFieldStyle(.plain)
-        .font(.system(size: 11.5))
-        .accessibilityLabel("搜索资源")
-        .accessibilityIdentifier("agent.assets.search")
+      TextField(
+        threadScoped ? "搜索本会话文件和图片" : "搜索文件、图片或会话",
+        text: $searchQuery
+      )
+      .textFieldStyle(.plain)
+      .font(.system(size: 11.5))
+      .accessibilityLabel(threadScoped ? "搜索本会话附件" : "搜索资源")
+      .accessibilityIdentifier(
+        threadScoped ? "agent.conversation.attachments.search" : "agent.assets.search"
+      )
       if !searchQuery.isEmpty {
         Button {
           searchQuery = ""
@@ -264,8 +315,8 @@ struct AgentAssetsDashboard: View {
             .foregroundStyle(.tertiary)
         }
         .buttonStyle(.plain)
-        .help("清除搜索")
-        .accessibilityLabel("清除资源搜索")
+        .help(threadScoped ? "清除附件搜索" : "清除搜索")
+        .accessibilityLabel(threadScoped ? "清除附件搜索" : "清除资源搜索")
       }
     }
     .forgeInspectorSearchSurface()

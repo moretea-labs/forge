@@ -1,10 +1,16 @@
 import { randomUUID } from 'crypto';
+import { performance } from 'perf_hooks';
 import { existsSync, watch } from 'fs';
 import { dirname } from 'path';
 import express, { type Request, type Response, type NextFunction } from 'express';
-import { NodeStreamableHTTPServerTransport, toNodeHandler, toWebRequest, type NodeMcpRequestHandler } from "@modelcontextprotocol/node";
-import { createMcpHandler, isLegacyRequest, type McpRequestContext } from "@modelcontextprotocol/server";
-import { InvalidTokenError } from "@modelcontextprotocol/server-legacy/auth";
+import {
+  NodeStreamableHTTPServerTransport,
+  toNodeHandler,
+  toWebRequest,
+  type NodeMcpRequestHandler,
+} from '@modelcontextprotocol/node';
+import { createMcpHandler, isLegacyRequest, type McpRequestContext } from '@modelcontextprotocol/server';
+import { InvalidTokenError } from '@modelcontextprotocol/server-legacy/auth';
 import {
   buildMultiRepositoryToolDefinitions,
   createCanonicalRuntimeProxy,
@@ -27,7 +33,7 @@ import { createMcpOAuthProvider, McpOAuthTokenStore } from '../oauth';
 import { resolveMcpRepoRoot } from '../repo';
 import { resolveControllerHome } from '../../../src/effects/controller-home';
 import { readRuntimeGeneration } from '../../../src/runtime/control-plane/runtime-generation';
-import { recordMcpTransportEvent } from '../../../src/runtime/diagnostics/mcp-timing';
+import { recordMcpHttpTransportSpan, recordMcpTransportEvent } from '../../../src/runtime/diagnostics/mcp-timing';
 import { readRuntimeStatusSnapshot, runtimeStatusPath } from '../../../src/runtime/root/status';
 import { mcpSessionLookupError } from '../../../src/runtime/shared/mcp-session-errors';
 export { mcpSessionLookupError };
@@ -37,9 +43,18 @@ import {
   FORGE_TOOL_SURFACE,
   FORGE_VERSION,
 } from '../../../src/runtime/shared/runtime-config';
-import { McpSessionRegistry, type ClosableMcpTransport, type McpSessionRegistryOptions, type McpSessionRoute } from './session-registry';
+import {
+  McpSessionRegistry,
+  type ClosableMcpTransport,
+  type McpSessionRegistryOptions,
+  type McpSessionRoute,
+} from './session-registry';
 import { getConfiguredPublicOrigin, getPublicOrigin, registerMcpOAuthHttpRoutes } from './oauth-http';
-import { registerMcpHttpObservationRoutes, type McpAuthFailureEvent, type McpAuthFailureSnapshot } from './http-observation';
+import {
+  registerMcpHttpObservationRoutes,
+  type McpAuthFailureEvent,
+  type McpAuthFailureSnapshot,
+} from './http-observation';
 import { drainMcpPosts, reconcileActiveMcpPosts } from './http-post-lifecycle';
 import { RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN } from '../../../src/runtime/root/mcp-transport';
 import { packageConnectorCutoverDrainIsActive } from '../../../src/runtime/root/package-connector-service';
@@ -93,15 +108,21 @@ function isInitializeRequest(body: unknown): boolean {
 }
 
 function initializeClientIdentity(req: Request, body: unknown, route: McpSessionRoute, principalId: string): string {
-  const params = typeof body === 'object' && body !== null
-    ? (body as { params?: { clientInfo?: { name?: unknown; version?: unknown } } }).params
-    : undefined;
+  const params =
+    typeof body === 'object' && body !== null
+      ? (body as { params?: { clientInfo?: { name?: unknown; version?: unknown } } }).params
+      : undefined;
   const clientInfo = params?.clientInfo;
-  const clientName = typeof clientInfo?.name === 'string' && clientInfo.name.trim() ? clientInfo.name.trim() : 'unknown-client';
-  const clientVersion = typeof clientInfo?.version === 'string' && clientInfo.version.trim() ? clientInfo.version.trim() : 'unknown-version';
-  const userAgent = typeof req.headers['user-agent'] === 'string' && req.headers['user-agent'].trim()
-    ? req.headers['user-agent'].trim().slice(0, 160)
-    : 'unknown-agent';
+  const clientName =
+    typeof clientInfo?.name === 'string' && clientInfo.name.trim() ? clientInfo.name.trim() : 'unknown-client';
+  const clientVersion =
+    typeof clientInfo?.version === 'string' && clientInfo.version.trim()
+      ? clientInfo.version.trim()
+      : 'unknown-version';
+  const userAgent =
+    typeof req.headers['user-agent'] === 'string' && req.headers['user-agent'].trim()
+      ? req.headers['user-agent'].trim().slice(0, 160)
+      : 'unknown-agent';
   return `${principalId}|${route}|${clientName}/${clientVersion}|${userAgent}`;
 }
 
@@ -137,10 +158,13 @@ export async function resolveMcpSessionCurrentFingerprint(
 
 export function isMcpToolsListRequest(body: unknown): boolean {
   const messages = Array.isArray(body) ? body : [body];
-  return messages.length > 0 && messages.every((message) => {
-    if (!message || typeof message !== 'object') return false;
-    return (message as { method?: unknown }).method === 'tools/list';
-  });
+  return (
+    messages.length > 0 &&
+    messages.every((message) => {
+      if (!message || typeof message !== 'object') return false;
+      return (message as { method?: unknown }).method === 'tools/list';
+    })
+  );
 }
 
 function sendMcpToolSurfaceReset(
@@ -168,11 +192,7 @@ function sendMcpToolSurfaceReset(
  * retirement until Express has flushed the reconnect instruction, then release
  * its session-local state. Work identity is Controller-owned, not transport-owned.
  */
-function retireAfterToolSurfaceReset(
-  res: Response,
-  registry: HttpSessionRegistry,
-  sessionId: string,
-): void {
+function retireAfterToolSurfaceReset(res: Response, registry: HttpSessionRegistry, sessionId: string): void {
   let retired = false;
   const retire = (): void => {
     if (retired) return;
@@ -191,7 +211,8 @@ export function mcpRequestError(error: unknown) {
       body: {
         error: 'runtime_cutover_outcome_unknown' as const,
         code: RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN,
-        message: 'The Canonical Runtime changed after this request was admitted. Reconcile the original request/effect identity before retrying.',
+        message:
+          'The Canonical Runtime changed after this request was admitted. Reconcile the original request/effect identity before retrying.',
         recoverable: true as const,
         retryable: false as const,
         sessionPreserved: true as const,
@@ -199,7 +220,10 @@ export function mcpRequestError(error: unknown) {
       },
     };
   }
-  const transient = /(?:\b502\b|\b503\b|\b429\b|ECONNRESET|ETIMEDOUT|EAI_AGAIN|CANONICAL_RUNTIME_TIMEOUT|server_busy|session_capacity|gateway)/i.test(rawMessage);
+  const transient =
+    /(?:\b502\b|\b503\b|\b429\b|ECONNRESET|ETIMEDOUT|EAI_AGAIN|CANONICAL_RUNTIME_TIMEOUT|server_busy|session_capacity|gateway)/i.test(
+      rawMessage,
+    );
   // An HTTP/transport exception is not proof that an admitted operation failed
   // before dispatch. Preserve its identity for reconciliation, regardless of
   // whether the observation failure itself appears transient.
@@ -207,8 +231,11 @@ export function mcpRequestError(error: unknown) {
     status: (transient ? 503 : 500) as 500 | 503,
     body: {
       error: 'request_failed' as const,
-      code: (transient ? 'MCP_TRANSIENT_FAILURE' : 'MCP_REQUEST_FAILED') as 'MCP_TRANSIENT_FAILURE' | 'MCP_REQUEST_FAILED',
-      message: 'The MCP response could not be observed. Reconcile the original request or Process identity before retrying.',
+      code: (transient ? 'MCP_TRANSIENT_FAILURE' : 'MCP_REQUEST_FAILED') as
+        | 'MCP_TRANSIENT_FAILURE'
+        | 'MCP_REQUEST_FAILED',
+      message:
+        'The MCP response could not be observed. Reconcile the original request or Process identity before retrying.',
       recoverable: true as const,
       retryable: false as const,
       executionOutcome: 'unknown' as const,
@@ -273,7 +300,11 @@ function requireMcpHttpAuth(
               : 'missing_authorization',
           route: resourcePath,
         });
-        sendBearerUnauthorized(res, bearerToken ? 'Missing or invalid Authorization header' : 'Bearer token is not configured', Boolean(bearerToken));
+        sendBearerUnauthorized(
+          res,
+          bearerToken ? 'Missing or invalid Authorization header' : 'Bearer token is not configured',
+          Boolean(bearerToken),
+        );
         return;
       }
       next();
@@ -292,10 +323,17 @@ function requireMcpHttpAuth(
         reason: token ? 'credentials_unavailable' : 'missing_authorization',
         route: resourcePath,
       });
-      sendOAuthUnauthorized(req, res, token ? 'OAuth is not configured' : 'Missing Authorization header', configuredOrigin, resourcePath);
+      sendOAuthUnauthorized(
+        req,
+        res,
+        token ? 'OAuth is not configured' : 'Missing Authorization header',
+        configuredOrigin,
+        resourcePath,
+      );
       return;
     }
-    provider.verifyAccessToken(token)
+    provider
+      .verifyAccessToken(token)
       .then((authInfo) => {
         (req as unknown as Record<string, unknown>).auth = authInfo;
         next();
@@ -339,7 +377,10 @@ const MCP_SESSION_ABSOLUTE_LIFETIME_MS = positiveIntegerEnv('FORGE_MCP_SESSION_A
 // Expiry observation stays within a bounded fraction of the shortest configured session lifetime.
 const MCP_SESSION_PRUNE_INTERVAL_MS = Math.max(
   25,
-  Math.min(60_000, Math.floor(Math.min(MCP_SESSION_IDLE_TTL_MS, MCP_STREAM_LEASE_MS, MCP_SESSION_ABSOLUTE_LIFETIME_MS) / 4)),
+  Math.min(
+    60_000,
+    Math.floor(Math.min(MCP_SESSION_IDLE_TTL_MS, MCP_STREAM_LEASE_MS, MCP_SESSION_ABSOLUTE_LIFETIME_MS) / 4),
+  ),
 );
 const MCP_ACTIVE_POST_STALL_MS = positiveIntegerEnv('FORGE_MCP_ACTIVE_POST_STALL_MS', 10 * 60_000);
 
@@ -370,10 +411,7 @@ function sendReleaseCutoverDraining(res: Response): void {
 
 function connectorCutoverDrainActive(req: Request, controllerHome?: string): boolean {
   if (!controllerHome || !req.socket.localPort) return false;
-  return packageConnectorCutoverDrainIsActive(
-    controllerHome,
-    `http://127.0.0.1:${req.socket.localPort}/mcp`,
-  );
+  return packageConnectorCutoverDrainIsActive(controllerHome, `http://127.0.0.1:${req.socket.localPort}/mcp`);
 }
 
 /**
@@ -397,7 +435,10 @@ export function admitMcpPost(
     sendMcpGatewayDraining(res);
     return false;
   }
-  if (cutoverDrain && packageConnectorCutoverDrainIsActive(cutoverDrain.controllerHome, cutoverDrain.connectorEndpoint)) {
+  if (
+    cutoverDrain &&
+    packageConnectorCutoverDrainIsActive(cutoverDrain.controllerHome, cutoverDrain.connectorEndpoint)
+  ) {
     sendReleaseCutoverDraining(res);
     return false;
   }
@@ -432,7 +473,6 @@ export function admitMcpPost(
 type McpToolContext = ReturnType<typeof createMcpToolContext>;
 type HttpSessionRegistry = McpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>;
 
-
 /**
  * Public HTTP transport registry. It owns transport admission/leases and
  * transport-local observability only; closing a transport session must never
@@ -466,14 +506,17 @@ function createMcpHttpHandler(
   sharedRuntimeProxy: CanonicalRuntimeProxy | undefined,
   legacy: 'reject' | 'stateless',
 ): { handler: ReturnType<typeof createMcpHandler>; nodeHandler: NodeMcpRequestHandler } {
-  const handler = createMcpHandler(async (requestContext) => {
-    const toolContext = createMcpToolContext({
-      ...baseOptions,
-      principalId: principalIdFromModernRequestContext(requestContext),
-    });
-    const runtimeSchema = await resolveRuntimeSchema?.(toolContext);
-    return createForgeMcpServerFromContext(toolContext, runtimeSchema, sharedRuntimeProxy);
-  }, { legacy, responseMode: 'auto' });
+  const handler = createMcpHandler(
+    async (requestContext) => {
+      const toolContext = createMcpToolContext({
+        ...baseOptions,
+        principalId: principalIdFromModernRequestContext(requestContext),
+      });
+      const runtimeSchema = await resolveRuntimeSchema?.(toolContext);
+      return createForgeMcpServerFromContext(toolContext, runtimeSchema, sharedRuntimeProxy);
+    },
+    { legacy, responseMode: 'auto' },
+  );
   return { handler, nodeHandler: toNodeHandler(handler) };
 }
 
@@ -514,12 +557,17 @@ async function handleMcpPost(
     res.status(400).json({ error: 'invalid JSON request body' });
     return;
   }
-  const connectorEndpoint = req.socket.localPort
-    ? `http://127.0.0.1:${req.socket.localPort}/mcp`
-    : undefined;
-  if (!admitMcpPost(stats, res, baseOptions.controllerHome && connectorEndpoint
-    ? { controllerHome: baseOptions.controllerHome, connectorEndpoint }
-    : undefined)) return;
+  const connectorEndpoint = req.socket.localPort ? `http://127.0.0.1:${req.socket.localPort}/mcp` : undefined;
+  if (
+    !admitMcpPost(
+      stats,
+      res,
+      baseOptions.controllerHome && connectorEndpoint
+        ? { controllerHome: baseOptions.controllerHome, connectorEndpoint }
+        : undefined,
+    )
+  )
+    return;
   const sessionId = req.headers['mcp-session-id'] as string | undefined;
   if (statelessHandler) {
     const webRequest = await toWebRequest(req, body);
@@ -587,7 +635,7 @@ async function handleMcpPost(
         sessionId: `mcp_${randomUUID().replace(/-/g, '')}`,
         principalId,
       });
-      let runtimeSchema = await resolveRuntimeSchema?.(sessionContext);
+      const runtimeSchema = await resolveRuntimeSchema?.(sessionContext);
       let server: ReturnType<typeof createForgeMcpServerFromContext> | undefined;
       transport = new NodeStreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
@@ -602,7 +650,9 @@ async function handleMcpPost(
             clientIdentity,
             toolSurfaceFingerprint: runtimeSchema?.fingerprint ?? currentToolSurfaceFingerprint(),
             toolNames: runtimeSchema?.toolNames,
-            notifyToolListChanged: async () => { await server?.sendToolListChanged(); },
+            notifyToolListChanged: async () => {
+              await server?.sendToolListChanged();
+            },
             ...(runtimeSchema && resolveRuntimeSchema
               ? {
                   refreshToolSurface: async () => {
@@ -629,9 +679,9 @@ async function handleMcpPost(
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
       if (
-        initializedSessionId
-        && 'controllerHome' in sessionContext
-        && typeof sessionContext.controllerHome === 'string'
+        initializedSessionId &&
+        'controllerHome' in sessionContext &&
+        typeof sessionContext.controllerHome === 'string'
       ) {
         recordMcpTransportEvent(sessionContext.controllerHome, {
           kind: 'session_initialized',
@@ -659,12 +709,11 @@ async function handleMcpPost(
         return;
       }
       registry.beginPost(sessionId);
+      observeMcpHttpToolCallResponse(res, body, managed.toolContext);
       try {
         const currentFingerprint = await resolveMcpSessionCurrentFingerprint(
           currentToolSurfaceFingerprint(),
-          resolveRuntimeSchema
-            ? async () => (await resolveRuntimeSchema(managed.toolContext))?.fingerprint
-            : undefined,
+          resolveRuntimeSchema ? async () => (await resolveRuntimeSchema(managed.toolContext))?.fingerprint : undefined,
         );
         if (!mcpSessionToolSurfaceFingerprintIsCurrent(managed.toolSurfaceFingerprint, currentFingerprint)) {
           // Standard MCP hot refresh: allow an explicitly requested tools/list
@@ -672,8 +721,7 @@ async function handleMcpPost(
           // that ignore list_changed and call directly still hit the reset fence.
           if (isMcpToolsListRequest(body)) {
             const refreshed = await registry.refreshToolSurface(sessionId);
-            if (refreshed
-              && (!currentFingerprint || refreshed.toolSurfaceFingerprint === currentFingerprint)) {
+            if (refreshed && (!currentFingerprint || refreshed.toolSurfaceFingerprint === currentFingerprint)) {
               await managed.transport.handleRequest(req, res, body);
               return;
             }
@@ -690,6 +738,102 @@ async function handleMcpPost(
     }
   }
   sendMcpSessionLookupError(res, sessionId);
+}
+
+interface McpHttpRequestStart {
+  startedAtMs: number;
+  startedAt: string;
+  route: string;
+}
+
+export interface McpToolCallTraceRequest {
+  rpcId: string | number;
+  tool: string;
+  forwardedSessionId?: string;
+}
+
+const mcpHttpRequestStarts = new WeakMap<Response, McpHttpRequestStart>();
+
+export function mcpToolCallTraceRequests(body: unknown): McpToolCallTraceRequest[] {
+  const requests = Array.isArray(body) ? body : [body];
+  const traces: McpToolCallTraceRequest[] = [];
+
+  for (const value of requests) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const request = value as Record<string, unknown>;
+    if (request.method !== 'tools/call') continue;
+    if (typeof request.id !== 'string' && typeof request.id !== 'number') continue;
+
+    const params = request.params;
+    if (!params || typeof params !== 'object' || Array.isArray(params)) continue;
+    const parameters = params as Record<string, unknown>;
+    if (typeof parameters.name !== 'string' || !parameters.name.trim()) continue;
+
+    const meta = parameters._meta;
+    const metaRecord =
+      meta && typeof meta === 'object' && !Array.isArray(meta) ? (meta as Record<string, unknown>) : undefined;
+    const forwarding = metaRecord?.forgeRuntimeForwarding;
+    const forwardingRecord =
+      forwarding && typeof forwarding === 'object' && !Array.isArray(forwarding)
+        ? (forwarding as Record<string, unknown>)
+        : undefined;
+    const forwardedSessionId = typeof forwardingRecord?.sessionId === 'string' ? forwardingRecord.sessionId.trim() : '';
+
+    traces.push({
+      rpcId: request.id,
+      tool: parameters.name.trim(),
+      ...(forwardedSessionId ? { forwardedSessionId } : {}),
+    });
+  }
+
+  return traces;
+}
+
+function observeMcpHttpToolCallResponse(res: Response, body: unknown, toolContext: McpToolContext): void {
+  const started = mcpHttpRequestStarts.get(res);
+  if (!started) return;
+
+  const requests = mcpToolCallTraceRequests(body);
+  if (requests.length === 0) return;
+
+  const context = toolContext as unknown as {
+    controllerHome?: unknown;
+    sessionId?: unknown;
+    runtimeSourceRoot?: unknown;
+  };
+  const controllerHome = context.controllerHome;
+  const contextSessionId = context.sessionId;
+  if (typeof controllerHome !== 'string' || typeof contextSessionId !== 'string') return;
+
+  const isCanonicalRuntime = typeof context.runtimeSourceRoot === 'string' && context.runtimeSourceRoot.length > 0;
+  const layer = isCanonicalRuntime ? 'canonical_runtime' : 'public_gateway';
+  let finalized = false;
+  const finalize = (outcome: 'finished' | 'closed'): void => {
+    if (finalized) return;
+    finalized = true;
+
+    const finishedAt = new Date().toISOString();
+    const durationMs = Math.max(0, performance.now() - started.startedAtMs);
+    for (const request of requests) {
+      const sessionId = isCanonicalRuntime ? (request.forwardedSessionId ?? contextSessionId) : contextSessionId;
+      recordMcpHttpTransportSpan(controllerHome, {
+        sessionId,
+        layer,
+        rpcId: request.rpcId,
+        tool: request.tool,
+        route: started.route,
+        startedAt: started.startedAt,
+        finishedAt,
+        durationMs,
+        statusCode: res.statusCode,
+        outcome,
+      });
+    }
+    mcpHttpRequestStarts.delete(res);
+  };
+
+  res.once('finish', () => finalize('finished'));
+  res.once('close', () => finalize(res.writableFinished ? 'finished' : 'closed'));
 }
 
 async function handleMcpGet(
@@ -723,9 +867,7 @@ async function handleMcpGet(
   try {
     const currentFingerprint = await resolveMcpSessionCurrentFingerprint(
       currentToolSurfaceFingerprint(),
-      resolveRuntimeSchema
-        ? async () => (await resolveRuntimeSchema(managed.toolContext))?.fingerprint
-        : undefined,
+      resolveRuntimeSchema ? async () => (await resolveRuntimeSchema(managed.toolContext))?.fingerprint : undefined,
     );
     if (!mcpSessionToolSurfaceFingerprintIsCurrent(managed.toolSurfaceFingerprint, currentFingerprint)) {
       sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);
@@ -740,7 +882,12 @@ async function handleMcpGet(
   }
 }
 
-async function handleMcpDelete(req: Request, res: Response, registry: HttpSessionRegistry, route: McpSessionRoute): Promise<void> {
+async function handleMcpDelete(
+  req: Request,
+  res: Response,
+  registry: HttpSessionRegistry,
+  route: McpSessionRoute,
+): Promise<void> {
   const sessionId = req.headers['mcp-session-id'] as string | undefined;
   const managed = sessionId ? registry.get(sessionId) : undefined;
   if (!managed || managed.route !== route || managed.principalId !== principalFromRequest(req)) {
@@ -763,23 +910,20 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   const serviceConfig = loadMcpServiceLocalConfig(controllerHome);
   const configuredForgeInstanceId = serviceConfig?.identity?.forgeInstanceId?.trim();
   if (configuredForgeInstanceId && configuredForgeInstanceId !== forgeInstance.instanceId) {
-    throw new Error(`MCP_FORGE_INSTANCE_ID_MISMATCH: config=${configuredForgeInstanceId} kernel=${forgeInstance.instanceId}`);
+    throw new Error(
+      `MCP_FORGE_INSTANCE_ID_MISMATCH: config=${configuredForgeInstanceId} kernel=${forgeInstance.instanceId}`,
+    );
   }
   const profile = opts.profile ?? serviceConfig?.profile ?? 'controller';
   // A controller Gateway can serve registered repositories without selecting
   // one at startup. Do not turn its launchd working directory into an
   // implicit repository, especially for package Runtime snapshots.
-  const repoRoot = profile === 'controller' && !opts.repo?.trim()
-    ? undefined
-    : resolveMcpRepoRoot(opts.repo ?? '.');
+  const repoRoot = profile === 'controller' && !opts.repo?.trim() ? undefined : resolveMcpRepoRoot(opts.repo ?? '.');
   const authMode = parseMcpHttpAuthMode(opts.auth ?? serviceConfig?.auth?.mode);
   const authToken = opts.authToken ?? readMcpServiceBearerToken(controllerHome);
-  const oauthPassphrase = authMode === 'oauth'
-    ? readMcpServiceOAuthPassphrase(controllerHome)
-    : null;
-  const tokenStore = authMode === 'oauth'
-    ? new McpOAuthTokenStore(mcpServiceOAuthTokenStorePath(controllerHome))
-    : null;
+  const oauthPassphrase = authMode === 'oauth' ? readMcpServiceOAuthPassphrase(controllerHome) : null;
+  const tokenStore =
+    authMode === 'oauth' ? new McpOAuthTokenStore(mcpServiceOAuthTokenStorePath(controllerHome)) : null;
   tokenStore?.load();
   const oauthProvider = tokenStore ? createMcpOAuthProvider(tokenStore) : null;
   const configuredPublicOrigin = getConfiguredPublicOrigin(serviceConfig);
@@ -819,43 +963,54 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     devRunnerMaxTimeoutMs: opts.devRunnerMaxTimeoutMs,
   };
   const runtimeControllerHome = 'controllerHome' in toolContext ? toolContext.controllerHome : undefined;
-  const sharedRuntimeProxy = runtimeControllerHome && 'controllerHome' in toolContext && !toolContext.runtimeSourceRoot
-    ? createCanonicalRuntimeProxy(toolContext)
-    : undefined;
-  const currentRuntimeGeneration = () => runtimeControllerHome ? readRuntimeGeneration(runtimeControllerHome) : undefined;
-  const currentRuntimeToolSurfaceFingerprint = () => runtimeControllerHome
-    ? readRuntimeStatusSnapshot(runtimeControllerHome)?.toolSurfaceFingerprint
-    : undefined;
+  const sharedRuntimeProxy =
+    runtimeControllerHome && 'controllerHome' in toolContext && !toolContext.runtimeSourceRoot
+      ? createCanonicalRuntimeProxy(toolContext)
+      : undefined;
+  const currentRuntimeGeneration = () =>
+    runtimeControllerHome ? readRuntimeGeneration(runtimeControllerHome) : undefined;
+  const currentRuntimeToolSurfaceFingerprint = () =>
+    runtimeControllerHome ? readRuntimeStatusSnapshot(runtimeControllerHome)?.toolSurfaceFingerprint : undefined;
   let observedRuntimeToolSurfaceFingerprint = currentRuntimeToolSurfaceFingerprint();
   let toolSurfaceNotificationTimer: ReturnType<typeof setTimeout> | undefined;
   const runtimeStatusDirectory = runtimeControllerHome ? dirname(runtimeStatusPath(runtimeControllerHome)) : undefined;
-  const runtimeStatusWatcher = runtimeStatusDirectory && existsSync(runtimeStatusDirectory)
-    ? watch(runtimeStatusDirectory, { persistent: false }, (_event, filename) => {
-      if (String(filename ?? '') !== 'status.json') return;
-      if (toolSurfaceNotificationTimer) clearTimeout(toolSurfaceNotificationTimer);
-      toolSurfaceNotificationTimer = setTimeout(() => {
-        const currentFingerprint = currentRuntimeToolSurfaceFingerprint();
-        if (!currentFingerprint || currentFingerprint === observedRuntimeToolSurfaceFingerprint) return;
-        observedRuntimeToolSurfaceFingerprint = currentFingerprint;
-        void sessionRegistry.notifyToolListChanged(currentFingerprint);
-      }, 25);
-      toolSurfaceNotificationTimer.unref();
-    })
-    : undefined;
+  const runtimeStatusWatcher =
+    runtimeStatusDirectory && existsSync(runtimeStatusDirectory)
+      ? watch(runtimeStatusDirectory, { persistent: false }, (_event, filename) => {
+          if (String(filename ?? '') !== 'status.json') return;
+          if (toolSurfaceNotificationTimer) clearTimeout(toolSurfaceNotificationTimer);
+          toolSurfaceNotificationTimer = setTimeout(() => {
+            const currentFingerprint = currentRuntimeToolSurfaceFingerprint();
+            if (!currentFingerprint || currentFingerprint === observedRuntimeToolSurfaceFingerprint) return;
+            observedRuntimeToolSurfaceFingerprint = currentFingerprint;
+            void sessionRegistry.notifyToolListChanged(currentFingerprint);
+          }, 25);
+          toolSurfaceNotificationTimer.unref();
+        })
+      : undefined;
   runtimeStatusWatcher?.on('error', () => undefined);
   const resolveRuntimeSchema = runtimeControllerHome
     ? async (context: McpToolContext): Promise<CanonicalRuntimeToolSchema | undefined> => {
-      if (!('controllerHome' in context)) return undefined;
-      return await readCanonicalRuntimeToolSchema(context, sharedRuntimeProxy);
-    }
+        if (!('controllerHome' in context)) return undefined;
+        return await readCanonicalRuntimeToolSchema(context, sharedRuntimeProxy);
+      }
     : undefined;
-  const toolSurface = toolContext.policy.profile === 'controller' ? FORGE_TOOL_SURFACE : `${toolContext.policy.profile}-legacy-v1`;
+  const toolSurface =
+    toolContext.policy.profile === 'controller' ? FORGE_TOOL_SURFACE : `${toolContext.policy.profile}-legacy-v1`;
   const toolSurfaceSchemaVersion = toolContext.policy.profile === 'controller' ? FORGE_MCP_SCHEMA_VERSION : 1;
   const forgeVersion = FORGE_VERSION;
   const app = express();
   app.set('trust proxy', 1);
   app.use((req, res, next) => {
-    if (runtimeStats.draining && ['/mcp', '/mcp-grok', '/mcp-bearer'].includes(req.path)) {
+    const isMcpRoute = ['/mcp', '/mcp-grok', '/mcp-bearer'].includes(req.path);
+    if (req.method === 'POST' && isMcpRoute) {
+      mcpHttpRequestStarts.set(res, {
+        startedAtMs: performance.now(),
+        startedAt: new Date().toISOString(),
+        route: req.path,
+      });
+    }
+    if (runtimeStats.draining && isMcpRoute) {
       sendMcpGatewayDraining(res);
       return;
     }
@@ -914,69 +1069,169 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
 
   // Primary MCP path: OAuth (or bearer when --auth bearer).
   app.use('/mcp', setMcpResponseHeaders);
-  app.post('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp', recordAuthFailure), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, statelessMcp.nodeHandler, true).catch((error: unknown) => {
-      if (!res.headersSent) sendMcpRequestError(res, error);
-    });
-  });
-  app.get('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp', recordAuthFailure), (req, res) => {
-    if (!req.headers['mcp-session-id']) {
-      statelessMcp.nodeHandler(req, res).catch((error: unknown) => {
+  app.post(
+    '/mcp',
+    requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp', recordAuthFailure),
+    express.raw({ type: '*/*', limit: '1mb' }),
+    (req, res) => {
+      handleMcpPost(
+        req,
+        res,
+        baseOptions,
+        sessionRegistry,
+        runtimeStats,
+        '/mcp',
+        forgeInstance,
+        currentRuntimeToolSurfaceFingerprint,
+        resolveRuntimeSchema,
+        sharedRuntimeProxy,
+        statelessMcp.nodeHandler,
+        true,
+      ).catch((error: unknown) => {
         if (!res.headersSent) sendMcpRequestError(res, error);
       });
-      return;
-    }
-    handleMcpGet(req, res, sessionRegistry, '/mcp', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, controllerHome).catch((error: unknown) => {
-      if (!res.headersSent) sendMcpRequestError(res, error);
-    });
-  });
-  app.delete('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp', recordAuthFailure), (req, res) => {
-    if (!req.headers['mcp-session-id']) {
-      statelessMcp.nodeHandler(req, res).catch((error: unknown) => {
+    },
+  );
+  app.get(
+    '/mcp',
+    requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp', recordAuthFailure),
+    (req, res) => {
+      if (!req.headers['mcp-session-id']) {
+        statelessMcp.nodeHandler(req, res).catch((error: unknown) => {
+          if (!res.headersSent) sendMcpRequestError(res, error);
+        });
+        return;
+      }
+      handleMcpGet(
+        req,
+        res,
+        sessionRegistry,
+        '/mcp',
+        currentRuntimeToolSurfaceFingerprint,
+        resolveRuntimeSchema,
+        controllerHome,
+      ).catch((error: unknown) => {
         if (!res.headersSent) sendMcpRequestError(res, error);
       });
-      return;
-    }
-    handleMcpDelete(req, res, sessionRegistry, '/mcp').catch((error: unknown) => {
-      if (!res.headersSent) sendMcpRequestError(res, error);
-    });
-  });
+    },
+  );
+  app.delete(
+    '/mcp',
+    requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp', recordAuthFailure),
+    (req, res) => {
+      if (!req.headers['mcp-session-id']) {
+        statelessMcp.nodeHandler(req, res).catch((error: unknown) => {
+          if (!res.headersSent) sendMcpRequestError(res, error);
+        });
+        return;
+      }
+      handleMcpDelete(req, res, sessionRegistry, '/mcp').catch((error: unknown) => {
+        if (!res.headersSent) sendMcpRequestError(res, error);
+      });
+    },
+  );
 
   // Legacy Grok OAuth resource. New Grok connectors should use canonical /mcp.
   app.use('/mcp-grok', setMcpResponseHeaders);
-  app.post('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok', recordAuthFailure), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-grok', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, modernMcp.nodeHandler).catch((error: unknown) => {
-      if (!res.headersSent) sendMcpRequestError(res, error);
-    });
-  });
-  app.get('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok', recordAuthFailure), (req, res) => {
-    handleMcpGet(req, res, sessionRegistry, '/mcp-grok', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, controllerHome).catch((error: unknown) => {
-      if (!res.headersSent) sendMcpRequestError(res, error);
-    });
-  });
-  app.delete('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok', recordAuthFailure), (req, res) => {
-    handleMcpDelete(req, res, sessionRegistry, '/mcp-grok').catch((error: unknown) => {
-      if (!res.headersSent) sendMcpRequestError(res, error);
-    });
-  });
+  app.post(
+    '/mcp-grok',
+    requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok', recordAuthFailure),
+    express.raw({ type: '*/*', limit: '1mb' }),
+    (req, res) => {
+      handleMcpPost(
+        req,
+        res,
+        baseOptions,
+        sessionRegistry,
+        runtimeStats,
+        '/mcp-grok',
+        forgeInstance,
+        currentRuntimeToolSurfaceFingerprint,
+        resolveRuntimeSchema,
+        sharedRuntimeProxy,
+        modernMcp.nodeHandler,
+      ).catch((error: unknown) => {
+        if (!res.headersSent) sendMcpRequestError(res, error);
+      });
+    },
+  );
+  app.get(
+    '/mcp-grok',
+    requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok', recordAuthFailure),
+    (req, res) => {
+      handleMcpGet(
+        req,
+        res,
+        sessionRegistry,
+        '/mcp-grok',
+        currentRuntimeToolSurfaceFingerprint,
+        resolveRuntimeSchema,
+        controllerHome,
+      ).catch((error: unknown) => {
+        if (!res.headersSent) sendMcpRequestError(res, error);
+      });
+    },
+  );
+  app.delete(
+    '/mcp-grok',
+    requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok', recordAuthFailure),
+    (req, res) => {
+      handleMcpDelete(req, res, sessionRegistry, '/mcp-grok').catch((error: unknown) => {
+        if (!res.headersSent) sendMcpRequestError(res, error);
+      });
+    },
+  );
 
   // Bearer-only MCP path for clients that can send Authorization headers. Never advertises OAuth resource_metadata.
   app.use('/mcp-bearer', setMcpResponseHeaders);
-  app.post('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin, '/mcp-bearer', recordAuthFailure), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-bearer', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, modernMcp.nodeHandler).catch((error: unknown) => {
-      if (!res.headersSent) sendMcpRequestError(res, error);
-    });
-  });
-  app.get('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin, '/mcp-bearer', recordAuthFailure), (req, res) => {
-    handleMcpGet(req, res, sessionRegistry, '/mcp-bearer', currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, controllerHome).catch((error: unknown) => {
-      if (!res.headersSent) sendMcpRequestError(res, error);
-    });
-  });
-  app.delete('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin, '/mcp-bearer', recordAuthFailure), (req, res) => {
-    handleMcpDelete(req, res, sessionRegistry, '/mcp-bearer').catch((error: unknown) => {
-      if (!res.headersSent) sendMcpRequestError(res, error);
-    });
-  });
+  app.post(
+    '/mcp-bearer',
+    requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin, '/mcp-bearer', recordAuthFailure),
+    express.raw({ type: '*/*', limit: '1mb' }),
+    (req, res) => {
+      handleMcpPost(
+        req,
+        res,
+        baseOptions,
+        sessionRegistry,
+        runtimeStats,
+        '/mcp-bearer',
+        forgeInstance,
+        currentRuntimeToolSurfaceFingerprint,
+        resolveRuntimeSchema,
+        sharedRuntimeProxy,
+        modernMcp.nodeHandler,
+      ).catch((error: unknown) => {
+        if (!res.headersSent) sendMcpRequestError(res, error);
+      });
+    },
+  );
+  app.get(
+    '/mcp-bearer',
+    requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin, '/mcp-bearer', recordAuthFailure),
+    (req, res) => {
+      handleMcpGet(
+        req,
+        res,
+        sessionRegistry,
+        '/mcp-bearer',
+        currentRuntimeToolSurfaceFingerprint,
+        resolveRuntimeSchema,
+        controllerHome,
+      ).catch((error: unknown) => {
+        if (!res.headersSent) sendMcpRequestError(res, error);
+      });
+    },
+  );
+  app.delete(
+    '/mcp-bearer',
+    requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin, '/mcp-bearer', recordAuthFailure),
+    (req, res) => {
+      handleMcpDelete(req, res, sessionRegistry, '/mcp-bearer').catch((error: unknown) => {
+        if (!res.headersSent) sendMcpRequestError(res, error);
+      });
+    },
+  );
 
   app.use((_req, res) => res.status(404).json({ error: 'not_found' }));
 
@@ -1006,11 +1261,16 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   await new Promise<void>((resolve) => {
     httpServer.once('listening', resolve);
   });
-  const authLabel = authMode === 'oauth'
-    ? (oauthPassphrase ? 'oauth' : 'oauth-missing')
-    : authMode === 'bearer'
-      ? (authToken ? 'bearer' : 'missing')
-      : 'none';
+  const authLabel =
+    authMode === 'oauth'
+      ? oauthPassphrase
+        ? 'oauth'
+        : 'oauth-missing'
+      : authMode === 'bearer'
+        ? authToken
+          ? 'bearer'
+          : 'missing'
+        : 'none';
   console.error(
     `forge mcp http listening on http://${host}:${port}/mcp (auth: ${authLabel}), http://${host}:${port}/mcp-grok (auth: ${authLabel}), and http://${host}:${port}/mcp-bearer (auth: bearer)`,
   );

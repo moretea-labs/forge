@@ -44,7 +44,10 @@ struct ForgeWorkspaceView: View {
         GeometryReader { geometry in
         HStack(spacing:6) {
             unifiedSidebar
-                .frame(width:ForgeClientDesign.Shell.sidebarWidth(windowWidth:geometry.size.width))
+                .frame(width:ForgeClientDesign.Shell.sidebarWidth(
+                    windowWidth:geometry.size.width,
+                    showsListColumn:activeSidebarDestination.showsListColumn
+                ))
                 .padding(.leading,6)
                 .padding(.bottom,6)
                 .background(Color.clear)
@@ -429,7 +432,9 @@ struct ForgeWorkspaceView: View {
         // Column 1: icon rail. Column 2: sessions / projects / board list.
         HStack(spacing:0) {
             iconRail
-            listColumn
+            if activeSidebarDestination.showsListColumn {
+                listColumn
+            }
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
         .forgePanelGlass(cornerRadius:18, material:.underWindowBackground)

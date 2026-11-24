@@ -184,11 +184,123 @@ export async function flushMcpDiagnostics(controllerHome?: string): Promise<void
   );
 }
 
+interface PendingMcpHttpTransportTrace {
+  traceId: string;
+  requestId?: string;
+  rpcId: string | number;
+  sessionId: string;
+  tool: string;
+  layer: NonNullable<McpTimingTrace['layer']>;
+  expiresAt: number;
+}
+
+export interface McpHttpTransportSpanInput {
+  sessionId: string;
+  rpcId: string | number;
+  tool: string;
+  route: string;
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  statusCode: number;
+  layer: NonNullable<McpTimingTrace['layer']>;
+  outcome: 'finished' | 'closed';
+}
+
+const MCP_HTTP_TRANSPORT_TRACE_TTL_MS = 60_000;
+const MCP_HTTP_TRANSPORT_TRACE_MAX_PENDING = 4_096;
+const pendingMcpHttpTransportTraces = new Map<string, PendingMcpHttpTransportTrace>();
+
+function mcpHttpTransportTraceKey(
+  controllerHome: string,
+  sessionId: string,
+  rpcId: string | number,
+  layer: NonNullable<McpTimingTrace['layer']>,
+  tool: string,
+): string {
+  return JSON.stringify([resolve(controllerHome), sessionId, typeof rpcId, String(rpcId), layer, tool]);
+}
+
+function prunePendingMcpHttpTransportTraces(now: number): void {
+  for (const [key, pending] of pendingMcpHttpTransportTraces) {
+    if (pending.expiresAt <= now) pendingMcpHttpTransportTraces.delete(key);
+  }
+  while (pendingMcpHttpTransportTraces.size >= MCP_HTTP_TRANSPORT_TRACE_MAX_PENDING) {
+    const oldestKey = pendingMcpHttpTransportTraces.keys().next().value;
+    if (oldestKey === undefined) break;
+    pendingMcpHttpTransportTraces.delete(oldestKey);
+  }
+}
+
+function rememberPendingMcpHttpTransportTrace(controllerHome: string, trace: McpTimingTrace): void {
+  const sessionId = trace.sessionId?.trim();
+  const traceId = trace.traceId?.trim();
+  const tool = trace.tool.trim();
+  const layer = trace.layer;
+  if (!sessionId || !traceId || trace.rpcId === undefined || !tool || !layer) return;
+
+  const now = Date.now();
+  prunePendingMcpHttpTransportTraces(now);
+  const key = mcpHttpTransportTraceKey(controllerHome, sessionId, trace.rpcId, layer, tool);
+  pendingMcpHttpTransportTraces.set(key, {
+    traceId,
+    ...(trace.requestId ? { requestId: trace.requestId } : {}),
+    rpcId: trace.rpcId,
+    sessionId,
+    tool,
+    layer,
+    expiresAt: now + MCP_HTTP_TRANSPORT_TRACE_TTL_MS,
+  });
+}
+
 export function recordMcpTiming(controllerHome: string, trace: McpTimingTrace): void {
+  try {
+    rememberPendingMcpHttpTransportTrace(controllerHome, trace);
+  } catch {
+    // Correlation is best-effort and must never change the tool result.
+  }
   try {
     appendDiagnostic(controllerHome, 'mcp-timings.jsonl', { schemaVersion: 1, at: new Date().toISOString(), ...trace });
   } catch {
     // Timing is diagnostic evidence; it must never change the tool result.
+  }
+}
+
+export function recordMcpHttpTransportSpan(controllerHome: string, span: McpHttpTransportSpanInput): boolean {
+  const sessionId = span.sessionId.trim();
+  const tool = span.tool.trim();
+  if (!sessionId || !tool) return false;
+
+  const now = Date.now();
+  prunePendingMcpHttpTransportTraces(now);
+  const key = mcpHttpTransportTraceKey(controllerHome, sessionId, span.rpcId, span.layer, tool);
+  const pending = pendingMcpHttpTransportTraces.get(key);
+  if (!pending) return false;
+  pendingMcpHttpTransportTraces.delete(key);
+
+  try {
+    appendDiagnostic(controllerHome, 'mcp-timings.jsonl', {
+      schemaVersion: 1,
+      at: span.finishedAt,
+      spanKind: 'http_transport',
+      tool: '__http_transport__',
+      mcpTool: pending.tool,
+      traceId: pending.traceId,
+      ...(pending.requestId ? { requestId: pending.requestId } : {}),
+      rpcId: pending.rpcId,
+      layer: pending.layer,
+      sessionId: pending.sessionId,
+      route: span.route,
+      httpStartedAt: span.startedAt,
+      httpFinishedAt: span.finishedAt,
+      httpDurationMs: Number.isFinite(span.durationMs) ? Math.max(0, Math.round(span.durationMs * 100) / 100) : 0,
+      httpStatusCode: span.statusCode,
+      httpOutcome: span.outcome,
+    });
+    return true;
+  } catch {
+    // HTTP timing is diagnostic evidence; it must never change the tool result.
+    return false;
   }
 }
 

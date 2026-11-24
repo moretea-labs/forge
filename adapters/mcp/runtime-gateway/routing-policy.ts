@@ -2,23 +2,17 @@ import { createHash } from 'crypto';
 import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
 import type { ExecutionTimeoutPolicy } from '../../../src/runtime/execution/jobs/types';
 import { classifyRepositoryCommand } from '../../../src/core/repository-command/classification';
-import { isFastEligibleTool, routeExecution, type ExecutionDecision } from '../../../src/runtime/execution/thin-harness';
+import {
+  isFastEligibleTool,
+  routeExecution,
+  type ExecutionDecision,
+} from '../../../src/runtime/execution/thin-harness';
 import { classifyRepositoryCommandRoute } from '../../../src/runtime/execution/process-runtime';
 import { isProcessIsolatedReadDiagnostic } from '../../../src/runtime/diagnostics/process-facade';
 
 /** Pure deterministic MCP Gateway placement policy. No execution or lifecycle mutation belongs here. */
 const DIRECT_REPOSITORY_TOOLS = new Set(['repository_list', 'repository_get', 'repository_workbench']);
-const DIRECT_CONTROL_WRITE_TOOLS = new Set([
-  'runtime_maintenance_apply',
-  // Protected credential preparation and physical input own their authorization boundary.
-  // Neither may be promoted into Process/ExecutionJob persistence or replay.
-  'computer_console_unlock_prepare',
-  'computer_console_unlock',
-  'computer_console_unlock_enroll',
-  'computer_console_unlock_status',
-  'computer_console_unlock_recover',
-  'computer_console_unlock_revoke',
-]);
+const DIRECT_CONTROL_WRITE_TOOLS = new Set(['runtime_maintenance_apply']);
 
 const THIN_ROUTED_TOOLS = new Set([
   'execute_command',
@@ -45,10 +39,15 @@ const GATEWAY_ISOLATED_TOOLS = new Set([
   // Review packets still require native screenshot/process observation.
   'ios_review_packet',
   // Diagnostics and maintenance perform process-table and recursive filesystem scans.
-  'workflow_watchdog_report', 'runtime_cleanup_preview', 'runtime_cleanup_apply',
-  'runtime_maintenance_status', 'runtime_maintenance_apply',
+  'workflow_watchdog_report',
+  'runtime_cleanup_preview',
+  'runtime_cleanup_apply',
+  'runtime_maintenance_status',
+  'runtime_maintenance_apply',
   // Release and recovery operations may spawn Git/process checks or restart managed children.
-  'release_gate', 'runtime_recovery', 'capability_recovery',
+  'release_gate',
+  'runtime_recovery',
+  'capability_recovery',
 ]);
 
 export function isGatewayIsolatedTool(name: string): boolean {
@@ -63,12 +62,21 @@ export function isSelfManagedDurableTool(name: string): boolean {
 }
 /** High-frequency bounded reads execute in the current MCP request. */
 const DIRECT_HOT_READ_TOOLS = new Set([
-  'get_task_run', 'get_task_run_events', 'get_task_run_log',
-  'get_job', 'list_jobs',
-  'work_status_digest', 'work_result_summary',
-  'controller_ready', 'repository_runtime_snapshot',
-  'rh_status', 'rh_context', 'rh_inbox',
-  'repository_git_status', 'repository_git_diff', 'git_diff_paths',
+  'get_task_run',
+  'get_task_run_events',
+  'get_task_run_log',
+  'get_job',
+  'list_jobs',
+  'work_status_digest',
+  'work_result_summary',
+  'controller_ready',
+  'repository_runtime_snapshot',
+  'rh_status',
+  'rh_context',
+  'rh_inbox',
+  'repository_git_status',
+  'repository_git_diff',
+  'git_diff_paths',
 ]);
 
 export function isDirectHotReadTool(name: string): boolean {
@@ -97,12 +105,6 @@ const INTERACTIVE_SYNC_WRITE_TOOLS = new Set([
   'finish_task_run',
   'cancel_task_run',
 ]);
-const AGENT_DELEGATION_TOOLS = new Set([
-  'dispatch_task',
-  'launch_issue',
-  'dispatch_ready_tasks',
-  'retry_task_run',
-]);
 const EXPLICIT_EXTERNAL_CONTROLLER_TOOLS = new Set([
   'publish_issue_to_github',
   'close_github_issue',
@@ -117,7 +119,11 @@ const GATEWAY_ROUTE_BEHAVIOR_PROBES: ReadonlyArray<{
   { id: 'hot-read', operation: 'controller_ready', args: {} },
   { id: 'isolated-read-diagnostic', operation: 'workflow_watchdog_report', args: {} },
   { id: 'readonly-command', operation: 'execute_command', args: { command: ['git', 'status', '--short'] } },
-  { id: 'managed-local-command', operation: 'execute_command', args: { command: ['bun', 'run', 'check:type'], timeout_ms: 120_000 } },
+  {
+    id: 'managed-local-command',
+    operation: 'execute_command',
+    args: { command: ['bun', 'run', 'check:type'], timeout_ms: 120_000 },
+  },
   { id: 'focused-check', operation: 'run_check', args: { check_id: 'package:check:type' } },
   { id: 'release-check', operation: 'run_check', args: { check_id: 'package:check:release' } },
   { id: 'interactive-write', operation: 'repository_safe_patch_apply', args: { operations: [] } },
@@ -157,16 +163,18 @@ export function gatewayRouteBehaviorSnapshot(): GatewayRouteBehaviorSnapshot {
       operation: probe.operation,
       path: classification.path,
       reasons: [...classification.reasons],
-      ...(classification.decision ? {
-        decision: {
-          mode: classification.decision.mode,
-          risk: classification.decision.risk,
-          estimatedClass: classification.decision.estimatedClass,
-          requiresIsolation: classification.decision.requiresIsolation,
-          requiresRecovery: classification.decision.requiresRecovery,
-          effects: { ...classification.decision.effects },
-        },
-      } : {}),
+      ...(classification.decision
+        ? {
+            decision: {
+              mode: classification.decision.mode,
+              risk: classification.decision.risk,
+              estimatedClass: classification.decision.estimatedClass,
+              requiresIsolation: classification.decision.requiresIsolation,
+              requiresRecovery: classification.decision.requiresRecovery,
+              effects: { ...classification.decision.effects },
+            },
+          }
+        : {}),
     };
   });
   return {
@@ -184,11 +192,13 @@ function durableTimeoutMs(value: unknown, fallback: number): number {
 }
 
 function wantsAsyncExecution(args: Record<string, unknown>): boolean {
-  return args.apply_mode === 'async'
-    || args.mode === 'async'
-    || args.mode === 'durable'
-    || args.async === true
-    || args.background === true;
+  return (
+    args.apply_mode === 'async' ||
+    args.mode === 'async' ||
+    args.mode === 'durable' ||
+    args.async === true ||
+    args.background === true
+  );
 }
 
 /** Release checks cross the external Controller boundary when explicitly
@@ -198,17 +208,12 @@ function isReleaseCheckId(value: unknown): boolean {
   return id === 'check:release' || id === 'package:check:release';
 }
 
-export function runsAsInteractiveSyncWrite(
-  name: string,
-  args: Record<string, unknown> = {},
-): boolean {
+export function runsAsInteractiveSyncWrite(name: string, args: Record<string, unknown> = {}): boolean {
   return INTERACTIVE_SYNC_WRITE_TOOLS.has(name) && !wantsAsyncExecution(args);
 }
 
 export function wantsWaitForResult(args: Record<string, unknown>): boolean {
-  return args.wait === true
-    || args.await_result === true
-    || args.wait_for_result === true;
+  return args.wait === true || args.await_result === true || args.wait_for_result === true;
 }
 
 export function waitTimeoutMs(args: Record<string, unknown>): number {
@@ -222,12 +227,9 @@ export function waitTimeoutMs(args: Record<string, unknown>): number {
   return 15_000;
 }
 
-export function operationExecutionTimeoutMsForMcpCall(
-  name: string,
-  args: Record<string, unknown>,
-): number {
+export function operationExecutionTimeoutMsForMcpCall(name: string, args: Record<string, unknown>): number {
   const requested = args.execution_timeout_ms ?? args.timeout_ms;
-  return durableTimeoutMs(requested, AGENT_DELEGATION_TOOLS.has(name) ? 60 * 60_000 : 15 * 60_000);
+  return durableTimeoutMs(requested, 15 * 60_000);
 }
 
 /**
@@ -235,22 +237,12 @@ export function operationExecutionTimeoutMsForMcpCall(
  * the caller's operation execution budget on the Child Run; the Parent only
  * receives enough execution time to create and durably associate that child.
  */
-export function executionTimeoutPolicyForMcpCall(
-  name: string,
-  args: Record<string, unknown>,
-): ExecutionTimeoutPolicy {
+export function executionTimeoutPolicyForMcpCall(name: string, args: Record<string, unknown>): ExecutionTimeoutPolicy {
   const operationExecutionMs = operationExecutionTimeoutMsForMcpCall(name, args);
-  const agentDelegation = AGENT_DELEGATION_TOOLS.has(name);
   return {
-    admissionTimeoutMs: durableTimeoutMs(
-      args.admission_timeout_ms,
-      agentDelegation ? 5 * 60_000 : operationExecutionMs,
-    ),
-    queueTimeoutMs: durableTimeoutMs(
-      args.queue_timeout_ms,
-      agentDelegation ? MAX_DURABLE_TIMEOUT_MS : operationExecutionMs,
-    ),
-    executionTimeoutMs: agentDelegation ? 120_000 : operationExecutionMs,
+    admissionTimeoutMs: durableTimeoutMs(args.admission_timeout_ms, operationExecutionMs),
+    queueTimeoutMs: durableTimeoutMs(args.queue_timeout_ms, operationExecutionMs),
+    executionTimeoutMs: operationExecutionMs,
     interactiveWaitMs: waitTimeoutMs(args),
   };
 }
@@ -302,16 +294,10 @@ export function classifyGatewayExecutionPath(
       reasons: opts.forceDurable ? ['force_durable'] : ['gateway_isolated_tool'],
     };
   }
-  const selfManagedProcessAsync = (
-    name === 'execute_command'
-    || name === 'run_check'
-    || name === 'verify_edit_session'
-  ) && (
-    args.apply_mode === 'async'
-    || args.mode === 'async'
-    || args.async === true
-    || args.background === true
-  ) && !(name === 'run_check' && isReleaseCheckId(args.check_id ?? args.checkId));
+  const selfManagedProcessAsync =
+    (name === 'execute_command' || name === 'run_check' || name === 'verify_edit_session') &&
+    (args.apply_mode === 'async' || args.mode === 'async' || args.async === true || args.background === true) &&
+    !(name === 'run_check' && isReleaseCheckId(args.check_id ?? args.checkId));
   // Async on Process-Runtime-owned tools means return the managed Process
   // handle immediately. It must not promote local work into the retired
   // ExecutionJob path. Explicit durable mode still crosses the external
@@ -411,13 +397,14 @@ export function classifyGatewayExecutionPath(
         command as string | string[],
         typeof args.default_branch === 'string' ? args.default_branch : undefined,
       );
-      const risk = commandClassification.risk === 'readonly'
-        ? 'readonly'
-        : commandClassification.risk === 'remote_write'
-          ? 'remote_write'
-          : commandClassification.risk === 'destructive'
-            ? 'destructive'
-            : 'workspace_write';
+      const risk =
+        commandClassification.risk === 'readonly'
+          ? 'readonly'
+          : commandClassification.risk === 'remote_write'
+            ? 'remote_write'
+            : commandClassification.risk === 'destructive'
+              ? 'destructive'
+              : 'workspace_write';
       const reasons = ['repository_command_process_runtime', route.reason];
       return {
         path: 'fast',
@@ -432,9 +419,11 @@ export function classifyGatewayExecutionPath(
           effects: {
             readsWorkspace: true,
             mutatesWorkspace: risk !== 'readonly',
-            mutatesGitRefs: risk !== 'readonly' && /(?:^|\s)git\s+(?:commit|merge|branch|switch|checkout|reset|rebase|tag)\b/i.test(
-              Array.isArray(command) ? command.join(' ') : command,
-            ),
+            mutatesGitRefs:
+              risk !== 'readonly' &&
+              /(?:^|\s)git\s+(?:commit|merge|branch|switch|checkout|reset|rebase|tag)\b/i.test(
+                Array.isArray(command) ? command.join(' ') : command,
+              ),
             remoteWrite: risk === 'remote_write',
           },
         },
@@ -452,7 +441,6 @@ export function classifyGatewayExecutionPath(
       requiresRecovery: args.requires_recovery === true,
       requiresIsolation: args.isolation === 'new_worktree' || args.requires_isolation === true,
       requiresWorktree: args.isolation === 'new_worktree',
-      agentRun: name === 'dispatch_task',
       remoteWrite: name.includes('push') || name === 'publish_issue_to_github',
       timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
       command: args.command as string | string[] | undefined,
@@ -461,9 +449,9 @@ export function classifyGatewayExecutionPath(
       patchOperationCount: Array.isArray(args.operations) ? args.operations.length : undefined,
       patchPaths: Array.isArray(args.operations)
         ? args.operations
-          .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
-          .map((entry) => String(entry.path ?? '').trim())
-          .filter(Boolean)
+            .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+            .map((entry) => String(entry.path ?? '').trim())
+            .filter(Boolean)
         : undefined,
     });
     if (decision.mode === 'fast') {
@@ -495,4 +483,3 @@ export function classifyGatewayExecutionPath(
   }
   return { path: 'reject', reasons: ['tool_not_found'] };
 }
-

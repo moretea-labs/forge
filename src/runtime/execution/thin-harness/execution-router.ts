@@ -72,9 +72,6 @@ const DURABLE_OPERATIONS = new Set<string>([
   'run_check',
   'verify_edit_session',
   'finish_edit_session',
-  'dispatch_task',
-  'launch_issue',
-  'quick_agent_session',
   'publish_issue_to_github',
   'release_gate',
   'runtime_recovery',
@@ -288,12 +285,11 @@ export function extractPatchPaths(operations: unknown): string[] {
   for (const entry of operations) {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
     const operation = entry as Record<string, unknown>;
-    const candidates = [
-      operation.path,
-      ...(operation.type === 'move' ? [operation.to_path ?? operation.toPath] : []),
-    ];
+    const candidates = [operation.path, ...(operation.type === 'move' ? [operation.to_path ?? operation.toPath] : [])];
     for (const candidate of candidates) {
-      const path = String(candidate ?? '').trim().replace(/\\/g, '/');
+      const path = String(candidate ?? '')
+        .trim()
+        .replace(/\\/g, '/');
       if (path) paths.add(path);
     }
   }
@@ -762,9 +758,7 @@ function durableSuggestion(operation: string): string {
   if (operation.includes('command')) {
     return 'execute_command / repository_command_execute on the current checkout';
   }
-  if (operation.includes('agent') || operation === 'quick_agent_session') {
-    return 'quick_agent_session / dispatch_task';
-  }
+  if (operation.includes('agent')) return 'use the explicit agent capability owned by the current provider/runtime';
   return 'retry with explicit mode=durable only when Fast Path policy rejects the operation';
 }
 
@@ -781,7 +775,6 @@ export function isFastEligibleTool(name: string, args: Record<string, unknown> =
     requiresRecovery: args.requires_recovery === true,
     requiresIsolation: args.isolation === 'new_worktree' || args.requires_isolation === true,
     requiresWorktree: args.isolation === 'new_worktree',
-    agentRun: name === 'quick_agent_session' || name === 'dispatch_task',
     remoteWrite: name.includes('push') || name === 'publish_issue_to_github',
     timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
     command: args.command as string | string[] | undefined,

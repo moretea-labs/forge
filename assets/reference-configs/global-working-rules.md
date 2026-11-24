@@ -14,7 +14,7 @@ Use this content for user-level `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` a
 - For understood small fixes: read Issue decision + exact source once → Direct Edit (or one safe patch) → focused tests → one commit → one Issue evidence note.
 - Do not preflight `rh_status` / plan_list / context lists / Writer inventory unless the next mutation depends on them or a failure requires them.
 - Do not create Work, ControllerRound, or Requirement/Plan progress theater for ordinary edits. Requirement revise, if used at all, is optional post-delivery semantic snapshot—never a second progress ledger.
-- Prefer IDE/terminal Direct Edit when the path is known. Use `repository_safe_patch_apply` when MCP-only write or explicit CAS/diff evidence is required. Legacy begin/apply/finalize EditSession is recovery/compatibility, not the default loop.
+- Prefer IDE/terminal Direct Edit when the path is known. Use `capability_execute` with `repository.direct_edit` when an MCP-only write or explicit CAS/diff evidence is required. Legacy begin/apply/finalize EditSession is recovery/compatibility, not the default loop.
 
 ## Delivery Transaction Discipline
 

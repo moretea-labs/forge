@@ -39,6 +39,10 @@ enum AgentWorkSurface: String, CaseIterable, Identifiable, Equatable {
     static func preferredTab(selected: Self, available: [Self]) -> Self {
         available.contains(selected) ? selected : .files
     }
+
+    static func isActive(_ surface: Self, selected: Self, inspectorVisible: Bool) -> Bool {
+        inspectorVisible && selected == surface
+    }
 }
 
 /// The conversation header owns one persistent Inspector toggle for both open and close.
@@ -58,6 +62,9 @@ enum AgentCapabilitiesContract {
 /// availability must still come from a real backend before a slot can become active.
 enum AgentCapabilityExtension: String, CaseIterable, Identifiable {
     case skills, mcp, agents, commands, hooks
+
+    /// Only capabilities backed by a real discovery/status surface are shown in the client.
+    static let visibleCases: [Self] = [.mcp]
 
     var id: String { rawValue }
     var accessibilityIdentifier: String { "agent.capability.\(rawValue)" }
@@ -119,6 +126,10 @@ struct AgentScrollMetrics: Equatable {
     let offset: CGFloat
     let contentHeight: CGFloat
     let viewportHeight: CGFloat
+
+    static func quantizedOffset(_ offset: CGFloat) -> CGFloat {
+        (max(0, offset) / 4).rounded(.down) * 4
+    }
 
     var distanceToBottom: CGFloat { max(0, contentHeight - offset - viewportHeight) }
     var isNearBottom: Bool { viewportHeight > 0 && distanceToBottom <= 72 }
@@ -188,9 +199,6 @@ struct AgentPane: View {
     @StateObject private var voiceDictation = AgentVoiceDictation()
     @State private var voiceBaseDraft = ""
     @State private var restoreComposerFocusAfterWorkSurface = false
-    @State private var fileSelectedRepoId = ""
-    @State private var fileShowLocalResources = true
-    @State private var fileShowRemoteImages = true
     @State private var fileSearchQuery = ""
     @State private var fileSelectedResourceID: String?
     @FocusState private var composerFocused: Bool
@@ -257,9 +265,24 @@ struct AgentPane: View {
         return ForgePalette.secondary
     }
 
-    /// Keep workspace health visible without spending toolbar width on persistent status text.
+    /// Keep the compact status slot informative without turning refresh into an ambiguous dot action.
     private var agentWorkspaceStatusChip: some View {
-        Button { Task { await model.refresh() } } label: {
+        Menu {
+            Button(model.agentWorkspaceStatusLabel) {}
+                .disabled(true)
+            if !agentScopeLabel.isEmpty {
+                Button(agentScopeLabel) {}
+                    .disabled(true)
+            }
+            Button(model.agentWorkspaceStatusDetail) {}
+                .disabled(true)
+            Divider()
+            Button {
+                Task { await model.refresh() }
+            } label: {
+                Label("刷新工作区",systemImage:"arrow.clockwise")
+            }
+        } label: {
             Circle()
                 .fill(agentWorkspaceStatusColor)
                 .frame(width:6,height:6)
@@ -267,11 +290,11 @@ struct AgentPane: View {
                 .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
                 .forgeHoverFill(cornerRadius:8)
         }
-        .buttonStyle(.plain)
-        .help("\(model.agentWorkspaceStatusLabel)\n\(agentScopeLabel.isEmpty ? model.agentWorkspaceStatusDetail : agentScopeLabel)\n\(model.agentWorkspaceStatusDetail)\n点击刷新")
-        .accessibilityLabel("工作区")
+        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .help("查看工作区状态")
+        .accessibilityLabel("工作区状态")
         .accessibilityValue("\(agentScopeLabel.isEmpty ? (model.thread?.title ?? "Forge") : agentScopeLabel) · \(model.agentWorkspaceStatusLabel)")
-        .accessibilityHint("点击刷新会话状态和模型服务")
+        .accessibilityHint("打开状态详情和刷新操作")
         .accessibilityIdentifier("agent.workspace-scope")
     }
 
@@ -764,7 +787,7 @@ struct AgentPane: View {
                             Color.clear.preference(
                                 key:AgentScrollMetricsPreferenceKey.self,
                                 value:AgentScrollMetrics(
-                                    offset:max(0,-content.frame(in:.named("agent.conversation")).minY),
+                                    offset:AgentScrollMetrics.quantizedOffset(-content.frame(in:.named("agent.conversation")).minY),
                                     contentHeight:content.size.height,
                                     viewportHeight:conversationViewportHeight
                                 )
@@ -1259,48 +1282,54 @@ struct AgentPane: View {
     }
 
     private func workSurfaceContent() -> some View {
-        VStack(spacing:0) {
+        let isActive: (AgentWorkSurface) -> Bool = { surface in
+            AgentWorkSurface.isActive(
+                surface,selected:selectedWorkSurface,inspectorVisible:workSurfaceVisible)
+        }
+        return VStack(spacing:0) {
             inspectorHeader
             ZStack {
-            AgentChangesPane(model:model)
-                .opacity(selectedWorkSurface == .changes ? 1 : 0)
-                .allowsHitTesting(selectedWorkSurface == .changes)
-                .accessibilityHidden(selectedWorkSurface != .changes)
+                AgentChangesPane(model:model,isActive:isActive(.changes))
+                    .opacity(isActive(.changes) ? 1 : 0)
+                    .allowsHitTesting(isActive(.changes))
+                    .accessibilityHidden(!isActive(.changes))
 
-            AgentAssetsDashboard(
-                model:model,
-                selectedRepoId:$fileSelectedRepoId,
-                showLocalResources:$fileShowLocalResources,
-                showRemoteImages:$fileShowRemoteImages,
-                searchQuery:$fileSearchQuery,
-                selectedResourceID:$fileSelectedResourceID
-            )
-            .opacity(selectedWorkSurface == .files ? 1 : 0)
-            .allowsHitTesting(selectedWorkSurface == .files)
-            .accessibilityHidden(selectedWorkSurface != .files)
+                AgentAssetsDashboard(
+                    model:model,
+                    selectedRepoId:.constant(""),
+                    showLocalResources:.constant(true),
+                    showRemoteImages:.constant(true),
+                    searchQuery:$fileSearchQuery,
+                    selectedResourceID:$fileSelectedResourceID,
+                    threadScoped:true,
+                    isActive:isActive(.files)
+                )
+                .opacity(isActive(.files) ? 1 : 0)
+                .allowsHitTesting(isActive(.files))
+                .accessibilityHidden(!isActive(.files))
 
-            AgentPlanningInspector(model:model,inline:true) {
-                closeWorkSurface()
+                AgentPlanningInspector(model:model,inline:true,isActive:isActive(.planning)) {
+                    closeWorkSurface()
+                }
+                .opacity(isActive(.planning) ? 1 : 0)
+                .allowsHitTesting(isActive(.planning))
+                .accessibilityHidden(!isActive(.planning))
+
+                AgentKnowledgeInspector(model:model,inline:true,isActive:isActive(.knowledge)) {
+                    closeWorkSurface()
+                }
+                .opacity(isActive(.knowledge) ? 1 : 0)
+                .allowsHitTesting(isActive(.knowledge))
+                .accessibilityHidden(!isActive(.knowledge))
+
+                AgentCapabilitiesInspector(model:model,isActive:isActive(.capabilities)) {
+                    closeWorkSurface()
+                    model.show(.plugins)
+                }
+                .opacity(isActive(.capabilities) ? 1 : 0)
+                .allowsHitTesting(isActive(.capabilities))
+                .accessibilityHidden(!isActive(.capabilities))
             }
-            .opacity(selectedWorkSurface == .planning ? 1 : 0)
-            .allowsHitTesting(selectedWorkSurface == .planning)
-            .accessibilityHidden(selectedWorkSurface != .planning)
-
-            AgentKnowledgeInspector(model:model,inline:true) {
-                closeWorkSurface()
-            }
-            .opacity(selectedWorkSurface == .knowledge ? 1 : 0)
-            .allowsHitTesting(selectedWorkSurface == .knowledge)
-            .accessibilityHidden(selectedWorkSurface != .knowledge)
-
-            AgentCapabilitiesInspector(model:model) {
-                closeWorkSurface()
-                model.show(.plugins)
-            }
-            .opacity(selectedWorkSurface == .capabilities ? 1 : 0)
-            .allowsHitTesting(selectedWorkSurface == .capabilities)
-            .accessibilityHidden(selectedWorkSurface != .capabilities)
-        }
             .frame(maxWidth:.infinity,maxHeight:.infinity)
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
@@ -1814,6 +1843,7 @@ func copyAgentText(_ text: String) {
 
 struct AgentCapabilitiesInspector: View {
     @ObservedObject var model: NativeWorkspace
+    var isActive: Bool = true
     let onManagePlugins: () -> Void
 
     private var installedPlugins: [PluginManagementItem] {
@@ -1843,6 +1873,23 @@ struct AgentCapabilitiesInspector: View {
     }
 
     var body: some View {
+        Group {
+            if isActive {
+                activeContent
+            } else {
+                Color.clear
+            }
+        }
+        .task(id:isActive) {
+            guard isActive else { return }
+            if (model.pluginManagement.isEmpty && !model.pluginManagementLoading)
+                || (model.toolSurface == nil && !model.toolSurfaceLoading) {
+                await model.loadAgentCapabilities()
+            }
+        }
+    }
+
+    private var activeContent: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:12) {
                 HStack(spacing:8) {
@@ -1938,15 +1985,7 @@ struct AgentCapabilitiesInspector: View {
                     .padding(.leading,30)
                 }
 
-                HStack(spacing:8) {
-                    Text("扩展能力")
-                        .font(.system(size:10.5,weight:.semibold))
-                        .foregroundStyle(ForgePalette.secondary)
-                    Spacer(minLength:8)
-                }
-                .padding(.top,4)
-
-                ForEach(AgentCapabilityExtension.allCases) { extensionPoint in
+                ForEach(AgentCapabilityExtension.visibleCases) { extensionPoint in
                     capabilityRow(
                         icon:extensionPoint.symbol,
                         title:extensionPoint.title,
@@ -1954,26 +1993,31 @@ struct AgentCapabilitiesInspector: View {
                         identifier:extensionPoint.accessibilityIdentifier,
                         status:extensionStatus(extensionPoint),
                         active:extensionActive(extensionPoint),
-                        muted:!extensionActive(extensionPoint)
+                        muted:!extensionActive(extensionPoint),
+                        actionTitle:mcpRefreshTitle,
+                        action:{ Task { await model.loadToolSurface() } }
                     )
                 }
             }
             .padding(14)
             .frame(maxWidth:.infinity,alignment:.leading)
         }
-        .task {
-            if (model.pluginManagement.isEmpty && !model.pluginManagementLoading)
-                || (model.toolSurface == nil && !model.toolSurfaceLoading) {
-                await model.loadAgentCapabilities()
-            }
-        }
         .accessibilityIdentifier(AgentCapabilitiesContract.panelIdentifier)
+    }
+
+    private var mcpRefreshTitle: String? {
+        guard !model.toolSurfaceLoading else { return nil }
+        if model.toolSurfaceError != nil { return "重试" }
+        return model.toolSurface?.staleConnector == true ? "刷新" : nil
     }
 
     private func extensionDetail(_ extensionPoint: AgentCapabilityExtension) -> String {
         guard extensionPoint == .mcp else { return extensionPoint.summary }
         if let surface = model.toolSurface {
-            return "\(surface.toolSurface) \(surface.version) · \(surface.exposedToolCount) 个工具 · \(surface.capabilityCount) 项能力"
+            let summary = "\(surface.toolSurface) \(surface.version) · \(surface.exposedToolCount) 个工具 · \(surface.capabilityCount) 项能力"
+            if model.toolSurfaceLoading { return "\(summary) · 刷新中" }
+            if model.toolSurfaceError != nil { return "\(summary) · 最近确认" }
+            return summary
         }
         if model.toolSurfaceLoading { return "正在读取 Controller 工具面…" }
         if model.toolSurfaceError != nil { return "Controller 工具面状态暂未确认。" }
@@ -1982,13 +2026,18 @@ struct AgentCapabilitiesInspector: View {
 
     private func extensionStatus(_ extensionPoint: AgentCapabilityExtension) -> String {
         guard extensionPoint == .mcp else { return "待接入" }
+        if model.toolSurfaceLoading { return model.toolSurface == nil ? "读取中" : "刷新中" }
+        if model.toolSurfaceError != nil { return model.toolSurface == nil ? "未知" : "需确认" }
         if let surface = model.toolSurface { return surface.staleConnector ? "需刷新" : "可用" }
-        if model.toolSurfaceLoading { return "读取中" }
-        return model.toolSurfaceError == nil ? "待读取" : "未知"
+        return "待读取"
     }
 
     private func extensionActive(_ extensionPoint: AgentCapabilityExtension) -> Bool {
-        guard extensionPoint == .mcp, let surface = model.toolSurface else { return false }
+        guard extensionPoint == .mcp,
+              !model.toolSurfaceLoading,
+              model.toolSurfaceError == nil,
+              let surface = model.toolSurface
+        else { return false }
         return !surface.staleConnector
     }
 
@@ -2021,7 +2070,9 @@ struct AgentCapabilitiesInspector: View {
         identifier: String,
         status: String? = nil,
         active: Bool = false,
-        muted: Bool = false
+        muted: Bool = false,
+        actionTitle: String? = nil,
+        action: (() -> Void)? = nil
     ) -> some View {
         HStack(alignment:.top,spacing:10) {
             Image(systemName:icon)
@@ -2045,6 +2096,14 @@ struct AgentCapabilitiesInspector: View {
                     .foregroundStyle(active ? Color.green : ForgePalette.secondary)
                     .lineLimit(1)
             }
+            if let actionTitle, let action {
+                Button(actionTitle, action:action)
+                    .buttonStyle(.plain)
+                    .font(.system(size:9.5,weight:.medium))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .help(actionTitle == "重试" ? "重新读取 Controller 工具面" : "刷新 Controller 工具面状态")
+                    .accessibilityIdentifier("\(identifier).refresh")
+            }
         }
         .padding(.vertical,6)
         .accessibilityElement(children:.combine)
@@ -2054,6 +2113,7 @@ struct AgentCapabilitiesInspector: View {
 
 struct AgentChangesPane: View {
     @ObservedObject var model: NativeWorkspace
+    var isActive: Bool = true
     @State private var commitMessage = ""
     @State private var restoreSnapshot: AgentGitDiff?
     @State private var focusedPath: String?
@@ -2062,6 +2122,26 @@ struct AgentChangesPane: View {
     @State private var reviewStaged = false
 
     var body: some View {
+        Group {
+            if isActive {
+                activeContent
+            } else {
+                Color.clear
+            }
+        }
+        .onChange(of:isActive) { active in
+            guard active else { return }
+            if let focusedPath,
+               !(model.agentChanges?.nameOnly.contains(focusedPath) ?? false) {
+                self.focusedPath = nil
+                focusedChanges = nil
+                focusedLoading = false
+            }
+            if let staged = model.agentChanges?.staged { reviewStaged = staged }
+        }
+    }
+
+    private var activeContent: some View {
         VStack(alignment:.leading,spacing:0) {
             if model.changesLoading {
                 VStack(spacing:9) {
@@ -2548,6 +2628,7 @@ struct AutopilotApprovalContext: Identifiable {
 struct AgentPlanningInspector: View {
     @ObservedObject var model: NativeWorkspace
     var inline: Bool = false
+    var isActive: Bool = true
     let dismiss: () -> Void
     @State private var records: [ForgeRecord] = []
     @State private var loading = false
@@ -2557,6 +2638,20 @@ struct AgentPlanningInspector: View {
     @State private var loadedScopeKey: String?
 
     var body: some View {
+        Group {
+            if isActive {
+                activeContent
+            } else {
+                Color.clear
+            }
+        }
+        .task(id:isActive ? planningScopeKey : nil) {
+            guard isActive, loadedScopeKey != planningScopeKey else { return }
+            await reload()
+        }
+    }
+
+    private var activeContent: some View {
         VStack(alignment:.leading,spacing:0) {
             HStack(alignment:.top,spacing:10) {
                 VStack(alignment:.leading,spacing:3) {
@@ -2687,7 +2782,6 @@ struct AgentPlanningInspector: View {
             }
         }
         .frame(width:inline ? nil : 390,height:inline ? nil : 455)
-        .task(id:planningScopeKey) { await reload() }
     }
 
     private var planningScopeKey:String {
@@ -2826,6 +2920,7 @@ struct AgentPlanningInspector: View {
 struct AgentKnowledgeInspector: View {
     @ObservedObject var model: NativeWorkspace
     var inline: Bool = false
+    var isActive: Bool = true
     let dismiss: () -> Void
     @State private var query = ""
     @State private var result: KnowledgeAuditDetail?
@@ -2834,8 +2929,23 @@ struct AgentKnowledgeInspector: View {
     @State private var loadToken = UUID()
     @State private var expandedMemoryIds: Set<String> = []
     @State private var resultOrigin: (repoId: String, checkoutId: String?, threadId: String)?
+    @State private var loadedScopeKey: String?
 
     var body: some View {
+        Group {
+            if isActive {
+                activeContent
+            } else {
+                Color.clear
+            }
+        }
+        .task(id:isActive ? knowledgeScopeKey : nil) {
+            guard isActive, loadedScopeKey != knowledgeScopeKey else { return }
+            await reload()
+        }
+    }
+
+    private var activeContent: some View {
         VStack(alignment:.leading,spacing:0) {
             HStack(alignment:.top,spacing:10) {
                 VStack(alignment:.leading,spacing:3) {
@@ -2935,7 +3045,10 @@ struct AgentKnowledgeInspector: View {
             }
         }
         .frame(width:inline ? nil : 410,height:inline ? nil : 455)
-        .task(id:[model.repoId ?? "", model.checkoutId ?? "", model.selectedThreadId ?? ""]) { await reload() }
+    }
+
+    private var knowledgeScopeKey: String {
+        "\(model.repoId ?? "")|\(model.checkoutId ?? "")|\(model.selectedThreadId ?? "")|\(model.projectContextGeneration)"
     }
 
     private var memories:[KnowledgeMemoryDetail] {
@@ -3001,6 +3114,8 @@ struct AgentKnowledgeInspector: View {
         loadToken=token
         result=nil
         resultOrigin=nil
+        let scopeKey=knowledgeScopeKey
+        loadedScopeKey=nil
         expandedMemoryIds=[]
         error=nil
         guard let repoId=model.repoId,
@@ -3021,6 +3136,7 @@ struct AgentKnowledgeInspector: View {
                   !Task.isCancelled else { return }
             result=fresh
             resultOrigin=(repoId,checkoutId,threadId)
+            loadedScopeKey=scopeKey
         } catch {
             guard loadToken == token, model.repoId == repoId, model.checkoutId == checkoutId,
                   model.projectContextGeneration == contextGeneration,

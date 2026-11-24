@@ -30,7 +30,7 @@ import type {
   ProcessCheckReceiptStatus,
 } from '../execution/process-runtime/check-receipt';
 import { invalidateRepositoryReadCaches } from '../repositories/inspector';
-import type { EditOperation } from './edit-operation-contract';
+import { findOccurrence, type EditOperation } from './edit-operation-contract';
 import { claimsConflict } from '../resources/claims/conflicts';
 import { listActiveLeases } from '../resources/leases/store';
 export type { EditOperation } from './edit-operation-contract';
@@ -1783,17 +1783,6 @@ function sessionSummary(session: EditSession): EditSessionSummary {
     finalizedAt: session.finalizedAt,
     reconciledAt: session.reconciledAt,
   };
-}
-
-export function findOccurrence(value: string, anchor: string, occurrence: number): number {
-  let from = 0;
-  for (let current = 1; current <= occurrence; current += 1) {
-    const index = value.indexOf(anchor, from);
-    if (index < 0) return -1;
-    if (current === occurrence) return index;
-    from = index + anchor.length;
-  }
-  return -1;
 }
 
 function applyTextOperation(

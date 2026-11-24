@@ -588,11 +588,9 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
     });
   }
   const integrationEvidence = {
-    kind: commitSha ? ('commit' as const) : ('no_change' as const),
     targetBranch: after.branch,
     targetRevision,
     reachable: revisionReachable(repoRoot, targetRevision, after.branch),
-    recordedAt: nowIso(),
   };
   const dirtyOwnedPaths = ownedWorkspaceChanges(repoRoot, changedPaths, session.allowedPaths);
   const cleanupBlockers =

@@ -3618,6 +3618,7 @@ struct SettingsPane: View {
                 .padding(.vertical,10)
 
                 RuntimeSettingsSection(model:model)
+                RuntimeCleanupSettingsSection(model:model)
             }
             .padding(.horizontal,24).padding(.vertical,24)
             .frame(maxWidth:760,alignment:.leading)

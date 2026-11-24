@@ -17,7 +17,8 @@ final class NativeWorkspaceTests: XCTestCase {
 
   func testAgentWorkSurfaceOverlayWidthStaysBounded() {
     XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 890), 340)
-    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 958), 364.04, accuracy: 0.001)
+    XCTAssertEqual(
+      AgentWorkSurfaceLayout.overlayWidth(availableWidth: 958), 364.04, accuracy: 0.001)
     XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 1400), 420)
   }
 
@@ -216,6 +217,10 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertTrue(ForgeBridge.allowed.contains("create_plan"))
     XCTAssertTrue(ForgeBridge.allowed.contains("autopilot_control"))
     XCTAssertTrue(ForgeBridge.allowed.contains("managed_api_credential_control"))
+    XCTAssertTrue(ForgeBridge.allowed.contains("runtime_cleanup_preview"))
+    XCTAssertTrue(ForgeBridge.allowed.contains("runtime_cleanup_apply"))
+    XCTAssertTrue(ForgeBridge.allowed.contains("runtime_process_wait"))
+    XCTAssertFalse(ForgeBridge.allowed.contains("runtime_cleanup_delete_path"))
     XCTAssertFalse(ForgeBridge.allowed.contains("send_local_api_conversation"))
     XCTAssertFalse(ForgeBridge.allowed.contains("cancel_local_api_conversation"))
     XCTAssertFalse(ForgeBridge.allowed.contains("read_project_work_list"))
@@ -224,6 +229,124 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertTrue(ForgeBridge.allowed.contains("read_repository_access"))
     XCTAssertTrue(ForgeBridge.allowed.contains("set_repository_access"))
     XCTAssertFalse(ForgeBridge.allowed.contains("perform_recovery_action"))
+  }
+
+  func testRuntimeCleanupPreviewParsesCandidateSummaryWithoutExposingAbsolutePaths() throws {
+    let preview = try XCTUnwrap(
+      RuntimeCleanupPreview(value: [
+        "generatedAt": "2026-11-24T11:00:00Z",
+        "summary": [
+          "total": 2, "safe": 1, "unsafe": 1,
+          "tempDirs": 1, "localJobs": 1, "legacyRuns": 0, "attentionMarkers": 0,
+        ],
+        "candidates": [
+          [
+            "kind": "temp_dir", "path": "/private/tmp/forge-preview-1",
+            "reason": "Aged and unoccupied", "ageMinutes": 180, "safe": true,
+          ],
+          [
+            "kind": "local_job", "id": "job-1", "path": "/controller/local-jobs/job-1",
+            "reason": "Storage not relocated", "ageMinutes": 200, "safe": false,
+          ],
+        ],
+        "truncated": ["candidates": false],
+        "warnings": ["Preview is non-destructive."],
+      ]))
+    XCTAssertEqual(preview.summary.total, 2)
+    XCTAssertEqual(preview.summary.safe, 1)
+    XCTAssertEqual(preview.candidates[0].displayName, "forge-preview-1")
+    XCTAssertEqual(preview.candidates[1].displayName, "job-1")
+    XCTAssertFalse(preview.candidates[0].displayName.contains("/private"))
+  }
+
+  func testRuntimeCleanupApplyResultParsesPerCandidateFailures() throws {
+    let result = try XCTUnwrap(
+      RuntimeCleanupApplyResult(value: [
+        "mode": "apply",
+        "cycle": ["attempted": 2, "removed": 1, "failed": 1],
+        "applied": [
+          [
+            "kind": "temp_dir", "path": "/private/tmp/forge-preview-1",
+            "reason": "Safe", "safe": true, "applied": true,
+          ],
+          [
+            "kind": "legacy_run", "id": "RUN-2", "path": "/controller/jobs/RUN-2",
+            "reason": "State changed", "safe": true, "applied": false,
+            "error": "RUNTIME_CLEANUP_LEGACY_RUN_STATE_CHANGED",
+          ],
+        ],
+        "warnings": [],
+      ]))
+    XCTAssertEqual(result.attempted, 2)
+    XCTAssertEqual(result.removed, 1)
+    XCTAssertEqual(result.failed, 1)
+    XCTAssertEqual(result.items.last?.error, "RUNTIME_CLEANUP_LEGACY_RUN_STATE_CHANGED")
+  }
+
+  func testRuntimeCleanupMetricsParsesLogicalSizeAndStatfsDeltas() throws {
+    let preview = try XCTUnwrap(
+      RuntimeCleanupPreview(value: [
+        "generatedAt": "2026-11-24T12:00:00Z",
+        "summary": [
+          "total": 1, "safe": 1, "unsafe": 0,
+          "tempDirs": 1, "localJobs": 0, "legacyRuns": 0, "attentionMarkers": 0,
+          "logicalBytes": 8192, "logicalBytesTruncated": true,
+        ],
+        "filesystems": [
+          [
+            "label": "repository", "deviceId": "1", "totalBytes": 100000, "freeBytes": 70000,
+            "availableBytes": 60000,
+          ]
+        ],
+        "candidates": [
+          [
+            "kind": "local_job", "id": "JOB-1", "path": "/controller/local-jobs/JOB-1",
+            "reason": "Terminal and relocated", "safe": true,
+            "logicalBytes": 8192, "sizeTruncated": true,
+          ]
+        ],
+        "truncated": ["candidates": false],
+        "warnings": [],
+      ]))
+    XCTAssertEqual(preview.summary.logicalBytes, 8192)
+    XCTAssertTrue(preview.summary.logicalBytesTruncated)
+    XCTAssertEqual(preview.candidates.first?.logicalBytes, 8192)
+    XCTAssertTrue(preview.candidates.first?.sizeTruncated == true)
+    XCTAssertEqual(preview.filesystems.first?.availableBytes, 60000)
+
+    let result = try XCTUnwrap(
+      RuntimeCleanupApplyResult(value: [
+        "mode": "apply",
+        "cycle": ["attempted": 1, "removed": 1, "failed": 0],
+        "applied": [
+          [
+            "kind": "local_job", "id": "JOB-1", "path": "/controller/local-jobs/JOB-1",
+            "reason": "Terminal and relocated", "safe": true, "applied": true,
+          ]
+        ],
+        "filesystemBefore": [
+          [
+            "label": "repository", "deviceId": "1", "totalBytes": 100000, "freeBytes": 70000,
+            "availableBytes": 60000,
+          ]
+        ],
+        "filesystemAfter": [
+          [
+            "label": "repository", "deviceId": "1", "totalBytes": 100000, "freeBytes": 80000,
+            "availableBytes": 70000,
+          ]
+        ],
+        "availableBytesDelta": [
+          [
+            "label": "repository", "deviceId": "1", "beforeAvailableBytes": 60000,
+            "afterAvailableBytes": 70000, "deltaAvailableBytes": 10000,
+          ]
+        ],
+        "warnings": [],
+      ]))
+    XCTAssertEqual(result.filesystemBefore.first?.availableBytes, 60000)
+    XCTAssertEqual(result.filesystemAfter.first?.availableBytes, 70000)
+    XCTAssertEqual(result.availableBytesDelta.first?.deltaAvailableBytes, 10000)
   }
 
   @MainActor

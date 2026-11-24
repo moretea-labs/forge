@@ -1,5 +1,15 @@
 import { execFileSync } from 'child_process';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statfsSync,
+  writeFileSync,
+} from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
 import type { CleanupCycleSummary } from '../control-plane/runtime-cleanup';
@@ -15,6 +25,9 @@ export interface RuntimeCleanupCandidate {
   occupiedByPid?: number;
   safe: boolean;
   ownershipStatus?: 'explicit' | 'unknown';
+  logicalBytes?: number;
+  sizeScannedEntries?: number;
+  sizeTruncated?: boolean;
 }
 
 export interface RuntimeCleanupPreview {
@@ -32,7 +45,10 @@ export interface RuntimeCleanupPreview {
     localJobs: number;
     legacyRuns: number;
     attentionMarkers: number;
+    logicalBytes: number;
+    logicalBytesTruncated: boolean;
   };
+  filesystems: RuntimeCleanupFilesystemSnapshot[];
   warnings: string[];
   cycle: CleanupCycleSummary;
 }
@@ -40,6 +56,9 @@ export interface RuntimeCleanupPreview {
 export interface RuntimeCleanupApplyResult extends Omit<RuntimeCleanupPreview, 'mode'> {
   mode: 'apply';
   applied: Array<RuntimeCleanupCandidate & { applied: boolean; error?: string }>;
+  filesystemBefore: RuntimeCleanupFilesystemSnapshot[];
+  filesystemAfter: RuntimeCleanupFilesystemSnapshot[];
+  availableBytesDelta: RuntimeCleanupFilesystemDelta[];
 }
 
 export interface RuntimeCleanupOptions {
@@ -53,13 +72,17 @@ export interface RuntimeCleanupOptions {
   confirmCleanup?: boolean;
 }
 
-function now(): string { return new Date().toISOString(); }
+function now(): string {
+  return new Date().toISOString();
+}
 
 function safeNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : fallback;
 }
 
-function normalizeOptions(options: RuntimeCleanupOptions): Required<Omit<RuntimeCleanupOptions, 'confirmCleanup'>> & { confirmCleanup: boolean } {
+function normalizeOptions(
+  options: RuntimeCleanupOptions,
+): Required<Omit<RuntimeCleanupOptions, 'confirmCleanup'>> & { confirmCleanup: boolean } {
   return {
     minAgeMinutes: safeNumber(options.minAgeMinutes, 60),
     includeTempDirs: options.includeTempDirs !== false,
@@ -72,11 +95,154 @@ function normalizeOptions(options: RuntimeCleanupOptions): Required<Omit<Runtime
   };
 }
 
+const MAX_CLEANUP_SIZE_SCAN_ENTRIES = 12_000;
+const MAX_CLEANUP_SIZE_SCAN_DEPTH = 12;
+
+export interface RuntimeCleanupFilesystemSnapshot {
+  label: 'repository' | 'temporary';
+  deviceId: string;
+  totalBytes: number;
+  freeBytes: number;
+  availableBytes: number;
+}
+
+export interface RuntimeCleanupFilesystemDelta {
+  label: 'repository' | 'temporary';
+  deviceId: string;
+  beforeAvailableBytes: number;
+  afterAvailableBytes: number;
+  deltaAvailableBytes: number;
+}
+
+function measureDirectoryLogicalSize(
+  root: string,
+  budget: { remaining: number },
+): { logicalBytes: number; scannedEntries: number; truncated: boolean } {
+  let logicalBytes = 0;
+  let scannedEntries = 0;
+  let truncated = false;
+  const queue: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
+
+  try {
+    if (!lstatSync(root).isDirectory()) return { logicalBytes: 0, scannedEntries: 0, truncated: true };
+  } catch {
+    return { logicalBytes: 0, scannedEntries: 0, truncated: true };
+  }
+
+  while (queue.length > 0 && budget.remaining > 0) {
+    const current = queue.shift()!;
+    let entries;
+    try {
+      entries = readdirSync(current.path, { withFileTypes: true });
+    } catch {
+      truncated = true;
+      continue;
+    }
+    for (const entry of entries) {
+      if (budget.remaining <= 0) {
+        truncated = true;
+        break;
+      }
+      budget.remaining -= 1;
+      scannedEntries += 1;
+      if (entry.isSymbolicLink()) continue;
+      const child = join(current.path, entry.name);
+      if (entry.isDirectory()) {
+        if (current.depth >= MAX_CLEANUP_SIZE_SCAN_DEPTH) {
+          truncated = true;
+        } else {
+          queue.push({ path: child, depth: current.depth + 1 });
+        }
+      } else if (entry.isFile()) {
+        try {
+          logicalBytes += lstatSync(child).size;
+        } catch {
+          truncated = true;
+        }
+      }
+    }
+  }
+  if (queue.length > 0) truncated = true;
+  return { logicalBytes, scannedEntries, truncated };
+}
+
+function enrichCandidateLogicalSizes(candidates: RuntimeCleanupCandidate[]): void {
+  const budget = { remaining: MAX_CLEANUP_SIZE_SCAN_ENTRIES };
+  for (const candidate of candidates) {
+    if (!candidate.safe || !candidate.path || candidate.kind === 'attention_marker') continue;
+    if (budget.remaining <= 0) {
+      candidate.logicalBytes = 0;
+      candidate.sizeScannedEntries = 0;
+      candidate.sizeTruncated = true;
+      continue;
+    }
+    const measured = measureDirectoryLogicalSize(candidate.path, budget);
+    candidate.logicalBytes = measured.logicalBytes;
+    candidate.sizeScannedEntries = measured.scannedEntries;
+    candidate.sizeTruncated = measured.truncated;
+  }
+}
+
+function runtimeCleanupFilesystemSnapshots(repoRoot: string): {
+  snapshots: RuntimeCleanupFilesystemSnapshot[];
+  warnings: string[];
+} {
+  const snapshots: RuntimeCleanupFilesystemSnapshot[] = [];
+  const warnings: string[] = [];
+  const seenDevices = new Set<string>();
+  const targets: Array<{ label: 'repository' | 'temporary'; path: string }> = [
+    { label: 'repository', path: repoRoot },
+    { label: 'temporary', path: tmpdir() },
+  ];
+  for (const target of targets) {
+    try {
+      const realPath = realpathSync(target.path);
+      const deviceId = String(lstatSync(realPath).dev);
+      if (seenDevices.has(deviceId)) continue;
+      const stats = statfsSync(realPath);
+      const blockSize = Math.max(1, Number(stats.bsize));
+      snapshots.push({
+        label: target.label,
+        deviceId,
+        totalBytes: Math.max(0, Math.floor(Number(stats.blocks) * blockSize)),
+        freeBytes: Math.max(0, Math.floor(Number(stats.bfree) * blockSize)),
+        availableBytes: Math.max(0, Math.floor(Number(stats.bavail) * blockSize)),
+      });
+      seenDevices.add(deviceId);
+    } catch {
+      warnings.push('filesystem_statfs_unavailable:' + target.label);
+    }
+  }
+  return { snapshots, warnings };
+}
+
+function filesystemAvailableDelta(
+  before: RuntimeCleanupFilesystemSnapshot[],
+  after: RuntimeCleanupFilesystemSnapshot[],
+): RuntimeCleanupFilesystemDelta[] {
+  return before.flatMap((snapshot) => {
+    const current = after.find((entry) => entry.deviceId === snapshot.deviceId);
+    if (!current) return [];
+    return [
+      {
+        label: snapshot.label,
+        deviceId: snapshot.deviceId,
+        beforeAvailableBytes: snapshot.availableBytes,
+        afterAvailableBytes: current.availableBytes,
+        deltaAvailableBytes: current.availableBytes - snapshot.availableBytes,
+      },
+    ];
+  });
+}
+
 function processCommands(): Array<{ pid: number; command: string }> {
   let output: string;
   try {
     output = execFileSync('ps', ['-axo', 'pid=,command='], {
-      encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 2_000, killSignal: 'SIGKILL',
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+      timeout: 2_000,
+      killSignal: 'SIGKILL',
     });
   } catch {
     throw new Error('RUNTIME_CLEANUP_PROCESS_INVENTORY_UNAVAILABLE: bounded process scan failed');
@@ -97,18 +263,30 @@ function isSafeForgeTemp(path: string): boolean {
   const name = basename(path);
   if (!name.startsWith('forge')) return false;
   const parent = dirname(path);
-  const allowedParents = new Set([tmpdir(), '/private/tmp', '/tmp'].filter((root) => existsSync(root)).map((root) => realpathSync(root)));
-  try { return allowedParents.has(realpathSync(parent)); } catch { return false; }
+  const allowedParents = new Set(
+    [tmpdir(), '/private/tmp', '/tmp'].filter((root) => existsSync(root)).map((root) => realpathSync(root)),
+  );
+  try {
+    return allowedParents.has(realpathSync(parent));
+  } catch {
+    return false;
+  }
 }
 
 function scanTempDirs(minAgeMinutes: number, limit: number): RuntimeCleanupCandidate[] {
-  const roots = Array.from(new Set([tmpdir(), '/private/tmp', '/tmp'].filter((root) => existsSync(root)).map((root) => realpathSync(root))));
+  const roots = Array.from(
+    new Set([tmpdir(), '/private/tmp', '/tmp'].filter((root) => existsSync(root)).map((root) => realpathSync(root))),
+  );
   const processes = processCommands();
   const at = Date.now();
   const candidates: RuntimeCleanupCandidate[] = [];
   for (const root of roots) {
     let names: string[] = [];
-    try { names = readdirSync(root).filter((name) => name.startsWith('forge')); } catch { continue; }
+    try {
+      names = readdirSync(root).filter((name) => name.startsWith('forge'));
+    } catch {
+      continue;
+    }
     for (const name of names) {
       const path = join(root, name);
       if (!isSafeForgeTemp(path)) continue;
@@ -125,8 +303,8 @@ function scanTempDirs(minAgeMinutes: number, limit: number): RuntimeCleanupCandi
           reason: gitSourceProtected
             ? 'Git worktree, repository, symlink or uninspectable source is protected; use its Work/Git owner.'
             : safe
-            ? `Forge temp directory is older than ${minAgeMinutes} minutes and not referenced by a running process.`
-            : 'Temp directory is too new or still referenced by a running process.',
+              ? `Forge temp directory is older than ${minAgeMinutes} minutes and not referenced by a running process.`
+              : 'Temp directory is too new or still referenced by a running process.',
           ageMinutes,
           occupiedByPid: occupied?.pid,
           safe,
@@ -148,7 +326,11 @@ function assertCleanupDirectoryCurrent(path: string, minAgeMinutes: number): voi
 }
 
 function readJson(path: string): unknown {
-  try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return undefined; }
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return undefined;
+  }
 }
 
 function pathInside(root: string, candidate: string): boolean {
@@ -191,7 +373,9 @@ function scanTerminalLocalJobs(repoRoot: string, minAgeMinutes: number, limit: n
         id: typeof jobJson?.jobId === 'string' ? jobJson.jobId : name,
         reason: !relocated
           ? 'Repository-local Local Job storage must be relocated to Controller Home before cleanup.'
-          : safe ? 'Terminal Local Job is old enough to remove from Controller runtime storage.' : 'Local Job is not terminal or is too new.',
+          : safe
+            ? 'Terminal Local Job is old enough to remove from Controller runtime storage.'
+            : 'Local Job is not terminal or is too new.',
         ageMinutes,
         safe,
         ownershipStatus: relocated ? 'explicit' : 'unknown',
@@ -205,11 +389,13 @@ function scanTerminalLocalJobs(repoRoot: string, minAgeMinutes: number, limit: n
 
 function textIncludesNoOpIntegrate(value: unknown): boolean {
   const text = JSON.stringify(value ?? '').toLowerCase();
-  return text.includes('no changes to integrate')
-    || text.includes('nothing to integrate')
-    || text.includes('no diff')
-    || text.includes('没有可集成')
-    || text.includes('无变更');
+  return (
+    text.includes('no changes to integrate') ||
+    text.includes('nothing to integrate') ||
+    text.includes('no diff') ||
+    text.includes('没有可集成') ||
+    text.includes('无变更')
+  );
 }
 
 function findRunState(path: string): Record<string, unknown> | undefined {
@@ -218,7 +404,9 @@ function findRunState(path: string): Record<string, unknown> | undefined {
     const state = readJson(join(path, file));
     if (state && typeof state === 'object') return state as Record<string, unknown>;
   }
-  for (const file of readdirSync(path).filter((entry) => entry.endsWith('.json')).slice(0, 10)) {
+  for (const file of readdirSync(path)
+    .filter((entry) => entry.endsWith('.json'))
+    .slice(0, 10)) {
     const state = readJson(join(path, file));
     if (state && typeof state === 'object') return state as Record<string, unknown>;
   }
@@ -232,7 +420,9 @@ function scanLegacyRuns(repoRoot: string, minAgeMinutes: number, limit: number):
   const at = Date.now();
   const relocated = Boolean(relocatedRuntimeStorageRoot(repoRoot, 'jobs'));
   const candidates: RuntimeCleanupCandidate[] = [];
-  for (const name of readdirSync(root).filter((entry) => entry.startsWith('RUN-')).slice(0, limit * 3)) {
+  for (const name of readdirSync(root)
+    .filter((entry) => entry.startsWith('RUN-'))
+    .slice(0, limit * 3)) {
     const path = join(root, name);
     try {
       const stat = lstatSync(path);
@@ -241,7 +431,12 @@ function scanLegacyRuns(repoRoot: string, minAgeMinutes: number, limit: number):
       const occupied = processes.find((process) => process.command.includes(name) || process.command.includes(path));
       const status = String(state?.status ?? 'unknown');
       const ageMinutes = Math.max(0, Math.round((at - stat.mtimeMs) / 60_000));
-      const safe = relocated && !occupied && ageMinutes >= minAgeMinutes && status === 'waiting_for_user' && textIncludesNoOpIntegrate(state);
+      const safe =
+        relocated &&
+        !occupied &&
+        ageMinutes >= minAgeMinutes &&
+        status === 'waiting_for_user' &&
+        textIncludesNoOpIntegrate(state);
       candidates.push({
         kind: 'legacy_run',
         path,
@@ -278,13 +473,15 @@ function scanHistoricalAttention(repoRoot: string): RuntimeCleanupCandidate[] {
     const raw = entry as Record<string, unknown>;
     if (raw.status !== 'orphaned') return [];
     const jobId = typeof raw.jobId === 'string' ? raw.jobId : undefined;
-    return [{
-      kind: 'attention_marker',
-      id: jobId,
-      path: projectionPath,
-      reason: 'Historical orphaned attention marker can be acknowledged when no matching worker process exists.',
-      safe: true,
-    }];
+    return [
+      {
+        kind: 'attention_marker',
+        id: jobId,
+        path: projectionPath,
+        reason: 'Historical orphaned attention marker can be acknowledged when no matching worker process exists.',
+        safe: true,
+      },
+    ];
   });
 }
 
@@ -297,6 +494,11 @@ function summarize(candidates: RuntimeCleanupCandidate[]): RuntimeCleanupPreview
     localJobs: candidates.filter((candidate) => candidate.kind === 'local_job').length,
     legacyRuns: candidates.filter((candidate) => candidate.kind === 'legacy_run').length,
     attentionMarkers: candidates.filter((candidate) => candidate.kind === 'attention_marker').length,
+    logicalBytes: candidates.reduce(
+      (total, candidate) => total + (candidate.safe ? (candidate.logicalBytes ?? 0) : 0),
+      0,
+    ),
+    logicalBytesTruncated: candidates.some((candidate) => candidate.safe && candidate.sizeTruncated === true),
   };
 }
 
@@ -305,15 +507,24 @@ export function previewRuntimeCleanup(repoRoot: string, options: RuntimeCleanupO
   const scanLimit = Math.min(normalized.maxCandidates * 3, 600);
   const allCandidates = [
     ...(normalized.includeTempDirs ? scanTempDirs(normalized.minAgeMinutes, scanLimit) : []),
-    ...(normalized.includeTerminalLocalJobs ? scanTerminalLocalJobs(repoRoot, normalized.minAgeMinutes, scanLimit) : []),
+    ...(normalized.includeTerminalLocalJobs
+      ? scanTerminalLocalJobs(repoRoot, normalized.minAgeMinutes, scanLimit)
+      : []),
     ...(normalized.includeLegacyRuns ? scanLegacyRuns(repoRoot, normalized.minAgeMinutes, scanLimit) : []),
     ...(normalized.includeHistoricalAttention ? scanHistoricalAttention(repoRoot) : []),
   ];
   const candidates = allCandidates.slice(0, normalized.maxCandidates);
+  enrichCandidateLogicalSizes(candidates);
+  const filesystem = runtimeCleanupFilesystemSnapshots(repoRoot);
   const generatedAt = now();
   const skippedByReason = candidates.reduce<Record<string, number>>((counts, candidate) => {
     if (!candidate.safe) {
-      const reason = candidate.ownershipStatus === 'unknown' ? 'unknown_ownership' : candidate.occupiedByPid ? 'process_occupied' : 'retained';
+      const reason =
+        candidate.ownershipStatus === 'unknown'
+          ? 'unknown_ownership'
+          : candidate.occupiedByPid
+            ? 'process_occupied'
+            : 'retained';
       counts[reason] = (counts[reason] ?? 0) + 1;
     }
     return counts;
@@ -326,7 +537,11 @@ export function previewRuntimeCleanup(repoRoot: string, options: RuntimeCleanupO
     candidates,
     truncated: { candidates: allCandidates.length > candidates.length },
     summary: summarize(candidates),
+    filesystems: filesystem.snapshots,
     warnings: [
+      ...filesystem.warnings,
+      'Logical sizes are a bounded, non-following scan; truncated values are lower bounds.',
+      'Filesystem available-space values are point-in-time statfs samples and may change due to unrelated system activity.',
       'Preview is non-destructive. Apply requires confirmCleanup=true.',
       'Legacy runtime cleanup removes only relocated Controller Home records proven terminal/no-op and old enough; repository-local storage is never archived in the source tree.',
       'Historical attention cleanup is intentionally represented as acknowledgement guidance unless an explicit reconciler is added.',
@@ -367,13 +582,36 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
           applied: [],
           truncated: { candidates: false },
           summary: {
-            total: 0, safe: 0, unsafe: 0, tempDirs: 0, localJobs: 0, legacyRuns: 0, attentionMarkers: 0,
+            total: 0,
+            safe: 0,
+            unsafe: 0,
+            tempDirs: 0,
+            localJobs: 0,
+            legacyRuns: 0,
+            attentionMarkers: 0,
+            logicalBytes: 0,
+            logicalBytesTruncated: false,
           },
+          filesystems: [],
+          filesystemBefore: [],
+          filesystemAfter: [],
+          availableBytesDelta: [],
           warnings: [`writer_fenced:${fence.reason ?? 'denied'}`],
           cycle: {
-            scanned: 0, eligible: 0, attempted: 0, removed: 0, retained: 0, skipped: 0, failed: 0,
-            truncated: false, budgetExhausted: false, skippedByReason: { writer_fenced: 1 }, failedByType: {},
-            startedAt: generatedAt, finishedAt: generatedAt, durationMs: 0,
+            scanned: 0,
+            eligible: 0,
+            attempted: 0,
+            removed: 0,
+            retained: 0,
+            skipped: 0,
+            failed: 0,
+            truncated: false,
+            budgetExhausted: false,
+            skippedByReason: { writer_fenced: 1 },
+            failedByType: {},
+            startedAt: generatedAt,
+            finishedAt: generatedAt,
+            durationMs: 0,
           },
         } as RuntimeCleanupApplyResult;
       }
@@ -382,73 +620,91 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
     /* legacy / shape mismatch — proceed */
   }
   const normalized = normalizeOptions(options);
-  if (!normalized.confirmCleanup) throw new Error('RUNTIME_CLEANUP_CONFIRMATION_REQUIRED: confirmCleanup=true is required.');
+  if (!normalized.confirmCleanup)
+    throw new Error('RUNTIME_CLEANUP_CONFIRMATION_REQUIRED: confirmCleanup=true is required.');
   const preview = previewRuntimeCleanup(repoRoot, normalized);
   const eligible = preview.candidates.filter((candidate) => candidate.safe);
-  const applied: Array<RuntimeCleanupCandidate & { applied: boolean; error?: string }> = eligible.slice(0, normalized.maxRemovals).map((candidate) => {
-    try {
-      if (candidate.kind === 'temp_dir' && candidate.path && isSafeForgeTemp(candidate.path)) {
-        // A preview is not a mutation lease. Recheck source and liveness.
-        if (tempEntryProtectsGitSource(candidate.path)) throw new Error('RUNTIME_CLEANUP_GIT_SOURCE_PROTECTED');
-        if (processCommands().some((process) => process.command.includes(candidate.path!))) throw new Error('RUNTIME_CLEANUP_TEMP_PROCESS_OCCUPIED');
-        rmSync(candidate.path, { recursive: true, force: true });
-        return { ...candidate, applied: true };
-      }
-      if (candidate.kind === 'local_job' && candidate.path) {
-        const relativePath = relative(join(repoRoot, '.ai/harness/local-jobs'), candidate.path);
-        if (relativePath && !relativePath.startsWith('..')) {
-          if (!relocatedRuntimeStorageRoot(repoRoot, 'local-jobs')) throw new Error('RUNTIME_CLEANUP_STORAGE_NOT_RELOCATED');
-          assertCleanupDirectoryCurrent(candidate.path, normalized.minAgeMinutes);
-          const job = readJson(join(candidate.path, 'job.json')) as Record<string, unknown> | undefined;
-          if (!terminalStatus(job?.status)) throw new Error('RUNTIME_CLEANUP_LOCAL_JOB_STATE_CHANGED');
+  const applied: Array<RuntimeCleanupCandidate & { applied: boolean; error?: string }> = eligible
+    .slice(0, normalized.maxRemovals)
+    .map((candidate) => {
+      try {
+        if (candidate.kind === 'temp_dir' && candidate.path && isSafeForgeTemp(candidate.path)) {
+          // A preview is not a mutation lease. Recheck source and liveness.
+          if (tempEntryProtectsGitSource(candidate.path)) throw new Error('RUNTIME_CLEANUP_GIT_SOURCE_PROTECTED');
+          if (processCommands().some((process) => process.command.includes(candidate.path!)))
+            throw new Error('RUNTIME_CLEANUP_TEMP_PROCESS_OCCUPIED');
           rmSync(candidate.path, { recursive: true, force: true });
           return { ...candidate, applied: true };
         }
-      }
-      if (candidate.kind === 'legacy_run' && candidate.path) {
-        const relativePath = relative(join(repoRoot, '.ai/harness/jobs'), candidate.path);
-        if (relativePath && !relativePath.startsWith('..') && basename(candidate.path).startsWith('RUN-')) {
-          if (!relocatedRuntimeStorageRoot(repoRoot, 'jobs')) throw new Error('RUNTIME_CLEANUP_STORAGE_NOT_RELOCATED');
-          assertCleanupDirectoryCurrent(candidate.path, normalized.minAgeMinutes);
-          const state = findRunState(candidate.path);
-          if (state?.status !== 'waiting_for_user' || !textIncludesNoOpIntegrate(state)) {
-            throw new Error('RUNTIME_CLEANUP_LEGACY_RUN_STATE_CHANGED');
+        if (candidate.kind === 'local_job' && candidate.path) {
+          const relativePath = relative(join(repoRoot, '.ai/harness/local-jobs'), candidate.path);
+          if (relativePath && !relativePath.startsWith('..')) {
+            if (!relocatedRuntimeStorageRoot(repoRoot, 'local-jobs'))
+              throw new Error('RUNTIME_CLEANUP_STORAGE_NOT_RELOCATED');
+            assertCleanupDirectoryCurrent(candidate.path, normalized.minAgeMinutes);
+            const job = readJson(join(candidate.path, 'job.json')) as Record<string, unknown> | undefined;
+            if (!terminalStatus(job?.status)) throw new Error('RUNTIME_CLEANUP_LOCAL_JOB_STATE_CHANGED');
+            rmSync(candidate.path, { recursive: true, force: true });
+            return { ...candidate, applied: true };
           }
-          if (processCommands().some((process) => process.command.includes(basename(candidate.path!)) || process.command.includes(candidate.path!))) {
-            throw new Error('RUNTIME_CLEANUP_LEGACY_RUN_PROCESS_OCCUPIED');
+        }
+        if (candidate.kind === 'legacy_run' && candidate.path) {
+          const relativePath = relative(join(repoRoot, '.ai/harness/jobs'), candidate.path);
+          if (relativePath && !relativePath.startsWith('..') && basename(candidate.path).startsWith('RUN-')) {
+            if (!relocatedRuntimeStorageRoot(repoRoot, 'jobs'))
+              throw new Error('RUNTIME_CLEANUP_STORAGE_NOT_RELOCATED');
+            assertCleanupDirectoryCurrent(candidate.path, normalized.minAgeMinutes);
+            const state = findRunState(candidate.path);
+            if (state?.status !== 'waiting_for_user' || !textIncludesNoOpIntegrate(state)) {
+              throw new Error('RUNTIME_CLEANUP_LEGACY_RUN_STATE_CHANGED');
+            }
+            if (
+              processCommands().some(
+                (process) =>
+                  process.command.includes(basename(candidate.path!)) || process.command.includes(candidate.path!),
+              )
+            ) {
+              throw new Error('RUNTIME_CLEANUP_LEGACY_RUN_PROCESS_OCCUPIED');
+            }
+            rmSync(candidate.path, { recursive: true, force: true });
+            return { ...candidate, applied: true };
           }
-          rmSync(candidate.path, { recursive: true, force: true });
+        }
+        if (candidate.kind === 'attention_marker') {
+          const notePath = join(repoRoot, '.ai/harness/controller/acknowledged-attention.jsonl');
+          mkdirSync(dirname(notePath), { recursive: true });
+          writeFileSync(notePath, `${JSON.stringify({ acknowledgedAt: now(), candidate })}\n`, {
+            encoding: 'utf8',
+            flag: 'a',
+          });
           return { ...candidate, applied: true };
         }
+        return { ...candidate, applied: false, error: 'Unsupported or unsafe cleanup candidate.' };
+      } catch (error) {
+        return { ...candidate, applied: false, error: error instanceof Error ? error.message : String(error) };
       }
-      if (candidate.kind === 'attention_marker') {
-        const notePath = join(repoRoot, '.ai/harness/controller/acknowledged-attention.jsonl');
-        mkdirSync(dirname(notePath), { recursive: true });
-        writeFileSync(notePath, `${JSON.stringify({ acknowledgedAt: now(), candidate })}\n`, { encoding: 'utf8', flag: 'a' });
-        return { ...candidate, applied: true };
-      }
-      return { ...candidate, applied: false, error: 'Unsupported or unsafe cleanup candidate.' };
-    } catch (error) {
-      return { ...candidate, applied: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  });
+    });
   const finishedAt = now();
   const attempted = applied.length;
   const removed = applied.filter((candidate) => candidate.applied).length;
   const failed = applied.filter((candidate) => !candidate.applied && candidate.error).length;
+  const filesystemAfter = runtimeCleanupFilesystemSnapshots(repoRoot);
   const cycle: CleanupCycleSummary = {
     ...preview.cycle,
     attempted,
     removed,
     failed,
-    skipped: preview.cycle.skipped
-      + applied.filter((candidate) => !candidate.applied && !candidate.error).length
-      + Math.max(0, eligible.length - applied.length),
+    skipped:
+      preview.cycle.skipped +
+      applied.filter((candidate) => !candidate.applied && !candidate.error).length +
+      Math.max(0, eligible.length - applied.length),
     truncated: preview.cycle.truncated || eligible.length > applied.length,
     budgetExhausted: preview.cycle.budgetExhausted || eligible.length > applied.length,
     skippedByReason: {
       ...preview.cycle.skippedByReason,
-      ...(eligible.length > applied.length ? { cleanup_budget_exhausted: Math.max(0, eligible.length - applied.length) } : {}),
+      ...(eligible.length > applied.length
+        ? { cleanup_budget_exhausted: Math.max(0, eligible.length - applied.length) }
+        : {}),
     },
     failedByType: applied.reduce<Record<string, number>>((counts, candidate) => {
       if (!candidate.error) return counts;
@@ -463,11 +719,19 @@ export function applyRuntimeCleanup(repoRoot: string, options: RuntimeCleanupOpt
     mode: 'apply',
     applied,
     cycle,
+    filesystemBefore: preview.filesystems,
+    filesystemAfter: filesystemAfter.snapshots,
+    availableBytesDelta: filesystemAvailableDelta(preview.filesystems, filesystemAfter.snapshots),
+    warnings: [...preview.warnings, ...filesystemAfter.warnings],
   };
 }
 
 /** Fixed internal CLI entry; the existing cleanup owner retains all path and liveness checks. */
-export function applyRuntimeCleanupArguments(controllerHome: string, repoRoot: string, args: Record<string, unknown>): RuntimeCleanupApplyResult {
+export function applyRuntimeCleanupArguments(
+  controllerHome: string,
+  repoRoot: string,
+  args: Record<string, unknown>,
+): RuntimeCleanupApplyResult {
   const fence = assertRuntimeMayWrite('cleanup', controllerHome);
   if (!fence.allowed) throw new Error(`RUNTIME_CLEANUP_WRITER_FENCED: ${fence.reason}`);
   return applyRuntimeCleanup(repoRoot, {

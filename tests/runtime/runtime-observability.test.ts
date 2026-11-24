@@ -964,6 +964,12 @@ describe('runtime observability', () => {
         });
         expect(commandCall.isError).not.toBe(true);
         expect(commandCall.structuredContent).toMatchObject({ accepted: true });
+        const accessStateCall = await fullClient.callTool({
+          name: 'rh_access',
+          arguments: { repo_id: repo.repoId },
+        });
+        const accessState = accessStateCall.structuredContent as { toolGroups?: string[] } | undefined;
+        expect(accessState?.toolGroups ?? []).not.toContain('direct_edit_sessions');
       } finally {
         await fullClient.close();
         await fullServer.close();

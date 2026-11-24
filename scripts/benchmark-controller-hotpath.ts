@@ -60,28 +60,46 @@ function timed<T>(fn: () => T): { value: T; ms: number } {
 function writeIssueFixture(repoRoot: string, index: number): void {
   const id = `ISS-BENCH-${String(index).padStart(4, '0')}`;
   const slug = `fixture-${index}`;
-  writeFileSync(join(repoRoot, 'tasks', 'issues', `${id}-${slug}.issue.json`), `${JSON.stringify({
-    schemaVersion: 5,
-    id,
-    slug,
-    kind: 'feature',
-    status: 'planned',
-    title: `Benchmark Issue ${index}`,
-    summary: 'Synthetic controller hotpath fixture.',
-    goals: [],
-    nonGoals: [],
-    acceptanceCriteria: [],
-    tasks: [],
-    createdAt: new Date(0).toISOString(),
-    updatedAt: new Date(0).toISOString(),
-    repoId: 'benchmark',
-  }, null, 2)}\n`);
+  writeFileSync(
+    join(repoRoot, 'tasks', 'issues', `${id}-${slug}.issue.json`),
+    `${JSON.stringify(
+      {
+        schemaVersion: 5,
+        id,
+        slug,
+        kind: 'feature',
+        status: 'planned',
+        title: `Benchmark Issue ${index}`,
+        summary: 'Synthetic controller hotpath fixture.',
+        goals: [],
+        nonGoals: [],
+        acceptanceCriteria: [],
+        tasks: [],
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+        repoId: 'benchmark',
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
-export function duration(result: { isError?: boolean; structuredContent?: unknown; content?: Array<{ text?: string }> } | undefined): { ms: number; bytes: number; cacheHit: boolean; phaseTimingsMs: Record<string, number>; largestFields: Array<{ key: string; bytes: number }> } {
-  if (result?.isError === true) throw new Error('CONTROLLER_HOTPATH_TOOL_ERROR: benchmark cannot time a failed tool call');
-  const value = (result?.structuredContent
-    ?? JSON.parse(result?.content?.[0]?.text ?? '{}')) as Record<string, unknown>;
+export function duration(
+  result: { isError?: boolean; structuredContent?: unknown; content?: Array<{ text?: string }> } | undefined,
+): {
+  ms: number;
+  bytes: number;
+  cacheHit: boolean;
+  phaseTimingsMs: Record<string, number>;
+  largestFields: Array<{ key: string; bytes: number }>;
+} {
+  if (result?.isError === true)
+    throw new Error('CONTROLLER_HOTPATH_TOOL_ERROR: benchmark cannot time a failed tool call');
+  const value = (result?.structuredContent ?? JSON.parse(result?.content?.[0]?.text ?? '{}')) as Record<
+    string,
+    unknown
+  >;
   if (!value || typeof value !== 'object' || Array.isArray(value) || value.status === 'error') {
     throw new Error('CONTROLLER_HOTPATH_TOOL_ERROR: benchmark requires a successful tool result');
   }
@@ -95,9 +113,10 @@ export function duration(result: { isError?: boolean; structuredContent?: unknow
     ms: serverDurationMs,
     bytes: Buffer.byteLength(JSON.stringify(value), 'utf8'),
     cacheHit: responseMeta.cacheHit === true || projection.cacheHit === true,
-    phaseTimingsMs: responseMeta.phaseTimingsMs && typeof responseMeta.phaseTimingsMs === 'object'
-      ? responseMeta.phaseTimingsMs as Record<string, number>
-      : {},
+    phaseTimingsMs:
+      responseMeta.phaseTimingsMs && typeof responseMeta.phaseTimingsMs === 'object'
+        ? (responseMeta.phaseTimingsMs as Record<string, number>)
+        : {},
     largestFields: Object.entries(value)
       .map(([key, field]) => ({ key, bytes: Buffer.byteLength(JSON.stringify(field) ?? 'null', 'utf8') }))
       .sort((a, b) => b.bytes - a.bytes)
@@ -127,16 +146,25 @@ async function benchmarkScale(scale: number): Promise<Record<string, unknown>> {
       sections: ['git', 'focus'],
     });
     const sectionRead = duration(sectionReadResult);
-    const sectionValue = (sectionReadResult?.structuredContent
-      ?? JSON.parse(sectionReadResult?.content?.[0]?.text ?? '{}')) as Record<string, unknown>;
-    const returnedSections = sectionValue.sections && typeof sectionValue.sections === 'object'
-      ? sectionValue.sections as Record<string, unknown>
-      : {};
-    if (sectionValue.detailLevel !== 'sections' || !('git' in returnedSections) || !('focus' in returnedSections)
-      || 'taskLedger' in returnedSections || 'readiness' in returnedSections) {
+    const sectionValue = (sectionReadResult?.structuredContent ??
+      JSON.parse(sectionReadResult?.content?.[0]?.text ?? '{}')) as Record<string, unknown>;
+    const returnedSections =
+      sectionValue.sections && typeof sectionValue.sections === 'object'
+        ? (sectionValue.sections as Record<string, unknown>)
+        : {};
+    if (
+      sectionValue.detailLevel !== 'sections' ||
+      !('git' in returnedSections) ||
+      !('focus' in returnedSections) ||
+      'taskLedger' in returnedSections ||
+      'readiness' in returnedSections
+    ) {
       throw new Error('CONTROLLER_CONTEXT_SECTION_SELECTION_FAILED: requested sections were not isolated');
     }
-    const coldResult = await callRuntimeTool(ctx, 'controller_context', { repo_id: repository.repoId, detail_level: 'detail' });
+    const coldResult = await callRuntimeTool(ctx, 'controller_context', {
+      repo_id: repository.repoId,
+      detail_level: 'detail',
+    });
     const cold = duration(coldResult!);
     const samples: number[] = [];
     let cacheHits = 0;
@@ -210,22 +238,74 @@ function benchmarkGitSampling(): Record<string, unknown> {
   }
 }
 
-export function controllerHotpathAcceptance(scales: Array<{ scale: number; coldSummaryMs: number; coldSummaryResponseBytes: number; coldSummaryPhaseTimingsMs: Record<string, number>; hotP95Ms: number; maxSummaryBytes: number }>, gitSampling: { identityCounters: { subprocesses: number }; snapshotCounters: { subprocesses: number }; snapshotIdentityCounters: { subprocesses: number } }) {
-  const thresholds = { coldSummaryMs: 25, maxColdSummaryBytes: 8 * 1024, warmP95Ms: 100, maxSummaryBytes: 32 * 1024, identitySubprocessesPerSample: 1, snapshotUniqueSubprocesses: 2 };
-  const forbiddenSummaryPhases = ['gitIdentity', 'build.task_board', 'build.task_ledger', 'build.readiness', 'build.git', 'build.jobs', 'build.checks', 'build.plugins'];
+export function controllerHotpathAcceptance(
+  scales: Array<{
+    scale: number;
+    coldSummaryMs: number;
+    coldSummaryResponseBytes: number;
+    coldSummaryPhaseTimingsMs: Record<string, number>;
+    hotP95Ms: number;
+    maxSummaryBytes: number;
+  }>,
+  gitSampling: {
+    identityCounters: { subprocesses: number };
+    snapshotCounters: { subprocesses: number };
+    snapshotIdentityCounters: { subprocesses: number };
+  },
+) {
+  const thresholds = {
+    coldSummaryMs: 25,
+    maxColdSummaryBytes: 8 * 1024,
+    warmP95Ms: 100,
+    maxSummaryBytes: 32 * 1024,
+    identitySubprocessesPerSample: 1,
+    snapshotUniqueSubprocesses: 2,
+  };
+  const forbiddenSummaryPhases = [
+    'gitIdentity',
+    'build.task_board',
+    'build.task_ledger',
+    'build.readiness',
+    'build.git',
+    'build.jobs',
+    'build.checks',
+    'build.plugins',
+  ];
   const failures: string[] = [];
   for (const scale of scales) {
-    if (!Number.isFinite(scale.coldSummaryMs) || scale.coldSummaryMs < 0 || scale.coldSummaryMs > thresholds.coldSummaryMs) failures.push(`scale=${scale.scale}: coldSummaryMs=${scale.coldSummaryMs}`);
-    if (!Number.isFinite(scale.coldSummaryResponseBytes) || scale.coldSummaryResponseBytes < 1 || scale.coldSummaryResponseBytes > thresholds.maxColdSummaryBytes) failures.push(`scale=${scale.scale}: coldSummaryResponseBytes=${scale.coldSummaryResponseBytes}`);
+    if (
+      !Number.isFinite(scale.coldSummaryMs) ||
+      scale.coldSummaryMs < 0 ||
+      scale.coldSummaryMs > thresholds.coldSummaryMs
+    )
+      failures.push(`scale=${scale.scale}: coldSummaryMs=${scale.coldSummaryMs}`);
+    if (
+      !Number.isFinite(scale.coldSummaryResponseBytes) ||
+      scale.coldSummaryResponseBytes < 1 ||
+      scale.coldSummaryResponseBytes > thresholds.maxColdSummaryBytes
+    )
+      failures.push(`scale=${scale.scale}: coldSummaryResponseBytes=${scale.coldSummaryResponseBytes}`);
     const eagerPhases = forbiddenSummaryPhases.filter((phase) => Object.hasOwn(scale.coldSummaryPhaseTimingsMs, phase));
     if (eagerPhases.length) failures.push(`scale=${scale.scale}: summary eagerly executed ${eagerPhases.join(', ')}`);
-    if (!Number.isFinite(scale.hotP95Ms) || scale.hotP95Ms < 0 || scale.hotP95Ms > thresholds.warmP95Ms) failures.push(`scale=${scale.scale}: hotP95Ms=${scale.hotP95Ms}`);
-    if (!Number.isFinite(scale.maxSummaryBytes) || scale.maxSummaryBytes < 1 || scale.maxSummaryBytes > thresholds.maxSummaryBytes) failures.push(`scale=${scale.scale}: maxSummaryBytes=${scale.maxSummaryBytes}`);
+    if (!Number.isFinite(scale.hotP95Ms) || scale.hotP95Ms < 0 || scale.hotP95Ms > thresholds.warmP95Ms)
+      failures.push(`scale=${scale.scale}: hotP95Ms=${scale.hotP95Ms}`);
+    if (
+      !Number.isFinite(scale.maxSummaryBytes) ||
+      scale.maxSummaryBytes < 1 ||
+      scale.maxSummaryBytes > thresholds.maxSummaryBytes
+    )
+      failures.push(`scale=${scale.scale}: maxSummaryBytes=${scale.maxSummaryBytes}`);
   }
   if (!scales.length) failures.push('no scale samples');
-  if (!Number.isFinite(gitSampling.identityCounters.subprocesses) || gitSampling.identityCounters.subprocesses > thresholds.identitySubprocessesPerSample) failures.push('git identity subprocess budget exceeded');
-  const snapshotProcesses = gitSampling.snapshotCounters.subprocesses + gitSampling.snapshotIdentityCounters.subprocesses;
-  if (!Number.isFinite(snapshotProcesses) || snapshotProcesses > thresholds.snapshotUniqueSubprocesses) failures.push('git snapshot subprocess budget exceeded');
+  if (
+    !Number.isFinite(gitSampling.identityCounters.subprocesses) ||
+    gitSampling.identityCounters.subprocesses > thresholds.identitySubprocessesPerSample
+  )
+    failures.push('git identity subprocess budget exceeded');
+  const snapshotProcesses =
+    gitSampling.snapshotCounters.subprocesses + gitSampling.snapshotIdentityCounters.subprocesses;
+  if (!Number.isFinite(snapshotProcesses) || snapshotProcesses > thresholds.snapshotUniqueSubprocesses)
+    failures.push('git snapshot subprocess budget exceeded');
   return { ...thresholds, passed: failures.length === 0, failures };
 }
 
@@ -239,17 +319,41 @@ async function main(): Promise<void> {
     const repoRoot = join(profileRepo, 'repo');
     mkdirSync(repoRoot, { recursive: true });
     gitInit(repoRoot);
-    const ctx = createMcpToolContext({ repo: repoRoot, profile: 'controller', controllerHome }) as MultiRepositoryMcpToolContext;
+    const ctx = createMcpToolContext({
+      repo: repoRoot,
+      profile: 'controller',
+      controllerHome,
+    }) as MultiRepositoryMcpToolContext;
     const exposedTools = exposedControllerToolDefinitions(ctx).length;
-    const acceptance = controllerHotpathAcceptance(scaleResults as Array<{ scale: number; coldSummaryMs: number; coldSummaryResponseBytes: number; coldSummaryPhaseTimingsMs: Record<string, number>; hotP95Ms: number; maxSummaryBytes: number }>, gitSampling as { identityCounters: { subprocesses: number }; snapshotCounters: { subprocesses: number }; snapshotIdentityCounters: { subprocesses: number } });
-    console.log(JSON.stringify({
-      benchmark: 'controller-hotpath',
-      hotReads: HOT_READS,
-      scales: scaleResults,
-      gitSampling,
-      exposedTools,
-      acceptance,
-    }, null, 2));
+    const acceptance = controllerHotpathAcceptance(
+      scaleResults as Array<{
+        scale: number;
+        coldSummaryMs: number;
+        coldSummaryResponseBytes: number;
+        coldSummaryPhaseTimingsMs: Record<string, number>;
+        hotP95Ms: number;
+        maxSummaryBytes: number;
+      }>,
+      gitSampling as {
+        identityCounters: { subprocesses: number };
+        snapshotCounters: { subprocesses: number };
+        snapshotIdentityCounters: { subprocesses: number };
+      },
+    );
+    console.log(
+      JSON.stringify(
+        {
+          benchmark: 'controller-hotpath',
+          hotReads: HOT_READS,
+          scales: scaleResults,
+          gitSampling,
+          exposedTools,
+          acceptance,
+        },
+        null,
+        2,
+      ),
+    );
     if (!acceptance.passed) throw new Error(`CONTROLLER_HOTPATH_ACCEPTANCE_FAILED: ${acceptance.failures.join('; ')}`);
   } finally {
     rmSync(profileRepo, { recursive: true, force: true });

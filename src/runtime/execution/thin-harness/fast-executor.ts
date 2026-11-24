@@ -1,10 +1,6 @@
 import { existsSync, readFileSync, statSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import {
-  applySafePatch,
-  applySessionlessMutationBatch,
-  isSessionlessTextEditBatch,
-} from '../../repositories/safe-patch';
+import { applySessionlessMutationBatch, isSessionlessTextEditBatch } from '../../repositories/safe-patch';
 import {
   executeRepositoryCommandAsync,
   previewRepositoryCommandExecutionAsync,
@@ -33,13 +29,6 @@ import {
   type FastRequestLedgerEntry,
 } from './request-ledger';
 import { runInspectorSearchInWorker } from './search-worker';
-import {
-  createWorkspaceSavepoint,
-  discardWorkspaceSavepoint,
-  restoreWorkspaceSavepoint,
-  verifySavepointRestored,
-  type WorkspaceSavepoint,
-} from './workspace-savepoint';
 import {
   FAST_PATH_DEFAULT_TIMEOUT_MS,
   FAST_PATH_MAX_FILE_BYTES,
@@ -765,13 +754,37 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
             request.input.validation_request_id ||
             request.input.continue_on_error === true,
         );
-        const useSessionless =
-          request.input.sessionless === true ||
-          (request.input.sessionless !== false &&
-            !explicitLegacyFlow &&
-            isSessionlessTextEditBatch(request.input.operations));
-        if (useSessionless) {
-          if (explicitLegacyFlow) throw new Error('SESSIONLESS_SAFE_PATCH_LEGACY_SESSION_OR_VALIDATION_NOT_SUPPORTED');
+        if (request.input.sessionless === false || explicitLegacyFlow) {
+          ok = false;
+          outcome = 'failed';
+          policyDecision = 'failed';
+          repositoryChanged = false;
+          changedPaths = [];
+          resultPayload = {
+            error: {
+              code: 'SAFE_PATCH_LEGACY_SESSION_RETIRED',
+              message: 'EditSession-backed Safe Patch is retired; use sessionless mutation operations.',
+              cleanupRequired: false,
+              reconciliationRequired: false,
+              repositoryChanged: false,
+            },
+          };
+        } else if (!isSessionlessTextEditBatch(request.input.operations)) {
+          ok = false;
+          outcome = 'failed';
+          policyDecision = 'failed';
+          repositoryChanged = false;
+          changedPaths = [];
+          resultPayload = {
+            error: {
+              code: 'SAFE_PATCH_MUTATION_NOT_SUPPORTED_BY_SESSIONLESS_PLANNER',
+              message: 'Mutation is not supported by the sessionless planner.',
+              cleanupRequired: false,
+              reconciliationRequired: false,
+              repositoryChanged: false,
+            },
+          };
+        } else {
           const atomic = await trace.measure('executionMs', async () =>
             applySessionlessMutationBatch(ctx.repository, {
               operations: request.input.operations,
@@ -792,129 +805,9 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
                   message: atomic.failures[0]?.message ?? 'Atomic patch was not applied',
                   cleanupRequired: false,
                   reconciliationRequired: false,
-                  repositoryChanged: false,
+                  repositoryChanged,
                 },
               };
-        } else {
-          // Multi-file/legacy edits still need binary-safe crash recovery.
-          // Create binary-safe savepoint (files, symlinks, modes, create/delete) before apply.
-          let savepoint: WorkspaceSavepoint | undefined;
-          try {
-            savepoint = createWorkspaceSavepoint({
-              controllerHome: ctx.controllerHome,
-              repoId: ctx.repository.repoId,
-              repoRoot: root,
-              paths: opPaths,
-            });
-          } catch (error) {
-            throw new Error(`SAVEPOINT_CREATE_FAILED: ${error instanceof Error ? error.message : String(error)}`);
-          }
-          let applied: ReturnType<typeof applySafePatch>;
-          try {
-            helpers?.assert();
-            applied = await trace.measure('executionMs', async () =>
-              applySafePatch(ctx.repository, {
-                controllerHome: ctx.controllerHome,
-                sessionId: request.input.session_id,
-                purpose: request.input.purpose ?? 'fast-path-patch',
-                operations: request.input.operations,
-                chunkSize: request.input.chunk_size,
-                expectedRevision: request.input.expected_revision,
-                allowedPaths: allowed,
-                continueOnError: false,
-                refreshFingerprints: request.input.refresh_fingerprints === true,
-                recoverStaleSession: request.input.recover_stale_session !== false,
-                leaseOwnerJobId: helpers?.getGate().ownerJobId,
-              }),
-            );
-          } catch (error) {
-            const restored = restoreWorkspaceSavepoint(savepoint);
-            const verified = verifySavepointRestored(root, savepoint);
-            if (!restored.ok || !verified.ok) {
-              resultPayload = {
-                error: {
-                  code: 'PATCH_ROLLBACK_INCOMPLETE',
-                  message: error instanceof Error ? error.message : String(error),
-                  repositoryChanged: true,
-                  cleanupRequired: true,
-                  reconciliationRequired: true,
-                  failedPaths: restored.failedPaths,
-                  residual: verified.residual,
-                },
-              };
-              ok = false;
-              outcome = 'failed';
-              repositoryChanged = true;
-              changedPaths = [...new Set([...restored.failedPaths, ...verified.residual])];
-              policyDecision = 'rollback_incomplete';
-              // Do not discard savepoint on incomplete restore.
-              return {
-                ok,
-                outcome,
-                changedPaths,
-                repositoryChanged,
-                resultPayload,
-                authorizationDecision: String(authorizationDecision),
-                policyDecision,
-              };
-            }
-            discardWorkspaceSavepoint(savepoint);
-            throw error;
-          }
-          changedPaths = [...new Set((applied.appliedChunks ?? []).flatMap((chunk) => chunk.paths ?? []))];
-          repositoryChanged = changedPaths.length > 0;
-          ok = applied.status === 'applied';
-          outcome = ok ? 'succeeded' : 'failed';
-          policyDecision = ok ? 'allowed' : 'failed';
-
-          const needsRollback =
-            !ok || (allowed?.length ? changedPaths.some((path) => !pathAllowed(path, allowed)) : false);
-
-          if (needsRollback) {
-            const outOfScope = allowed?.length ? changedPaths.filter((path) => !pathAllowed(path, allowed)) : [];
-            const restored = restoreWorkspaceSavepoint(savepoint);
-            const verified = verifySavepointRestored(root, savepoint);
-            const rollbackOk = restored.ok && verified.ok;
-            ok = false;
-            outcome = 'failed';
-            if (rollbackOk) {
-              policyDecision = outOfScope.length ? 'path_scope_violation_rolled_back' : 'patch_failed_rolled_back';
-              repositoryChanged = false;
-              changedPaths = [];
-              discardWorkspaceSavepoint(savepoint);
-              resultPayload = {
-                error: {
-                  code: outOfScope.length ? 'PATH_SCOPE_VIOLATION' : 'PATCH_FAILED_ROLLED_BACK',
-                  message: outOfScope.length
-                    ? `changed paths outside declared scope; rolled back: ${outOfScope.join(', ')}`
-                    : `patch failed; workspace restored to savepoint`,
-                  outOfScope,
-                  cleanupRequired: false,
-                  reconciliationRequired: false,
-                  repositoryChanged: false,
-                },
-                applied,
-              };
-            } else {
-              policyDecision = 'path_scope_violation_cleanup_required';
-              repositoryChanged = true;
-              changedPaths = [...new Set([...outOfScope, ...restored.failedPaths, ...verified.residual])];
-              resultPayload = {
-                error: {
-                  code: 'PATH_SCOPE_VIOLATION_CLEANUP_REQUIRED',
-                  message: `changed paths; rollback incomplete: ${changedPaths.join(', ')}`,
-                  outOfScope,
-                  cleanupRequired: true,
-                  reconciliationRequired: true,
-                  repositoryChanged: true,
-                },
-                applied,
-              };
-            }
-          } else {
-            discardWorkspaceSavepoint(savepoint);
-            resultPayload = { applied, changedPaths, fencingToken };
-          }
         }
       } else if (operation === 'stage_paths' || operation === 'git_stage_paths') {
         helpers?.assert();

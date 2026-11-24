@@ -444,8 +444,22 @@ export function buildMcpToolDefinitions(
             sections: {
               type: 'array',
               uniqueItems: true,
-              items: { type: 'string', enum: ['git', 'focus', 'taskLedger', 'readiness', 'activeRuns', 'localBridge', 'history', 'checks', 'plugins'] },
-              description: 'Omit for the lightweight Context Index. Request only the named sections to read them on demand; multiple sections are batched without loading unrelated sections.',
+              items: {
+                type: 'string',
+                enum: [
+                  'git',
+                  'focus',
+                  'taskLedger',
+                  'readiness',
+                  'activeRuns',
+                  'localBridge',
+                  'history',
+                  'checks',
+                  'plugins',
+                ],
+              },
+              description:
+                'Omit for the lightweight Context Index. Request only the named sections to read them on demand; multiple sections are batched without loading unrelated sections.',
             },
             needs_dependencies: { type: 'boolean' },
             risk: { type: 'string', enum: ['readonly', 'low', 'medium', 'high', 'destructive'] },

@@ -23,7 +23,7 @@ Missing external skills must degrade only the named enhancement. Hooks may sugge
 For understood small fixes and bounded slices, use the shortest valid path:
 
 1. **Read once**: current Issue latest decision (body + newest comments) and the exact 1–2 source/test files needed.
-2. **Edit directly**: IDE Direct Edit or one `repository_safe_patch_apply` batch. Do not open multi-step EditSession begin/apply/finalize rituals for ordinary work.
+2. **Edit directly**: IDE Direct Edit or one `capability_execute` call targeting `repository.direct_edit`. Do not open multi-step EditSession begin/apply/finalize rituals for ordinary work.
 3. **Validate narrowly**: focused tests for the changed contract; omit broad suites until delivery or high-risk boundaries.
 4. **Deliver once**: one coherent commit on the repository's source policy (Forge uses protected `main`), then one Issue progress note with SHA, check evidence, and remaining gaps.
 5. **Stop**: do not chain `rh_status` → plan_list → context/list → Writer/dirty preflights unless the next mutation depends on them or a real failure points there.

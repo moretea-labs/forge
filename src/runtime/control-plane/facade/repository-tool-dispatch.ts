@@ -31,17 +31,10 @@ import {
 import { repositoryGitRemoveWorktree } from '../../repositories/structured-worktree-cleanup';
 import { buildControllerWorkbench } from '../../repositories/workbench';
 import {
-  applySafePatch,
   applySessionlessMutationBatch,
   buildSafePatchPlan,
   isSessionlessTextEditBatch,
 } from '../../repositories/safe-patch';
-import {
-  assertEditSessionDurableBinding,
-  getEditSession,
-  getEditSessionDiff,
-  type EditSessionBinding,
-} from '../../editing/edit-session';
 import { buildSyncOperationDigest, classifyUserFacingError } from './operation-digest';
 import {
   repositoryGitCommit,
@@ -73,7 +66,6 @@ import { getToolPolicy } from '../tool-policy';
 import { redactSensitiveText } from '../../evidence/sensitive-output';
 import type { ToolDispatchResult } from '../../shared/tool-dispatch-result';
 import {
-  boundUtf8,
   compactCommandOutput,
   compactErrorMessage,
   leadingErrorCode,
@@ -109,27 +101,6 @@ export interface RepositoryToolCallerContext {
   sessionId?: string;
   principalId?: string;
   controllerInstanceId?: string;
-}
-
-function safePatchEditBinding(
-  repository: ReturnType<typeof resolveRepositorySelection>,
-  args: Record<string, unknown>,
-  caller?: RepositoryToolCallerContext,
-): EditSessionBinding | undefined {
-  // Identity comes exclusively from the authenticated transport context,
-  // never from model-authored tool arguments. Unbound internal/legacy callers
-  // remain supported, but cannot resume a principal-bound session (#713).
-  const principalId = caller?.principalId?.trim();
-  if (caller && !principalId) throw new Error('SAFE_PATCH_PRINCIPAL_REQUIRED');
-  const binding: EditSessionBinding | undefined = principalId
-    ? { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, principalId }
-    : undefined;
-  const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
-  if (sessionId) {
-    const existing = getEditSession(repository.canonicalRoot, sessionId);
-    assertEditSessionDurableBinding(existing, binding, { requireBoundIdentity: true });
-  }
-  return binding;
 }
 
 function resolveRepositorySelectionWithoutWorkAuthority(
@@ -824,157 +795,68 @@ export async function callRepositoryTool(
             args.expected_revision !== undefined ||
             args.continue_on_error === true,
         );
-        const useSessionless =
-          args.sessionless === true ||
-          (args.sessionless !== false && !explicitLegacyFlow && isSessionlessTextEditBatch(args.operations));
-        if (useSessionless) {
-          if (explicitLegacyFlow) {
-            throw new Error('SESSIONLESS_SAFE_PATCH_LEGACY_SESSION_OR_VALIDATION_NOT_SUPPORTED');
-          }
-          const atomicClaims =
-            patchPaths.length > 0 ? claimPathWrites(patchPaths, repository.activeCheckoutId, repository.repoId) : [];
-          const atomic = withRepositoryMutationExclusion(
-            controllerHome,
-            repository.repoId,
-            'mcp:repository_safe_patch_atomic',
-            () =>
-              applySessionlessMutationBatch(repository, {
-                operations: args.operations,
-                allowedPaths: args.allowed_paths,
-                refreshFingerprints: args.refresh_fingerprints,
-              }),
-            60_000,
-            atomicClaims,
-          );
-          const firstFailure = atomic.failures[0];
-          const digest = buildSyncOperationDigest({
-            ok: atomic.status === 'applied',
-            operation: 'repository_safe_patch_apply',
-            summary:
-              atomic.status === 'applied'
-                ? `原子补丁已应用：${atomic.changedFiles.join(', ')}（无持久 EditSession）。`
-                : atomic.status === 'partial'
-                  ? `原子补丁已局部应用：${atomic.changedFiles.join(', ')}；冲突语义组未落地：${firstFailure?.message ?? '需要局部合并'}`
-                  : `原子补丁未应用：${firstFailure?.message ?? '请刷新源码后重试'}`,
-            changedFiles: atomic.changedFiles,
-            errorClass:
-              atomic.status === 'applied'
-                ? undefined
-                : classifyUserFacingError({
-                    code: firstFailure?.code,
-                    message: firstFailure?.message,
-                  }),
-            errorMessage: firstFailure?.message,
-          });
-          const payload = {
-            repoId: repository.repoId,
-            checkoutId: repository.activeCheckoutId,
-            ...atomic,
-            terminal: true,
-            phase: digest.phase,
-            statusLabel: digest.statusLabel,
-            summary: digest.summary,
-            digest,
-            reviewEvidence:
-              atomic.receipts?.length || atomic.receipt
-                ? {
-                    source: 'atomic_patch',
-                    receipts: atomic.receipts ?? (atomic.receipt ? [atomic.receipt] : []),
-                    semanticReviewAuthority: 'chatgpt',
-                    next: 'Use repository.git diff_paths for the exact reviewable diff; no EditSession was created.',
-                  }
-                : undefined,
-            suggestedNextActions: digest.suggestedNextActions,
-          };
-          return atomic.status === 'applied' ? result(payload) : { ...result(payload), isError: true };
+        if (args.sessionless === false || explicitLegacyFlow) {
+          throw new Error('SAFE_PATCH_LEGACY_SESSION_RETIRED');
         }
-        const binding = safePatchEditBinding(repository, args, caller);
-        const mutationClaims =
-          args.validation_only === true
-            ? []
-            : patchPaths.length > 0
-              ? claimPathWrites(patchPaths, repository.activeCheckoutId, repository.repoId)
-              : [];
-        const applied = withRepositoryMutationExclusion(
+        if (!isSessionlessTextEditBatch(args.operations)) {
+          throw new Error('SAFE_PATCH_MUTATION_NOT_SUPPORTED_BY_SESSIONLESS_PLANNER');
+        }
+        const atomicClaims =
+          patchPaths.length > 0 ? claimPathWrites(patchPaths, repository.activeCheckoutId, repository.repoId) : [];
+        const atomic = withRepositoryMutationExclusion(
           controllerHome,
           repository.repoId,
-          'mcp:repository_safe_patch_apply',
-          (leaseOwnerJobId) => {
-            const patchResult = applySafePatch(repository, {
-              controllerHome,
-              leaseOwnerJobId,
-              sessionId: args.session_id,
-              purpose: args.purpose,
+          'mcp:repository_safe_patch_atomic',
+          () =>
+            applySessionlessMutationBatch(repository, {
               operations: args.operations,
-              chunkSize: args.chunk_size,
-              expectedRevision: args.expected_revision,
               allowedPaths: args.allowed_paths,
-              continueOnError: args.continue_on_error,
               refreshFingerprints: args.refresh_fingerprints,
-              recoverStaleSession: args.recover_stale_session,
-              binding,
-            });
-            return patchResult;
-          },
+            }),
           60_000,
-          mutationClaims,
+          atomicClaims,
         );
-        const changedFiles = [...new Set((applied.appliedChunks ?? []).flatMap((chunk) => chunk.paths ?? []))];
-        const ok = applied.status === 'applied';
-        const firstFailure = applied.failures?.[0];
-        const editDiff =
-          applied.appliedChunks.length > 0
-            ? getEditSessionDiff(repository.canonicalRoot, applied.session.sessionId)
-            : undefined;
-        const boundedEditDiff = editDiff ? boundUtf8(editDiff.patch, RESPONSE_BUDGET.inlineOutputBytes) : undefined;
-        const reviewEvidence =
-          editDiff && boundedEditDiff
-            ? {
-                source: 'edit_session' as const,
-                sessionId: editDiff.sessionId,
-                revision: editDiff.revision,
-                sha256: editDiff.sha256,
-                patchPreview: boundedEditDiff.text,
-                truncated: boundedEditDiff.truncated,
-                byteLength: boundedEditDiff.byteLength,
-                semanticReviewAuthority: 'chatgpt' as const,
-                next: boundedEditDiff.truncated
-                  ? 'The edit diff exceeds the inline budget. Expand only the affected ranges or diff needed for semantic review.'
-                  : 'Review this exact edit-session diff before deciding whether more edits or focused validation are needed.',
-              }
-            : undefined;
+        const firstFailure = atomic.failures[0];
         const digest = buildSyncOperationDigest({
-          ok,
+          ok: atomic.status === 'applied',
           operation: 'repository_safe_patch_apply',
-          summary: ok
-            ? `补丁已同步应用，涉及 ${changedFiles.length} 个文件。`
-            : applied.status === 'partial'
-              ? `补丁部分应用：${changedFiles.length} 个文件成功，存在失败 chunk。`
-              : `补丁应用失败：${firstFailure?.message || '请检查 failures 摘要'}`,
-          changedFiles,
-          errorClass: ok
-            ? undefined
-            : classifyUserFacingError({
-                code: firstFailure?.code,
-                message: firstFailure?.message,
-                infrastructure: firstFailure?.code === 'APPLY_FAILED',
-              }),
+          summary:
+            atomic.status === 'applied'
+              ? `原子补丁已应用：${atomic.changedFiles.join(', ')}（无持久 EditSession）。`
+              : atomic.status === 'partial'
+                ? `原子补丁已局部应用：${atomic.changedFiles.join(', ')}；冲突语义组未落地：${firstFailure?.message ?? '需要局部合并'}`
+                : `原子补丁未应用：${firstFailure?.message ?? '请刷新源码后重试'}`,
+          changedFiles: atomic.changedFiles,
+          errorClass:
+            atomic.status === 'applied'
+              ? undefined
+              : classifyUserFacingError({
+                  code: firstFailure?.code,
+                  message: firstFailure?.message,
+                }),
           errorMessage: firstFailure?.message,
         });
         const payload = {
           repoId: repository.repoId,
           checkoutId: repository.activeCheckoutId,
-          ...(applied as unknown as Record<string, unknown>),
+          ...atomic,
+          terminal: true,
           phase: digest.phase,
           statusLabel: digest.statusLabel,
           summary: digest.summary,
-          terminal: true,
-          applyMode: 'sync',
           digest,
-          ...(reviewEvidence ? { reviewEvidence } : {}),
+          reviewEvidence:
+            atomic.receipts?.length || atomic.receipt
+              ? {
+                  source: 'atomic_patch',
+                  receipts: atomic.receipts ?? (atomic.receipt ? [atomic.receipt] : []),
+                  semanticReviewAuthority: 'chatgpt',
+                  next: 'Use repository.git diff_paths for the exact reviewable diff; no EditSession was created.',
+                }
+              : undefined,
           suggestedNextActions: digest.suggestedNextActions,
         };
-        return ok ? result(payload) : { ...result(payload), isError: true };
+        return atomic.status === 'applied' ? result(payload) : { ...result(payload), isError: true };
       }
       case 'execute_command': {
         if (args.scope !== undefined && args.scope !== 'repository')

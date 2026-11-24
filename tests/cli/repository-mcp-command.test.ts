@@ -1,4 +1,4 @@
-import { applySafePatch } from '../../src/runtime/repositories/safe-patch';
+import { applySessionlessMutationBatch } from '../../src/runtime/repositories/safe-patch';
 import { applyConsoleSafePatch } from '../../src/cli/local-bridge/facade-api';
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { describe, expect, test } from 'bun:test';
@@ -1538,7 +1538,7 @@ describe('repository MCP command tools', () => {
     }
   });
 
-  test('SafePatch direct and Console entrypoints retain the explicit caller home', async () => {
+  test('SafePatch direct and Console entrypoints do not create EditSession storage', async () => {
     for (const entrypoint of ['direct', 'console'] as const) {
       const workspace = mkdtempSync(join(tmpdir(), 'forge-safe-patch-caller-home-'));
       const controllerHome = join(workspace, 'caller-home');
@@ -1556,16 +1556,16 @@ describe('repository MCP command tools', () => {
         const repository = registerRepository({ path: repoRoot, controllerHome });
         const input = {
           operations: [{ type: 'replace', path: 'app.txt', replacements: [{ old_text: 'before', new_text: 'after' }] }],
+          allowedPaths: ['app.txt'],
         };
         if (entrypoint === 'direct') {
-          applySafePatch(repository, { ...input, controllerHome });
-          expect(
-            realpathSync(join(repoRoot, '.ai/harness/edit-sessions')).startsWith(`${realpathSync(controllerHome)}/`),
-          ).toBe(true);
+          const applied = applySessionlessMutationBatch(repository, input);
+          expect(applied).toMatchObject({ status: 'applied', sessionless: true, createdSession: false });
         } else {
           const applied = applyConsoleSafePatch({ repository, controllerHome }, input);
           expect(applied).toMatchObject({ sessionless: true, createdSession: false });
         }
+        expect(existsSync(join(repoRoot, '.ai/harness/edit-sessions'))).toBe(false);
         expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
       } finally {
         if (priorHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
@@ -1601,16 +1601,18 @@ describe('repository MCP command tools', () => {
       };
 
       expect(publishedToolNames).toContain('apply_patch');
-      expect(publishedToolNames).not.toEqual(expect.arrayContaining([
-        'begin_edit_session',
-        'get_edit_session',
-        'list_edit_sessions',
-        'get_edit_session_diff',
-        'create_edit_savepoint',
-        'verify_edit_session',
-        'rollback_edit_session',
-        'finalize_edit_session',
-      ]));
+      expect(publishedToolNames).not.toEqual(
+        expect.arrayContaining([
+          'begin_edit_session',
+          'get_edit_session',
+          'list_edit_sessions',
+          'get_edit_session_diff',
+          'create_edit_savepoint',
+          'verify_edit_session',
+          'rollback_edit_session',
+          'finalize_edit_session',
+        ]),
+      );
       const applied = await callMcpTool(context, 'apply_patch', {
         operations: [
           { type: 'replace', path: 'app.txt', replacements: [{ old_text: 'before', new_text: 'after' }] },
@@ -1626,7 +1628,9 @@ describe('repository MCP command tools', () => {
 
       const rejected = await callMcpTool(context, 'apply_patch', {
         session_id: 'legacy-session-1',
-        operations: [{ type: 'replace', path: 'app.txt', replacements: [{ old_text: 'after', new_text: 'clobbered' }] }],
+        operations: [
+          { type: 'replace', path: 'app.txt', replacements: [{ old_text: 'after', new_text: 'clobbered' }] },
+        ],
       });
       expect(rejected.isError).toBe(true);
       expect(rejected.structuredContent).toMatchObject({
@@ -1722,7 +1726,7 @@ describe('repository MCP command tools', () => {
     }
   });
 
-  test('safe patch apply splits repeated paths, refreshes fingerprints, and returns actionable failures', async () => {
+  test('safe patch apply executes repeated-path semantic groups without EditSession and returns actionable failures', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'forge-safe-patch-complete-'));
     const controllerHome = join(workspace, 'controller-home');
     const repoRoot = join(workspace, 'sample-repo');
@@ -1742,36 +1746,28 @@ describe('repository MCP command tools', () => {
       const applied = await json(
         callRepositoryTool(controllerHome, 'repository_safe_patch_apply', {
           repo_id: repository.repoId,
-          purpose: 'safe patch complete test',
           operations: [
             { type: 'replace', path: 'app.txt', replacements: [{ old_text: 'alpha', new_text: 'alpha-1' }] },
             { type: 'replace', path: 'app.txt', replacements: [{ old_text: 'beta', new_text: 'beta-1' }] },
           ],
-          chunk_size: 10,
         }),
       );
-      expect(applied.status).toBe('applied');
-      expect(applied.appliedChunks.length).toBe(2);
-      expect(
-        realpathSync(join(repoRoot, '.ai/harness/edit-sessions')).startsWith(`${realpathSync(controllerHome)}/`),
-      ).toBe(true);
-      expect(applied.session.currentRevision).toBe(2);
-      expect(applied.reviewEvidence).toMatchObject({
-        source: 'edit_session',
-        revision: 2,
-        truncated: false,
-        semanticReviewAuthority: 'chatgpt',
+      expect(applied).toMatchObject({
+        status: 'applied',
+        sessionless: true,
+        createdSession: false,
+        reviewEvidence: { source: 'atomic_patch', semanticReviewAuthority: 'chatgpt' },
       });
-      expect(applied.reviewEvidence.patchPreview).toContain('-alpha');
-      expect(applied.reviewEvidence.patchPreview).toContain('+alpha-1');
-      expect(applied.reviewEvidence.patchPreview).toContain('-beta');
-      expect(applied.reviewEvidence.patchPreview).toContain('+beta-1');
+      expect(applied.appliedChunks).toHaveLength(2);
+      expect(applied.groups).toHaveLength(2);
+      expect(applied.reviewEvidence.receipts).toHaveLength(2);
+      expect(applied.reviewEvidence.next).toContain('no EditSession');
+      expect(existsSync(join(repoRoot, '.ai/harness/edit-sessions'))).toBe(false);
       expect(readFileSync(join(repoRoot, 'app.txt'), 'utf-8')).toBe('alpha-1\nbeta-1\n');
 
       const failed = await json(
         callRepositoryTool(controllerHome, 'repository_safe_patch_apply', {
           repo_id: repository.repoId,
-          purpose: 'safe patch failure context',
           operations: [
             { type: 'replace', path: 'app.txt', replacements: [{ old_text: 'does-not-exist', new_text: 'x' }] },
           ],
@@ -1855,8 +1851,8 @@ describe('repository MCP command tools', () => {
         action: 'diff',
         arguments: { paths: ['README.md'] },
       });
-      expect(canonicalDiff?.isError).not.toBe(true);
-      expect((canonicalDiff?.structuredContent as Record<string, any>).diff).toEqual(diff.diff);
+      if (!canonicalDiff || canonicalDiff.isError) throw new Error('Canonical repository diff failed.');
+      expect((canonicalDiff.structuredContent as Record<string, unknown>).diff).toEqual(diff.diff);
 
       const commit = await json(
         callRepositoryTool(controllerHome, 'repository_git_commit', {

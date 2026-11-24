@@ -524,6 +524,17 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
     capabilityId,
     executeWith: 'capability_execute',
     actions: {
+      status: {
+        readOnly: true,
+        risk: 'readonly',
+        argumentsSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            refresh: { type: 'boolean' },
+          },
+        },
+      },
       diff: {
         readOnly: true,
         risk: 'readonly',

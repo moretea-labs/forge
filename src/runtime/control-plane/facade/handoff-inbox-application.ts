@@ -5,6 +5,7 @@ import {
   createHandoffItem,
   dismissHandoffItem,
   getHandoffItem,
+  isCanonicalUserRequestInbox,
   listHandoffItems,
   resolveHandoffItem,
   type HandoffInboxStoreOptions,
@@ -54,9 +55,15 @@ export function listHandoffAttentionItems(
   limit = 50,
 ): HandoffItem[] {
   const candidates = listHandoffItems({ ...store, status: 'pending', limit: 100 });
-  const pendingRequests = new Set(listUserRequests(store.controllerHome, 'pending').map((request) => request.requestId));
+  // Canonical projections already carry the authoritative UserRequest status
+  // from the same store read. Re-reading the whole ControllerHome request file
+  // adds synchronous JSON I/O and can even observe a different snapshot.
+  const canonicalInbox = isCanonicalUserRequestInbox(store);
+  const pendingRequests = canonicalInbox
+    ? undefined
+    : new Set(listUserRequests(store.controllerHome, 'pending').map((request) => request.requestId));
   const resolver: HandoffAttentionResolver = {
-    userRequestIsPending: (requestId) => pendingRequests.has(requestId),
+    userRequestIsPending: (requestId) => canonicalInbox || pendingRequests?.has(requestId) === true,
   };
   const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
   return candidates.filter((item) => handoffRequiresAttention(item, resolver)).slice(0, boundedLimit);

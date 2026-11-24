@@ -114,6 +114,10 @@ export function handoffInboxPath(location: HandoffInboxStoreLocation): string {
   return join(handoffInboxRootPath(location), 'index.json');
 }
 
+export function isCanonicalUserRequestInbox(options: HandoffInboxStoreOptions): boolean {
+  return usesCanonicalUserRequestStore(options) && existsSync(handoffMigrationMarkerPath(options));
+}
+
 function handoffMigrationMarkerPath(
   options: HandoffInboxStoreOptions & { controllerHome: string; repoId: string },
 ): string {

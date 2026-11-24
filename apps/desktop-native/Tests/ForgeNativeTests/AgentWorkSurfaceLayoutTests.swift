@@ -18,7 +18,8 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
     XCTAssertEqual(AgentWorkSurfaceLayout.workSurfaceMaximumWidth, 420)
     XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 560), 340)
     XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 890), 340)
-    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 958), 364.04, accuracy: 0.001)
+    XCTAssertEqual(
+      AgentWorkSurfaceLayout.overlayWidth(availableWidth: 958), 364.04, accuracy: 0.001)
     XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 1400), 420)
   }
 
@@ -37,6 +38,58 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
     )
   }
 
+  func testOnlyVisibleSelectedInspectorTabIsActive() {
+    XCTAssertTrue(AgentWorkSurface.isActive(.planning, selected: .planning, inspectorVisible: true))
+    XCTAssertFalse(AgentWorkSurface.isActive(.planning, selected: .files, inspectorVisible: true))
+    XCTAssertFalse(
+      AgentWorkSurface.isActive(.planning, selected: .planning, inspectorVisible: false))
+  }
+
+  func testInspectorAttachmentsAreScopedToTheSelectedConversation() {
+    let selected = ChatThread(id: "selected")
+    let other = ChatThread(id: "other")
+    let scoped = AgentAssetsDashboard.scopedThreads(
+      from: [selected, other],
+      selectedThreadId: "selected",
+      threadScoped: true
+    )
+    XCTAssertEqual(scoped.map(\.id), ["selected"])
+    XCTAssertEqual(
+      AgentAssetsDashboard.scopedThreads(
+        from: [selected, other], selectedThreadId: "selected", threadScoped: false
+      ).map(\.id),
+      ["selected", "other"]
+    )
+    XCTAssertTrue(
+      AgentAssetsDashboard.scopedThreads(
+        from: [selected, other], selectedThreadId: nil, threadScoped: true
+      ).isEmpty
+    )
+  }
+
+  func testInspectorPanesGateHeavyContentAndUseConversationScopedAttachments() throws {
+    let testFile = URL(fileURLWithPath: #filePath)
+    let packageRoot =
+      testFile
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let sourceURL = packageRoot.appendingPathComponent(
+      "Sources/ForgeNative/AgentWorkbenchViews.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    XCTAssertTrue(source.contains("AgentChangesPane(model:model,isActive:isActive(.changes))"))
+    XCTAssertTrue(source.contains("threadScoped:true"))
+    XCTAssertTrue(
+      source.contains(
+        "AgentPlanningInspector(model:model,inline:true,isActive:isActive(.planning))"))
+    XCTAssertTrue(
+      source.contains(
+        "AgentKnowledgeInspector(model:model,inline:true,isActive:isActive(.knowledge))"))
+    XCTAssertTrue(
+      source.contains("AgentCapabilitiesInspector(model:model,isActive:isActive(.capabilities))"))
+  }
+
   func testConversationHeaderExposesSingleInspectorToggleByDefault() {
     XCTAssertEqual(
       AgentConversationHeaderContract.requiredActionIdentifiers, ["agent.inspector.toggle"])
@@ -48,6 +101,23 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
       AgentConversationHeaderContract.requiredActionIdentifiers.contains("agent.changes"))
   }
 
+  func testCapabilityInspectorHidesPlaceholdersAndOffersMCPRecovery() throws {
+    let testFile = URL(fileURLWithPath: #filePath)
+    let packageRoot =
+      testFile
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let sourceURL = packageRoot.appendingPathComponent(
+      "Sources/ForgeNative/AgentWorkbenchViews.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    XCTAssertTrue(source.contains("ForEach(AgentCapabilityExtension.visibleCases)"))
+    XCTAssertFalse(source.contains("Text(\"扩展能力\")"))
+    XCTAssertTrue(source.contains("actionTitle:mcpRefreshTitle"))
+    XCTAssertTrue(source.contains("await model.loadToolSurface()"))
+  }
+
   func testCapabilityExtensionSlotsKeepStableBackendIndependentIdentity() {
     XCTAssertEqual(AgentCapabilitiesContract.panelIdentifier, "agent.capabilities.panel")
     XCTAssertEqual(AgentCapabilitiesContract.pluginIdentifier, "agent.capability.plugins")
@@ -57,6 +127,8 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
     XCTAssertEqual(
       AgentCapabilityExtension.allCases.map(\.title),
       ["Skills", "MCP / 外部工具", "Agents", "Commands", "Hooks"])
+    XCTAssertEqual(AgentCapabilityExtension.visibleCases.map(\.rawValue), ["mcp"])
+    XCTAssertEqual(AgentCapabilityExtension.visibleCases.map(\.title), ["MCP / 外部工具"])
     XCTAssertEqual(
       AgentCapabilityExtension.allCases.map(\.accessibilityIdentifier),
       [
@@ -85,11 +157,13 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
 
   func testInspectorOpensAndClosesFromTheSamePersistentControl() throws {
     let testFile = URL(fileURLWithPath: #filePath)
-    let packageRoot = testFile
+    let packageRoot =
+      testFile
       .deletingLastPathComponent()
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-    let sourceURL = packageRoot.appendingPathComponent("Sources/ForgeNative/AgentWorkbenchViews.swift")
+    let sourceURL = packageRoot.appendingPathComponent(
+      "Sources/ForgeNative/AgentWorkbenchViews.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
     XCTAssertTrue(source.contains("private var inspectorToggleButton"))
@@ -100,11 +174,13 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
 
   func testInspectorOverlayIsBoundToTranscriptViewportAndNeverCoversComposer() throws {
     let testFile = URL(fileURLWithPath: #filePath)
-    let packageRoot = testFile
+    let packageRoot =
+      testFile
       .deletingLastPathComponent()
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-    let sourceURL = packageRoot.appendingPathComponent("Sources/ForgeNative/AgentWorkbenchViews.swift")
+    let sourceURL = packageRoot.appendingPathComponent(
+      "Sources/ForgeNative/AgentWorkbenchViews.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
     let scrollReader = try XCTUnwrap(source.range(of: "ScrollViewReader { reader in"))
@@ -120,7 +196,8 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
         range: scrollReader.upperBound..<composer.lowerBound
       )
     )
-    XCTAssertFalse(source[composer.upperBound...].contains("if workSurfacePresentation == .overlay"))
+    XCTAssertFalse(
+      source[composer.upperBound...].contains("if workSurfacePresentation == .overlay"))
   }
 
 }

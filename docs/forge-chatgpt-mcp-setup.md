@@ -73,7 +73,7 @@ ChatGPT developer-mode/MCP availability is controlled by the current ChatGPT pla
 - With **HTTPS**, use the stable URL ending in `/mcp` and Forge's OAuth flow.
 - Refresh/scan tools after Forge tool definitions change.
 
-The bounded default surface leads with `read_repository_file`, `execute_command`, and `repository_safe_patch_apply`. The `rh_*` facade remains registered for frozen connectors and optional Requirement/Plan progress. Do not switch to exhaustive compatibility mode merely to see more tool names.
+The bounded default surface leads with `read_repository_file`, `execute_command`, and `capability_execute` (`repository.direct_edit`). The `rh_*` facade remains registered for frozen connectors and optional Requirement/Plan progress. Do not switch to exhaustive compatibility mode merely to see more tool names.
 
 ## Verify
 

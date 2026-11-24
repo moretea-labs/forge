@@ -42,11 +42,7 @@ import {
 } from '../../runtime/control-plane/facade';
 import { resolveHandoffItem } from '../../runtime/control-plane/facade/handoff-inbox-store';
 import { buildRuntimeMaintenanceStatus } from '../../runtime/recovery';
-import {
-  applySafePatch,
-  applySessionlessMutationBatch,
-  isSessionlessTextEditBatch,
-} from '../../runtime/repositories/safe-patch';
+import { applySessionlessMutationBatch, isSessionlessTextEditBatch } from '../../runtime/repositories/safe-patch';
 import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
 import { claimPathWrites } from '../../runtime/execution/process-runtime/resource-claims';
 import { extractPatchPaths } from '../../runtime/execution/thin-harness/execution-router';
@@ -1201,10 +1197,12 @@ export function applyConsoleSafePatch(
     sessionless?: boolean;
   },
 ): Record<string, unknown> {
-  const useSessionless =
-    input.sessionless === true ||
-    (input.sessionless !== false && !input.sessionId && isSessionlessTextEditBatch(input.operations));
-  if (useSessionless && input.sessionId) throw new Error('SESSIONLESS_SAFE_PATCH_LEGACY_SESSION_NOT_SUPPORTED');
+  if (input.sessionless === false || input.sessionId) {
+    throw new Error('SAFE_PATCH_LEGACY_SESSION_RETIRED');
+  }
+  if (!isSessionlessTextEditBatch(input.operations)) {
+    throw new Error('SAFE_PATCH_MUTATION_NOT_SUPPORTED_BY_SESSIONLESS_PLANNER');
+  }
   // Same exact-path claims as the MCP safe-patch entry (#713): a Console edit
   // fences only the files it writes and no longer holds the repository-wide
   // ControllerLock, which vetoed every concurrent Process source write lease.
@@ -1217,22 +1215,11 @@ export function applyConsoleSafePatch(
     ctx.controllerHome,
     ctx.repository.repoId,
     'console:safe_patch_apply',
-    (leaseOwnerJobId) =>
-      useSessionless
-        ? applySessionlessMutationBatch(ctx.repository, {
-            operations: input.operations,
-            allowedPaths: input.allowedPaths,
-          })
-        : applySafePatch(ctx.repository, {
-            controllerHome: ctx.controllerHome,
-            leaseOwnerJobId,
-            sessionId: input.sessionId,
-            purpose: input.purpose ?? 'Console interactive edit',
-            operations: input.operations,
-            allowedPaths: input.allowedPaths,
-            refreshFingerprints: false,
-            recoverStaleSession: true,
-          }),
+    () =>
+      applySessionlessMutationBatch(ctx.repository, {
+        operations: input.operations,
+        allowedPaths: input.allowedPaths,
+      }),
     60_000,
     mutationClaims,
   );

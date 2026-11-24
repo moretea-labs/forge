@@ -4,11 +4,17 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { RepositoryRecord } from '../../src/core/repository/types';
-import { readRepositoryGitStatusSample, sampleRepositoryGitStatusForRepositories, writeRepositoryGitStatusSample } from '../../src/runtime/projections/git-status-sampler';
+import {
+  readRepositoryGitStatusSample,
+  sampleRepositoryGitStatusForRepositories,
+  writeRepositoryGitStatusSample,
+} from '../../src/runtime/projections/git-status-sampler';
 import { repositoryGitStatus } from '../../src/runtime/repositories/structured-git';
 
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
+import { createMcpToolContext } from '../../adapters/mcp/multi-repository';
+import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 
 const roots: string[] = [];
 
@@ -81,12 +87,16 @@ describe('git status sampler', () => {
       if (previousTrace === undefined) delete process.env.GIT_TRACE;
       else process.env.GIT_TRACE = previousTrace;
     }
-    const commands = readFileSync(tracePath, 'utf8').split('\n').filter((line) => line.includes('built-in: git '));
+    const commands = readFileSync(tracePath, 'utf8')
+      .split('\n')
+      .filter((line) => line.includes('built-in: git '));
     expect(commands.filter((line) => line.includes('git status '))).toHaveLength(1);
     expect(commands).toHaveLength(2);
     const unborn = readRepositoryGitStatusSample(controllerHome, repository.repoId, repository.activeCheckoutId)!;
     expect(unborn.head).toBeNull();
-    expect(unborn.branch).toBe(execFileSync('git', ['branch', '--show-current'], { cwd: activeRoot, encoding: 'utf8' }).trim());
+    expect(unborn.branch).toBe(
+      execFileSync('git', ['branch', '--show-current'], { cwd: activeRoot, encoding: 'utf8' }).trim(),
+    );
 
     const git = (...args: string[]) => execFileSync('git', args, { cwd: activeRoot, encoding: 'utf8' }).trim();
     git('config', 'user.name', 'sampler-test');
@@ -104,7 +114,17 @@ describe('git status sampler', () => {
     const compareLive = async () => {
       const live = repositoryGitStatus(repository);
       const sampled = await writeRepositoryGitStatusSample(controllerHome, repository);
-      for (const key of ['branch', 'head', 'upstream', 'porcelain', 'shortStatus', 'staged', 'unstaged', 'untracked', 'clean'] as const) {
+      for (const key of [
+        'branch',
+        'head',
+        'upstream',
+        'porcelain',
+        'shortStatus',
+        'staged',
+        'unstaged',
+        'untracked',
+        'clean',
+      ] as const) {
         expect(sampled[key]).toEqual(live[key]);
       }
       return sampled;
@@ -128,16 +148,30 @@ test('repository status refreshes on demand and cached reads stay explicit', asy
   const repository = registerRepository({ path: root, controllerHome });
   const status = async (refresh?: boolean) => {
     const result = await callRepositoryTool(controllerHome, 'repository_git_status', {
-      repo_id: repository.repoId, ...(refresh === undefined ? {} : { refresh }),
+      repo_id: repository.repoId,
+      ...(refresh === undefined ? {} : { refresh }),
     });
     expect(result?.isError).not.toBe(true);
     return JSON.parse(result!.content[0]!.text).status;
   };
-  expect((await status(false)).sampled).toBe(false);
-  expect((await status()).clean).toBe(true);
+  const ctx = createMcpToolContext({ repo: root, controllerHome, profile: 'controller' });
+  const canonicalStatus = async (refresh?: boolean) => {
+    const result = await callCoreCapabilityAdapter(ctx, 'capability_execute', {
+      repo_id: repository.repoId,
+      capability_id: 'repository.git',
+      action: 'status',
+      arguments: refresh === undefined ? {} : { refresh },
+    });
+    expect(result?.isError).not.toBe(true);
+    return (result!.structuredContent as Record<string, any>).status;
+  };
+  const missing = await status(false);
+  expect(missing.sampled).toBe(false);
+  expect(await canonicalStatus(false)).toEqual(missing);
+  expect((await canonicalStatus()).clean).toBe(true);
   writeFileSync(join(root, 'external-edit.txt'), 'changed outside Forge\n');
-  expect((await status(false)).clean).toBe(true);
-  const live = await status();
+  expect((await canonicalStatus(false)).clean).toBe(true);
+  const live = await canonicalStatus();
   expect(live.clean).toBe(false);
   expect(live.untracked).toContain('external-edit.txt');
   expect(live.sampledBy).toBe('caller');

@@ -28,12 +28,11 @@ export const EXPECTED_FACADE_TOOLS = [...PREFERRED_FACADE_TOOL_NAMES] as const;
  * legacy atomics live in the `full` compatibility profile.
  */
 export const OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS = [
-  'repository_safe_patch_apply',
+  'capability_execute',
   'run_check',
   'process_get',
   'process_wait',
 ] as const;
-
 
 export type ConnectorFreshnessStatus =
   | 'local_mcp_updated'
@@ -152,18 +151,18 @@ function runtimeFingerprintMatches(
   // Only a healthy observation can confirm tool-surface freshness.
   if (runtime.healthy !== true) return null;
   if (
-    runtime.toolSurface === undefined
-    && runtime.schemaVersion === undefined
-    && runtime.forgeVersion === undefined
-    && runtime.toolSurfaceFingerprint === undefined
+    runtime.toolSurface === undefined &&
+    runtime.schemaVersion === undefined &&
+    runtime.forgeVersion === undefined &&
+    runtime.toolSurfaceFingerprint === undefined
   ) {
     return null;
   }
   return (
-    runtime.toolSurface === expected.toolSurface
-    && runtime.schemaVersion === expected.schemaVersion
-    && runtime.forgeVersion === expected.forgeVersion
-    && runtime.toolSurfaceFingerprint === expected.toolSurfaceFingerprint
+    runtime.toolSurface === expected.toolSurface &&
+    runtime.schemaVersion === expected.schemaVersion &&
+    runtime.forgeVersion === expected.forgeVersion &&
+    runtime.toolSurfaceFingerprint === expected.toolSurfaceFingerprint
   );
 }
 
@@ -173,9 +172,7 @@ function localMcpHealthUrl(repoRoot: string): string | null {
   const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
   const config = loadMcpServiceLocalConfig(controllerHome);
   const host = (config?.server?.host ?? '127.0.0.1').trim() || '127.0.0.1';
-  const port = typeof config?.server?.port === 'number' && config.server.port > 0
-    ? config.server.port
-    : 8765;
+  const port = typeof config?.server?.port === 'number' && config.server.port > 0 ? config.server.port : 8765;
   const normalized = host === '::1' ? '[::1]' : host;
   return `http://${normalized}:${port}/health`;
 }
@@ -189,7 +186,7 @@ async function fetchJsonHealth(url: string): Promise<Record<string, unknown> | n
       headers: { accept: 'application/json' },
     });
     if (!response.ok) return null;
-    return await response.json() as Record<string, unknown>;
+    return (await response.json()) as Record<string, unknown>;
   } catch {
     return null;
   } finally {
@@ -202,9 +199,7 @@ async function fetchJsonHealth(url: string): Promise<Record<string, unknown> | n
  * is lifecycle diagnostics, not an MCP schema authority, so an unavailable
  * live endpoint remains unverified instead of reviving an old tool snapshot.
  */
-export async function observeLocalMcpRuntime(
-  repoRoot: string,
-): Promise<ConnectorRuntimeObservation | null> {
+export async function observeLocalMcpRuntime(repoRoot: string): Promise<ConnectorRuntimeObservation | null> {
   const healthUrl = localMcpHealthUrl(repoRoot);
   if (healthUrl) {
     const live = await fetchJsonHealth(healthUrl);
@@ -214,7 +209,8 @@ export async function observeLocalMcpRuntime(
         toolSurface: typeof live.toolSurface === 'string' ? live.toolSurface : undefined,
         schemaVersion: typeof live.schemaVersion === 'number' ? live.schemaVersion : undefined,
         forgeVersion: typeof live.version === 'string' ? live.version : undefined,
-        toolSurfaceFingerprint: typeof live.toolSurfaceFingerprint === 'string' ? live.toolSurfaceFingerprint : undefined,
+        toolSurfaceFingerprint:
+          typeof live.toolSurfaceFingerprint === 'string' ? live.toolSurfaceFingerprint : undefined,
         toolCount: typeof live.toolCount === 'number' ? live.toolCount : undefined,
         source: 'live_health',
       };
@@ -229,15 +225,12 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
   const optionalExpected = [...(input.optionalDevelopmentTools ?? OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS)];
   const observedLocalTools = uniqueSorted(input.localToolNames ?? []);
   const connectorProvided = Array.isArray(input.connectorToolNames);
-  const observedConnectorTools = connectorProvided
-    ? uniqueSorted(input.connectorToolNames ?? [])
-    : undefined;
+  const observedConnectorTools = connectorProvided ? uniqueSorted(input.connectorToolNames ?? []) : undefined;
 
   const toolSurface = input.toolSurface ?? FORGE_TOOL_SURFACE;
   const schemaVersion = input.schemaVersion ?? FORGE_MCP_SCHEMA_VERSION;
   const forgeVersion = input.forgeVersion ?? FORGE_VERSION;
-  const toolSurfaceFingerprint = input.toolSurfaceFingerprint
-    ?? forgeToolSurfaceFingerprint(observedLocalTools);
+  const toolSurfaceFingerprint = input.toolSurfaceFingerprint ?? forgeToolSurfaceFingerprint(observedLocalTools);
   const runtime = input.runtime ?? null;
   const fingerprintMatches = runtimeFingerprintMatches(runtime, {
     toolSurface,
@@ -247,15 +240,15 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
   });
 
   const missingLocalTools = missingFrom(expectedFacadeTools, observedLocalTools);
-  const missingConnectorTools = observedConnectorTools
-    ? missingFrom(expectedFacadeTools, observedConnectorTools)
-    : [];
+  const missingConnectorTools = observedConnectorTools ? missingFrom(expectedFacadeTools, observedConnectorTools) : [];
   const optionalPresent = optionalExpected.filter((name) => observedLocalTools.includes(name));
   const optionalMissing = optionalExpected.filter((name) => !observedLocalTools.includes(name));
   const localRegistryVerified = missingLocalTools.length === 0;
   const connectorCallability = input.callabilityProbe
-    ? input.callabilityProbe.callable ? 'verified' as const : 'mismatch' as const
-    : 'unverified' as const;
+    ? input.callabilityProbe.callable
+      ? ('verified' as const)
+      : ('mismatch' as const)
+    : ('unverified' as const);
 
   const base = {
     expectedFacadeTools,
@@ -278,7 +271,9 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
     diagnosticScope: 'local_registry' as const,
     localRegistryVerified,
     connectorCallability,
-    ...(input.callabilityProbe ? { connectorCallabilitySource: input.callabilityProbe.source ?? 'external_probe' as const } : {}),
+    ...(input.callabilityProbe
+      ? { connectorCallabilitySource: input.callabilityProbe.source ?? ('external_probe' as const) }
+      : {}),
   };
 
   if (observedLocalTools.length === 0) {
@@ -342,7 +337,11 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
       summary: `Connector callability mismatch: ${toolName} was exposed locally but the external probe could not call it.`,
       restartRecommended: false,
       reconnectRecommended: true,
-      suggestedActions: ['重新连接 MCP Connector', '确认外部 Connector 使用当前 tools/list', '再次运行 connector callability probe'],
+      suggestedActions: [
+        '重新连接 MCP Connector',
+        '确认外部 Connector 使用当前 tools/list',
+        '再次运行 connector callability probe',
+      ],
       howToFix: [...DEFAULT_HOW_TO_FIX],
       warnings: [errorCode ? `${errorCode}: ${toolName}` : `Connector probe failed for ${toolName}.`],
       connectorLabel: 'Connector 不匹配',
@@ -353,7 +352,10 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
       connectorMismatch: {
         toolName,
         errorCode,
-        message: errorCode === 'UNKNOWN_TOOL' ? 'Connector reported UNKNOWN_TOOL for an exposed tool.' : 'External connector callability probe failed.',
+        message:
+          errorCode === 'UNKNOWN_TOOL'
+            ? 'Connector reported UNKNOWN_TOOL for an exposed tool.'
+            : 'External connector callability probe failed.',
       },
     });
   }
@@ -399,9 +401,7 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
       reconnectRecommended: false,
       suggestedActions: [],
       howToFix: [],
-      warnings: optionalMissing.length
-        ? [`可选交互开发工具未全部暴露：${optionalMissing.join(', ')}`]
-        : [],
+      warnings: optionalMissing.length ? [`可选交互开发工具未全部暴露：${optionalMissing.join(', ')}`] : [],
       connectorLabel: input.callabilityProbe?.callable ? 'Facade 可调用' : '本地 registry 已验证 · Connector 未确认',
       connectorTone: 'green',
       sectionStatusLabel: '正常',
@@ -426,9 +426,7 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
         '运行 forge runtime status 确认健康',
       ],
       howToFix: [...DEFAULT_HOW_TO_FIX],
-      warnings: [
-        '运行中的 MCP 进程工具面可能过期（指纹/版本不匹配）。这不等于已确认 ChatGPT 缺少工具。',
-      ],
+      warnings: ['运行中的 MCP 进程工具面可能过期（指纹/版本不匹配）。这不等于已确认 ChatGPT 缺少工具。'],
       connectorLabel: '需重启 MCP',
       connectorTone: 'amber',
       sectionStatusLabel: '进程可能过期',
@@ -468,9 +466,7 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
   });
 }
 
-function finalize(
-  report: Omit<ConnectorFreshnessReport, never>,
-): ConnectorFreshnessReport {
+function finalize(report: Omit<ConnectorFreshnessReport, never>): ConnectorFreshnessReport {
   return report;
 }
 

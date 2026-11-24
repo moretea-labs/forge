@@ -302,6 +302,7 @@ async function traceControllerMcpRequest(
       traceId,
       requestId,
       ...(rpcId === undefined ? {} : { rpcId }),
+      ...(ctx.sessionId?.trim() ? { sessionId: ctx.sessionId.trim() } : {}),
       layer: ctx.runtimeSourceRoot ? 'canonical_runtime' : 'public_gateway',
       startedAt: startedAtWall,
       ...(ctx.hostConversationSessionId?.trim()

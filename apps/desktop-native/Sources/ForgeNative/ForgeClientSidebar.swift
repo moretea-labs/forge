@@ -55,6 +55,13 @@ enum ForgeSidebarDestination: String, CaseIterable {
 
   var accessibilityIdentifier: String { "forge.nav.\(rawValue)" }
 
+  var showsListColumn: Bool {
+    switch self {
+    case .automations, .analytics: return false
+    default: return true
+    }
+  }
+
   var glyph: ForgeGlyphKind {
     switch self {
     case .agent: return .chat

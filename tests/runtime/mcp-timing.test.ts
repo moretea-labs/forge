@@ -2,15 +2,23 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { flushMcpDiagnostics, readRecentMcpTransportEvents, recordMcpTiming, recordMcpTransportEvent } from '../../src/runtime/diagnostics/mcp-timing';
+import {
+  flushMcpDiagnostics,
+  readRecentMcpTransportEvents,
+  recordMcpHttpTransportSpan,
+  recordMcpTiming,
+  recordMcpTransportEvent,
+} from '../../src/runtime/diagnostics/mcp-timing';
 
 const homes: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(homes.splice(0).map(async (home) => {
-    await flushMcpDiagnostics(home);
-    rmSync(home, { recursive: true, force: true });
-  }));
+  await Promise.all(
+    homes.splice(0).map(async (home) => {
+      await flushMcpDiagnostics(home);
+      rmSync(home, { recursive: true, force: true });
+    }),
+  );
 });
 
 describe('MCP timing diagnostics', () => {
@@ -22,6 +30,61 @@ describe('MCP timing diagnostics', () => {
     expect(readFileSync(join(home, 'audit', 'mcp-timings.jsonl'), 'utf8')).toContain('repository_list');
   });
 
+  test('correlates HTTP response completion with the originating MCP request trace', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-mcp-http-timing-'));
+    homes.push(home);
+    recordMcpTiming(home, {
+      tool: 'rh_status',
+      traceId: 'trace-http-1',
+      requestId: 'mcp-call:request-http-1',
+      rpcId: 17,
+      sessionId: 'session-http-1',
+      layer: 'public_gateway',
+      startedAt: '2026-11-24T12:00:00.000Z',
+      outcome: 'ok',
+      totalToolDurationMs: 9.5,
+    });
+
+    const span = {
+      sessionId: 'session-http-1',
+      layer: 'public_gateway' as const,
+      rpcId: 17,
+      tool: 'rh_status',
+      route: '/mcp',
+      startedAt: '2026-11-24T12:00:00.000Z',
+      finishedAt: '2026-11-24T12:00:00.030Z',
+      durationMs: 30,
+      statusCode: 200,
+      outcome: 'finished' as const,
+    };
+    expect(recordMcpHttpTransportSpan(home, { ...span, rpcId: 18 })).toBe(false);
+    expect(recordMcpHttpTransportSpan(home, { ...span, layer: 'canonical_runtime' })).toBe(false);
+    expect(recordMcpHttpTransportSpan(home, span)).toBe(true);
+    expect(recordMcpHttpTransportSpan(home, span)).toBe(false);
+
+    await flushMcpDiagnostics(home);
+    const records = readFileSync(join(home, 'audit', 'mcp-timings.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const httpSpan = records.find((record) => record.spanKind === 'http_transport');
+    expect(httpSpan).toMatchObject({
+      tool: '__http_transport__',
+      mcpTool: 'rh_status',
+      traceId: 'trace-http-1',
+      requestId: 'mcp-call:request-http-1',
+      rpcId: 17,
+      layer: 'public_gateway',
+      sessionId: 'session-http-1',
+      route: '/mcp',
+      httpStartedAt: span.startedAt,
+      httpFinishedAt: span.finishedAt,
+      httpDurationMs: 30,
+      httpStatusCode: 200,
+      httpOutcome: 'finished',
+    });
+    expect(httpSpan).not.toHaveProperty('totalToolDurationMs');
+  });
 
   test('keeps bounded transport interruption and reconnect evidence across diagnostic flush', async () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-mcp-transport-evidence-'));

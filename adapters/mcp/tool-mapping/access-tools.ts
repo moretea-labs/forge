@@ -4,10 +4,7 @@ import {
   readRepositoryAccessPolicy,
   writeRepositoryAccessPolicy,
 } from '../../../src/runtime/control-plane/governance/access-policy';
-import {
-  persistControllerAccessMode,
-  resolveControllerAccessState,
-} from '../access-mode';
+import { persistControllerAccessMode, resolveControllerAccessState } from '../access-mode';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { loadRepositoryRegistry, resolveRepositorySelection } from '../../../src/runtime/repositories/registry';
 import type { CallToolResult, McpToolDefinition } from './tools';
@@ -36,7 +33,11 @@ function definition(
   };
 }
 
-const repoId = { type: 'string', description: 'Stable repository id. Omit when exactly one repository is selected. Cannot be combined with all_repositories.' };
+const repoId = {
+  type: 'string',
+  description:
+    'Stable repository id. Omit when exactly one repository is selected. Cannot be combined with all_repositories.',
+};
 
 export const accessToolDefinitions: McpToolDefinition[] = [
   definition(
@@ -60,21 +61,21 @@ export const accessToolDefinitions: McpToolDefinition[] = [
       },
       confirm_authorization: {
         type: 'boolean',
-        description: 'Deprecated compatibility field. Normal mode changes use the host AI permission decision and do not require a second Forge confirmation.',
+        description:
+          'Deprecated compatibility field. Normal mode changes use the host AI permission decision and do not require a second Forge confirmation.',
       },
       confirmation_text: {
         type: 'string',
-        description: 'Optional compatibility confirmation text. Tool exposure never changes and no reconnect is required.',
+        description:
+          'Optional compatibility confirmation text. Tool exposure never changes and no reconnect is required.',
       },
     },
     [],
     false,
   ),
-  definition(
-    'repository_access_get',
-    'Read the Request or Full Access permission level for the selected repository.',
-    { repo_id: repoId },
-  ),
+  definition('repository_access_get', 'Read the Request or Full Access permission level for the selected repository.', {
+    repo_id: repoId,
+  }),
   definition(
     'repository_access_preview',
     'Preview how Request or Full Access changes execution approval behavior. Tool discovery remains unchanged.',
@@ -98,16 +99,19 @@ export const accessToolDefinitions: McpToolDefinition[] = [
       repo_id: repoId,
       all_repositories: {
         type: 'boolean',
-        description: 'When true, apply the mode to every enabled registered repository. Cannot be combined with repo_id.',
+        description:
+          'When true, apply the mode to every enabled registered repository. Cannot be combined with repo_id.',
       },
       mode: {
         type: 'string',
         enum: ['request', 'full_access'],
-        description: 'Request asks before elevated local effects. Full Access permits normal local repository work without repeated approval prompts.',
+        description:
+          'Request asks before elevated local effects. Full Access permits normal local repository work without repeated approval prompts.',
       },
       confirm_authorization: {
         type: 'boolean',
-        description: 'Deprecated compatibility field. It is accepted but no longer required as a second authorization layer.',
+        description:
+          'Deprecated compatibility field. It is accepted but no longer required as a second authorization layer.',
       },
       confirmation_text: {
         type: 'string',
@@ -151,7 +155,6 @@ function accessToolGroups(_mode: 'request' | 'full_access'): string[] {
     'commands_and_checks',
     'git_and_branches',
     'worktrees_and_task_runs',
-    'direct_edit_sessions',
     'ios_xcode_and_simulator',
     'screenshots_and_review_artifacts',
   ];
@@ -231,7 +234,8 @@ function previewPayload(
     schemaRefreshRequired: false,
     toolSchemaStable: true,
     restartRequired: false,
-    warning: 'Access mode changes execution approval only. The selected Core/Advanced/Full schema remains unchanged without reconnecting.',
+    warning:
+      'Access mode changes execution approval only. The selected Core/Advanced/Full schema remains unchanged without reconnecting.',
   };
 }
 
@@ -249,12 +253,15 @@ export function callAccessTool(
 
       const mode = args.mode;
       if (!isAccessMode(mode)) {
-        return result({
-          error: {
-            code: 'ACCESS_MODE_INVALID',
-            message: 'mode must be request or full_access',
+        return result(
+          {
+            error: {
+              code: 'ACCESS_MODE_INVALID',
+              message: 'mode must be request or full_access',
+            },
           },
-        }, true);
+          true,
+        );
       }
 
       const applyAll = args.all_repositories === true;
@@ -262,8 +269,9 @@ export function callAccessTool(
 
       const persisted = persistControllerAccessMode(ctx.controllerHome, mode);
       if (applyAll) {
-        const repositories = loadRepositoryRegistry(ctx.controllerHome).repositories
-          .filter((entry) => entry.enabled !== false);
+        const repositories = loadRepositoryRegistry(ctx.controllerHome).repositories.filter(
+          (entry) => entry.enabled !== false,
+        );
         for (const entry of repositories) writeRepositoryAccessPolicy(ctx.controllerHome, entry.repoId, mode, 'user');
       } else {
         writeRepositoryAccessPolicy(ctx.controllerHome, repository.repoId, mode, 'user');
@@ -271,12 +279,13 @@ export function callAccessTool(
       const configured = persisted.state;
       const effective = resolveControllerAccessState({
         controllerHome: ctx.controllerHome,
-          });
+      });
       return result({
         ...accessStatePayload(ctx, repository, configured, effective),
         updatedConfigPath: persisted.configPath,
         scope: applyAll ? 'all_enabled_repositories' : 'repository',
-        warning: 'Access mode was saved. It affects new execution-policy snapshots immediately; no Connector reconnect or schema refresh is required.',
+        warning:
+          'Access mode was saved. It affects new execution-policy snapshots immediately; no Connector reconnect or schema refresh is required.',
       });
     }
 
@@ -297,32 +306,41 @@ export function callAccessTool(
 
     if (name === 'repository_access_preview') {
       const repository = selected(ctx, args);
-      const mode = isAccessMode(args.mode) ? args.mode : readRepositoryAccessPolicy(ctx.controllerHome, repository.repoId).mode;
+      const mode = isAccessMode(args.mode)
+        ? args.mode
+        : readRepositoryAccessPolicy(ctx.controllerHome, repository.repoId).mode;
       return result(previewPayload(ctx, repository, mode, args.all_repositories === true));
     }
 
     const mode = args.mode;
     if (!isAccessMode(mode)) {
-      return result({
-        error: {
-          code: 'ACCESS_MODE_INVALID',
-          message: 'mode must be request or full_access',
+      return result(
+        {
+          error: {
+            code: 'ACCESS_MODE_INVALID',
+            message: 'mode must be request or full_access',
+          },
         },
-      }, true);
+        true,
+      );
     }
     const applyAll = args.all_repositories === true;
     if (applyAll && typeof args.repo_id === 'string' && args.repo_id.trim()) {
-      return result({
-        error: {
-          code: 'ACCESS_MODE_SCOPE_INVALID',
-          message: 'repo_id cannot be combined with all_repositories.',
+      return result(
+        {
+          error: {
+            code: 'ACCESS_MODE_SCOPE_INVALID',
+            message: 'repo_id cannot be combined with all_repositories.',
+          },
         },
-      }, true);
+        true,
+      );
     }
 
     if (applyAll) {
-      const repositories = loadRepositoryRegistry(ctx.controllerHome).repositories
-        .filter((repository) => repository.enabled !== false);
+      const repositories = loadRepositoryRegistry(ctx.controllerHome).repositories.filter(
+        (repository) => repository.enabled !== false,
+      );
       const updated = repositories.map((repository) => ({
         repository: {
           repoId: repository.repoId,
@@ -340,9 +358,10 @@ export function callAccessTool(
         reconnectRequired: false,
         schemaRefreshRequired: false,
         toolSchemaStable: true,
-        warning: mode === 'full_access'
-          ? 'Host-managed mode is active for every enabled repository. Normal work, including ordinary remote writes, follows the host AI permission model; destructive actions, outside-repository paths, and raw secrets retain hard gates.'
-          : 'Compatibility mode is stored for every enabled repository. Normal work still follows the host AI permission model; hard safety gates are unchanged.',
+        warning:
+          mode === 'full_access'
+            ? 'Host-managed mode is active for every enabled repository. Normal work, including ordinary remote writes, follows the host AI permission model; destructive actions, outside-repository paths, and raw secrets retain hard gates.'
+            : 'Compatibility mode is stored for every enabled repository. Normal work still follows the host AI permission model; hard safety gates are unchanged.',
       });
     }
 
@@ -360,17 +379,21 @@ export function callAccessTool(
       reconnectRequired: false,
       schemaRefreshRequired: false,
       toolSchemaStable: true,
-      warning: mode === 'full_access'
-        ? 'Host-managed mode is active. Normal work, including ordinary remote writes, follows the host AI permission model; destructive actions, outside-repository paths, and raw secrets retain hard gates.'
-        : 'Compatibility mode is stored. Normal work still follows the host AI permission model; hard safety gates are unchanged.',
+      warning:
+        mode === 'full_access'
+          ? 'Host-managed mode is active. Normal work, including ordinary remote writes, follows the host AI permission model; destructive actions, outside-repository paths, and raw secrets retain hard gates.'
+          : 'Compatibility mode is stored. Normal work still follows the host AI permission model; hard safety gates are unchanged.',
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return result({
-      error: {
-        code: message.includes(':') ? message.slice(0, message.indexOf(':')) : 'ACCESS_POLICY_FAILED',
-        message,
+    return result(
+      {
+        error: {
+          code: message.includes(':') ? message.slice(0, message.indexOf(':')) : 'ACCESS_POLICY_FAILED',
+          message,
+        },
       },
-    }, true);
+      true,
+    );
   }
 }

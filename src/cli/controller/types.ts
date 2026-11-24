@@ -72,11 +72,9 @@ export interface TaskCommandEvidence {
 
 export interface IntegrationEvidence {
   runId: string;
-  kind: 'commit' | 'no_change' | 'superseded';
   targetBranch: string;
   targetRevision: string;
   reachable: boolean;
-  recordedAt: string;
 }
 
 export interface CleanupEvidence {

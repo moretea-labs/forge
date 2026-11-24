@@ -20,11 +20,13 @@ enum ForgePalette {
   static let selectionStrong = Color(nsColor: .labelColor).opacity(0.060)
   // Semantic washes adapt to appearance instead of disappearing on light glass.
   private static func wash(dark: CGFloat, light: CGFloat) -> Color {
-    Color(nsColor: NSColor(name: nil) { appearance in
-      let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-      return isDark ? NSColor.white.withAlphaComponent(dark)
-        : NSColor.black.withAlphaComponent(light)
-    })
+    Color(
+      nsColor: NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark
+          ? NSColor.white.withAlphaComponent(dark)
+          : NSColor.black.withAlphaComponent(light)
+      })
   }
   static let userBubble = wash(dark: 0.065, light: 0.045)
   static let raisedSurface = wash(dark: 0.055, light: 0.035)
@@ -237,9 +239,8 @@ struct ForgeWindowConfigurator: NSViewRepresentable {
 
   private func configure(_ window: NSWindow?) {
     guard let window else { return }
-    // Follow the user's macOS appearance. Palette washes and native materials
-    // are semantic, so light and dark modes share the same visual hierarchy.
-    window.appearance = nil
+    // Keep Forge's glass surfaces Dark regardless of the macOS global appearance.
+    window.appearance = NSAppearance(named: .darkAqua)
     window.isOpaque = false
     window.backgroundColor = .clear
     window.titlebarAppearsTransparent = true
@@ -386,7 +387,6 @@ extension View {
       .background(ForgePalette.softFill, in: RoundedRectangle(cornerRadius: 8))
   }
 }
-
 
 struct ForgeClientFormSection<Content: View>: View {
   let title: String

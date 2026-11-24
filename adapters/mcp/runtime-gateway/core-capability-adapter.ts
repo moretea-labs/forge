@@ -155,21 +155,18 @@ export async function callCoreCapabilityAdapter(
         ...(typeof args.checkout_id === 'string' && args.checkout_id.trim()
           ? { checkout_id: args.checkout_id.trim() }
           : {}),
-        ...(typeof args.request_id === 'string' && args.request_id.trim() ? { request_id: args.request_id.trim() } : {}),
+        ...(typeof args.request_id === 'string' && args.request_id.trim()
+          ? { request_id: args.request_id.trim() }
+          : {}),
       };
       if (action === 'apply' && requestsRepositorySafePatchValidation(forwardedArgs)) {
         return executeRepositorySafePatchComposite(ctx, forwardedArgs);
       }
-      const forwarded = await callRepositoryTool(
-        ctx.controllerHome,
-        toolName,
-        forwardedArgs,
-        {
-          sessionId: ctx.sessionId,
-          principalId: ctx.principalId,
-          controllerInstanceId: ctx.controllerInstanceId,
-        },
-      );
+      const forwarded = await callRepositoryTool(ctx.controllerHome, toolName, forwardedArgs, {
+        sessionId: ctx.sessionId,
+        principalId: ctx.principalId,
+        controllerInstanceId: ctx.controllerInstanceId,
+      });
       return (
         forwarded ??
         result(
@@ -204,6 +201,36 @@ export async function callCoreCapabilityAdapter(
           },
         },
         true,
+      );
+    }
+    if (action === 'status') {
+      const forwarded = await callRepositoryTool(
+        ctx.controllerHome,
+        'repository_git_status',
+        {
+          ...(typeof args.repo_id === 'string' && args.repo_id.trim() ? { repo_id: args.repo_id.trim() } : {}),
+          ...(typeof args.checkout_id === 'string' && args.checkout_id.trim()
+            ? { checkout_id: args.checkout_id.trim() }
+            : {}),
+          ...(typeof input.refresh === 'boolean' ? { refresh: input.refresh } : {}),
+        },
+        {
+          sessionId: ctx.sessionId,
+          principalId: ctx.principalId,
+          controllerInstanceId: ctx.controllerInstanceId,
+        },
+      );
+      return (
+        forwarded ??
+        result(
+          {
+            error: {
+              code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE',
+              message: 'Repository Git status capability route is unavailable.',
+            },
+          },
+          true,
+        )
       );
     }
     const repository = selected(ctx, args);

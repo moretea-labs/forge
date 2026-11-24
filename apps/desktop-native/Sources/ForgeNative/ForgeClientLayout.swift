@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Geometry shared by the shell and conversation; visual tokens remain in ForgeClientDesign.
 extension ForgeClientDesign.Shell {
-  static let workspaceHeaderHeight: CGFloat = 30
-  static let conversationHeaderHeight: CGFloat = 30
+  static let workspaceHeaderHeight: CGFloat = 36
+  static let conversationHeaderHeight: CGFloat = 36
   static let workspaceStatusSlotWidth: CGFloat = 28
   static let composerTextHeight: CGFloat = 38
   static let readingGutter: CGFloat = 20
@@ -24,10 +24,11 @@ extension ForgeClientDesign.Shell {
     return width - 2 * composerControlInset < 564
   }
 
-  /// A labeled 52pt rail and 176pt list remain readable at compact widths.
+  /// A 52pt icon rail and 176pt contextual list remain readable at compact widths.
   /// The shell grows continuously to its 288pt desktop cap without breakpoint jumps.
-  static func sidebarWidth(windowWidth: CGFloat) -> CGFloat {
-    min(sidebarIdeal, max(sidebarMin, windowWidth * 0.21))
+  static func sidebarWidth(windowWidth: CGFloat, showsListColumn: Bool = true) -> CGFloat {
+    guard showsListColumn else { return iconRailWidth }
+    return min(sidebarIdeal, max(sidebarMin, windowWidth * 0.21))
   }
 }
 

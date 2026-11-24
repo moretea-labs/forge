@@ -10,6 +10,18 @@ export const EDIT_OPERATION_TYPES = [
   'move',
 ] as const;
 
+/** Shared 1-based anchor occurrence lookup for every edit implementation. */
+export function findOccurrence(value: string, anchor: string, occurrence: number): number {
+  let from = 0;
+  for (let current = 1; current <= occurrence; current += 1) {
+    const index = value.indexOf(anchor, from);
+    if (index < 0) return -1;
+    if (current === occurrence) return index;
+    from = index + anchor.length;
+  }
+  return -1;
+}
+
 export type EditOperation =
   | { type: 'create'; path: string; content: string }
   | { type: 'write'; path: string; expectedSha256: string; content: string }

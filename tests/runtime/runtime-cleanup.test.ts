@@ -1500,6 +1500,57 @@ fi
     expect(repositoryProjectionIsDirty(home, repositoryB.repoId)).toBe(false);
   });
 
+  test('native cleanup preview and apply report bounded logical size and statfs space delta', () => {
+    const repoRoot = controllerHome();
+    const home = controllerHome();
+    const harnessRoot = join(repoRoot, '.ai', 'harness');
+    const relocatedJobs = join(home, 'local-jobs');
+    mkdirSync(harnessRoot, { recursive: true });
+    mkdirSync(relocatedJobs, { recursive: true });
+    symlinkSync(relocatedJobs, join(harnessRoot, 'local-jobs'));
+
+    const jobRoot = join(relocatedJobs, 'JOB-cleanup-size-statfs');
+    mkdirSync(jobRoot, { recursive: true });
+    const jobJson = JSON.stringify({ jobId: 'JOB-cleanup-size-statfs', status: 'succeeded' });
+    writeFileSync(join(jobRoot, 'job.json'), jobJson);
+    writeFileSync(join(jobRoot, 'payload.bin'), Buffer.alloc(8 * 1024, 7));
+    age(jobRoot);
+
+    const options = {
+      minAgeMinutes: 0,
+      includeTempDirs: false,
+      includeTerminalLocalJobs: true,
+      includeLegacyRuns: false,
+      includeHistoricalAttention: false,
+      maxCandidates: 20,
+      maxRemovals: 10,
+    };
+    const preview = previewRuntimeCleanup(repoRoot, options);
+    const candidate = preview.candidates.find((entry) => entry.id === 'JOB-cleanup-size-statfs');
+    expect(candidate?.safe).toBe(true);
+    expect(candidate?.logicalBytes).toBeGreaterThan(8 * 1024);
+    expect(candidate?.sizeTruncated).toBe(false);
+    expect(preview.summary.logicalBytes).toBeGreaterThan(8 * 1024);
+    expect(preview.summary.logicalBytesTruncated).toBe(false);
+    expect(preview.filesystems.length).toBeGreaterThan(0);
+    expect(preview.filesystems[0]?.availableBytes).toBeGreaterThan(0);
+
+    const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
+    process.env.FORGE_CONTROLLER_HOME = '';
+    try {
+      const result = applyRuntimeCleanup(repoRoot, { ...options, confirmCleanup: true });
+      expect(result.applied.find((entry) => entry.id === 'JOB-cleanup-size-statfs')?.applied).toBe(true);
+      expect(existsSync(jobRoot)).toBe(false);
+      expect(result.filesystemBefore.length).toBeGreaterThan(0);
+      expect(result.filesystemAfter.length).toBeGreaterThan(0);
+      expect(result.availableBytesDelta.length).toBeGreaterThan(0);
+      expect(Number.isFinite(result.availableBytesDelta[0]?.deltaAvailableBytes)).toBe(true);
+    } finally {
+      if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+      else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;
+    }
+  });
+
   test('a cleanup failure does not interrupt the scheduler tick', async () => {
     const home = controllerHome();
     const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });

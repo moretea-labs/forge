@@ -219,7 +219,11 @@ describe('handoff and facade contracts', () => {
       'diff_paths',
       'restore_paths',
       'stage_paths',
+      'status',
     ]);
+    expect(schema?.actions?.status).toMatchObject({ readOnly: true, risk: 'readonly' });
+    expect(schema?.actions?.status?.argumentsSchema?.required).toBeUndefined();
+    expect(schema?.actions?.status?.argumentsSchema?.properties).toEqual({ refresh: expect.any(Object) });
     expect(schema?.actions?.diff).toMatchObject({ readOnly: true, risk: 'readonly' });
     expect(schema?.actions?.diff?.argumentsSchema?.required).toBeUndefined();
     expect(schema?.actions?.diff?.argumentsSchema?.properties).toEqual(

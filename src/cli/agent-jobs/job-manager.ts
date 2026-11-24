@@ -545,7 +545,7 @@ function reconcileLatestTerminalRun(repoRoot: string, meta: AgentJobMeta): void 
 }
 
 function reconcileIncompleteAutoIntegration(repoRoot: string, path: string, meta: AgentJobMeta): void {
-  const cleanupWasPending = Boolean(meta.integratedSessionId);
+  const cleanupWasPending = Boolean(meta.integratedAt || meta.integratedSessionId);
   const message =
     meta.autoIntegrationError?.trim() ||
     (cleanupWasPending
@@ -791,7 +791,13 @@ export function getAgentJob(
       const previous = meta.status;
       meta.exitCode = result.exitCode;
       meta.error = result.error;
-      if (result.ok && meta.autoIntegrate === true && meta.executionMode === 'worktree' && !meta.integratedSessionId) {
+      if (
+        result.ok &&
+        meta.autoIntegrate === true &&
+        meta.executionMode === 'worktree' &&
+        !meta.integratedAt &&
+        !meta.integratedSessionId
+      ) {
         reconcileIncompleteAutoIntegration(repoRoot, path, meta);
       } else {
         meta.status = result.ok ? 'succeeded' : 'failed';
@@ -923,26 +929,6 @@ export function listPendingIntegrationRuns(repoRoot: string, limit = 500): Agent
       return [];
     }
   });
-}
-
-export function recordAgentJobIntegrationEvidence(
-  repoRoot: string,
-  runId: string,
-  evidence: NonNullable<AgentJobMeta['integrationEvidence']>,
-): AgentJobMeta {
-  const current = getAgentJob(repoRoot, runId);
-  const { stdoutTail: _stdout, stderrTail: _stderr, ...meta } = current;
-  meta.integrationEvidence = evidence;
-  meta.integratedAt = meta.integratedAt ?? evidence.recordedAt;
-  meta.closureState = 'cleanup_pending';
-  meta.closureUpdatedAt = evidence.recordedAt;
-  writeAgentMeta(repoRoot, metaPath(repoRoot, runId), meta);
-  appendAgentJobEvent(repoRoot, runId, {
-    type: 'run_activity',
-    message: `Durable integration evidence recorded for ${evidence.targetRevision}; cleanup is pending.`,
-    data: { integrationEvidence: evidence },
-  });
-  return meta;
 }
 
 export function listAgentJobs(repoRoot: string, limit = 50): AgentJobMeta[] {
@@ -1251,7 +1237,6 @@ export function markAgentJobReviewedCompletion(
 export function markAgentJobIntegrated(
   repoRoot: string,
   runId: string,
-  sessionId: string,
   options: {
     changedFiles?: string[];
     changeOutcome?: AgentJobMeta['changeOutcome'];
@@ -1260,26 +1245,30 @@ export function markAgentJobIntegrated(
   const current = getAgentJob(repoRoot, runId);
   if (current.provider !== 'local')
     throw new Error(
-      'GitHub cloud session changes are reviewed and merged through their pull request, not local edit-session integration.',
+      'GitHub cloud changes are reviewed and merged through their pull request, not the local worktree integration path.',
     );
   const { stdoutTail: _stdout, stderrTail: _stderr, ...meta } = current;
-  meta.integratedSessionId = sessionId;
   meta.integratedAt = new Date().toISOString();
   if (options.changedFiles) meta.changedFiles = [...options.changedFiles];
   if (options.changeOutcome) meta.changeOutcome = options.changeOutcome;
+  if (meta.status === 'waiting_for_user' && meta.preservationReason === 'integration_review_required') {
+    meta.status = 'succeeded';
+    meta.finishedAt = meta.finishedAt ?? meta.integratedAt;
+  }
   meta.closureState = 'integrated';
   meta.closureUpdatedAt = meta.integratedAt;
+  delete meta.autoIntegrationError;
   delete meta.preservationReason;
   delete meta.preservationDetails;
   delete meta.integrationReviewPath;
   writeAgentMeta(repoRoot, metaPath(repoRoot, runId), meta);
   appendAgentJobEvent(repoRoot, runId, {
     type: 'run_integrated',
-    message: `Integrated through edit session ${sessionId}.`,
+    message: 'Integrated ' + (meta.changedFiles?.length ?? 0) + ' path(s) from isolated Task worktree.',
   });
   return markAgentJobClosure(repoRoot, runId, {
     state: 'cleanup_pending',
-    details: `Integration ${sessionId} completed; cleanup finalizer is pending.`,
+    details: 'Integration completed; cleanup finalizer is pending.',
   });
 }
 

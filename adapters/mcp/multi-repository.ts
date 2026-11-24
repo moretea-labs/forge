@@ -329,20 +329,6 @@ export function repositoryScopedToolArgs(
   if (githubRepo && name === 'publish_issue_to_github' && args.repo === undefined) {
     args.repo = githubRepo;
   }
-  if (
-    githubRepo &&
-    ['dispatch_task', 'launch_issue', 'dispatch_ready_tasks'].includes(name) &&
-    args.github_repo === undefined
-  ) {
-    args.github_repo = githubRepo;
-  }
-  if (
-    repository.defaultBranch &&
-    ['dispatch_task', 'launch_issue', 'dispatch_ready_tasks'].includes(name) &&
-    args.base_ref === undefined
-  ) {
-    args.base_ref = repository.defaultBranch;
-  }
   if (name === 'publish_issue_to_github' && github) {
     if (args.labels === undefined && github.labels?.length) args.labels = [...github.labels];
     if (args.project_owner === undefined && github.projectOwner) args.project_owner = github.projectOwner;

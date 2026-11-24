@@ -214,6 +214,57 @@ describe('Process Runtime fine-grained resource claims', () => {
     }
   });
 
+  test('exact validated path leases bypass the legacy repository ControllerLock while same-path and opaque claims stay fenced (#713)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-713-legacy-repository-lock-'));
+    const pathA = [{ resourceKey: 'path:co1:src/alpha.ts', mode: 'write' as const, checkoutId: 'co1' }];
+    const pathB = [{ resourceKey: 'path:co1:src/beta.ts', mode: 'write' as const, checkoutId: 'co1' }];
+    const opaqueSource = [{ resourceKey: 'repo-content:*', mode: 'write' as const, checkoutId: 'co1' }];
+    const opts = {
+      visibility: 'ephemeral' as const,
+      notifyScheduler: false,
+      invalidateProjection: false,
+      emitRuntimeEvent: false,
+    };
+    try {
+      ensureControllerHome(home);
+      await withControllerLockAsync(
+        home,
+        { scope: 'repository', repoId: 'repo1' },
+        'legacy-editor',
+        async () => {
+          const alpha = acquireExecutionLeases(home, 'repo1', 'path-alpha', pathA, opts);
+          expect(alpha.acquired).toBe(true);
+          if (!alpha.acquired) return;
+          try {
+            const overlap = acquireExecutionLeases(home, 'repo1', 'path-alpha-overlap', pathA, opts);
+            expect(overlap.acquired).toBe(false);
+            expect(overlap.blockers[0]).toMatchObject({
+              resourceKey: pathA[0]!.resourceKey,
+              ownerJobId: 'path-alpha',
+            });
+
+            const beta = acquireExecutionLeases(home, 'repo1', 'path-beta', pathB, opts);
+            expect(beta.acquired).toBe(true);
+            if (beta.acquired) releaseExecutionLeases(home, 'repo1', 'path-beta', beta.leases, opts);
+
+            const opaque = acquireExecutionLeases(home, 'repo1', 'opaque-source', opaqueSource, opts);
+            expect(opaque.acquired).toBe(false);
+            expect(opaque.blockers[0]).toMatchObject({
+              resourceKey: 'repository-writer',
+              ownerJobId: 'legacy-editor',
+            });
+          } finally {
+            releaseExecutionLeases(home, 'repo1', 'path-alpha', alpha.leases, opts);
+          }
+        },
+        undefined,
+        0,
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('scoped editor releases only its own resource lease after mutation throws (#713)', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-713-scoped-editor-throw-'));
     const opts = {

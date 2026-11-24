@@ -2021,12 +2021,14 @@ for (const path of [
     'setup commands must import their canonical synchronous process/environment owner',
   );
 }
-requireText('src/runtime/editing/edit-session.ts', 'export function findOccurrence');
-forbid(
-  'src/runtime/repositories/safe-patch.ts',
-  /^function\s+findOccurrence\s*\(/m,
-  'Safe Patch preflight must reuse Direct Edit anchor occurrence matching',
-);
+requireText('src/runtime/editing/edit-operation-contract.ts', 'export function findOccurrence');
+for (const path of ['src/runtime/editing/edit-session.ts', 'src/runtime/repositories/safe-patch.ts']) {
+  forbid(
+    path,
+    /^(?:export )?function\s+findOccurrence\s*\(/m,
+    'edit implementations must reuse the shared edit-operation anchor matcher',
+  );
+}
 requireText('src/runtime/editing/edit-session.ts', 'beforeMode');
 requireText('src/runtime/editing/edit-session.ts', 'afterMode');
 requireText('src/runtime/editing/edit-session.ts', '{ mode: record.beforeMode }');
@@ -2112,7 +2114,11 @@ forbid(
   /'work_execute'/,
   'A Work-bound execution helper must not be a second public command tool',
 );
-requireText('adapters/mcp/tool-mapping/repository-tools.ts', "definition('execute_command'");
+requireMatch(
+  'adapters/mcp/tool-mapping/repository-tools.ts',
+  /definition\(\s*'execute_command'/,
+  'expose the single execute_command schema',
+);
 requireText('adapters/mcp/toolset-names.ts', "'execute_command'");
 forbid(
   'adapters/mcp/toolset-names.ts',
@@ -2197,17 +2203,17 @@ requireMissing('src/runtime/execution/jobs/legacy-adapter.ts');
 requireMissing('src/cli/controller/migrated-issue-decision.ts');
 forbid(
   'src/cli/controller/issue-store.ts',
-  /export function createIssue|function issueId|function buildTasks|function taskFromDraft/,
+  /export function createIssue\b|function issueId\b|function buildTasks\b|function taskFromDraft\b/,
   'retired legacy Issue creation API must stay physically absent from production',
 );
 forbid(
   'src/cli/controller/issue-store.ts',
-  /export function (?:getIssueEffectiveView|listIssueEffectiveViews)/,
+  /export function (?:getIssueEffectiveView|listIssueEffectiveViews)\b/,
   'zero-consumer legacy Issue projection wrappers must stay physically absent',
 );
 forbid(
   'src/cli/controller/issue-store.ts',
-  /export function (?:setTaskDependencies|archiveIssue|restoreIssue)/,
+  /export function (?:setTaskDependencies|archiveIssue|restoreIssue)\b/,
   'zero-consumer legacy Issue mutation APIs must stay physically absent',
 );
 forbid(
@@ -2283,7 +2289,14 @@ forbid(
   /\bretryAgentJob\b|\bacceptTaskJob\b|\bstartTaskJob\b|\barchiveIssue\b|\brestoreIssue\b|\brecordTaskVerification\b|\bsetTaskDependencies\b|\bacceptVerifiedTask\b|\bsaveControllerProjectState\b|\bupdateTask\b/,
   'Local Bridge HTTP must not retain legacy Issue/Task, project-state or Agent Run writers',
 );
-requireText('src/cli/local-bridge/server.ts', 'runEditSessionMutationInWorker(');
+for (const contract of ['applySessionlessMutationBatch(', 'claimPathWrites(', 'withRepositoryMutationExclusion(']) {
+  requireText('src/cli/local-bridge/facade-api.ts', contract);
+}
+forbid(
+  'src/cli/local-bridge/server.ts',
+  /runEditSessionMutationInWorker\(|withRepositoryMutationExclusionAsync\(/,
+  'Local Bridge must use the sessionless mutation planner instead of the retired EditSession worker',
+);
 requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
 requireText('src/runtime/safe-tooling/mac-keychain-write.ts', "spawnSync('/usr/bin/security', ['-i']");
 requireText('src/runtime/safe-tooling/google-credential-store.ts', 'writeMacKeychainGenericPassword(');
@@ -2322,7 +2335,7 @@ requireText(
   "constraints: { kind: 'plugin_capability_authorization', pluginId, capabilityId },",
 );
 requireText('adapters/mcp/runtime-gateway/status-inbox-adapter.ts', 'gatewayLatencySummaries(repository.repoId)');
-requireText('src/cli/local-bridge/server.ts', 'withRepositoryMutationExclusionAsync(');
+requireText('src/cli/local-bridge/facade-api.ts', 'withRepositoryMutationExclusion(');
 requireText(
   'src/runtime/resources/leases/store.ts',
   'assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner, mutationClaims)',
@@ -3475,7 +3488,7 @@ forbid(
   new RegExp(`${controllerRepoCallPattern.source}|syncAssistantPluginRegistry|getAssistantPluginManifest\\s*\\(`),
   'Computer status/doctor must use Controller-scoped stored/targeted provider APIs rather than a fake repository or global execution-style manifest lookup',
 );
-requireText('src/cli/commands/plugin.ts', 'external-plugin:${pluginId}');
+requireText('src/cli/commands/plugin.ts', `external-plugin:\${pluginId}`);
 requireText('src/runtime/plugins/store.ts', 'export function readControllerStoredPluginManifest');
 requireText('src/runtime/plugins/store.ts', 'export function syncControllerPluginManifest');
 requireText('src/runtime/plugins/store.ts', 'export function removeControllerPluginManifestProjection');

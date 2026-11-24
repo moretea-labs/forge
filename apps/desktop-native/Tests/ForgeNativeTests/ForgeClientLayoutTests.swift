@@ -26,6 +26,24 @@ final class ForgeClientLayoutTests: XCTestCase {
       })
   }
 
+  func testUtilityDestinationsWithoutSubnavigationCollapseToIconRail() {
+    XCTAssertFalse(ForgeSidebarDestination.automations.showsListColumn)
+    XCTAssertFalse(ForgeSidebarDestination.analytics.showsListColumn)
+    for destination in [
+      ForgeSidebarDestination.agent, .projects, .workbench, .resources, .settings,
+    ] {
+      XCTAssertTrue(destination.showsListColumn)
+    }
+    XCTAssertEqual(
+      ForgeClientDesign.Shell.sidebarWidth(windowWidth: 860, showsListColumn: false),
+      ForgeClientDesign.Shell.iconRailWidth
+    )
+    XCTAssertEqual(
+      ForgeClientDesign.Shell.sidebarWidth(windowWidth: 860, showsListColumn: true),
+      228
+    )
+  }
+
   func testSidebarWidthChangesContinuouslyAboveCompactMinimum() {
     let narrowBefore = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1087)
     let narrowAfter = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1088)
@@ -47,10 +65,12 @@ final class ForgeClientLayoutTests: XCTestCase {
     let glyphs = ForgeSidebarDestination.allCases.map(\.glyph)
     XCTAssertEqual(Set(glyphs).count, glyphs.count)
     let navigationIdentifiers = ForgeSidebarDestination.allCases.map(\.accessibilityIdentifier)
-    XCTAssertEqual(navigationIdentifiers, [
-      "forge.nav.agent", "forge.nav.projects", "forge.nav.workbench",
-      "forge.nav.automations", "forge.nav.resources", "forge.nav.analytics", "forge.nav.settings",
-    ])
+    XCTAssertEqual(
+      navigationIdentifiers,
+      [
+        "forge.nav.agent", "forge.nav.projects", "forge.nav.workbench",
+        "forge.nav.automations", "forge.nav.resources", "forge.nav.analytics", "forge.nav.settings",
+      ])
     XCTAssertEqual(Set(navigationIdentifiers).count, navigationIdentifiers.count)
 
     XCTAssertEqual(glyphs, [.chat, .folder, .board, .tasks, .library, .analytics, .settings])
@@ -92,26 +112,48 @@ final class ForgeClientLayoutTests: XCTestCase {
   }
 
   func testHeaderAndReadingGutterHaveSharedMetrics() {
-    XCTAssertEqual(ForgeClientDesign.Shell.workspaceHeaderHeight, 30)
-    XCTAssertEqual(ForgeClientDesign.Shell.conversationHeaderHeight, 30)
+    XCTAssertEqual(ForgeClientDesign.Shell.workspaceHeaderHeight, 36)
+    XCTAssertEqual(ForgeClientDesign.Shell.conversationHeaderHeight, 36)
     XCTAssertEqual(ForgeClientDesign.Shell.workspaceStatusSlotWidth, 28)
     XCTAssertEqual(ForgeClientDesign.Shell.composerTextHeight, 38)
     XCTAssertEqual(ForgeClientDesign.Shell.readingGutter, 20)
     XCTAssertEqual(ForgeClientDesign.Shell.composerControlHeight, 30)
   }
 
+  func testClientOwnsDarkGlassAppearanceIndependentOfSystemTheme() throws {
+    let testFile = URL(fileURLWithPath: #filePath)
+    let packageRoot =
+      testFile
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let appSource = try String(
+      contentsOf: packageRoot.appendingPathComponent("Sources/ForgeNative/ForgeNativeApp.swift"),
+      encoding: .utf8
+    )
+    let designSource = try String(
+      contentsOf: packageRoot.appendingPathComponent("Sources/ForgeNative/ForgeClientDesign.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(appSource.contains(".preferredColorScheme(.dark)"))
+    XCTAssertTrue(designSource.contains("window.appearance = NSAppearance(named: .darkAqua)"))
+    XCTAssertFalse(designSource.contains("window.appearance = nil"))
+  }
+
   func testDropdownsDoNotRegressToRaisedPopupPickers() throws {
     let testFile = URL(fileURLWithPath: #filePath)
-    let packageRoot = testFile
+    let packageRoot =
+      testFile
       .deletingLastPathComponent()
       .deletingLastPathComponent()
       .deletingLastPathComponent()
     let sourcesRoot = packageRoot.appendingPathComponent("Sources/ForgeNative")
     let fileManager = FileManager.default
-    let sourceURLs = (fileManager.enumerator(
-      at: sourcesRoot,
-      includingPropertiesForKeys: nil
-    )?.allObjects as? [URL] ?? []).filter { $0.pathExtension == "swift" }
+    let sourceURLs =
+      (fileManager.enumerator(
+        at: sourcesRoot,
+        includingPropertiesForKeys: nil
+      )?.allObjects as? [URL] ?? []).filter { $0.pathExtension == "swift" }
 
     var raisedMenuPickerFiles: [String] = []
     var nonSegmentedPickerFiles: [String] = []
@@ -156,7 +198,8 @@ final class ForgeClientLayoutTests: XCTestCase {
 
   func testClientNoticeLivesBesideSettingsInsteadOfConsumingTopSpace() throws {
     let testFile = URL(fileURLWithPath: #filePath)
-    let packageRoot = testFile
+    let packageRoot =
+      testFile
       .deletingLastPathComponent()
       .deletingLastPathComponent()
       .deletingLastPathComponent()
@@ -166,11 +209,11 @@ final class ForgeClientLayoutTests: XCTestCase {
     XCTAssertTrue(source.contains("forge.settings.notice"))
     XCTAssertTrue(source.contains("private var clientNoticePopover"))
     XCTAssertFalse(
-      source.contains("if let error = model.error, model.page != .schedule && model.page != .plugins"),
+      source.contains(
+        "if let error = model.error, model.page != .schedule && model.page != .plugins"),
       "Client errors must not consume a persistent row above the main workspace."
     )
   }
-
 
   func testWindowToolbarOnlyReservesSpaceForAnAvailableBackAction() {
     XCTAssertFalse(
