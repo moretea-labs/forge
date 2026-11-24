@@ -229,6 +229,5 @@ export interface IssueReadiness {
   approvalPendingTaskIds: string[];
   blockedTaskIds?: string[];
   taskReadiness?: TaskReadiness[];
-  suggestedMaxParallel: number;
   agents: Record<ControllerAgent, number>;
 }

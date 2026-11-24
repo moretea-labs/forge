@@ -167,56 +167,6 @@ export function taskExecutionPolicy(task: Pick<ControllerTask, 'risk' | 'allowed
 }
 
 
-export interface ExecutionScopeDescriptor {
-  executionClass: TaskExecutionClass;
-  allowedPaths: readonly string[];
-}
-
-function scopePrefix(path: string): string {
-  return path
-    .trim()
-    .replace(/\\/g, '/')
-    .replace(/^\.\//, '')
-    .split(/[?*{\[]/, 1)[0]
-    .replace(/\/+$/, '');
-}
-
-/**
- * Returns true only when two non-read-only Tasks declare overlapping write scopes.
- * Missing scope is not treated as a global lock: it is insufficient evidence of a
- * conflict and the workspace isolation guard remains authoritative. A declared
- * repository-rooted globstar scope is intentionally broad
- * and conflicts with every other declared write scope.
- */
-export function executionScopesConflict(
-  left: ExecutionScopeDescriptor,
-  right: ExecutionScopeDescriptor,
-): boolean {
-  if (left.executionClass === 'read_only' || right.executionClass === 'read_only') return false;
-  if (left.allowedPaths.length === 0 || right.allowedPaths.length === 0) return false;
-  for (const leftPath of left.allowedPaths) {
-    const a = scopePrefix(leftPath);
-    if (!a) return true;
-    for (const rightPath of right.allowedPaths) {
-      const b = scopePrefix(rightPath);
-      if (!b || a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)) return true;
-    }
-  }
-  return false;
-}
-
-export function taskWriteScopesConflict(
-  left: Pick<ControllerTask, 'objective' | 'title' | 'risk' | 'allowedPaths' | 'forbiddenPaths'>,
-  right: Pick<ControllerTask, 'objective' | 'title' | 'risk' | 'allowedPaths' | 'forbiddenPaths'>,
-): boolean {
-  const leftClass = classifyTaskExecution(left).executionClass;
-  const rightClass = classifyTaskExecution(right).executionClass;
-  return executionScopesConflict(
-    { executionClass: leftClass, allowedPaths: left.allowedPaths },
-    { executionClass: rightClass, allowedPaths: right.allowedPaths },
-  );
-}
-
 const LEGACY_AUTOMATIC_ACCEPTANCE = /(?:^successful run [^;]+(?: integrated by [^;]+)?\.?$|successful run .*acceptance evidence|accepted from successful run)/i;
 
 export function taskAcceptanceOutcome(result: TaskAcceptanceResult | undefined): TaskAcceptanceOutcome | 'missing' {

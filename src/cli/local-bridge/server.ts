@@ -84,7 +84,6 @@ import {
   forgeToolSurfaceFingerprint,
   defaultLocalAgentRunners,
 } from '../../runtime/shared/runtime-config';
-import { taskWriteScopesConflict } from '../controller/execution-policy';
 import { finishEditSession } from '../controller/completion-orchestrator';
 import { getToolPolicy } from '../../runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
