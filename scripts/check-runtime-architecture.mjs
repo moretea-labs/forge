@@ -2196,6 +2196,11 @@ requireMissing('src/runtime/control-plane/global-scheduler/worker-stderr.ts');
 requireMissing('src/runtime/execution/jobs/legacy-adapter.ts');
 requireMissing('src/cli/controller/migrated-issue-decision.ts');
 forbid(
+  'src/cli/controller/issue-store.ts',
+  /export function (?:setTaskDependencies|archiveIssue|restoreIssue)/,
+  'zero-consumer legacy Issue mutation APIs must stay physically absent',
+);
+forbid(
   'src/cli/controller/governance.ts',
   /reconcileProjectGovernance|archiveTerminalIssue|acceptVerifiedTask|setTaskDependencies|updateIssue|updateTask|saveControllerProjectState/,
   'legacy governance mutation owner must stay physically absent',

@@ -713,37 +713,6 @@ export function createIssue(
   return written;
 }
 
-export function setTaskDependencies(
-  repoRoot: string,
-  issueIdValue: string,
-  taskId: string,
-  dependsOn: string[],
-): ControllerIssue {
-  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
-  const issue = getIssue(repoRoot, issueIdValue);
-  const task = issue.tasks.find((entry) => entry.id === taskId);
-  if (!task) throw new Error(`task not found: ${issueIdValue}/${taskId}`);
-  assertIssueExecutionActive(issue, 'set_task_dependencies');
-  const state = effectiveTaskState(repoRoot, issue, task);
-  if (state.terminal || state.inactive)
-    throw new Error(`cannot change dependencies for effective status ${state.effectiveStatus}`);
-  task.dependsOn = normalizeStrings(dependsOn);
-  validateTaskGraph(issue.tasks);
-  task.updatedAt = new Date().toISOString();
-  issue.updatedAt = task.updatedAt;
-  refreshReadiness(repoRoot, issue);
-  const written = writeIssue(repoRoot, issue);
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: 'task',
-    action: 'task_dependencies_changed',
-    summary: `Updated dependencies for ${taskId}.`,
-    issueId: issue.id,
-    taskId,
-    details: { dependsOn: task.dependsOn },
-  });
-  return written;
-}
-
 export function updateIssue(
   repoRoot: string,
   id: string,
@@ -985,47 +954,6 @@ export function removeEphemeralIssue(repoRoot: string, issueIdValue: string): bo
     issueId: issue.id,
   });
   return true;
-}
-
-export function archiveIssue(repoRoot: string, issueIdValue: string): ControllerIssue {
-  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
-  const issue = getIssue(repoRoot, issueIdValue);
-  if (!['done', 'cancelled'].includes(issue.status))
-    throw new Error(`only done or cancelled Issues can be archived (current: ${issue.status})`);
-  if (issue.archivedAt) return issue;
-  issue.archivedAt = new Date().toISOString();
-  issue.updatedAt = issue.archivedAt;
-  const written = writeIssue(repoRoot, issue);
-  const projectState = loadControllerProjectState(repoRoot);
-  if (projectState.currentIssueId === issue.id)
-    saveControllerProjectState(repoRoot, { currentIssueId: '' }, 'issue-archive');
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: 'issue',
-    action: 'issue_archived',
-    summary: `Archived ${issue.id}: ${issue.title}`,
-    issueId: issue.id,
-    statusFrom: issue.status,
-    statusTo: issue.status,
-  });
-  return written;
-}
-
-export function restoreIssue(repoRoot: string, issueIdValue: string): ControllerIssue {
-  assertLegacyIssueWritesAllowed(repoRoot, { id: issueIdValue });
-  const issue = getIssue(repoRoot, issueIdValue);
-  if (!issue.archivedAt) return issue;
-  const archivedAt = issue.archivedAt;
-  delete issue.archivedAt;
-  issue.updatedAt = new Date().toISOString();
-  const written = writeIssue(repoRoot, issue);
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: 'issue',
-    action: 'issue_restored',
-    summary: `Restored ${issue.id}: ${issue.title}`,
-    issueId: issue.id,
-    details: { archivedAt },
-  });
-  return written;
 }
 
 function gitText(repoRoot: string, args: string[]): string {

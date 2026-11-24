@@ -1023,11 +1023,8 @@ describe('final SQLite control-plane cutover', () => {
       expect(retiredAgentRun).not.toContain(`function ${retired}(`);
     }
     for (const name of [
-      'setTaskDependencies',
       'updateIssue',
       'updateTask',
-      'archiveIssue',
-      'restoreIssue',
       'acceptVerifiedTask',
       'recordTaskVerification',
     ]) {
@@ -1036,6 +1033,10 @@ describe('final SQLite control-plane cutover', () => {
       const body = issueStore.slice(start, start + 700);
       expect(body.indexOf('assertLegacyIssueWritesAllowed')).toBeGreaterThanOrEqual(0);
       expect(body.indexOf('assertLegacyIssueWritesAllowed')).toBeLessThan(body.indexOf('getIssue('));
+    }
+    // Zero-consumer retired writers must be physically absent, not preserved as throw-only tombstones.
+    for (const retired of ['setTaskDependencies', 'archiveIssue', 'restoreIssue']) {
+      expect(issueStore).not.toContain(`export function ${retired}`);
     }
     // No source-consumers or TypeScript reference sites remain for these old mutators.
     // Retired writer declarations must never be restored just to satisfy a gate.
