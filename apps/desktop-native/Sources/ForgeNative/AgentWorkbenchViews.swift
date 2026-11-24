@@ -812,14 +812,14 @@ struct AgentPane: View {
                 ZStack(alignment:.topLeading) {
                     if model.draft.isEmpty {
                         Text("输入消息或描述目标…")
-                            .font(.system(size:13))
-                            .foregroundStyle(.tertiary)
+                            .font(.system(size:12.75))
+                            .foregroundStyle(ForgePalette.secondary.opacity(0.52))
                             .padding(.leading,17).padding(.top,8)
                             .allowsHitTesting(false)
                     }
                     TextEditor(text:$model.draft)
                         .focused($composerFocused)
-                        .font(.system(size:13))
+                        .font(.system(size:12.75))
                         .foregroundStyle(ForgePalette.ink)
                         .scrollContentBackground(.hidden)
                         .frame(height:composerInputHeight)
@@ -847,7 +847,7 @@ struct AgentPane: View {
                     }
                     .scrollIndicators(.hidden)
                 }
-                HStack(spacing:7) {
+                HStack(spacing:5) {
                     Menu {
                         Button {
                             chooseAgentFiles(model)
@@ -866,6 +866,7 @@ struct AgentPane: View {
                         Image(systemName:"paperclip").forgeChromeIcon()
                     }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                    .tint(ForgePalette.secondary)
                     .fixedSize()
                     .disabled(model.busy || model.zenRefinementActive
                         || (model.checkoutRoot == nil && !model.selectedProviderSupportsImages))
@@ -971,11 +972,15 @@ struct AgentPane: View {
                             Task { await model.send() }
                         } label: {
                             Image(systemName:"arrow.up")
-                                .font(.system(size:ForgeClientDesign.Icon.point,weight:.bold))
-                                .foregroundStyle(.white)
+                                .font(.system(size:11.5,weight:.semibold))
+                                .foregroundStyle(sendDisabled
+                                                 ? ForgePalette.secondary.opacity(0.50)
+                                                 : Color.black.opacity(0.88))
                                 .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
-                                .background(ForgePalette.accent,in:Circle())
-                                .opacity(sendDisabled ? 0.34 : 1)
+                                .background(sendDisabled
+                                            ? Color.white.opacity(0.07)
+                                            : Color.white.opacity(0.92),
+                                            in:Circle())
                         }
                         .buttonStyle(.plain)
                         .disabled(sendDisabled)
@@ -1010,7 +1015,7 @@ struct AgentPane: View {
                             }
                             .buttonStyle(.plain)
                             .fontWeight(.semibold)
-                            .foregroundStyle(ForgePalette.accent)
+                            .foregroundStyle(ForgePalette.ink.opacity(0.90))
                             .accessibilityIdentifier("agent.configure-provider")
                         }
                     }
@@ -1022,10 +1027,10 @@ struct AgentPane: View {
                 }
             }
             .background(ForgePalette.composer,
-                        in:RoundedRectangle(cornerRadius:18,style:.continuous))
-            .forgeFloatingGlass(cornerRadius:18)
+                        in:RoundedRectangle(cornerRadius:19,style:.continuous))
+            .forgeFloatingGlass(cornerRadius:19)
             .overlay {
-                RoundedRectangle(cornerRadius:18,style:.continuous)
+                RoundedRectangle(cornerRadius:19,style:.continuous)
                     .strokeBorder(isComposerDropTarget ? ForgePalette.accent.opacity(0.42)
                                   : composerFocused ? ForgePalette.primaryHairlineFocused : Color.clear,
                                   lineWidth:isComposerDropTarget || composerFocused ? 0.75 : 0)
@@ -1519,6 +1524,7 @@ struct AgentPane: View {
             )
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .tint(ForgePalette.secondary)
         .fixedSize()
         .disabled(providerSelectionLocked)
         .help("切换当前会话的模型服务；已有消息保留，默认服务只影响新会话")
@@ -1556,6 +1562,7 @@ struct AgentPane: View {
             quickControlLabel(quickModelLabel,systemImage:"cube")
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .tint(ForgePalette.secondary)
         .fixedSize()
         .disabled(model.busy || (model.selectedProvider == "codex" && model.agentModels.isEmpty))
         .help(model.selectedProvider == "codex" ? "切换模型" : "当前模型由外部服务提供；配置可在设置中管理")
@@ -1583,6 +1590,7 @@ struct AgentPane: View {
             quickControlLabel(reasoningLabel(model.selectedReasoningEffort),systemImage:"brain.head.profile")
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .tint(ForgePalette.secondary)
         .fixedSize()
         .disabled(model.busy)
         .help("切换当前模型的推理强度")
@@ -1629,6 +1637,7 @@ struct AgentPane: View {
             )
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .tint(ForgePalette.secondary)
         .fixedSize()
         .disabled(model.busy || model.repositoryAccessLoading)
         .help("当前模型服务的项目权限")
@@ -1638,23 +1647,24 @@ struct AgentPane: View {
     }
 
     private func quickControlLabel(_ title:String,systemImage:String) -> some View {
-        HStack(spacing:4) {
+        HStack(spacing:3) {
             Image(systemName:systemImage)
-                .font(ForgeClientDesign.Icon.font)
+                .font(.system(size:11.5,weight:.medium))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(ForgePalette.secondary)
+                .foregroundStyle(ForgePalette.secondary.opacity(0.78))
             Text(title)
-                .font(.system(size:11,weight:.medium))
-                .foregroundStyle(ForgePalette.secondary)
+                .font(ForgeClientDesign.Shell.control)
+                .foregroundStyle(ForgePalette.secondary.opacity(0.88))
                 .lineLimit(1)
                 .truncationMode(.middle)
             Image(systemName:"chevron.down")
-                .font(.system(size:7,weight:.bold))
-                .foregroundStyle(.tertiary)
+                .font(.system(size:6.5,weight:.semibold))
+                .foregroundStyle(ForgePalette.secondary.opacity(0.45))
         }
-        .padding(.horizontal,4)
-        .frame(height:ForgeClientDesign.Icon.hit)
-        .contentShape(Rectangle())
+        .padding(.horizontal,5)
+        .frame(height:24)
+        .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+        .forgeHoverFill(cornerRadius:8)
     }
 
     private var quickProviderLabel: String {

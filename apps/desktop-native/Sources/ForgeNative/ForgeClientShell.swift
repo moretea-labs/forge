@@ -459,8 +459,8 @@ struct ForgeWorkspaceView: View {
         VStack(alignment:.leading,spacing:0) {
             HStack(spacing:2) {
                 Text("会话")
-                    .font(.system(size:10.5,weight:.semibold))
-                    .foregroundStyle(ForgePalette.secondary)
+                    .font(ForgeClientDesign.Shell.sidebarTitle)
+                    .foregroundStyle(ForgePalette.secondary.opacity(0.90))
                     .lineLimit(1)
                 Spacer(minLength:0)
 
@@ -496,10 +496,10 @@ struct ForgeWorkspaceView: View {
                             let exactCount = model.userRequestsTotalCount
                             Text(exactCount.map { $0 > 99 ? "99+" : "\($0)" }
                                  ?? "\(min(visibleCount,99))+")
-                                .font(.system(size:8,weight:.bold))
+                                .font(.system(size:8,weight:.semibold))
                                 .padding(.horizontal,3).frame(minWidth:13,minHeight:13)
-                                .background(Capsule().fill(ForgePalette.accent))
-                                .foregroundStyle(Color.white)
+                                .background(Capsule().fill(Color.white.opacity(0.12)))
+                                .foregroundStyle(ForgePalette.ink.opacity(0.88))
                                 .offset(x:2,y:0)
                         }
                     }
@@ -520,10 +520,14 @@ struct ForgeWorkspaceView: View {
 
             if model.showSearch {
                 HStack(spacing:7) {
+                    Image(systemName:"magnifyingglass")
+                        .font(.system(size:11,weight:.medium))
+                        .foregroundStyle(ForgePalette.secondary.opacity(0.72))
+                        .accessibilityHidden(true)
                     TextField("搜索会话",text:$model.search)
                         .focused($sidebarSearchFocused)
                         .textFieldStyle(.plain)
-                        .font(.system(size:12))
+                        .font(.system(size:11.75))
                         .onSubmit {
                             if !model.busy,
                                !model.search.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
@@ -544,10 +548,11 @@ struct ForgeWorkspaceView: View {
                         .accessibilityLabel("清除搜索")
                     }
                 }
-                .padding(.horizontal,9)
-                .frame(height:28)
-                .background(ForgePalette.inputFill,in:RoundedRectangle(cornerRadius:10,style:.continuous))
-                .padding(.horizontal,10).padding(.bottom,4)
+                .padding(.horizontal,10)
+                .frame(height:30)
+                .background(ForgePalette.inputFill,in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                .forgeFloatingGlass(cornerRadius:11)
+                .padding(.horizontal,10).padding(.bottom,5)
             }
 
             ScrollView {
@@ -558,8 +563,8 @@ struct ForgeWorkspaceView: View {
                         ForEach(sidebarThreadSections) { section in
                             HStack(spacing:6) {
                                 Text(section.title)
-                                    .font(.system(size:10.5,weight:.medium))
-                                    .foregroundStyle(ForgePalette.secondary)
+                                    .font(.system(size:9.75,weight:.semibold))
+                                    .foregroundStyle(ForgePalette.secondary.opacity(0.78))
                                     .lineLimit(1)
                                 Spacer()
                                 if let repoId = section.repoId {
@@ -838,7 +843,8 @@ struct ForgeWorkspaceView: View {
             } label: {
                 HStack(spacing:6) {
                     Text(thread.title)
-                        .font(.system(size:12,weight:selected ? .medium : .regular))
+                        .font(selected ? ForgeClientDesign.Shell.threadTitleSelected
+                                       : ForgeClientDesign.Shell.threadTitle)
                         .lineLimit(1)
                         .frame(maxWidth:.infinity,alignment:.leading)
                     if thread.hasUnsentContent {
@@ -896,9 +902,9 @@ struct ForgeWorkspaceView: View {
         }
         .padding(.leading,8).padding(.trailing,4)
         .frame(height:ForgeClientDesign.Shell.threadRowHeight)
-        .background(selected ? ForgePalette.selectionStrong : (hovered ? ForgePalette.softFill : .clear),
-                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
-        .contentShape(RoundedRectangle(cornerRadius:10,style:.continuous))
+        .background(selected ? ForgePalette.selection : (hovered ? ForgePalette.softFill : .clear),
+                    in:RoundedRectangle(cornerRadius:9,style:.continuous))
+        .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
         .onHover { inside in
             if inside {
                 hoveredThreadId = thread.id
@@ -1208,9 +1214,10 @@ struct ForgeWorkspaceView: View {
                     .font(.system(size:9,weight:.semibold))
                     .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal,4)
-            .frame(height:24)
-            .contentShape(Rectangle())
+            .padding(.horizontal,5)
+            .frame(height:26)
+            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+            .forgeHoverFill(cornerRadius:8)
         }
         .buttonStyle(.plain)
         .help(model.project == nil

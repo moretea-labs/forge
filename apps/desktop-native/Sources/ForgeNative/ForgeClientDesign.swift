@@ -16,22 +16,22 @@ enum ForgePalette {
         : NSColor.labelColor
     })
   // Selection and hover are light floating washes, not opaque rows.
-  static let selection = Color.white.opacity(0.065)
-  static let selectionStrong = Color.white.opacity(0.095)
-  static let userBubble = Color.white.opacity(0.035)
-  static let raisedSurface = Color.white.opacity(0.045)
-  static let softFill = Color.white.opacity(0.03)
-  static let inputFill = Color.white.opacity(0.03)
-  static let composer = Color.white.opacity(0.018)
+  static let selection = Color.white.opacity(0.045)
+  static let selectionStrong = Color.white.opacity(0.072)
+  static let userBubble = Color.white.opacity(0.032)
+  static let raisedSurface = Color.white.opacity(0.040)
+  static let softFill = Color.white.opacity(0.022)
+  static let inputFill = Color.white.opacity(0.020)
+  static let composer = Color.white.opacity(0.014)
   /// Near-invisible edge reserved for focus rings and floating glass rims.
   static let hairline = Color.white.opacity(0.04)
   static let primaryHairlineFocused = Color.white.opacity(0.10)
   /// The wallpaper/material should do most of the visual work. These tints are
   /// deliberately much weaker than the first Dark Glass pass.
-  static let windowTint = Color.black.opacity(0.035)
-  static let railTint = Color.black.opacity(0.055)
-  static let listTint = Color.black.opacity(0.025)
-  static let sidePanel = Color.black.opacity(0.035)
+  static let windowTint = Color.black.opacity(0.026)
+  static let railTint = Color.black.opacity(0.024)
+  static let listTint = Color.black.opacity(0.010)
+  static let sidePanel = Color.black.opacity(0.024)
   static let floatingTint = Color.white.opacity(0.018)
   static let floatingStroke = Color.white.opacity(0.012)
 }
@@ -249,11 +249,14 @@ enum ForgeClientDesign {
     /// Centered reading column shared by transcript and composer (Cursor/Claude style).
     static let readingColumn: CGFloat = 760
     static let destinationRowHeight: CGFloat = 42
-    static let threadRowHeight: CGFloat = 28
+    static let threadRowHeight: CGFloat = 30
     static let sessionTitle: Font = .system(size: 13.5, weight: .semibold)
+    static let sidebarTitle: Font = .system(size: 11, weight: .medium)
+    static let threadTitle: Font = .system(size: 11.75, weight: .regular)
+    static let threadTitleSelected: Font = .system(size: 11.75, weight: .medium)
     static let body: Font = .system(size: 12.5)
     static let supporting: Font = .system(size: 11)
-    static let control: Font = .system(size: 11, weight: .medium)
+    static let control: Font = .system(size: 10.5, weight: .medium)
   }
   enum Size {
     static let approvalSheet: CGFloat = 520
