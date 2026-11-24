@@ -890,7 +890,6 @@ const required = [
   'src/runtime/control-plane/persistence/operational-prior-store.ts',
   'evaluation/lib/shadow-operational-prior.ts',
   'packages/kernel/engineering/domain/check-receipt.ts',
-  'packages/kernel/engineering/domain/execution-snapshot.ts',
   'packages/kernel/engineering/domain/repository-completion-receipt.ts',
   'packages/kernel/engineering/domain/types.ts',
   'packages/kernel/engineering/api/index.ts',
