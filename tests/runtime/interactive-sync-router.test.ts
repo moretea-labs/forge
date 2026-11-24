@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { PREFERRED_CONTROLLER_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
-import { classifyGatewayExecutionPath, runsAsInteractiveSyncWrite } from '../../adapters/mcp/runtime-gateway/router';
+import { runsAsInteractiveSyncWrite } from '../../adapters/mcp/runtime-gateway/router';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 
 describe('interactive sync routing policy', () => {
@@ -14,7 +14,8 @@ describe('interactive sync routing policy', () => {
     expect(policySource).toContain('begin_edit_session');
     expect(policySource).toContain('apply_patch');
     expect(policySource).toContain('wantsAsyncExecution');
-    expect(routerSource).toContain('EXECUTION_JOB_RETIRED');
+    expect(routerSource).toContain('EXTERNAL_CONTROLLER_REQUIRED');
+    expect(routerSource).not.toContain('EXECUTION_JOB_RETIRED');
     expect(routerSource).not.toContain('createExecutionJob');
     expect(routerSource).not.toContain('waitForExecutionJob');
     expect(routerSource).not.toContain('buildAcceptedQueuedDigest');
@@ -27,32 +28,17 @@ describe('interactive sync routing policy', () => {
     expect(runsAsInteractiveSyncWrite('dispatch_task')).toBe(false);
   });
 
-  test('protected console prepare/unlock are exposed but stay on the direct non-durable boundary', () => {
-    const prepareDefinition = runtimeToolDefinitions.find((tool) => tool.name === 'computer_console_unlock_prepare');
-    const unlockDefinition = runtimeToolDefinitions.find((tool) => tool.name === 'computer_console_unlock');
-    expect(prepareDefinition).toBeDefined();
-    expect(unlockDefinition).toBeDefined();
-    expect(classifyGatewayExecutionPath('computer_console_unlock_prepare', {
-      confirm_authorization: true,
-    }, { definition: prepareDefinition })).toMatchObject({ path: 'direct', reasons: ['bounded_direct_control_write'] });
-    expect(classifyGatewayExecutionPath('computer_console_unlock', {
-      credential_handle: '11111111-1111-4111-8111-111111111111',
-      confirm_authorization: true,
-    }, { definition: unlockDefinition })).toMatchObject({ path: 'direct', reasons: ['bounded_direct_control_write'] });
-  });
-
-  test('protected console lifecycle tools stay on the same direct non-durable boundary', () => {
-    for (const name of [
+  test('protected console unlock stays on the computer plugin and is not a public MCP tool', () => {
+    const names = [
+      'computer_console_unlock_prepare',
+      'computer_console_unlock',
       'computer_console_unlock_enroll',
       'computer_console_unlock_status',
       'computer_console_unlock_recover',
       'computer_console_unlock_revoke',
-    ]) {
-      const definition = runtimeToolDefinitions.find((tool) => tool.name === name);
-      expect(definition).toBeDefined();
-      expect(classifyGatewayExecutionPath(name, { confirm_authorization: true }, { definition })).toMatchObject({
-        path: 'direct', reasons: ['bounded_direct_control_write'],
-      });
+    ];
+    for (const name of names) {
+      expect(runtimeToolDefinitions.some((tool) => tool.name === name)).toBe(false);
     }
   });
 

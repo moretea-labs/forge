@@ -2103,7 +2103,7 @@ forbid(
   /shouldCreateDurableJob|function executionJobCreationRetired/,
   'MCP Gateway must not own a duplicate retired-ExecutionJob creation decision',
 );
-requireText('adapters/mcp/runtime-gateway/router.ts', "'EXECUTION_JOB_RETIRED'");
+requireText('adapters/mcp/runtime-gateway/router.ts', "'EXTERNAL_CONTROLLER_REQUIRED'");
 forbid(
   'adapters/mcp/runtime-gateway/execution-tools.ts',
   /\bisDurableWorkOperation\b/,
@@ -2173,6 +2173,11 @@ forbid(
   'Runtime MCP tools must not retain dormant ExecutionJob creation paths',
 );
 requireMissing('adapters/mcp/tool-capability-cache.ts');
+forbid(
+  'src/runtime/execution/jobs/store.ts',
+  /export function createExecutionJob\s*\(/,
+  'retired ExecutionJob creation API must stay physically absent',
+);
 requireMissing('src/runtime/execution/jobs/legacy-adapter.ts');
 requireMissing('src/cli/controller/migrated-issue-decision.ts');
 requireMissing('src/cli/mcp/oauth-client-retirement.ts');

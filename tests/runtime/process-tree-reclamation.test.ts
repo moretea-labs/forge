@@ -1,8 +1,4 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
-import { createExecutionJob } from '../../src/runtime/execution/jobs/store';
 import {
   isProcessStatAlive,
   parseProcessGroupMembersPosix,
@@ -31,20 +27,5 @@ describe('worker process-tree reclamation', () => {
     expect(parseProcessGroupMembersPosix(output, 99)).toEqual([]);
   });
 
-  test('refuses new ExecutionJobs used by the retired worker reclamation path', () => {
-    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-process-tree-'));
-    try {
-      expect(() => createExecutionJob(controllerHome, {
-        repoId: 'repo-a',
-        type: 'check',
-        requestId: 'tree-1',
-        semanticKey: 'check:tree-1',
-        origin: { surface: 'mcp' },
-        payload: { operation: 'run_check', target: 'mcp-tool' },
-        resourceClaims: [],
-      })).toThrow(/EXECUTION_JOB_RETIRED/);
-    } finally {
-      rmSync(controllerHome, { recursive: true, force: true });
-    }
-  });
+
 });

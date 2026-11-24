@@ -7,7 +7,7 @@ import {
   readForgeRuntimeStatus,
   schedulerHeartbeatSnapshotHealthy,
 } from '../../src/runtime/control-plane/runtime-status-client';
-import { createExecutionJob, executionJobRoot } from '../../src/runtime/execution/jobs/store';
+import { executionJobRoot } from '../../src/runtime/execution/jobs/store';
 import {
   operationReceiptMatchesJobOwnership,
   type OperationReceipt,
@@ -671,20 +671,5 @@ describe('control-plane hardening', () => {
     expect(operationReceiptMatchesJobOwnership(legacyReceipt, legacyJob)).toBe(true);
   });
 
-  test('refuses new ExecutionJobs for approval-wait and controller-scope recovery paths', () => {
-    const controllerHome = temp('forge-job-retired-');
-    expect(() =>
-      createExecutionJob(controllerHome, {
-        repoId: 'repo-test',
-        checkoutId: 'checkout-test',
-        type: 'mcp-tool',
-        requestId: `request-${Date.now()}`,
-        semanticKey: `test:${Date.now()}`,
-        origin: { surface: 'system', actor: 'test' },
-        payload: { operation: 'controller_ready', target: 'runtime', profile: 'controller', arguments: {} },
-        resourceClaims: [],
-      }),
-    ).toThrow(/EXECUTION_JOB_RETIRED/);
-    expect(TERMINAL_JOB_STATUSES.has('waiting_for_approval')).toBe(false);
-  });
+
 });

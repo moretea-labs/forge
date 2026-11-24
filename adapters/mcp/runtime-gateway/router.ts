@@ -185,10 +185,10 @@ export async function routeDurableMcpCall(
       path: 'external_controller_required',
       routing: {
         path: 'external_controller_required',
-        reasons: [...classification.reasons, 'execution_job_creation_retired'],
+        reasons: [...classification.reasons, 'external_controller_required'],
         ...(classification.decision ? { decision: classification.decision } : {}),
       },
-      rejectCode: 'EXECUTION_JOB_RETIRED',
+      rejectCode: 'EXTERNAL_CONTROLLER_REQUIRED',
       message: 'This operation needs external Controller or authorized domain capability; Forge does not create Work/Plans or prescribe a workflow to fulfill it.',
     });
   }

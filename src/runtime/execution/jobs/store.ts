@@ -416,16 +416,6 @@ export function findExecutionJob(controllerHome: string, jobId: string): Executi
   return undefined;
 }
 
-export function createExecutionJob(
-  _controllerHome: string,
-  _input: CreateExecutionJobInput,
-): { job: ExecutionJob; deduplicated: boolean } {
-  // Fail closed at the write boundary. Historical ExecutionJobs remain readable via get/list APIs.
-  throw new Error(
-    'EXECUTION_JOB_RETIRED: New ExecutionJobs are disabled. Use direct Process Runtime, repository commands, or an explicitly claimed external Controller.',
-  );
-}
-
 export function updateExecutionJob(
   controllerHome: string,
   repoId: string,
