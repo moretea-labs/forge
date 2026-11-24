@@ -47,7 +47,6 @@ import {
 import { PREFERRED_FACADE_TOOL_NAMES } from '../toolset-names';
 import { buildLocalConnectorStatusForRepo } from '../../../src/cli/local-bridge/connector-freshness';
 import { gitSnapshot } from '../../../src/runtime/repositories/inspector';
-import { listLocalBridgeJobs } from '../../../src/cli/local-bridge/job-store';
 import {
   listSessions,
   openSession,
@@ -470,16 +469,6 @@ export function buildMcpToolDefinitions(
             needs_dependencies: { type: 'boolean' },
             risk: { type: 'string', enum: ['readonly', 'low', 'medium', 'high', 'destructive'] },
           },
-          additionalProperties: false,
-        },
-        annotations: readOnly,
-      },
-      {
-        name: 'list_local_jobs',
-        description: 'List recent local Job Tickets and execution state.',
-        inputSchema: {
-          type: 'object',
-          properties: { limit: { type: 'number' } },
           additionalProperties: false,
         },
         annotations: readOnly,
@@ -995,14 +984,6 @@ export async function callMcpTool(
         };
         audit(ctx, name, 'ok', args);
         return textResult(payload);
-      }
-      case 'list_local_jobs': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'list_local_jobs requires the controller profile');
-        const limit = typeof args.limit === 'number' ? args.limit : 50;
-        const jobs = listLocalBridgeJobs(ctx.repoRoot, limit);
-        audit(ctx, name, 'ok', args);
-        return textResult({ jobs });
       }
       case 'project_snapshot': {
         if (ctx.policy.profile !== 'controller')

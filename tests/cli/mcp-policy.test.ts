@@ -15,7 +15,7 @@ describe('mcp policy and paths', () => {
     const names = definitions.map((tool) => tool.name);
     expect(names).not.toContain('quick_agent_session');
     expect(names).not.toContain('submit_local_job');
-    expect(names).toContain('list_local_jobs');
+    expect(names).not.toContain('list_local_jobs');
     expect(names).toContain('get_local_job');
   });
 
