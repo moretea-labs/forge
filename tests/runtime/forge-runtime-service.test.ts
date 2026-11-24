@@ -26,6 +26,7 @@ import {
   validateForgeRuntimeServiceConfig,
   writeForgeRuntimeServiceConfig,
 } from '../../src/runtime/root/service';
+import { resolveForgeRuntimeServiceCommand } from '../../src/runtime/root/service-runner';
 import { materializePackageRuntimeRelease } from '../../src/runtime/root/package-runtime-release';
 import {
   activateScheduledPackageRuntimeService,
@@ -38,7 +39,7 @@ import {
   systemdRuntimeInstallCommands,
   type PackageRuntimeActivationRequest,
 } from '../../src/runtime/root/package-runtime-service';
-import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
+import { ensureActiveRuntimeRelease, readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import {
   PACKAGE_CONNECTOR_LAUNCHD_BOOTOUT_OBSERVE_MS,
   PACKAGE_CONNECTOR_LAUNCHD_EXIT_TIMEOUT_SEC,
@@ -183,14 +184,7 @@ describe('Forge Runtime service', () => {
         createdAt: new Date().toISOString(),
       })}\n`,
     );
-    writeFileSync(
-      join(fx.home, 'runtime', 'releases', 'authority.json'),
-      `${JSON.stringify({
-        schemaVersion: 2,
-        status: 'committed',
-        active: { releaseId: 'release-a', manifestPath, artifactIdentity: 'sha256:test' },
-      })}\n`,
-    );
+    ensureActiveRuntimeRelease(fx.home, manifestPath, 'forge-runtime-service-test');
 
     mkdirSync(paths.serviceRoot, { recursive: true });
     writeFileSync(
@@ -201,12 +195,17 @@ describe('Forge Runtime service', () => {
         repositoryRoot: fx.repo,
         host: '127.0.0.1',
         port: 8765,
+        outboundProxy: { mode: 'direct' },
         authTokenFile: fx.token,
       })}\n`,
     );
 
     expect(activeRuntimeEntrypoint(fx.home)).toBe(entry);
     expect(activeRuntimeLaunchSpec(fx.home)?.environment.FORGE_BUILD_VERSION).toBe('1.7.2-test');
+    expect(activeRuntimeLaunchSpec(fx.home)?.environment.FORGE_RUNTIME_GATEWAY_JSON_RESPONSES).toBe('1');
+    expect(resolveForgeRuntimeServiceCommand(fx.home, paths.configPath).env.FORGE_RUNTIME_GATEWAY_JSON_RESPONSES).toBe(
+      '1',
+    );
     // The previous installed Runtime requires these derived fields during rollback.
     const args = activeRuntimeLaunchSpec(fx.home)!.args;
     const topology = JSON.parse(args[args.indexOf('--deployment-topology') + 1]!);
@@ -244,6 +243,8 @@ describe('Forge Runtime service', () => {
     expect(plist).toContain('<string>release-revision-a</string>');
     expect(plist).toContain('<key>FORGE_RELEASE_SOURCE_COMMIT</key>');
     expect(plist).toContain('<string>source-a</string>');
+    expect(plist).toContain('<key>FORGE_RUNTIME_GATEWAY_JSON_RESPONSES</key>');
+    expect(plist).toContain('<string>1</string>');
     expect(plist).not.toContain('<string>--config</string>');
     expect(plist).not.toContain('forge-runtime-service.mjs');
   });

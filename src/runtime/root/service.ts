@@ -380,6 +380,7 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
       FORGE_RELEASE_REVISION: active.manifest.releaseRevision ?? active.releaseId,
       ...(active.manifest.sourceCommit ? { FORGE_RELEASE_SOURCE_COMMIT: active.manifest.sourceCommit } : {}),
       FORGE_RELEASE_CLEAN_WORKSPACE: String(active.manifest.cleanWorkspace !== false),
+      FORGE_RUNTIME_GATEWAY_JSON_RESPONSES: '1',
     },
   };
 }

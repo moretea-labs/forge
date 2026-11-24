@@ -55,6 +55,7 @@ export function resolveForgeRuntimeServiceCommand(
         ? { FORGE_RELEASE_SOURCE_COMMIT: activeRuntimeReleaseManifest.sourceCommit }
         : {}),
       FORGE_RELEASE_CLEAN_WORKSPACE: String(activeRuntimeReleaseManifest.cleanWorkspace !== false),
+      FORGE_RUNTIME_GATEWAY_JSON_RESPONSES: '1',
     },
   };
 }
