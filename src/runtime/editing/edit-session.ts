@@ -2097,6 +2097,9 @@ export function applyEditOperations(
     binding?: EditSessionBinding;
   } = {},
 ): EditSession {
+  if (operations.some((operation) => operation.type === 'move')) {
+    throw new Error('MOVE_REQUIRES_SESSIONLESS_MUTATION_PLANNER');
+  }
   let session = getEditSession(repoRoot, sessionId);
   assertDurableEditSessionStorageBound(repoRoot, session.repoId);
   if (['finalized', 'rolled_back'].includes(session.status))
@@ -2381,7 +2384,7 @@ export function applyEditOperations(
       records.push({
         revision,
         operationIndex: item.operationIndex,
-        type: item.operation.type,
+        type: item.operation.type as EditSessionOperationRecord['type'],
         path: item.relativePath,
         beforeSha256: item.beforeExists ? hash(item.before) : undefined,
         afterSha256: item.afterExists ? hash(item.after) : undefined,

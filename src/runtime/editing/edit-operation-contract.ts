@@ -7,6 +7,7 @@ export const EDIT_OPERATION_TYPES = [
   'prepend',
   'append',
   'delete',
+  'move',
 ] as const;
 
 export type EditOperation =
@@ -27,13 +28,15 @@ export type EditOperation =
       occurrence?: number;
     }
   | { type: 'prepend' | 'append'; path: string; expectedSha256?: string; content: string }
-  | { type: 'delete'; path: string; expectedSha256: string };
+  | { type: 'delete'; path: string; expectedSha256: string }
+  | { type: 'move'; path: string; toPath: string; expectedSha256: string };
 
 export const EDIT_OPERATION_INPUT_SCHEMA = {
   type: 'object',
   properties: {
     type: { type: 'string', enum: [...EDIT_OPERATION_TYPES] },
     path: { type: 'string' },
+    to_path: { type: 'string', description: 'Destination path for move operations.' },
     content: { type: 'string' },
     semantic_group: {
       type: 'string',
@@ -43,7 +46,7 @@ export const EDIT_OPERATION_INPUT_SCHEMA = {
     expected_sha256: {
       type: 'string',
       description:
-        'Optional strict whole-file CAS for local replace/insert/prepend/append edits; required for full-file write/delete mutations.',
+        'Optional strict whole-file CAS for local replace/insert/prepend/append edits; required for full-file write/delete/move mutations.',
     },
     anchor: { type: 'string', description: 'Anchor text for insert_before or insert_after.' },
     occurrence: { type: 'number', description: '1-based anchor occurrence; defaults to 1.' },
@@ -85,7 +88,7 @@ function optionalExpectedSha256(entry: Record<string, unknown>): string | undefi
   return value || undefined;
 }
 
-function requiredExpectedSha256(value: string | undefined, type: 'write' | 'delete'): string {
+function requiredExpectedSha256(value: string | undefined, type: 'write' | 'delete' | 'move'): string {
   if (!value) throw new Error(`${type} requires expected_sha256`);
   return value;
 }
@@ -113,6 +116,11 @@ export function normalizeEditOperation(entry: Record<string, unknown>): EditOper
       return { type, path, content: String(entry.content ?? '') };
     case 'delete':
       return { type, path, expectedSha256: requiredExpectedSha256(expectedSha256, type) };
+    case 'move': {
+      const toPath = String(entry.to_path ?? entry.toPath ?? '');
+      if (!toPath) throw new Error('move requires to_path');
+      return { type, path, toPath, expectedSha256: requiredExpectedSha256(expectedSha256, type) };
+    }
     case 'write':
       return {
         type,

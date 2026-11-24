@@ -13,7 +13,12 @@ import {
 } from '../editing/edit-session';
 import { normalizeEditOperation, type EditOperation } from '../editing/edit-operation-contract';
 import { getToolPolicy } from '../control-plane/tool-policy';
-import { atomicCompareAndDeleteText, atomicCompareAndSwapText, atomicCreateText } from '../../effects/fs-transaction';
+import {
+  atomicCompareAndDeleteText,
+  atomicCompareAndMoveText,
+  atomicCompareAndSwapText,
+  atomicCreateText,
+} from '../../effects/fs-transaction';
 import { globMatches, resolveMcpPath } from '../safe-tooling/path-policy';
 import type { RepositoryRecord } from '../../core/repository/types';
 import { ensureRepositoryRuntimeStorageBinding } from './runtime-storage';
@@ -59,6 +64,7 @@ export interface SafePatchPreflightFailure {
     | 'ANCHOR_NOT_FOUND'
     | 'NO_CHANGE'
     | 'STALE_FILE_SHA'
+    | 'MOVE_TARGET_EXISTS'
     | 'SEMANTIC_GROUP_UNSUPPORTED'
     | 'APPLY_FAILED';
   message: string;
@@ -345,6 +351,11 @@ function preflightChunk(
   return { operations: refreshed, failures };
 }
 
+function operationRepositoryPaths(repository: RepositoryRecord, operation: EditOperation): string[] {
+  const path = repoRelativePath(repository, operation.path);
+  return operation.type === 'move' ? [path, repoRelativePath(repository, operation.toPath)] : [path];
+}
+
 export function buildSafePatchPlan(
   repository: RepositoryRecord,
   input: { operations: unknown; chunkSize?: unknown },
@@ -361,16 +372,17 @@ export function buildSafePatchPlan(
   const seen = new Set<string>();
   const repeated = new Set<string>();
   for (const operation of operations) {
-    const path = repoRelativePath(repository, operation.path);
-    if (seen.has(path)) repeated.add(path);
-    seen.add(path);
+    for (const path of operationRepositoryPaths(repository, operation)) {
+      if (seen.has(path)) repeated.add(path);
+      seen.add(path);
+    }
   }
   for (const path of repeated) warnings.push(`Path appears multiple times and will be split across revisions: ${path}`);
   return {
     operationCount: operations.length,
     chunkSize: size,
     chunks: grouped.map((group, index) => {
-      const paths = [...new Set(group.map((operation) => repoRelativePath(repository, operation.path)))].sort();
+      const paths = [...new Set(group.flatMap((operation) => operationRepositoryPaths(repository, operation)))].sort();
       return {
         index: index + 1,
         operationCount: group.length,
@@ -427,14 +439,14 @@ export function isSessionlessTextEditBatch(operations: unknown): boolean {
       (operation) =>
         typeof operation === 'object' &&
         operation !== null &&
-        ['create', 'replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after', 'delete'].includes(
+        ['create', 'replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after', 'delete', 'move'].includes(
           String((operation as Record<string, unknown>).type ?? ''),
         ),
     )
   );
 }
 
-type SessionlessReceipt = { path: string; beforeSha256?: string; afterSha256?: string };
+type SessionlessReceipt = { path: string; toPath?: string; beforeSha256?: string; afterSha256?: string };
 
 type SessionlessGroupResult = {
   groupId: string;
@@ -474,7 +486,7 @@ function sessionlessFailure(plan: SafePatchPlan, failures: SafePatchPreflightFai
 function sessionlessSuccess(
   plan: SafePatchPlan,
   path: string,
-  receipt: { beforeSha256?: string; afterSha256?: string },
+  receipt: { toPath?: string; beforeSha256?: string; afterSha256?: string },
 ): SessionlessSafePatchResult {
   return {
     status: 'applied',
@@ -513,6 +525,84 @@ function applySessionlessCreate(
       ? 'CREATE_TARGET_EXISTS'
       : 'APPLY_FAILED';
     return sessionlessFailure(plan, [{ ...base, code, message, currentSha256: currentFile(repository, path).sha256 }]);
+  }
+}
+
+function sessionlessMoveErrorCode(message: string): SafePatchPreflightFailure['code'] {
+  if (message.startsWith('STALE_FILE_SHA:')) return 'STALE_FILE_SHA';
+  if (message.startsWith('TARGET_MISSING:')) return 'TARGET_MISSING';
+  if (message.startsWith('MOVE_TARGET_EXISTS:')) return 'MOVE_TARGET_EXISTS';
+  if (message.startsWith('NO_CHANGE:')) return 'NO_CHANGE';
+  return 'APPLY_FAILED';
+}
+
+function applySessionlessMove(
+  repository: RepositoryRecord,
+  path: string,
+  operation: Extract<EditOperation, { type: 'move' }>,
+  plan: SafePatchPlan,
+  allowedPaths?: unknown,
+): SessionlessSafePatchResult {
+  const base = { chunkIndex: 1, operationIndex: 1, type: operation.type, path };
+  let toPath: string;
+  try {
+    toPath = resolveSessionlessPath(repository, operation.toPath, allowedPaths);
+  } catch (error) {
+    return sessionlessFailure(plan, [
+      {
+        ...base,
+        path: operation.toPath,
+        code: 'PATH_DENIED',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    ]);
+  }
+  if (toPath === path) {
+    return sessionlessFailure(plan, [
+      { ...base, code: 'NO_CHANGE', message: 'move source and destination are identical' },
+    ]);
+  }
+  const current = currentFile(repository, path);
+  if (!current.exists || !current.sha256)
+    return sessionlessFailure(plan, [{ ...base, code: 'TARGET_MISSING', message: 'move source is no longer present' }]);
+  if (operation.expectedSha256 !== current.sha256)
+    return sessionlessFailure(plan, [
+      {
+        ...base,
+        code: 'STALE_FILE_SHA',
+        message: `stale file version for ${path}`,
+        currentSha256: current.sha256,
+        expectedSha256: operation.expectedSha256,
+        context: snippetAround(current.content, ''),
+      },
+    ]);
+  try {
+    const receipt = atomicCompareAndMoveText(repository.canonicalRoot, path, toPath, operation.expectedSha256);
+    return {
+      status: 'applied',
+      sessionless: true,
+      createdSession: false,
+      changedFiles: [path, toPath],
+      appliedChunks: [{ index: 1, operationCount: 1, paths: [path, toPath] }],
+      failures: [],
+      receipt: { path, toPath, ...receipt },
+      receipts: [{ path, toPath, ...receipt }],
+      plan,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = sessionlessMoveErrorCode(message);
+    const latest = currentFile(repository, path);
+    return sessionlessFailure(plan, [
+      {
+        ...base,
+        code,
+        message,
+        currentSha256: latest.sha256,
+        expectedSha256: operation.expectedSha256,
+        context: snippetAround(latest.content, ''),
+      },
+    ]);
   }
 }
 
@@ -564,7 +654,7 @@ function applySessionlessDelete(
   }
 }
 
-type SessionlessTextOperation = Exclude<EditOperation, { type: 'create' | 'delete' }>;
+type SessionlessTextOperation = Exclude<EditOperation, { type: 'create' | 'delete' | 'move' }>;
 
 function sessionlessNeedle(operation: SessionlessTextOperation): string {
   if (operation.type === 'replace') return operation.replacements[0]?.oldText ?? '';
@@ -696,7 +786,7 @@ function groupOperationIndexes(group: SessionlessMutationGroup): number[] {
 }
 
 function groupPaths(repository: RepositoryRecord, group: SessionlessMutationGroup): string[] {
-  return [...new Set(group.operations.map((operation) => repoRelativePath(repository, operation.path)))];
+  return [...new Set(group.operations.flatMap((operation) => operationRepositoryPaths(repository, operation)))];
 }
 
 function semanticGroupFailure(
@@ -961,13 +1051,17 @@ function executeSessionlessMutationGroup(
       `semantic group ${group.groupId} spans ${paths.length} paths; cross-file atomic groups require the multi-file recovery owner`,
     );
   }
-  if (group.operations.some((operation) => operation.type === 'create' || operation.type === 'delete')) {
+  if (
+    group.operations.some(
+      (operation) => operation.type === 'create' || operation.type === 'delete' || operation.type === 'move',
+    )
+  ) {
     return semanticGroupFailure(
       plan,
       group,
       groupIndex,
       'SEMANTIC_GROUP_UNSUPPORTED',
-      `semantic group ${group.groupId} mixes create/delete with other operations; planner refused partial execution before mutation`,
+      `semantic group ${group.groupId} mixes create/delete/move with other operations; planner refused partial execution before mutation`,
     );
   }
 
@@ -1080,7 +1174,7 @@ export function applySessionlessSafePatch(
   const operations = normalizedSafePatchOperations(input.operations);
   if (
     operations.length !== 1 ||
-    !['create', 'replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after', 'delete'].includes(
+    !['create', 'replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after', 'delete', 'move'].includes(
       operations[0]!.type,
     )
   ) {
@@ -1092,6 +1186,7 @@ export function applySessionlessSafePatch(
   const plan = buildSafePatchPlan(repository, { operations, chunkSize: 1 });
   if (operation.type === 'create') return applySessionlessCreate(repository, path, operation, plan);
   if (operation.type === 'delete') return applySessionlessDelete(repository, path, operation, plan);
+  if (operation.type === 'move') return applySessionlessMove(repository, path, operation, plan, input.allowedPaths);
   return applySessionlessTextOperation(repository, path, operation, plan);
 }
 
@@ -1113,12 +1208,15 @@ export function applySafePatch(
   },
 ): SafePatchApplyResult {
   const controllerHome = input.controllerHome?.trim() || resolveRepoPreferredControllerHome(repository.canonicalRoot);
+  const operations = normalizedSafePatchOperations(input.operations);
+  if (operations.length === 0) throw new Error('SAFE_PATCH_OPERATIONS_REQUIRED: provide at least one operation');
+  if (operations.some((operation) => operation.type === 'move')) {
+    throw new Error('MOVE_REQUIRES_SESSIONLESS_MUTATION_PLANNER');
+  }
   const editStorage = ensureRepositoryRuntimeStorageBinding(repository, 'edit-sessions', controllerHome);
   if (editStorage.status === 'legacy-active' || editStorage.status === 'conflict') {
     throw new Error(`SAFE_PATCH_EDIT_SESSION_STORAGE_NOT_READY: ${editStorage.message ?? editStorage.status}`);
   }
-  const operations = normalizedSafePatchOperations(input.operations);
-  if (operations.length === 0) throw new Error('SAFE_PATCH_OPERATIONS_REQUIRED: provide at least one operation');
   const size = chunkSize(input.chunkSize);
   const refresh = input.refreshFingerprints === true;
   const continueOnError = input.continueOnError === true;

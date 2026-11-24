@@ -223,6 +223,20 @@ function withTargetLock<T>(
   }
 }
 
+function withTargetLocks<T>(
+  targetPaths: string[],
+  fn: () => T,
+  options: { busyRetries?: number; retryDelayMs?: number } = {},
+): T {
+  const ordered = [...new Set(targetPaths)].sort();
+  const acquire = (index: number): T => {
+    const targetPath = ordered[index];
+    if (!targetPath) return fn();
+    return withTargetLock(targetPath, () => acquire(index + 1), options);
+  };
+  return acquire(0);
+}
+
 /**
  * Sessionless single-file source mutation. The expected hash is checked
  * INSIDE the existing target lock before any bytes change. Unlike the legacy
@@ -302,6 +316,41 @@ export function atomicCreateText(repoRoot: string, path: string, content: string
     }
     return { afterSha256: createHash('sha256').update(content).digest('hex') };
   });
+}
+
+/** Sessionless strict move. Source SHA and destination vacancy are checked under ordered dual-path locks. */
+export function atomicCompareAndMoveText(
+  repoRoot: string,
+  path: string,
+  toPath: string,
+  expectedSha256: string,
+): { beforeSha256: string; afterSha256: string } {
+  const source = resolveInsideRepo(repoRoot, path);
+  const destination = resolveInsideRepo(repoRoot, toPath);
+  if (!source.ok || !source.path) throw new Error(source.error ?? 'invalid source path');
+  if (!destination.ok || !destination.path) throw new Error(destination.error ?? 'invalid destination path');
+  if (source.path === destination.path) throw new Error(`NO_CHANGE: ${path}`);
+  const parentError = ensureParent(repoRoot, toPath);
+  if (parentError) throw new Error(parentError);
+
+  return withTargetLocks(
+    [source.path, destination.path],
+    () => {
+      if (!existsSync(source.path!)) throw new Error(`TARGET_MISSING: ${path}`);
+      statModeForCas(source.path!);
+      if (existsSync(destination.path!)) throw new Error(`MOVE_TARGET_EXISTS: ${toPath}`);
+      const before = readFileSync(source.path!, 'utf-8');
+      const currentHash = createHash('sha256').update(before).digest('hex');
+      if (currentHash !== expectedSha256) {
+        throw new Error(`STALE_FILE_SHA: ${path}: expected ${expectedSha256}, got ${currentHash}`);
+      }
+      renameSync(source.path!, destination.path!);
+      fsyncDirectory(dirname(source.path!));
+      if (dirname(destination.path!) !== dirname(source.path!)) fsyncDirectory(dirname(destination.path!));
+      return { beforeSha256: currentHash, afterSha256: currentHash };
+    },
+    { busyRetries: 12, retryDelayMs: 5 },
+  );
 }
 
 /** Sessionless strict delete. The file is removed only if its full-file CAS still matches. */

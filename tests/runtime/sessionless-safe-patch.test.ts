@@ -279,6 +279,12 @@ test('exact local edits omit whole-file CAS while full-file mutations require it
   expect(() => normalizeEditOperation({ type: 'delete', path: 'source.ts' })).toThrow(
     'delete requires expected_sha256',
   );
+  expect(() => normalizeEditOperation({ type: 'move', path: 'source.ts', to_path: 'moved.ts' })).toThrow(
+    'move requires expected_sha256',
+  );
+  expect(() => normalizeEditOperation({ type: 'move', path: 'source.ts', expected_sha256: hash('source') })).toThrow(
+    'move requires to_path',
+  );
 });
 
 test('single-file create/delete defaults to sessionless strict atomic mutations (#716)', async () => {
@@ -336,6 +342,116 @@ test('single-file create/delete defaults to sessionless strict atomic mutations 
     receipt: { path, beforeSha256: hash(content) },
   });
   expect(existsSync(join(fx.repoRoot, path))).toBe(false);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('move is a strict sessionless controlled mutation with source+destination CAS evidence (#716)', async () => {
+  const fx = fixture();
+  const sourcePath = 'move-source.ts';
+  const targetPath = 'moved/move-target.ts';
+  const content = 'export const moved = true;\n';
+  writeFileSync(join(fx.repoRoot, sourcePath), content);
+
+  const moved = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [{ type: 'move', path: sourcePath, to_path: targetPath, expected_sha256: hash(content) }],
+  });
+  expect(moved?.isError).not.toBe(true);
+  expect(moved?.structuredContent).toMatchObject({
+    status: 'applied',
+    sessionless: true,
+    createdSession: false,
+    changedFiles: [sourcePath, targetPath],
+    receipt: { path: sourcePath, toPath: targetPath, beforeSha256: hash(content), afterSha256: hash(content) },
+  });
+  expect(existsSync(join(fx.repoRoot, sourcePath))).toBe(false);
+  expect(readFileSync(join(fx.repoRoot, targetPath), 'utf8')).toBe(content);
+  expect(fx.sessions()).toHaveLength(0);
+
+  const staleSource = 'stale-move-source.ts';
+  const staleTarget = 'stale-move-target.ts';
+  writeFileSync(join(fx.repoRoot, staleSource), content);
+  const stale = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [{ type: 'move', path: staleSource, to_path: staleTarget, expected_sha256: hash('stale') }],
+  });
+  expect(stale?.isError).toBe(true);
+  expect(stale?.structuredContent).toMatchObject({
+    status: 'failed',
+    failures: [{ code: 'STALE_FILE_SHA', currentSha256: hash(content) }],
+  });
+  expect(readFileSync(join(fx.repoRoot, staleSource), 'utf8')).toBe(content);
+  expect(existsSync(join(fx.repoRoot, staleTarget))).toBe(false);
+
+  const occupiedSource = 'occupied-move-source.ts';
+  const occupiedTarget = 'occupied-move-target.ts';
+  const occupiedContent = 'keep destination\n';
+  writeFileSync(join(fx.repoRoot, occupiedSource), content);
+  writeFileSync(join(fx.repoRoot, occupiedTarget), occupiedContent);
+  const occupied = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [{ type: 'move', path: occupiedSource, to_path: occupiedTarget, expected_sha256: hash(content) }],
+  });
+  expect(occupied?.isError).toBe(true);
+  expect(occupied?.structuredContent).toMatchObject({
+    status: 'failed',
+    failures: [{ code: 'MOVE_TARGET_EXISTS' }],
+  });
+  expect(readFileSync(join(fx.repoRoot, occupiedSource), 'utf8')).toBe(content);
+  expect(readFileSync(join(fx.repoRoot, occupiedTarget), 'utf8')).toBe(occupiedContent);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('move participates in independent mixed mutation planning without EditSession (#716)', async () => {
+  const fx = fixture();
+  const sourcePath = 'mixed-move-source.ts';
+  const targetPath = 'mixed-move-target.ts';
+  const createPath = 'mixed-move-create.ts';
+  const content = 'export const mixedMove = true;\n';
+  writeFileSync(join(fx.repoRoot, sourcePath), content);
+  const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [
+      { type: 'move', path: sourcePath, to_path: targetPath, expected_sha256: hash(content) },
+      { type: 'create', path: createPath, content: 'export const afterMove = true;\n' },
+    ],
+  });
+  expect(response?.isError).not.toBe(true);
+  expect(response?.structuredContent).toMatchObject({
+    status: 'applied',
+    sessionless: true,
+    changedFiles: [sourcePath, targetPath, createPath],
+    groups: [
+      { groupId: 'operation:1', status: 'applied', paths: [sourcePath, targetPath] },
+      { groupId: 'operation:2', status: 'applied', paths: [createPath] },
+    ],
+  });
+  expect(existsSync(join(fx.repoRoot, sourcePath))).toBe(false);
+  expect(readFileSync(join(fx.repoRoot, targetPath), 'utf8')).toBe(content);
+  expect(readFileSync(join(fx.repoRoot, createPath), 'utf8')).toContain('afterMove = true');
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('explicit legacy move is rejected before an EditSession can be created (#716)', () => {
+  const fx = fixture();
+  const ctx = { repository: fx.repository, controllerHome: fx.controllerHome };
+  const content = 'export const legacyMove = true;\n';
+  writeFileSync(join(fx.repoRoot, 'legacy-move-source.ts'), content);
+  expect(() =>
+    applyConsoleSafePatch(ctx, {
+      sessionless: false,
+      operations: [
+        {
+          type: 'move',
+          path: 'legacy-move-source.ts',
+          to_path: 'legacy-move-target.ts',
+          expected_sha256: hash(content),
+        },
+      ],
+    }),
+  ).toThrow('MOVE_REQUIRES_SESSIONLESS_MUTATION_PLANNER');
+  expect(readFileSync(join(fx.repoRoot, 'legacy-move-source.ts'), 'utf8')).toBe(content);
+  expect(existsSync(join(fx.repoRoot, 'legacy-move-target.ts'))).toBe(false);
   expect(fx.sessions()).toHaveLength(0);
 });
 
