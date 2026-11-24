@@ -215,10 +215,16 @@ describe('handoff and facade contracts', () => {
     expect(Object.keys(schema?.actions ?? {}).sort()).toEqual([
       'commit_paths',
       'delete_remote_branch',
+      'diff',
       'diff_paths',
       'restore_paths',
       'stage_paths',
     ]);
+    expect(schema?.actions?.diff).toMatchObject({ readOnly: true, risk: 'readonly' });
+    expect(schema?.actions?.diff?.argumentsSchema?.required).toBeUndefined();
+    expect(schema?.actions?.diff?.argumentsSchema?.properties).toEqual(
+      expect.objectContaining({ paths: expect.any(Object), staged: expect.any(Object), max_bytes: expect.any(Object) }),
+    );
     expect(schema?.actions?.restore_paths).toMatchObject({ readOnly: false, risk: 'destructive' });
     expect(schema?.actions?.restore_paths?.argumentsSchema?.required).toEqual([
       'paths',

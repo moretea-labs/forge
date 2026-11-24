@@ -7,6 +7,7 @@ import {
   selectedPathDiff,
   stageSelectedPaths,
 } from '../../../src/runtime/repositories/selected-path-actions';
+import { repositoryGitDiff } from '../../../src/runtime/repositories/structured-git';
 import { result } from './result-adapter';
 import {
   executeRepositorySafePatchComposite,
@@ -207,6 +208,14 @@ export async function callCoreCapabilityAdapter(
     }
     const repository = selected(ctx, args);
     switch (action) {
+      case 'diff':
+        return result({
+          diff: repositoryGitDiff(repository, {
+            paths: input.paths,
+            staged: input.staged === true,
+            maxBytes: typeof input.max_bytes === 'number' ? input.max_bytes : undefined,
+          }),
+        });
       case 'diff_paths':
         return result({
           ...selectedPathDiff(repository, {

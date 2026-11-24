@@ -105,13 +105,6 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     refresh: { type: 'boolean', description: 'Defaults to true: read current Git status on demand. Set false to read the last cached snapshot without running Git; no periodic sampling is required.' },
   }, [], true),
 
-  definition('repository_git_diff', 'Return a bounded structured git diff for the selected repository, optionally staged and path-scoped.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    staged: { type: 'boolean' },
-    paths: { type: 'array', items: { type: 'string' } },
-    max_bytes: { type: 'number' },
-  }, [], true),
   definition('repository_git_create_branch', 'Create a safe local Git branch, optionally switching to it.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },

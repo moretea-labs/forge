@@ -524,6 +524,19 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
     capabilityId,
     executeWith: 'capability_execute',
     actions: {
+      diff: {
+        readOnly: true,
+        risk: 'readonly',
+        argumentsSchema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            paths: { type: 'array', maxItems: 256, items: { type: 'string' } },
+            staged: { type: 'boolean' },
+            max_bytes: { type: 'number', minimum: 1024, maximum: 524288 },
+          },
+        },
+      },
       diff_paths: {
         readOnly: true,
         risk: 'readonly',

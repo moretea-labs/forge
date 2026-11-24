@@ -30,6 +30,7 @@ import { callRuntimeTool, runtimeToolDefinitions } from '../../adapters/mcp/runt
 import { createMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { controllerExposureSnapshot } from '../../adapters/mcp/toolset';
 import { getCoreCapabilityExecutionSchema } from '../../src/runtime/control-plane/facade/capability-registry';
+import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { getLocalBridgeJob } from '../../src/cli/local-bridge/job-store';
 import { readLocalBridgeJobOutputSnapshot } from '../../src/runtime/local-bridge/read-model';
 import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
@@ -463,6 +464,7 @@ describe('repository MCP command tools', () => {
     expect(repositoryToolDefinitions.some((tool) => tool.name === 'repository_command_execute')).toBe(false);
     expect(repositoryToolDefinitions.some((tool) => tool.name === 'repository_safe_patch_plan')).toBe(false);
     expect(repositoryToolDefinitions.some((tool) => tool.name === 'repository_safe_patch_apply')).toBe(false);
+    expect(repositoryToolDefinitions.some((tool) => tool.name === 'repository_git_diff')).toBe(false);
     const planOperations = directEditCapability.actions?.plan?.argumentsSchema?.properties?.operations as
       | { items?: { properties?: { type?: { enum?: string[] } } } }
       | undefined;
@@ -1782,6 +1784,15 @@ describe('repository MCP command tools', () => {
         }),
       );
       expect(diff.diff.patch).toContain('structured');
+      const ctx = createMcpToolContext({ repo: repoRoot, controllerHome, profile: 'controller' });
+      const canonicalDiff = await callCoreCapabilityAdapter(ctx, 'capability_execute', {
+        repo_id: repository.repoId,
+        capability_id: 'repository.git',
+        action: 'diff',
+        arguments: { paths: ['README.md'] },
+      });
+      expect(canonicalDiff?.isError).not.toBe(true);
+      expect((canonicalDiff?.structuredContent as Record<string, any>).diff).toEqual(diff.diff);
 
       const commit = await json(
         callRepositoryTool(controllerHome, 'repository_git_commit', {

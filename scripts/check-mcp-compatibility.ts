@@ -34,9 +34,10 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // 2026-11-08: managed generic API credentials add one metadata-only rh_credential facade.
 // It owns only credential-use AuthorizationGrant lifecycle; macOS Keychain/provider stores remain secret authorities.
 // Preferred facade names stay stable; any further complete-registry drift fails closed.
-// 2026-11-24 #714: repository_safe_patch_plan/apply are no longer top-level MCP tools;
-// repository.direct_edit plan/apply remains the canonical capability_execute route.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '5e9139259c1ed49f';
+// 2026-11-24 #714: repository_safe_patch_plan/apply and repository_git_diff are no longer
+// top-level MCP tools; repository.direct_edit and repository.git diff remain canonical
+// capability_execute routes with behavior-equivalent internal handlers.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'ac97e5ea494eae00';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a
@@ -128,7 +129,9 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = '9ebdaeedde7cf065';
 // 2026-11-23: origin/main drifted past the prior preferred schema fence after
 // Work-retirement schema cleanup; refresh the exact fingerprint so Connector
 // snapshots invalidate without relaxing the frozen public-contract assertion.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'ca9c7c4841de0a8f';
+// 2026-11-24 #714: repository.git gained the exact bounded diff contract behind
+// capability_execute while the preferred tool-name set itself remains unchanged.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '0908f78dda978027';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
