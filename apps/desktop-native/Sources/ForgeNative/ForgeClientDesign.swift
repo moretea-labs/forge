@@ -112,6 +112,7 @@ struct ForgeChromeSurface: ViewModifier {
       )
       .onHover { hovering = $0 }
       .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
+      .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: selected)
   }
 }
 
