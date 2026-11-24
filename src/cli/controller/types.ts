@@ -92,10 +92,8 @@ export interface CleanupEvidence {
   editSessionClosedOrNotCreated: boolean;
   noActiveProcess: boolean;
   noDirtyDiff: boolean;
-  retainedReason?: string;
   maintenanceWarnings?: CompletionMaintenanceWarning[];
   resourceBlockers?: CompletionResourceBlocker[];
-  recordedAt: string;
 }
 
 export type TaskAcceptanceOutcome = 'passed' | 'failed' | 'not_evaluated';
