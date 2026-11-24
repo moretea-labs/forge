@@ -730,20 +730,6 @@ export async function callRuntimeObservationAdapter(
           nonBlocking: true,
         });
       }
-      case 'get_local_job_output': {
-        const repository = selected(ctx, args);
-        const jobId = String(args.job_id ?? '').trim();
-        return result({
-          ...readLocalBridgeJobOutputSnapshot(repository.canonicalRoot, jobId, {
-            stream: args.stream === 'stderr' ? 'stderr' : 'stdout',
-            maxBytes: typeof args.max_bytes === 'number' ? args.max_bytes : undefined,
-          }),
-          repoId: repository.repoId,
-          repository: repositorySummary(repository),
-          runtimeStorage: { ...inspectRepositoryRuntimeStorage(repository, ctx.controllerHome), readOnly: true },
-          nonBlocking: true,
-        });
-      }
       case 'controller_context': {
         const responseStartedAt = performance.now();
         const phaseTimingsMs: Record<string, number> = {};

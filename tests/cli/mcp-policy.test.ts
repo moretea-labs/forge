@@ -17,6 +17,7 @@ describe('mcp policy and paths', () => {
     expect(names).not.toContain('submit_local_job');
     expect(names).not.toContain('list_local_jobs');
     expect(names).toContain('get_local_job');
+    expect(names).not.toContain('get_local_job_output');
   });
 
   test('direct edit schema does not advertise retired Work authority', () => {

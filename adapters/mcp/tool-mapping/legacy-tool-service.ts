@@ -481,19 +481,7 @@ export function buildMcpToolDefinitions(
           properties: {
             job_id: { type: 'string' },
             include_events: { type: 'boolean' },
-          },
-          required: ['job_id'],
-          additionalProperties: false,
-        },
-        annotations: readOnly,
-      },
-      {
-        name: 'get_local_job_output',
-        description: 'Read bounded stdout or stderr for one local Job Ticket.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            job_id: { type: 'string' },
+            include_output: { type: 'boolean' },
             stream: { type: 'string', enum: ['stdout', 'stderr'] },
             max_bytes: { type: 'number' },
           },

@@ -445,7 +445,7 @@ describe('v8.1 repository runtime storage isolation', () => {
       expect(detail?.isError).not.toBe(true);
       expectLegacyControllerStateNotMigrated(state);
 
-      const output = await callRuntimeObservationAdapter(ctx, 'get_local_job_output', args);
+      const output = await callRuntimeObservationAdapter(ctx, 'get_local_job', { ...args, include_output: true });
       expect(output?.isError).not.toBe(true);
       expectLegacyControllerStateNotMigrated(state);
     } finally {
