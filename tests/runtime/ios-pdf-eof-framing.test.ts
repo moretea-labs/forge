@@ -21,6 +21,15 @@ describe('physical iPhone document export PDF EOF framing', () => {
     expect(hasPdfEofMarkerAtTail(Buffer.alloc(0))).toBe(false);
   });
 
+  test('rejects every high-bit alias of the five-byte ASCII EOF marker', () => {
+    const marker = Buffer.from('%%EOF', 'ascii');
+    for (let index = 0; index < marker.length; index += 1) {
+      const candidate = Buffer.from(marker);
+      candidate[index] = candidate[index]! | 0x80;
+      expect(hasPdfEofMarkerAtTail(candidate)).toBe(false);
+    }
+  });
+
   test('requires the EOF marker to occur within the last 2048 physical bytes', () => {
     expect(hasPdfEofMarkerAtTail(Buffer.concat([Buffer.from('%%EOF', 'ascii'), Buffer.alloc(2048, 0x41)]))).toBe(false);
     expect(hasPdfEofMarkerAtTail(Buffer.concat([Buffer.alloc(4096, 0x41), Buffer.from('%%EOF\n', 'ascii')]))).toBe(

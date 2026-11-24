@@ -356,7 +356,7 @@ export function hasPdfEofMarkerAtTail(bytes: Buffer): boolean {
       && byte !== 0x0c && byte !== 0x0d && byte !== 0x20) break;
     end -= 1;
   }
-  return end >= 5 && tail.subarray(end - 5, end).toString('ascii') === '%%EOF';
+  return end >= 5 && tail.subarray(end - 5, end).toString('latin1') === '%%EOF';
 }
 
 function requireBundleId(value: unknown): string {
