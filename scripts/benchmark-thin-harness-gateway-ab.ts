@@ -21,7 +21,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readdirSync, existsSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../src/effects/controller-home';
+import { controllerSystemRoot, ensureControllerHome } from '../src/effects/controller-home';
 import { registerRepository } from '../src/runtime/repositories/registry';
 import {
   executeFast,
@@ -40,11 +40,6 @@ const BASELINE_REV = 'e1582c573b738c29ff41eda6884685488654e5b9';
 // Write cases may emit lease lifecycle events and mutation receipts legitimately.
 // An unclassified future case remains subject to the strict read-only checks.
 const MUTATING_BENCHMARK_CASES = new Set(['bounded_patch', 'fast_mutation_ownership']);
-
-function countFastReceipts(controllerHome: string, repoId: string): number {
-  const dir = join(repositoryControllerRoot(controllerHome, repoId), 'fast-receipts');
-  return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.json')).length : 0;
-}
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -134,7 +129,6 @@ interface MetricsSample {
   runtimeEventDelta: number;
   projectionInvalidationDelta: number;
   schedulerWakeDelta: number;
-  receiptCount: number;
   leaseFilesTouched: number;
   ephemeralLeaseAcquires: number;
   ok: boolean;
@@ -166,7 +160,6 @@ async function callRepositoryFacade(
 ): Promise<{
   ok: boolean;
   latency: LatencyBreakdown;
-  receipt?: { executionId: string } | null;
   responseBytes: number;
 }> {
   const response = await callRepositoryTool(fixture.controllerHome, name, {
@@ -178,7 +171,6 @@ async function callRepositoryFacade(
   return {
     ok: response?.isError !== true && payload.ok !== false,
     latency: (payload.latency as LatencyBreakdown | undefined) ?? emptyLatency(),
-    receipt: (payload.receipt as { executionId: string } | null | undefined) ?? null,
     responseBytes: serializedBytes(response),
   };
 }
@@ -207,8 +199,7 @@ async function sampleOnce(
   fn: () => Promise<{
     ok: boolean;
     latency: LatencyBreakdown;
-    receipt?: { executionId: string } | null;
-    responseBytes?: number;
+      responseBytes?: number;
     durableSideEffects?: {
       executionJobCount?: number;
       localJobCount?: number;
@@ -223,7 +214,6 @@ async function sampleOnce(
   resetLeaseSideEffectMetrics();
   const sideBefore = getLeaseSideEffectMetrics();
   const effectsBefore = observeEffects(fixture);
-  const receiptsBefore = countFastReceipts(fixture.controllerHome, fixture.repository.repoId);
   const leasesBefore = countLeaseFiles(fixture.controllerHome);
 
   let result: Awaited<ReturnType<typeof fn>> | undefined;
@@ -256,10 +246,6 @@ async function sampleOnce(
   const reportedTotalMs = roundMs(latency.totalMs ?? 0);
   const phaseAccountedMs = roundMs(routingMs + policyMs + snapshotMs + executionMs + receiptMs);
   const operationMs = Math.max(executionMs, snapshotMs);
-  const observedReceiptDelta = Math.max(
-    0,
-    countFastReceipts(fixture.controllerHome, fixture.repository.repoId) - receiptsBefore,
-  );
 
   return {
     wallClockMs,
@@ -296,7 +282,6 @@ async function sampleOnce(
       0,
       (side.schedulerWakeCount ?? 0) + sideAfter.schedulerWakes - sideBefore.schedulerWakes,
     ),
-    receiptCount: Math.max(result?.receipt ? 1 : 0, observedReceiptDelta),
     leaseFilesTouched: Math.max(
       0,
       Math.abs(countLeaseFiles(fixture.controllerHome) - leasesBefore) +
@@ -334,7 +319,6 @@ function medianSample(runs: MetricsSample[]): MetricsSample {
     runtimeEventDelta: pick('runtimeEventDelta') as number,
     projectionInvalidationDelta: pick('projectionInvalidationDelta') as number,
     schedulerWakeDelta: pick('schedulerWakeDelta') as number,
-    receiptCount: pick('receiptCount') as number,
     leaseFilesTouched: pick('leaseFilesTouched') as number,
     ephemeralLeaseAcquires: pick('ephemeralLeaseAcquires') as number,
     ok: pick('ok') as boolean,
@@ -347,8 +331,7 @@ async function runCase(
   fn: () => Promise<{
     ok: boolean;
     latency: LatencyBreakdown;
-    receipt?: { executionId: string } | null;
-    responseBytes?: number;
+      responseBytes?: number;
     durableSideEffects?: MetricsSample extends never
       ? never
       : {
@@ -560,7 +543,7 @@ async function main() {
         'Reported time and phases come from LatencyBreakdown; outer gap is wall minus reported total and phase gap is reported total minus named phases.',
         'Response bytes measure the in-process result/envelope serialized by this benchmark.',
         'Job, managed Process, and recorded worker-PID counts are observed from existing fixture stores, while lease counts use the controller-global authority; recorded worker PIDs do not count all OS child processes.',
-        'Acceptance evaluates every warmup and timed run, not only medians; read-only cases must create no receipts, leases or Runtime events, while mutating cases may legitimately acquire leases and record their effects. Counters outside the observed stores remain unknown.',
+        'Acceptance evaluates every warmup and timed run, not only medians; read-only cases must create no leases or Runtime events, while mutating cases may legitimately acquire leases and record their effects. Counters outside the observed stores remain unknown.',
         `Baseline ${BASELINE_REV} is a historical reference only; no synthetic A/B claim is made.`,
       ].join(' '),
       cases: cases.map((entry) => ({
@@ -577,7 +560,6 @@ async function main() {
         zeroReadRuntimeEvents: readObservations.every((sample) => sample.runtimeEventDelta === 0),
         zeroReadProjectionInvalidations: readObservations.every((sample) => sample.projectionInvalidationDelta === 0),
         zeroReadSchedulerWakes: readObservations.every((sample) => sample.schedulerWakeDelta === 0),
-        zeroReadReceipts: readObservations.every((sample) => sample.receiptCount === 0),
         zeroReadLeaseAcquires: readObservations.every((sample) => sample.ephemeralLeaseAcquires === 0),
         allOk: observations.every((sample) => sample.ok),
       },
@@ -634,7 +616,6 @@ async function main() {
         'evt'.padStart(5),
         'proj'.padStart(5),
         'sch'.padStart(5),
-        'rcpt'.padStart(5),
         'lease'.padStart(6),
       );
       for (const entry of cases) {
@@ -648,7 +629,6 @@ async function main() {
           String(m.runtimeEventDelta).padStart(5),
           String(m.projectionInvalidationDelta).padStart(5),
           String(m.schedulerWakeDelta).padStart(5),
-          String(m.receiptCount).padStart(5),
           String(m.leaseFilesTouched).padStart(6),
         );
       }

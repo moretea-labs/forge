@@ -13,7 +13,6 @@ import { getLeaseSideEffectMetrics } from '../../resources/leases/store';
 import { runBoundedGit, runBoundedProcess } from './async-process';
 import { extractPatchPaths, pathAllowed, routeExecution } from './execution-router';
 import { LatencyTrace } from './latency-trace';
-import { hashRequestInput, writeFastReceipt } from './fast-receipt';
 import {
   mutationGateBusyMessage,
   withCheckoutMutationGate,
@@ -26,6 +25,7 @@ import {
   bindFastRequestBaseSnapshot,
   completeFastRequest,
   heartbeatFastRequest,
+  hashRequestInput,
   type FastRequestLedgerEntry,
 } from './request-ledger';
 import { runInspectorSearchInWorker } from './search-worker';
@@ -42,11 +42,9 @@ import {
   FAST_PATH_MAX_OUTPUT_BYTES,
   FAST_PATH_MAX_TIMEOUT_MS,
   type ExecutionDecision,
-  type FastExecutionReceipt,
   type FastOperationKind,
   type FastOutcome,
   type LatencyBreakdown,
-  type ReceiptMode,
 } from './types';
 
 export interface FastExecutorContext {
@@ -64,7 +62,6 @@ export interface FastExecuteInput {
   background?: boolean;
   timeoutMs?: number;
   allowedPaths?: string[];
-  receiptMode?: ReceiptMode;
   requestId?: string;
   signal?: AbortSignal;
   /** When set, reuses outer mutation gate (batch). */
@@ -77,9 +74,6 @@ export interface FastExecuteInput {
 export interface FastExecuteResult {
   ok: boolean;
   decision: ExecutionDecision;
-  receipt?: FastExecutionReceipt;
-  receiptPersisted?: boolean;
-  receiptWarning?: string;
   operationSucceeded?: boolean;
   changedPaths?: string[];
   repositoryChanged?: boolean;
@@ -460,7 +454,6 @@ function ownershipOptionsFor(
  * Execute one Fast Path operation without ExecutionJob / Local Job / Worker.
  */
 export async function executeFast(ctx: FastExecutorContext, request: FastExecuteInput): Promise<FastExecuteResult> {
-  const startedAt = new Date().toISOString();
   const trace = new LatencyTrace('fast');
   const sideEffectsBefore = getLeaseSideEffectMetrics();
   const requestId = request.requestId?.trim() || undefined;
@@ -533,9 +526,8 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
 
   const operation = request.operation;
   const needsMutation = decision.effects.mutatesWorkspace || decision.effects.mutatesGitRefs;
-  // Pure observations are returned to the Agent without a second durable evidence record.
-  // Request-ledger and mutation receipts stay enabled for effectful operations.
-  const receiptMode = request.receiptMode ?? (needsMutation ? 'standalone' : 'none');
+  // Pure observations return directly. Effectful operations use the Request Ledger when a request id is present;
+  // source/Git/Process state remains the execution fact instead of a second Fast receipt log.
   const isExplicitWriteOp = [
     'apply_patch',
     'repository_safe_patch_apply',
@@ -548,7 +540,7 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
   ].includes(String(operation));
 
   // Mutations without requestId must not default to Fast for non-idempotent ops.
-  if (needsMutation && isExplicitWriteOp && !requestId && receiptMode === 'standalone' && !request.externalMutation) {
+  if (needsMutation && isExplicitWriteOp && !requestId && !request.externalMutation) {
     if (
       ['commit_paths', 'git_commit_paths', 'repository_git_commit', 'stage_paths', 'git_stage_paths'].includes(
         String(operation),
@@ -583,7 +575,7 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
   // Atomic request ledger before mutation.
   let ledgerEntry: ReturnType<typeof beginFastRequest> | undefined;
   let acquiredLedger: FastRequestLedgerEntry | undefined;
-  if (requestId && needsMutation && receiptMode === 'standalone' && !request.externalMutation) {
+  if (requestId && needsMutation && !request.externalMutation) {
     ledgerEntry = beginFastRequest({
       controllerHome: ctx.controllerHome,
       repoId: ctx.repository.repoId,
@@ -605,14 +597,12 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
           reasons: ['idempotent_replay'],
           effects: decision.effects,
         }),
-        receiptPersisted: true,
         operationSucceeded: true,
         result: {
           replayed: true,
           requestId,
           entryId: ledgerEntry.entry.entryId,
           resultSummary: ledgerEntry.entry.resultSummary,
-          receiptExecutionId: ledgerEntry.entry.receiptExecutionId,
         },
         latency: trace.snapshot(ctx.includeLatencyBreakdown === true),
         durableSideEffects: observedSideEffects(sideEffectsBefore),
@@ -1251,55 +1241,9 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
     bodyResult = await runBody(undefined, undefined, undefined, request.signal);
   }
 
-  const finishedAt = new Date().toISOString();
-  let receipt: FastExecutionReceipt | undefined;
-  let receiptPersisted: boolean | undefined;
-  let receiptWarning: string | undefined;
   let ledgerPersisted: boolean | undefined;
   let ledgerWarning: string | undefined;
-
-  // Snapshot latency before receipt so persisted duration is complete for op time.
-  const preReceiptLatency = trace.snapshot(true);
-  const durationForReceipt = preReceiptLatency.totalMs;
-
-  if (receiptMode === 'standalone') {
-    const receiptStarted = performance.now();
-    const written = writeFastReceipt(ctx.controllerHome, {
-      repoId: ctx.repository.repoId,
-      checkoutId: ctx.repository.activeCheckoutId,
-      operation: String(operation),
-      startedAt,
-      finishedAt,
-      durationMs: durationForReceipt,
-      outcome: bodyResult.outcome,
-      changedPaths: bodyResult.changedPaths,
-      repositoryChanged: bodyResult.repositoryChanged,
-      authorizationDecision: bodyResult.authorizationDecision,
-      policyDecision: bodyResult.policyDecision,
-      outputSummary: summaryFrom(bodyResult.resultPayload),
-      reasons: decision.reasons,
-      requestId,
-      fencingToken,
-      baseHead,
-      inputHash,
-      observabilityLatency: preReceiptLatency,
-    });
-    receipt = written.receipt;
-    receiptPersisted = written.persisted;
-    receiptWarning = written.warning;
-    trace.add('receiptMs', performance.now() - receiptStarted);
-  }
-
   const latency = trace.snapshot(ctx.includeLatencyBreakdown === true);
-  if (receipt) {
-    receipt.durationMs = durationForReceipt;
-    if (ctx.includeLatencyBreakdown === true) {
-      receipt.latency = {
-        ...latency,
-        totalMs: durationForReceipt + (latency.receiptMs || 0),
-      };
-    }
-  }
 
   const resultError = bodyResult.resultPayload.error as
     | {
@@ -1325,7 +1269,6 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
       status: ledgerStatus,
       resultSummary: summaryFrom(bodyResult.resultPayload, 1_024),
       error: bodyResult.ok ? undefined : resultError?.message,
-      receiptExecutionId: receipt?.executionId,
     });
     ledgerPersisted = completed.ok;
     ledgerWarning = completed.warning;
@@ -1335,13 +1278,10 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
   const reconciliationRequired =
     resultError?.reconciliationRequired === true || processStopUnconfirmed || outcomeUnknown;
 
-  // Mutation success is independent of receipt/ledger persistence failures.
+  // Mutation success is independent of Request Ledger persistence failures.
   return {
     ok: bodyResult.ok && !processStopUnconfirmed,
     decision,
-    receipt,
-    receiptPersisted,
-    receiptWarning,
     ledgerPersisted,
     ledgerWarning,
     operationSucceeded: bodyResult.ok,

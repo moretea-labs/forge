@@ -3,15 +3,14 @@ import { writeControllerResult } from '../../evidence/result-store';
 import { extractPatchPaths, routeExecution } from './execution-router';
 import { executeFast } from './fast-executor';
 import { LatencyTrace } from './latency-trace';
-import { writeFastReceipt } from './fast-receipt';
 import { mutationGateBusyMessage, withCheckoutMutationGate } from './mutation-gate';
 import {
   beginFastRequest,
   bindFastRequestBaseSnapshot,
   completeFastRequest,
   heartbeatFastRequest,
+  hashRequestInput,
 } from './request-ledger';
-import { hashRequestInput } from './fast-receipt';
 import {
   FAST_BATCH_MAX_STEPS,
   FAST_BATCH_MAX_TOTAL_MS,
@@ -33,13 +32,12 @@ const MAX_INLINE_BATCH_BYTES = 64 * 1024;
 
 /**
  * Typed multi-step batch on Fast Path.
- * Write batches keep one parent receipt and Mutation Ownership; read-only batches return directly.
+ * Write batches keep one Request Ledger identity plus Mutation Ownership; read-only batches return directly.
  */
 export async function executeRepositoryBatch(
   ctx: BatchExecutorContext,
   request: RepositoryBatchRequest,
 ): Promise<RepositoryBatchResult> {
-  const startedAt = new Date().toISOString();
   const wallStart = performance.now();
   const trace = new LatencyTrace('fast');
   const stopOnError = request.stopOnError !== false;
@@ -213,7 +211,6 @@ export async function executeRepositoryBatch(
         stoppedEarly: false,
         partialFailure: false,
         latency: trace.snapshot(request.includeLatencyBreakdown === true),
-        receipt: undefined,
       };
     }
     if (ledger.kind === 'in_progress') {
@@ -362,7 +359,6 @@ export async function executeRepositoryBatch(
           input: step.input,
           timeoutMs: stepTimeout,
           allowedPaths: request.allowedPaths,
-          receiptMode: 'none',
           signal: helpers?.signal ?? request.signal,
           externalMutation: hasWrite,
           externalGate: gate,
@@ -577,40 +573,8 @@ export async function executeRepositoryBatch(
   }
 
   const ok = stepResults.length > 0 && stepResults.every((entry) => entry.ok) && !stoppedEarly;
-  const finishedAt = new Date().toISOString();
-  const preReceipt = trace.snapshot(true);
-  preReceipt.executionMs = Math.round(stepResults.reduce((sum, entry) => sum + entry.durationMs, 0) * 100) / 100;
-  // Read-only batches return their results directly. Only effectful batches need
-  // an execution receipt for reconciliation; do not create a second evidence log.
-  const receiptStarted = performance.now();
-  const written = hasWrite
-    ? writeFastReceipt(ctx.controllerHome, {
-        repoId: ctx.repository.repoId,
-        checkoutId: ctx.repository.activeCheckoutId,
-        operation: 'batch',
-        startedAt,
-        finishedAt,
-        durationMs: preReceipt.totalMs,
-        outcome: ok ? 'succeeded' : 'failed',
-        changedPaths: allChangedPaths,
-        repositoryChanged,
-        authorizationDecision: 'batch_precheck',
-        policyDecision: ok ? 'allowed' : 'failed',
-        outputSummary: `batch steps=${stepResults.length} ok=${stepResults.filter((s) => s.ok).length} failed=${stepResults.filter((s) => !s.ok).length}`,
-        stepCount: stepResults.length,
-        reasons: decision.reasons,
-        requestId,
-        inputHash,
-        observabilityLatency: preReceipt,
-      })
-    : { receipt: undefined, persisted: undefined, warning: undefined };
-  if (hasWrite) trace.add('receiptMs', performance.now() - receiptStarted);
   const latency = trace.snapshot(request.includeLatencyBreakdown === true);
-  latency.executionMs = preReceipt.executionMs;
-  if (written.receipt) {
-    written.receipt.durationMs = preReceipt.totalMs;
-    if (request.includeLatencyBreakdown === true) written.receipt.latency = latency;
-  }
+  latency.executionMs = Math.round(stepResults.reduce((sum, entry) => sum + entry.durationMs, 0) * 100) / 100;
 
   const reconciliationRequired =
     processStopUnconfirmed ||
@@ -629,7 +593,6 @@ export async function executeRepositoryBatch(
     const completed = completeFastRequest(ctx.controllerHome, ledger.entry, {
       status: ledgerStatus,
       resultSummary: `batch ok=${ok} steps=${stepResults.length} partial=${partialFailure}`,
-      receiptExecutionId: written.receipt?.executionId,
       error: ok ? undefined : processStopUnconfirmed ? 'process_stop_unconfirmed' : 'batch failed or partial',
     });
     ledgerPersisted = completed.ok;
@@ -640,9 +603,6 @@ export async function executeRepositoryBatch(
     ok: ok && !processStopUnconfirmed,
     mode: 'fast',
     decision,
-    receipt: written.receipt,
-    receiptPersisted: written.persisted,
-    receiptWarning: written.warning,
     steps: stepResults,
     stoppedEarly,
     partialFailure: partialFailure || processStopUnconfirmed,

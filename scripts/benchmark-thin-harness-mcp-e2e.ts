@@ -18,7 +18,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { ensureControllerHome, controllerSystemRoot, repositoryControllerRoot } from '../src/effects/controller-home';
+import { ensureControllerHome, controllerSystemRoot } from '../src/effects/controller-home';
 import { registerRepository } from '../src/runtime/repositories/registry';
 import { createMcpToolContext } from '../adapters/mcp/server';
 import { callRepositoryTool } from '../src/runtime/control-plane/facade/repository-tool-dispatch';
@@ -36,11 +36,6 @@ import {
 import type { MultiRepositoryMcpToolContext } from '../adapters/mcp/multi-repository';
 import { waitForProcess } from '../src/runtime/execution/process-runtime/runtime';
 import { isLightweightProcessId, waitForLightweightProcess } from '../src/runtime/execution/process-runtime/lightweight-managed';
-
-function countFastReceipts(controllerHome: string, repoId: string): number {
-  const dir = join(repositoryControllerRoot(controllerHome, repoId), 'fast-receipts');
-  return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.json')).length : 0;
-}
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -128,7 +123,6 @@ interface PhaseSample {
   schedulerWakeDelta: number;
   projectionInvalidationDelta: number;
   runtimeEventDelta: number;
-  receiptCount: number;
 }
 
 async function dispatchMcpLike(
@@ -136,7 +130,7 @@ async function dispatchMcpLike(
   name: string,
   args: Record<string, unknown>,
 ): Promise<{
-  phases: Omit<PhaseSample, 'executionJobDelta' | 'localJobDelta' | 'recordedWorkerPidDelta' | 'managedProcessDelta' | 'schedulerWakeDelta' | 'projectionInvalidationDelta' | 'runtimeEventDelta' | 'receiptCount' | 'terminalObservationMs' | 'terminalOk'>;
+  phases: Omit<PhaseSample, 'executionJobDelta' | 'localJobDelta' | 'recordedWorkerPidDelta' | 'managedProcessDelta' | 'schedulerWakeDelta' | 'projectionInvalidationDelta' | 'runtimeEventDelta' | 'terminalObservationMs' | 'terminalOk'>;
   payload: Record<string, unknown>;
 }> {
   const wallStart = performance.now();
@@ -222,7 +216,6 @@ async function sampleCase(
   resetLeaseSideEffectMetrics();
   const sideBefore = getLeaseSideEffectMetrics();
   const effectsBefore = observeEffects(fixture);
-  const receiptsBefore = countFastReceipts(fixture.controllerHome, fixture.repository.repoId);
 
   const { phases, payload } = await dispatchMcpLike(fixture, tool, args);
   const side = (payload.durableSideEffects ?? {}) as {
@@ -271,10 +264,6 @@ async function sampleCase(
         + (sideAfter.durableAcquireEvents + sideAfter.durableReleaseEvents)
         - (sideBefore.durableAcquireEvents + sideBefore.durableReleaseEvents),
     ),
-    receiptCount: Math.max(
-      0,
-      countFastReceipts(fixture.controllerHome, fixture.repository.repoId) - receiptsBefore,
-    ),
   };
 }
 
@@ -306,7 +295,6 @@ function summarize(samples: PhaseSample[]) {
     schedulerWakeDelta: median(samples.map((s) => s.schedulerWakeDelta)),
     projectionInvalidationDelta: median(samples.map((s) => s.projectionInvalidationDelta)),
     runtimeEventDelta: median(samples.map((s) => s.runtimeEventDelta)),
-    receiptCount: median(samples.map((s) => s.receiptCount)),
     cold: samples[0],
     warm: samples.slice(1),
   };

@@ -1,5 +1,5 @@
 /**
- * Thin Harness V1 — shared types for Fast Path routing, receipts, batch, and lanes.
+ * Thin Harness V1 — shared types for Fast Path routing, batch, and lanes.
  * Prefer Direct Edit / repository_safe_patch_apply / execute_command on the current checkout.
  * Durable ExecutionJob / Scheduler / Worker is last-resort escalation when Fast Path policy rejects,
  * not the default coding or progress path (Work lifecycle remains retired).
@@ -17,7 +17,6 @@ export type FastOutcome =
   | 'rejected'
   | 'busy'
   | 'unknown';
-export type ReceiptMode = 'none' | 'standalone';
 
 export type FastOperationKind =
   | 'read_file'
@@ -92,21 +91,6 @@ export interface LatencyBreakdown {
   responseSerializationMs?: number;
 }
 
-/**
- * Stable, controller-facing measurements. These deliberately describe only
- * deterministic Kernel facts; a controller may add semantic diagnosis from
- * the returned logs and evidence.
- */
-export interface RuntimeObservability {
-  framework_overhead_ms: number;
-  command_runtime_ms: number;
-  controller_wait_ms: number;
-  duplicate_event_count: number;
-  automatic_retry_count: number;
-  /** State/projection writes caused by a read path. Audit receipt writes are excluded. */
-  read_path_write_count: number;
-}
-
 export const EMPTY_LATENCY: LatencyBreakdown = {
   routingMs: 0,
   policyMs: 0,
@@ -126,34 +110,6 @@ export const EMPTY_LATENCY: LatencyBreakdown = {
   projectionUpdateMs: 0,
   responseSerializationMs: 0,
 };
-
-export interface FastExecutionReceipt {
-  schemaVersion: 1;
-  executionId: string;
-  repoId: string;
-  checkoutId: string;
-  mode: 'fast';
-  operation: string;
-  startedAt: string;
-  finishedAt: string;
-  durationMs: number;
-  outcome: FastOutcome;
-  changedPaths: string[];
-  repositoryChanged: boolean;
-  authorizationDecision: string;
-  policyDecision: string;
-  outputSummary?: string;
-  artifactRefs?: string[];
-  latency?: LatencyBreakdown;
-  observability?: RuntimeObservability;
-  stepCount?: number;
-  laneCount?: number;
-  reasons?: string[];
-  requestId?: string;
-  fencingToken?: number;
-  baseHead?: string | null;
-  inputHash?: string;
-}
 
 export type RepositoryBatchStepKind =
   | 'read_file'
@@ -202,9 +158,6 @@ export interface RepositoryBatchResult {
   ok: boolean;
   mode: 'fast' | 'durable' | 'reject' | 'busy';
   decision: ExecutionDecision;
-  receipt?: FastExecutionReceipt;
-  receiptPersisted?: boolean;
-  receiptWarning?: string;
   steps: RepositoryBatchStepResult[];
   stoppedEarly: boolean;
   partialFailure: boolean;
@@ -292,8 +245,6 @@ export interface PatchProposalValidateResult {
 
 export interface LightweightLanesResult {
   ok: boolean;
-  receipt?: FastExecutionReceipt;
-  receiptPersisted?: boolean;
   readLanes: ReadLaneResult[];
   patchProposals: PatchProposalValidateResult[];
   conflicts: LaneConflict[];
@@ -313,5 +264,3 @@ export const FAST_PATH_MAX_OUTPUT_BYTES = 128 * 1024;
 export const FAST_PATH_MAX_FILE_BYTES = 256 * 1024;
 export const FAST_BATCH_MAX_STEPS = 20;
 export const FAST_LANE_MAX_CONCURRENCY = 4;
-export const FAST_RECEIPT_RETENTION = 200;
-export const FAST_RECEIPT_MAX_SUMMARY_BYTES = 4_096;

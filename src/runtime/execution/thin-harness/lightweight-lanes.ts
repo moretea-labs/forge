@@ -4,7 +4,6 @@ import { runBoundedGit } from './async-process';
 import { routeExecution } from './execution-router';
 import { executeFast } from './fast-executor';
 import { LatencyTrace } from './latency-trace';
-import { writeFastReceipt } from './fast-receipt';
 import {
   createServerPatchProposal,
   markServerPatchProposalApplied,
@@ -242,7 +241,6 @@ export async function executeLightweightLanes(
             operation: lane.kind,
             mode: 'fast',
             input: lane.input,
-            receiptMode: 'none',
             signal: request.signal,
           },
         );
@@ -428,7 +426,7 @@ export async function executeLightweightLanes(
 /**
  * Integrator: apply selected server-side proposals under one Mutation Ownership.
  * Trusts proposalId / server record — revalidates fingerprints, snapshot, conflicts.
- * One parent receipt; stop on first failure unless continueOnError.
+ * Revalidate server proposals and stop on first failure unless continueOnError.
  */
 export async function integratePatchProposals(
   ctx: LanesExecutorContext,
@@ -445,12 +443,9 @@ export async function integratePatchProposals(
 ): Promise<{
   ok: boolean;
   applied: Array<{ proposalId: string; ok: boolean; changedPaths: string[]; error?: string }>;
-  receiptIds: string[];
-  parentReceiptId?: string;
   reconciliationRequired?: boolean;
 }> {
   const applied: Array<{ proposalId: string; ok: boolean; changedPaths: string[]; error?: string }> = [];
-  const receiptIds: string[] = [];
   const continueOnError = options.continueOnError === true;
 
   const requested = proposals.filter((entry) => !entry.analysisOnly && entry.ok && entry.proposalId);
@@ -483,11 +478,10 @@ export async function integratePatchProposals(
 
   const writePaths = [...new Set(applyable.flatMap(({ server }) => server.writePaths))];
   if (requested.length === 0) {
-    return { ok: false, applied: [], receiptIds: [] };
+    return { ok: false, applied: [] };
   }
 
   const requestId = options.requestId ?? `integrate-${randomUUID().slice(0, 10)}`;
-  let parentReceiptId: string | undefined;
   let reconciliationRequired = false;
 
   const gated = await withCheckoutMutationGate(
@@ -660,7 +654,6 @@ export async function integratePatchProposals(
               allowed_paths: options.allowedPaths ?? serverProposal.writePaths,
             },
             allowedPaths: options.allowedPaths ?? serverProposal.writePaths,
-            receiptMode: 'none',
             requestId: `${requestId}:${proposal.proposalId}`,
             signal: helpers.signal,
             externalMutation: true,
@@ -668,7 +661,6 @@ export async function integratePatchProposals(
             externalHelpers: helpers,
           },
         );
-        if (executed.receipt) receiptIds.push(executed.receipt.executionId);
         const changed =
           executed.changedPaths ??
           (
@@ -693,28 +685,6 @@ export async function integratePatchProposals(
       }
 
       const allOk = applied.length > 0 && applied.every((entry) => entry.ok);
-      const allChanged = [...new Set(applied.flatMap((entry) => entry.changedPaths))];
-      const written = writeFastReceipt(ctx.controllerHome, {
-        repoId: ctx.repository.repoId,
-        checkoutId: ctx.repository.activeCheckoutId,
-        operation: 'patch_proposal_integrate',
-        startedAt: new Date().toISOString(),
-        finishedAt: new Date().toISOString(),
-        durationMs: 0,
-        outcome: allOk ? 'succeeded' : 'failed',
-        changedPaths: allChanged,
-        repositoryChanged: allChanged.length > 0,
-        authorizationDecision: 'integrator',
-        policyDecision: allOk ? 'allowed' : 'failed',
-        outputSummary: `integrated=${applied.filter((a) => a.ok).length}/${applied.length}`,
-        requestId,
-        fencingToken: gate.fencingToken,
-        baseHead: gate.baseHead,
-      });
-      if (written.receipt) {
-        parentReceiptId = written.receipt.executionId;
-        receiptIds.push(written.receipt.executionId);
-      }
       return { allOk };
     },
   );
@@ -730,7 +700,6 @@ export async function integratePatchProposals(
           error: `mutation_busy: ${gated.busy.reason}`,
         },
       ],
-      receiptIds: [],
       reconciliationRequired: false,
     };
   }
@@ -738,8 +707,6 @@ export async function integratePatchProposals(
   return {
     ok: gated.value.allOk,
     applied,
-    receiptIds,
-    parentReceiptId,
     reconciliationRequired: reconciliationRequired || undefined,
   };
 }

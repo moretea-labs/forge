@@ -2415,7 +2415,6 @@ requireText('src/runtime/execution/jobs/store.ts', 'transitionExecutionJobFromWo
 requireText('src/runtime/execution/jobs/receipt-store.ts', "state: 'started' | 'completed'");
 requireText('src/runtime/execution/thin-harness/execution-router.ts', "mode: 'fast'");
 requireText('src/runtime/execution/thin-harness/execution-router.ts', 'routeExecution');
-requireText('src/runtime/execution/thin-harness/types.ts', 'FastExecutionReceipt');
 requireText('docs/architecture/CURRENT.md', '### Ephemeral Direct — default');
 requireText('src/runtime/resources/leases/types.ts', 'fencingToken: number');
 requireText('src/runtime/resources/leases/store.ts', 'assertFencingToken');

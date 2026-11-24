@@ -89,7 +89,6 @@ interface CaseResult {
   observedWorkerPidCount: number;
   managedProcessRecordCount: number;
   projectionUpdateCount: number;
-  receiptCount: number;
   ok: boolean;
   path: string;
 }
@@ -97,7 +96,7 @@ interface CaseResult {
 async function runCase(
   name: string,
   fixture: Fixture,
-  fn: () => Promise<{ latency: LatencyBreakdown; ok: boolean; receipt?: { executionId: string } | null }>,
+  fn: () => Promise<{ latency: LatencyBreakdown; ok: boolean }>,
 ): Promise<CaseResult> {
   const before = observeEffects(fixture);
   const result = await fn();
@@ -112,7 +111,6 @@ async function runCase(
     observedWorkerPidCount: newlyObserved(before.workerPids, after.workerPids),
     managedProcessRecordCount: newlyObserved(before.processIds, after.processIds),
     projectionUpdateCount: Math.max(0, after.projectionDirtyMarks - before.projectionDirtyMarks),
-    receiptCount: result.receipt ? 1 : 0,
     ok: result.ok,
     path: result.latency.path ?? 'fast',
   };
@@ -177,7 +175,6 @@ async function main() {
       return {
         ok: batch.ok,
         latency: batch.latency,
-        receipt: batch.receipt,
       };
     }));
     cases.push(await runCase('4_lane_read_only_analysis', fixture, async () => {
@@ -195,7 +192,6 @@ async function main() {
       return {
         ok: lanes.ok,
         latency: lanes.latency,
-        receipt: lanes.receipt,
       };
     }));
 
@@ -213,7 +209,6 @@ async function main() {
         observedWorkerPidCount: cases.reduce((sum, entry) => sum + entry.observedWorkerPidCount, 0),
         managedProcessRecordCount: cases.reduce((sum, entry) => sum + entry.managedProcessRecordCount, 0),
         projectionUpdateCount: cases.reduce((sum, entry) => sum + entry.projectionUpdateCount, 0),
-        receiptCount: cases.reduce((sum, entry) => sum + entry.receiptCount, 0),
       },
     };
 
@@ -231,7 +226,6 @@ async function main() {
         'pid'.padStart(6),
         'proc'.padStart(6),
         'proj'.padStart(6),
-        'rcpt'.padStart(6),
         'ok'.padStart(4),
       );
       for (const entry of cases) {
@@ -245,7 +239,6 @@ async function main() {
           String(entry.observedWorkerPidCount).padStart(6),
           String(entry.managedProcessRecordCount).padStart(6),
           String(entry.projectionUpdateCount).padStart(6),
-          String(entry.receiptCount).padStart(6),
           String(entry.ok).padStart(4),
         );
       }

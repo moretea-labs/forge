@@ -45,7 +45,6 @@ export interface FastRequestLedgerEntry {
   finishedAt?: string;
   resultSummary?: string;
   error?: string;
-  receiptExecutionId?: string;
   baseSnapshot?: string;
   reconcileNotes?: string;
 }
@@ -62,6 +61,10 @@ export interface LedgerCompleteResult {
   entry?: FastRequestLedgerEntry;
   warning?: string;
   code?: 'LEDGER_STALE_OWNER' | 'LEDGER_WRITE_FAILED' | 'LEDGER_MISSING' | 'LEDGER_CAS_FAILED';
+}
+
+export function hashRequestInput(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value ?? null)).digest('hex').slice(0, 24);
 }
 
 const DEFAULT_LEDGER_TTL_MS = 15 * 60_000;
@@ -396,7 +399,6 @@ export function completeFastRequest(
     status: 'succeeded' | 'failed' | 'unknown';
     resultSummary?: string;
     error?: string;
-    receiptExecutionId?: string;
   },
 ): LedgerCompleteResult {
   return withLedgerLock(controllerHome, expected.repoId, `${expected.requestId}:complete`, () => {
@@ -438,7 +440,6 @@ export function completeFastRequest(
         heartbeatAt: new Date().toISOString(),
         resultSummary: update.resultSummary?.slice(0, 2_048),
         error: update.error?.slice(0, 1_024),
-        receiptExecutionId: update.receiptExecutionId,
       };
       writeEntryAtomic(path, next);
       return { ok: true, entry: next };

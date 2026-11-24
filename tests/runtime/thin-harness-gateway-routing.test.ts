@@ -13,7 +13,7 @@ import { executeGatewayRoutedOperation } from '../../adapters/mcp/runtime-gatewa
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { createMcpToolContext } from '../../adapters/mcp/server';
 import { callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
-import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
+import { ensureControllerHome } from '../../src/effects/controller-home';
 import {
   addRepositoryCheckout,
   getRepository,
@@ -42,6 +42,7 @@ import {
   isFastEligibleTool,
   executeFast,
   executeLightweightLanes,
+  integratePatchProposals,
 } from '../../src/runtime/execution/thin-harness';
 import { getProcessRecord, listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
@@ -148,11 +149,6 @@ function fixture() {
     repo: repoRoot,
   });
   return { root, controllerHome, repoRoot, originRoot, repository, ctx };
-}
-
-function fastReceiptFiles(controllerHome: string, repoId: string): string[] {
-  const dir = join(repositoryControllerRoot(controllerHome, repoId), 'fast-receipts');
-  return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.json')) : [];
 }
 
 const roots: string[] = [];
@@ -2228,7 +2224,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     }
   });
 
-  test('single read Fast Path has no durable receipt; explicit opt-in is still available', async () => {
+  test('single read Fast Path returns without receipt bookkeeping', async () => {
     const fx = fixture();
     roots.push(fx.root);
     const plain = await executeFast(
@@ -2236,17 +2232,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       { operation: 'read_file', input: { path: 'README.md' } },
     );
     expect(plain.ok).toBe(true);
-    expect(plain.receipt).toBeUndefined();
-    expect(plain.receiptPersisted).toBeUndefined();
-    expect(fastReceiptFiles(fx.controllerHome, fx.repository.repoId)).toEqual([]);
-
-    const explicit = await executeFast(
-      { controllerHome: fx.controllerHome, repository: fx.repository },
-      { operation: 'read_file', input: { path: 'README.md' }, receiptMode: 'standalone' },
-    );
-    expect(explicit.ok).toBe(true);
-    expect(explicit.receiptPersisted).toBe(true);
-    expect(fastReceiptFiles(fx.controllerHome, fx.repository.repoId)).toHaveLength(1);
+    expect('receipt' in plain).toBe(false);
+    expect('receiptPersisted' in plain).toBe(false);
   });
 
   test('read-only lanes return results without creating durable evidence', async () => {
@@ -2264,8 +2251,46 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     );
     expect(result.ok).toBe(true);
     expect(result.readLanes).toHaveLength(2);
-    expect(result.receipt).toBeUndefined();
-    expect(fastReceiptFiles(fx.controllerHome, fx.repository.repoId)).toEqual([]);
+    expect('receipt' in result).toBe(false);
+  });
+
+  test('proposal integration applies server-stored edits without a receipt lifecycle', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const lanes = await executeLightweightLanes(
+      { controllerHome: fx.controllerHome, repository: fx.repository },
+      {
+        repoId: fx.repository.repoId,
+        patchProposalValidations: [
+          {
+            readPaths: ['src/lib.ts'],
+            writePaths: ['src/lib.ts'],
+            proposedOperations: [
+              {
+                type: 'replace',
+                path: 'src/lib.ts',
+                replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 11;' }],
+              },
+            ],
+          },
+        ],
+      },
+    );
+    expect(lanes.ok).toBe(true);
+    expect(lanes.patchProposals[0]?.proposalId).toBeTruthy();
+
+    const integrated = await integratePatchProposals(
+      { controllerHome: fx.controllerHome, repository: fx.repository },
+      lanes.patchProposals,
+      { requestId: 'proposal-integrate-without-receipt' },
+    );
+    expect(integrated.ok).toBe(true);
+    expect(integrated.applied).toEqual([
+      expect.objectContaining({ ok: true, changedPaths: ['src/lib.ts'] }),
+    ]);
+    expect('receiptIds' in integrated).toBe(false);
+    expect('parentReceiptId' in integrated).toBe(false);
+    expect(readFileSync(join(fx.repoRoot, 'src/lib.ts'), 'utf8')).toBe('export const n = 11;\n');
   });
 
   test('workbench read-only batch returns results without a durable receipt', async () => {
@@ -2290,9 +2315,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(payload.mode).toBe('fast');
     expect(payload.ok).toBe(true);
     expect(Array.isArray(payload.steps) && (payload.steps as unknown[]).length).toBe(4);
-    expect(payload.receipt).toBeUndefined();
-    expect(payload.receiptPersisted).toBeUndefined();
-    expect(fastReceiptFiles(fx.controllerHome, fx.repository.repoId)).toEqual([]);
+    expect('receipt' in payload).toBe(false);
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
   });
 });
