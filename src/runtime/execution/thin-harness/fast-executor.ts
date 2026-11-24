@@ -746,15 +746,13 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
             throw new Error(`PATH_SCOPE_REJECTED: operations target paths outside allowed scope: ${bad.join(', ')}`);
           }
         }
-        const explicitLegacyFlow = Boolean(
-          request.input.session_id ||
-            request.input.expected_revision !== undefined ||
-            request.input.validation_only === true ||
+        const explicitLegacyValidation = Boolean(
+          request.input.validation_only === true ||
             request.input.check_ids ||
             request.input.validation_request_id ||
             request.input.continue_on_error === true,
         );
-        if (request.input.sessionless === false || explicitLegacyFlow) {
+        if (explicitLegacyValidation) {
           ok = false;
           outcome = 'failed';
           policyDecision = 'failed';
@@ -763,7 +761,8 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
           resultPayload = {
             error: {
               code: 'SAFE_PATCH_LEGACY_SESSION_RETIRED',
-              message: 'EditSession-backed Safe Patch is retired; use sessionless mutation operations.',
+              message:
+                'Session-bound validation is retired; use run_check with explicit repository and checkout identity.',
               cleanupRequired: false,
               reconciliationRequired: false,
               repositoryChanged: false,

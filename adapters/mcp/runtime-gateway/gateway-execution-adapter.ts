@@ -22,23 +22,6 @@ export async function executeRepositorySafePatchComposite(
   ctx: MultiRepositoryMcpToolContext,
   args: Record<string, unknown>,
 ): Promise<CallToolResult> {
-  const unsupportedSessionFields = ['session_id', 'expected_revision', 'sessionless'].filter((field) =>
-    Object.prototype.hasOwnProperty.call(args, field),
-  );
-  if (unsupportedSessionFields.length > 0) {
-    return result(
-      {
-        accepted: false,
-        mode: 'reject',
-        path: 'reject',
-        error: {
-          code: 'SAFE_PATCH_ARGUMENTS_UNSUPPORTED',
-          message: 'unsupported repository edit arguments: ' + unsupportedSessionFields.join(', '),
-        },
-      },
-      true,
-    );
-  }
   if (args.validation_only === true) {
     return result(
       {
@@ -110,8 +93,7 @@ export async function executeRepositorySafePatchComposite(
   const explicitValidationRequestId =
     typeof args.validation_request_id === 'string' ? args.validation_request_id.trim() : '';
   const patchRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-  const validationRequestId =
-    explicitValidationRequestId || (patchRequestId ? patchRequestId + ':checks' : undefined);
+  const validationRequestId = explicitValidationRequestId || (patchRequestId ? patchRequestId + ':checks' : undefined);
   const timeoutMs =
     typeof args.check_timeout_ms === 'number'
       ? args.check_timeout_ms

@@ -12,11 +12,7 @@ import {
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { createMcpToolContext } from '../../adapters/mcp/server';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import {
-  addRepositoryCheckout,
-  getRepository,
-  registerRepository,
-} from '../../src/runtime/repositories/registry';
+import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/runtime/repositories/registry';
 import { commitSelectedPaths } from '../../src/runtime/repositories/selected-path-actions';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
@@ -59,15 +55,10 @@ import {
 } from '../../src/runtime/editing/edit-session';
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { executeRepositoryBatch } from '../../src/runtime/execution/thin-harness/batch-executor';
-import {
-  startOrJoinEditValidation,
-} from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
+import { startOrJoinEditValidation } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
 import { resolveAuthorizationRequest } from '../../src/runtime/control-plane/governance/authorization';
 
-import {
-  acquireExecutionLeases,
-  releaseExecutionLeases,
-} from '../../src/runtime/resources/leases/store';
+import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 
 function git(root: string, args: string[]): string {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -234,39 +225,6 @@ describe('controller.plugins capability', () => {
 });
 
 describe('repository.direct_edit capability', () => {
-  test('explicit sessionless=false is rejected without writing', async () => {
-    const fx = fixture();
-    roots.push(fx.root);
-
-    const edited = await callCoreCapabilityAdapter(
-      { ...fx.ctx, principalId: 'legacy-direct-edit-test-principal' },
-      'capability_execute',
-      {
-        repo_id: fx.repository.repoId,
-        capability_id: 'repository.direct_edit',
-        action: 'apply',
-        request_id: 'direct-edit-capability-apply',
-        arguments: {
-          purpose: 'Verify the retired sessionless=false compatibility input is rejected.',
-          sessionless: false,
-          operations: [
-            {
-              type: 'replace',
-              path: 'src/lib.ts',
-              replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 2;' }],
-            },
-          ],
-        },
-      },
-    );
-
-    expect(edited?.isError).toBe(true);
-    expect(edited?.structuredContent).toMatchObject({
-      error: { code: 'SAFE_PATCH_LEGACY_SESSION_RETIRED' },
-    });
-    expect(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'), 'utf-8')).toBe('export const n = 1;' + String.fromCharCode(10));
-  });
-
   test('direct-edit capability applies sessionlessly and validates through Process run_check', async () => {
     const fx = fixture();
     roots.push(fx.root);
@@ -863,10 +821,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(block).toContain('listActiveExecutionJobs(ctx.controllerHome, repository.repoId)');
     expect(block).not.toContain('listExecutionJobs(ctx.controllerHome, repository.repoId, 100)');
 
-    const mobileMonitorSource = readFileSync(
-      join(process.cwd(), 'src/cli/local-bridge/mobile-monitor.ts'),
-      'utf8',
-    );
+    const mobileMonitorSource = readFileSync(join(process.cwd(), 'src/cli/local-bridge/mobile-monitor.ts'), 'utf8');
     expect(mobileMonitorSource).toContain('listActiveExecutionJobs(input.controllerHome, input.repoId)');
     expect(mobileMonitorSource).toContain('listExecutionJobs(input.controllerHome, input.repoId, 8)');
     expect(mobileMonitorSource).not.toContain('listExecutionJobs(input.controllerHome, input.repoId, 80)');
@@ -2209,9 +2164,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       { requestId: 'proposal-integrate-without-receipt' },
     );
     expect(integrated.ok).toBe(true);
-    expect(integrated.applied).toEqual([
-      expect.objectContaining({ ok: true, changedPaths: ['src/lib.ts'] }),
-    ]);
+    expect(integrated.applied).toEqual([expect.objectContaining({ ok: true, changedPaths: ['src/lib.ts'] })]);
     expect('receiptIds' in integrated).toBe(false);
     expect('parentReceiptId' in integrated).toBe(false);
     expect(readFileSync(join(fx.repoRoot, 'src/lib.ts'), 'utf8')).toBe('export const n = 11;\n');

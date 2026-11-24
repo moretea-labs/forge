@@ -264,7 +264,12 @@ describe('handoff and facade contracts', () => {
     expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['apply', 'plan']);
     expect(schema?.actions?.plan?.argumentsSchema?.required).toEqual(['operations']);
     expect(schema?.actions?.apply?.argumentsSchema?.properties).not.toHaveProperty('work_id');
-    expect(schema?.actions?.apply?.argumentsSchema?.properties).toHaveProperty('validation_only');
+    for (const field of ['session_id', 'expected_revision', 'sessionless', 'recover_stale_session']) {
+      expect(schema?.actions?.apply?.argumentsSchema?.properties).not.toHaveProperty(field);
+    }
+    for (const field of ['validation_only', 'continue_on_error']) {
+      expect(schema?.actions?.apply?.argumentsSchema?.properties).not.toHaveProperty(field);
+    }
     expect(FACADE_TOOLS).toHaveLength(6);
   });
 

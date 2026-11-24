@@ -787,15 +787,13 @@ export async function callRepositoryTool(
       case 'repository_safe_patch_apply': {
         const repository = resolveRepositorySelectionWithoutWorkAuthority(controllerHome, args, repoIdValue, caller);
         const patchPaths = extractPatchPaths(args.operations);
-        const explicitLegacyFlow = Boolean(
-          args.session_id ||
-            args.validation_only === true ||
+        const explicitLegacyValidation = Boolean(
+          args.validation_only === true ||
             args.check_ids ||
             args.validation_request_id ||
-            args.expected_revision !== undefined ||
             args.continue_on_error === true,
         );
-        if (args.sessionless === false || explicitLegacyFlow) {
+        if (explicitLegacyValidation) {
           throw new Error('SAFE_PATCH_LEGACY_SESSION_RETIRED');
         }
         if (!isSessionlessTextEditBatch(args.operations)) {

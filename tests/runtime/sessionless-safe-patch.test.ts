@@ -432,29 +432,6 @@ test('move participates in independent mixed mutation planning without EditSessi
   expect(fx.sessions()).toHaveLength(0);
 });
 
-test('explicit legacy move is rejected before an EditSession can be created (#716)', () => {
-  const fx = fixture();
-  const ctx = { repository: fx.repository, controllerHome: fx.controllerHome };
-  const content = 'export const legacyMove = true;\n';
-  writeFileSync(join(fx.repoRoot, 'legacy-move-source.ts'), content);
-  expect(() =>
-    applyConsoleSafePatch(ctx, {
-      sessionless: false,
-      operations: [
-        {
-          type: 'move',
-          path: 'legacy-move-source.ts',
-          to_path: 'legacy-move-target.ts',
-          expected_sha256: hash(content),
-        },
-      ],
-    }),
-  ).toThrow('SAFE_PATCH_LEGACY_SESSION_RETIRED');
-  expect(readFileSync(join(fx.repoRoot, 'legacy-move-source.ts'), 'utf8')).toBe(content);
-  expect(existsSync(join(fx.repoRoot, 'legacy-move-target.ts'))).toBe(false);
-  expect(fx.sessions()).toHaveLength(0);
-});
-
 test('sessionless Safe Patch refuses symlink targets without source mutation', async () => {
   const fx = fixture();
   symlinkSync('source.ts', join(fx.repoRoot, 'alias.ts'));
@@ -683,31 +660,7 @@ test('explicit stale SHA stays stale even when caller requests fingerprint refre
   expect(fx.sessions()).toHaveLength(0);
 });
 
-test('MCP rejects the retired sessionless=false EditSession fallback (#716)', async () => {
-  const fx = fixture();
-  const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
-    repo_id: fx.repository.repoId,
-    sessionless: false,
-    operations: [
-      {
-        type: 'replace',
-        path: 'source.ts',
-        expected_sha256: hash(fx.initial),
-        replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
-      },
-    ],
-  });
-  expect(response?.isError).toBe(true);
-  expect(response?.structuredContent).toMatchObject({
-    error: {
-      code: 'SAFE_PATCH_LEGACY_SESSION_RETIRED',
-    },
-  });
-  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
-  expect(fx.sessions()).toHaveLength(0);
-});
-
-test('Local Bridge Console uses CAS and rejects the retired EditSession fallback (#716)', () => {
+test('Local Bridge Console uses CAS and preserves strict stale-SHA rejection (#716)', () => {
   const fx = fixture();
   const ctx = { repository: fx.repository, controllerHome: fx.controllerHome };
   const atomic = applyConsoleSafePatch(ctx, {
@@ -744,19 +697,6 @@ test('Local Bridge Console uses CAS and rejects the retired EditSession fallback
   });
   expect(fx.sessions()).toHaveLength(0);
 
-  expect(() =>
-    applyConsoleSafePatch(ctx, {
-      sessionless: false,
-      operations: [
-        {
-          type: 'replace',
-          path: 'source.ts',
-          expected_sha256: hash('export const n = 2;\nexport const label = 1;\n'),
-          replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
-        },
-      ],
-    }),
-  ).toThrow('SAFE_PATCH_LEGACY_SESSION_RETIRED');
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const n = 2;\nexport const label = 1;\n');
   expect(fx.sessions()).toHaveLength(0);
 });
@@ -783,40 +723,6 @@ test('Local Bridge Console routes multi-mutation batches through the shared sess
   });
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toContain('n = 2');
   expect(readFileSync(join(fx.repoRoot, createdPath), 'utf8')).toContain('consoleCreated = true');
-  expect(fx.sessions()).toHaveLength(0);
-});
-
-test('Fast Executor rejects the retired EditSession fallback as a known no-write failure (#716)', async () => {
-  const fx = fixture();
-  const ctx = { controllerHome: fx.controllerHome, repository: fx.repository };
-  const result = await executeFast(ctx, {
-    operation: 'repository_safe_patch_apply',
-    requestId: 'fast-retired-edit-session',
-    input: {
-      sessionless: false,
-      operations: [
-        {
-          type: 'replace',
-          path: 'source.ts',
-          expected_sha256: hash(fx.initial),
-          replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
-        },
-      ],
-    },
-  });
-  expect(result.ok).toBe(false);
-  expect(result.operationSucceeded).toBe(false);
-  expect(result.repositoryChanged).toBe(false);
-  expect(result.reconciliationRequired).toBeUndefined();
-  expect(result.result).toMatchObject({
-    error: {
-      code: 'SAFE_PATCH_LEGACY_SESSION_RETIRED',
-      repositoryChanged: false,
-      cleanupRequired: false,
-      reconciliationRequired: false,
-    },
-  });
-  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
   expect(fx.sessions()).toHaveLength(0);
 });
 

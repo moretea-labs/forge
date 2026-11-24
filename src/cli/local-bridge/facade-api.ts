@@ -1193,13 +1193,8 @@ export function applyConsoleSafePatch(
     operations: unknown;
     purpose?: string;
     allowedPaths?: string[];
-    sessionId?: string;
-    sessionless?: boolean;
   },
 ): Record<string, unknown> {
-  if (input.sessionless === false || input.sessionId) {
-    throw new Error('SAFE_PATCH_LEGACY_SESSION_RETIRED');
-  }
   if (!isSessionlessTextEditBatch(input.operations)) {
     throw new Error('SAFE_PATCH_MUTATION_NOT_SUPPORTED_BY_SESSIONLESS_PLANNER');
   }
