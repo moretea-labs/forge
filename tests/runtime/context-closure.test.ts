@@ -5,10 +5,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import {
-  buildContextClosureReceipt,
-  validateRuntimeIssuedContextClosureReceipt,
-} from '../../src/runtime/context/context-closure';
+import { buildContextClosureReceipt } from '../../src/runtime/context/context-closure';
 import { validateProjectEngineeringContract } from '../../packages/kernel/engineering/domain/project-engineering-contract';
 
 const roots: string[] = [];
@@ -274,38 +271,6 @@ describe('Context Closure', () => {
     expect(receipt.skills).toMatchObject({ status: 'unavailable', unresolvedKinds: ['typescript'] });
     expect(receipt.readiness.reasonCodes).toContain('project_contract.missing');
     expect(receipt.readiness.status).toBe('degraded');
-  });
-
-  test('accepts semantically identical issued content regardless of object property order but rejects content tampering', () => {
-    const root = temp('context-closure-issued-');
-    projectContract(root, { projectId: 'issued', skillRefs: ['typescript-engineering'] });
-    skill(root, 'typescript-engineering');
-    const issued = buildContextClosureReceipt({
-      repoRoot: root,
-      skillHomeDir: join(root, 'no-user-skills'),
-      query: 'typescript service implementation',
-      pack: pack('revision-issued', ['src/service.ts'], ['tests/service.test.ts']),
-      semanticNavigation: { requested: 0, results: [], errors: [] },
-      semanticProviders: [{ id: 'typescript-language-service', languages: ['typescript'] }],
-    });
-    expect(validateRuntimeIssuedContextClosureReceipt(issued).receiptId).toBe(issued.receiptId);
-
-    const reverseObjectKeyOrder = (value: unknown): unknown => {
-      if (Array.isArray(value)) return value.map(reverseObjectKeyOrder);
-      if (!value || typeof value !== 'object') return value;
-      return Object.fromEntries(
-        Object.entries(value as Record<string, unknown>)
-          .reverse()
-          .map(([key, entry]) => [key, reverseObjectKeyOrder(entry)]),
-      );
-    };
-    const reordered = reverseObjectKeyOrder(issued) as typeof issued;
-    expect(validateRuntimeIssuedContextClosureReceipt(reordered).receiptId).toBe(issued.receiptId);
-
-    const tampered = { ...issued, generatedAt: '2026-09-03T00:00:01.000Z' };
-    expect(() => validateRuntimeIssuedContextClosureReceipt(tampered)).toThrow(
-      'CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME',
-    );
   });
 });
 

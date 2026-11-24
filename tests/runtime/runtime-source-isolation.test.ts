@@ -17,7 +17,6 @@ import {
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { callContextAdapter } from '../../adapters/mcp/runtime-gateway/context-adapter';
 import { recordGatewayLatency } from '../../src/core/observability/gateway-contention-metrics';
-import { validateRuntimeIssuedContextClosureReceipt } from '../../src/runtime/context/context-closure';
 import type { ContextClosureReceipt } from '../../packages/kernel/engineering/api/index';
 import {
   collectRuntimeSourceIdentity,
@@ -1309,7 +1308,7 @@ printf '{"ok":true}\\n'
     );
   });
 
-  test('rh_context returns an intact runtime-issued closure and rejects tampered provenance', async () => {
+  test('rh_context returns intact source-bound context facts without admission replay', async () => {
     const business = tempRoot('forge-context-roundtrip-facade-');
     const controllerHome = tempRoot('forge-home-context-roundtrip-facade-');
     initGitRepo(business, 'context-roundtrip-facade');
@@ -1339,21 +1338,16 @@ printf '{"ok":true}\\n'
         max_snippets: 4,
       }),
     );
-    const contextData = contextPayload.data as { contextClosure?: Record<string, unknown> };
+    const contextData = contextPayload.data as { contextClosure?: ContextClosureReceipt };
     const closure = contextData.contextClosure;
     expect(closure).toBeTruthy();
     expect(JSON.stringify(closure)).not.toContain('[bounded-depth]');
-    expect((closure?.readiness as { status?: string } | undefined)?.status).not.toBe('insufficient');
-
-    const issued = validateRuntimeIssuedContextClosureReceipt(closure as unknown as ContextClosureReceipt);
-    expect(issued.receiptId).toBe(String(closure?.receiptId));
-    expect(issued.sourceRevision).toBe(sourceRevision);
-    expect(() =>
-      validateRuntimeIssuedContextClosureReceipt({
-        ...issued,
-        generatedAt: '2099-01-01T00:00:00.000Z',
-      }),
-    ).toThrow('CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME');
+    expect(closure?.readiness.status).not.toBe('insufficient');
+    expect(closure?.sourceRevision).toBe(sourceRevision);
+    expect(closure?.sourceEvidence.currentPaths).toContain('src/index.ts');
+    expect(closure?.projectContract?.sourceRevision).toBe(sourceRevision);
+    expect(closure?.provenance.source).toBe('rh_context');
+    expect(closure?.receiptId).toMatch(/^context_closure_[a-f0-9]{32}$/);
   });
 
   test('rh_context list query returns bounded read-only intent discovery and preserves plugin_action_execute authority', async () => {
