@@ -12,7 +12,7 @@ import type { ExecutionChildReference } from './child-reference';
 import { getExecutionJob } from './store';
 import type { ExecutionJob } from './types';
 
-export interface OperationReceiptLeaseRef {
+interface OperationReceiptLeaseRef {
   leaseId: string;
   fencingToken: number;
 }

@@ -1,7 +1,7 @@
-import type { McpToolDefinition, CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
+import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { boundedPluginArtifactImageContent, jsonPreview, result, resultWithPluginArtifactImages } from './result-adapter';
-import { expectedRevision, repositoryRootForRepoId, selected, stringList } from './shared-adapter';
+import { result } from './result-adapter';
+import { repositoryRootForRepoId } from './shared-adapter';
 import { cancelExecutionJob, findExecutionJob, getExecutionJob } from '../../../src/runtime/execution/jobs/store';
 import { summarizeExecutionJob } from './runtime-tool-shared';
 

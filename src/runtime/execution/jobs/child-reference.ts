@@ -15,7 +15,7 @@ export interface ExecutionChildReference {
   requestId?: string;
 }
 
-export const AGENT_DELEGATION_OPERATIONS = new Set([
+const AGENT_DELEGATION_OPERATIONS = new Set([
   'dispatch_task',
   'launch_issue',
   'dispatch_ready_tasks',
@@ -23,7 +23,7 @@ export const AGENT_DELEGATION_OPERATIONS = new Set([
   'quick_agent_session',
 ]);
 
-export const AGENT_DELEGATION_LOCAL_ACTIONS = new Set([
+const AGENT_DELEGATION_LOCAL_ACTIONS = new Set([
   'launch-task',
   'quick-agent-session',
 ]);

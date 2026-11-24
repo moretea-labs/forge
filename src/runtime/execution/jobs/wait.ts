@@ -1,7 +1,7 @@
 import { getExecutionJob } from './store';
 import { TERMINAL_JOB_STATUSES, type ExecutionJob } from './types';
 
-export interface WaitForExecutionJobOptions {
+interface WaitForExecutionJobOptions {
   controllerHome: string;
   repoId: string;
   jobId: string;
@@ -14,11 +14,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function isTerminalExecutionJob(job: ExecutionJob): boolean {
+function isTerminalExecutionJob(job: ExecutionJob): boolean {
   return TERMINAL_JOB_STATUSES.has(job.status);
 }
 
-export function isInteractiveExecutionStop(job: ExecutionJob): boolean {
+function isInteractiveExecutionStop(job: ExecutionJob): boolean {
   return isTerminalExecutionJob(job) || job.status === 'waiting_for_approval';
 }
 

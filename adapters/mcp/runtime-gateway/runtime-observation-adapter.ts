@@ -30,7 +30,6 @@ import {
 } from '../../../src/runtime/repositories/registry';
 import { repositoryControllerRoot } from '../../../src/effects/controller-home';
 import {
-  cancelExecutionJob,
   findExecutionJob,
   getExecutionJob,
   listActiveExecutionJobs,

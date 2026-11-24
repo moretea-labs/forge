@@ -12,7 +12,7 @@ import { getExecutionJob, transitionExecutionJob } from './store';
 import type { ExecutionJob } from './types';
 import { releaseExecutionLeases } from '../../resources/leases/store';
 
-export type RecoveredReceiptOutcome = {
+type RecoveredReceiptOutcome = {
   job: ExecutionJob;
   recoveredAs: 'completed' | 'delegated';
   outcome: 'succeeded' | 'failed' | 'delegated';
