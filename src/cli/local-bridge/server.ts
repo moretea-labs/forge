@@ -25,7 +25,7 @@ import {
   listControllerWorklogEvents,
   parseWorklogCategory,
 } from '../../runtime/evidence/controller-worklog';
-import { inspectProjectGovernance, reconcileProjectGovernance } from '../controller/governance';
+import { inspectProjectGovernance } from '../controller/governance';
 import { loadControllerProjectState } from '../controller/project-state';
 import { legacyIssueAuthorityRetired } from '../controller/legacy-issue-cutover';
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../runtime/control-plane/facade/requirement-board';
@@ -2034,13 +2034,6 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
   app.get('/api/governance', (request, response) => {
     try {
       response.json(inspectProjectGovernance(requestRepositoryRoot(request, options, controllerHome)));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post('/api/governance/reconcile', (request, response) => {
-    try {
-      response.json(reconcileProjectGovernance(requestRepositoryRoot(request, options, controllerHome)));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }

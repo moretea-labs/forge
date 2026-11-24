@@ -7,7 +7,7 @@ import { writeControlPlaneRecord } from '../../src/runtime/control-plane/persist
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { getIssueReadView, createIssue, updateTask } from '../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../../src/cli/controller/task-ledger';
-import { inspectProjectGovernance, reconcileProjectGovernance } from '../../src/cli/controller/governance';
+import { inspectProjectGovernance } from '../../src/cli/controller/governance';
 import {
   clearCurrentIssue,
   loadControllerProjectState,
@@ -221,7 +221,6 @@ describe('legacy control-plane cutover', () => {
       expect(() => saveControllerProjectState(repoRoot, { issueCreationMode: 'open' })).toThrow(
         'LEGACY_PROJECT_STATE_WRITES_RETIRED',
       );
-      expect(() => reconcileProjectGovernance(repoRoot)).toThrow('LEGACY_GOVERNANCE_RECONCILIATION_RETIRED');
       expect(() => finishEditSession(repoRoot, { sessionId: 'EDIT-MISSING' })).toThrow(
         'LEGACY_EDIT_SESSION_COMPLETION_RETIRED',
       );
@@ -264,6 +263,7 @@ describe('legacy control-plane cutover', () => {
       '/api/project-state',
       '/api/progress',
       '/api/tasks/launch-ready',
+      '/api/governance/reconcile',
       '/api/issues/:issueId/focus',
       '/api/issues/:issueId/archive',
       '/api/issues/:issueId/restore',

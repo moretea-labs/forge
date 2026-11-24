@@ -1,21 +1,10 @@
 import { listAgentJobs } from "../agent-jobs/job-manager";
 import type { AgentJobMeta } from "../agent-jobs/types";
-import {
-  acceptVerifiedTask,
-  archiveIssue,
-  getIssue,
-  listIssues,
-  setTaskDependencies,
-  updateIssue,
-  updateTask,
-} from "./issue-store";
-import { clearCurrentIssue, loadControllerProjectState, saveControllerProjectState } from "./project-state";
+import { listIssues } from "./issue-store";
+import { loadControllerProjectState } from "./project-state";
 import type { ControllerIssue, ControllerTask } from "./types";
-import { completionEvidenceComplete } from "./execution-policy";
-import { resolveCompletionTargetBranch } from "./completion-target";
 import { readIssueRunEvidence } from "./run-evidence";
 import { resolveEffectiveTaskState, resolveIssueTaskStates, resolveTaskDependencies, type EffectiveTaskState } from "./task-status-resolver";
-import { tryAppendControllerWorklogEvent } from "../../runtime/evidence/controller-worklog";
 import { legacyIssueCutoverState } from "./legacy-issue-cutover";
 import { resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
@@ -73,12 +62,6 @@ export interface ProjectGovernanceSnapshot {
   authority?: "controller-home-sqlite";
   requirements?: unknown[];
   notice?: string;
-}
-
-export interface ReconcileResult {
-  changed: boolean;
-  changes: Array<{ issueId: string; taskId?: string; action: string; summary: string }>;
-  governance: ProjectGovernanceSnapshot;
 }
 
 export type GovernanceStatusKind =
@@ -187,20 +170,6 @@ function governanceStatusSummary(input: {
       ? "No review, retry, blocked, or dispatchable task needs immediate governance action."
       : "No active controller issues remain in the current workspace.",
   };
-}
-
-function hasGovernanceRetryBlocker(task: ControllerTask): boolean {
-  return task.notes.some((note) => note.includes(GOVERNANCE_RETRY_BLOCKER_NOTE));
-}
-
-function shouldAutoAcceptVerifiedTask(repoRoot: string, issue: ControllerIssue, task: ControllerTask): boolean {
-  if (task.status !== "verified" || !task.verification) return false;
-  if (!completionEvidenceComplete(task.verification, {
-    issueId: issue.id,
-    taskId: task.id,
-    targetBranch: resolveCompletionTargetBranch(repoRoot),
-  })) return false;
-  return task.acceptanceCriteria.length === 0;
 }
 
 function taskQueueItem(issue: ControllerIssue, task: ControllerTask, state: EffectiveTaskState): ExecutionQueueItem | undefined {
@@ -490,104 +459,4 @@ export function inspectProjectGovernance(repoRoot: string): ProjectGovernanceSna
     findings,
     counts,
   };
-}
-
-export function reconcileProjectGovernance(repoRoot: string): ReconcileResult {
-  if (legacyIssueCutoverState(repoRoot).retired) {
-    throw new Error("LEGACY_GOVERNANCE_RECONCILIATION_RETIRED: reconciliation cannot mutate frozen Issue/Task/project-state files after SQLite cutover.");
-  }
-  const changes: ReconcileResult["changes"] = [];
-  const issues = listIssues(repoRoot);
-  const runs = listAgentJobs(repoRoot, 2000);
-  const byId = new Map(runs.map((run) => [run.runId, run]));
-
-  for (const issue of issues.filter((entry) => !entry.archivedAt)) {
-    const issueStates = resolveIssueTaskStates(issue, readIssueRunEvidence(repoRoot, issue));
-    for (const task of issue.tasks) {
-      const state = issueStates.get(task.id)!;
-      if (state.terminal || state.inactive) continue;
-      let nextDependencies = task.dependsOn.slice();
-      let dependencyChanged = false;
-      for (const dependencyId of task.dependsOn) {
-        const dependency = issue.tasks.find((candidate) => candidate.id === dependencyId);
-        if (dependency?.status === "superseded" && (dependency.supersededBy?.length ?? 0) > 0) {
-          nextDependencies = nextDependencies.flatMap((value) => value === dependencyId ? dependency.supersededBy ?? [] : [value]);
-          dependencyChanged = true;
-        }
-      }
-      if (dependencyChanged) {
-        nextDependencies = Array.from(new Set(nextDependencies));
-        setTaskDependencies(repoRoot, issue.id, task.id, nextDependencies);
-        changes.push({ issueId: issue.id, taskId: task.id, action: "repair_dependency", summary: `Replaced superseded dependencies for ${task.id}.` });
-      }
-      const latestRunId = state.latestRunId;
-      const latestRunStatus = state.latestRunStatus;
-      if (latestRunId && latestRunStatus === "succeeded" && task.status === "running") {
-        updateTask(repoRoot, issue.id, task.id, {
-          status: "review",
-          transition: "run_sync",
-          note: `${latestRunId} succeeded; Task moved to review by explicit governance reconciliation.`,
-        });
-        changes.push({ issueId: issue.id, taskId: task.id, action: "review_after_run", summary: `Moved ${task.id} to review after succeeded Run.` });
-      } else if (
-        latestRunId &&
-        latestRunStatus === "succeeded" &&
-        task.status === "blocked" &&
-        hasGovernanceRetryBlocker(task)
-      ) {
-        updateTask(repoRoot, issue.id, task.id, {
-          status: "review",
-          transition: "run_sync",
-          note: `${latestRunId} succeeded after an earlier retry-required failure; stale governance blocker was cleared and the Task returned to review.`,
-        });
-        changes.push({ issueId: issue.id, taskId: task.id, action: "clear_stale_failed_run_blocker", summary: `Returned ${task.id} to review after a later succeeded Run superseded an older retry blocker.` });
-      } else if (latestRunId && latestRunStatus && ["failed", "unknown", "cancelled"].includes(latestRunStatus) && ["backlog", "analysis", "planned", "ready", "running", "launch_blocked"].includes(task.status)) {
-        updateTask(repoRoot, issue.id, task.id, {
-          status: "blocked",
-          transition: "run_sync",
-          note: `${latestRunId} remains recorded as ${latestRunStatus}; explicit retry is required and no new Run was created.`,
-        });
-        changes.push({ issueId: issue.id, taskId: task.id, action: "block_after_run", summary: `Blocked ${task.id} after ${latestRunStatus} Run; explicit retry required.` });
-      }
-      if (shouldAutoAcceptVerifiedTask(repoRoot, issue, task)) {
-        acceptVerifiedTask(repoRoot, issue.id, task.id, "Accepted during governance reconciliation because policy auto-completes verified work for this Task.");
-        changes.push({ issueId: issue.id, taskId: task.id, action: "auto_accept_verified_task", summary: `Closed ${task.id} because existing verification already satisfies the current auto-complete policy.` });
-      }
-    }
-    const refreshed = getIssue(repoRoot, issue.id);
-    const refreshedStates = resolveIssueTaskStates(refreshed, readIssueRunEvidence(repoRoot, refreshed));
-    const nonSuperseded = refreshed.tasks.filter((task) => !["superseded", "cancelled"].includes(refreshedStates.get(task.id)!.effectiveStatus));
-    if (nonSuperseded.length > 0 && nonSuperseded.every((task) => refreshedStates.get(task.id)!.effectiveStatus === "done") && refreshed.status !== "done") {
-      updateIssue(repoRoot, refreshed.id, { status: "done" });
-      changes.push({ issueId: refreshed.id, action: "close_issue", summary: `Closed ${refreshed.id} because all active Tasks are done.` });
-    }
-  }
-
-  const state = loadControllerProjectState(repoRoot);
-  const allCurrentIssues = listIssues(repoRoot);
-  const currentIssues = activeIssues(allCurrentIssues);
-  const focused = state.currentIssueId ? currentIssues.find((issue) => issue.id === state.currentIssueId) : undefined;
-  if (state.currentIssueId && !focused) {
-    clearCurrentIssue(repoRoot, "governance-reconciler");
-    changes.push({ issueId: state.currentIssueId, action: "clear_focus", summary: `Cleared terminal or archived execution focus ${state.currentIssueId}.` });
-  }
-  if (currentIssues.length === 1 && (!focused || state.currentIssueId !== currentIssues[0].id)) {
-    saveControllerProjectState(repoRoot, { currentIssueId: currentIssues[0].id }, "governance-reconciler");
-    changes.push({ issueId: currentIssues[0].id, action: "set_focus", summary: `Selected ${currentIssues[0].id} as the only active Issue.` });
-  }
-
-  if (changes.length > 0) {
-    tryAppendControllerWorklogEvent(repoRoot, {
-      category: "system",
-      action: "governance_reconciled",
-      summary: `Applied ${changes.length} safe governance repair(s).`,
-      actor: "governance-reconciler",
-      details: { changes },
-    });
-  }
-  return { changed: changes.length > 0, changes, governance: inspectProjectGovernance(repoRoot) };
-}
-
-export function archiveTerminalIssue(repoRoot: string, issueId: string): ControllerIssue {
-  return archiveIssue(repoRoot, issueId);
 }

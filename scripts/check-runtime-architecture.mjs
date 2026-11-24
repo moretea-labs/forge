@@ -2195,6 +2195,16 @@ requireMissing('src/runtime/control-plane/global-scheduler/worker-attachment.ts'
 requireMissing('src/runtime/control-plane/global-scheduler/worker-stderr.ts');
 requireMissing('src/runtime/execution/jobs/legacy-adapter.ts');
 requireMissing('src/cli/controller/migrated-issue-decision.ts');
+forbid(
+  'src/cli/controller/governance.ts',
+  /reconcileProjectGovernance|archiveTerminalIssue|acceptVerifiedTask|setTaskDependencies|updateIssue|updateTask|saveControllerProjectState/,
+  'legacy governance mutation owner must stay physically absent',
+);
+forbid(
+  'src/cli/local-bridge/server.ts',
+  /\/api\/governance\/reconcile/,
+  'retired governance reconciliation HTTP route must stay physically absent',
+);
 requireMissing('src/cli/mcp/oauth-client-retirement.ts');
 requireMissing('adapters/mcp/tool-mapping/umbrella-tools.ts');
 requireMissing('src/runtime/control-plane/execution/implementation-review-content.ts');
