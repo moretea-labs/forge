@@ -396,7 +396,7 @@ describe('Local Execution Bridge', () => {
     }
   });
 
-  test('returns stable 410 handoffs for retired Local Bridge creation and progress projection routes', async () => {
+  test('does not register retired Local Bridge creation and legacy progress mutation routes', async () => {
     const root = repo();
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
     servers.push(handle);
@@ -412,13 +412,11 @@ describe('Local Execution Bridge', () => {
         headers: { 'content-type': 'application/json', 'x-forge-local-token': handle.token },
         body: '{}',
       });
-      expect(response.status).toBe(410);
-      expect(await response.json()).toMatchObject({ error: 'LOCAL_BRIDGE_JOB_RETIRED' });
+      expect(response.status).toBe(404);
     }
     for (const path of ['/api/progress', '/api/issues/ISS-test/tasks/T1']) {
       const response = await fetch(new URL(path, handle.url), { headers: { 'x-forge-local-token': handle.token } });
-      expect(response.status).toBe(410);
-      expect(await response.json()).toMatchObject({ error: 'LEGACY_PROGRESS_PROJECTION_RETIRED' });
+      expect(response.status).toBe(404);
     }
     // Legacy mutations are retired even before repository portfolio migration.
     const retiredWriteRoutes = [
@@ -440,8 +438,7 @@ describe('Local Execution Bridge', () => {
         headers: { 'content-type': 'application/json', 'x-forge-local-token': handle.token },
         body: '{}',
       });
-      expect(response.status).toBe(410);
-      expect(await response.json()).toMatchObject({ error: 'LEGACY_CONTROL_PLANE_MUTATION_RETIRED' });
+      expect(response.status).toBe(404);
     }
   });
 
@@ -954,8 +951,7 @@ describe('Local Execution Bridge', () => {
         headers: { ...headers, 'content-type': 'application/json' },
         body: JSON.stringify({ confirmAcceptance: true }),
       });
-      expect(response.status).toBe(410);
-      expect(await response.json()).toMatchObject({ error: 'LEGACY_CONTROL_PLANE_MUTATION_RETIRED' });
+      expect(response.status).toBe(404);
     }
     expect(getIssue(root, issue.id).tasks[0]?.status).toBe('review');
     const governance = await fetch(new URL('/api/governance', handle.url), { headers }).then((response) =>

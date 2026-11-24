@@ -252,35 +252,6 @@ function withMobileIntentStoreLock<T>(controllerHome: string, repoId: string, op
   );
 }
 
-function localBridgeExecutionRetiredPayload(): Record<string, unknown> {
-  return {
-    error: 'LOCAL_BRIDGE_JOB_RETIRED',
-    message:
-      'New Local Bridge Jobs are retired. Claim Work through an external Controller, or use the Process Runtime for deterministic commands and checks.',
-  };
-}
-
-function legacyControlPlaneMutationRetiredPayload(): Record<string, unknown> {
-  return {
-    error: 'LEGACY_CONTROL_PLANE_MUTATION_RETIRED',
-    message:
-      'Issue, Task, currentIssue and legacy project-board mutation APIs are frozen after SQLite cutover. Use Requirement, Plan and Work APIs.',
-    authority: 'controller-home-sqlite',
-    deprecated: true,
-    frozen: true,
-  };
-}
-
-function legacyProgressProjectionRetiredPayload(): Record<string, unknown> {
-  return {
-    error: 'LEGACY_PROGRESS_PROJECTION_RETIRED',
-    message:
-      'Legacy Issue/Task progress projections were retired with the Local Bridge web UI. Use Requirement, Plan, Work and execution evidence APIs.',
-    authority: 'controller-home-sqlite',
-    deprecated: true,
-  };
-}
-
 function queryString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -2222,46 +2193,6 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.get('/api/project-state', (request, response) => {
-    try {
-      response.json(loadControllerProjectState(requestRepositoryRoot(request, options, controllerHome)));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get('/api/progress', (_request, response) => {
-    response.status(410).json(legacyProgressProjectionRetiredPayload());
-  });
-  app.get('/api/issues/:issueId/tasks/:taskId', (_request, response) => {
-    response.status(410).json(legacyProgressProjectionRetiredPayload());
-  });
-  // All legacy Issue/Task/project-state HTTP mutations are retired for every
-  // repository, including those with no SQLite migration marker. The read-only
-  // history endpoints remain, but Runtime clients write Requirement/Plan/Work.
-  const retireLegacyIssueMutation = (_request: Request, response: Response): void => {
-    response.status(410).json(legacyControlPlaneMutationRetiredPayload());
-  };
-  app.patch('/api/project-state', retireLegacyIssueMutation);
-  for (const path of [
-    '/api/issues/:issueId/focus',
-    '/api/issues/:issueId/archive',
-    '/api/issues/:issueId/restore',
-    '/api/issues/:issueId/tasks/:taskId/verify',
-    '/api/issues/:issueId/tasks/:taskId/accept',
-    '/api/issues/:issueId/tasks/:taskId/request-changes',
-    '/api/issues/:issueId/tasks/:taskId/cancel',
-    '/api/issues/:issueId/tasks/:taskId/dependencies',
-  ])
-    app.post(path, retireLegacyIssueMutation);
-  app.post('/api/tasks/launch-ready', (_request, response) => {
-    response.status(410).json(localBridgeExecutionRetiredPayload());
-  });
-  app.post('/api/issues/:issueId/launch', (_request, response) => {
-    response.status(410).json(localBridgeExecutionRetiredPayload());
-  });
-  app.post('/api/issues/:issueId/tasks/:taskId/launch', (_request, response) => {
-    response.status(410).json(localBridgeExecutionRetiredPayload());
-  });
   app.post('/api/checks/run', (request, response) => {
     try {
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
@@ -2670,9 +2601,6 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
       response.status(404).json({ error: errorMessage(error) });
     }
   });
-  app.post('/api/jobs', (_request, response) => {
-    response.status(410).json(localBridgeExecutionRetiredPayload());
-  });
   app.post('/api/jobs/:jobId/cancel', (request, response) => {
     try {
       response.json(
@@ -2736,18 +2664,7 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
       response.status(400).json({ error: errorMessage(error) });
     }
   });
-  app.post('/api/runs/:runId/retry', (_request, response) => {
-    // Fail closed: Kernel-managed Agent Run retry is retired. Do not probe
-    // providers, mutate Task state, or create Runs/Jobs from this route.
-    response.status(410).json({
-      error: 'AGENT_RUN_RETIRED',
-      message:
-        'Kernel-managed Agent Run retry is retired. Continue from the current Requirement/Plan and explicit repository/checkout through Process Runtime.',
-      migration: {
-        path: ['Requirement/Plan', 'repository/checkout', 'Process Runtime'],
-      },
-    });
-  });
+
 
   const server = createServer(app);
   server.listen(requestedPort, host);

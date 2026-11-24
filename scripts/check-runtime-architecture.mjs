@@ -2238,8 +2238,6 @@ forbid(
   /\bretryAgentJob\b|\bacceptTaskJob\b|\bstartTaskJob\b|\barchiveIssue\b|\brestoreIssue\b|\brecordTaskVerification\b|\bsetTaskDependencies\b|\bacceptVerifiedTask\b|\bsaveControllerProjectState\b|\bupdateTask\b/,
   'Local Bridge HTTP must not retain legacy Issue/Task, project-state or Agent Run writers',
 );
-requireText('src/cli/local-bridge/server.ts', 'app.post(path, retireLegacyIssueMutation)');
-requireText('src/cli/local-bridge/server.ts', "app.patch('/api/project-state', retireLegacyIssueMutation)");
 requireText('src/cli/local-bridge/server.ts', 'runEditSessionMutationInWorker(');
 requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
 requireText('src/runtime/safe-tooling/mac-keychain-write.ts', "spawnSync('/usr/bin/security', ['-i']");
