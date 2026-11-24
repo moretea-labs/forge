@@ -49,12 +49,18 @@ enum AgentConversationToolbarContract {
     static let requiredActionIdentifiers = [inspectorIdentifier]
 }
 
+enum AgentCapabilitiesContract {
+    static let panelIdentifier = "agent.capabilities.panel"
+    static let pluginIdentifier = "agent.capability.plugins"
+}
+
 /// Stable UI identities for Agent extension points. These are presentation slots only;
 /// availability must still come from a real backend before a slot can become active.
 enum AgentCapabilityExtension: String, CaseIterable, Identifiable {
     case skills, mcp, agents, commands, hooks
 
     var id: String { rawValue }
+    var accessibilityIdentifier: String { "agent.capability.\(rawValue)" }
 
     var title: String {
         switch self {
@@ -881,7 +887,7 @@ struct AgentPane: View {
                             .forgeChromeIcon(active:workSurfaceVisible && selectedWorkSurface == .capabilities)
                     }
                     .buttonStyle(.plain)
-                    .help("能力：插件、Skills 与外部工具")
+                    .help("Agent 能力与扩展")
                     .accessibilityLabel("打开 Agent 能力")
                     .accessibilityIdentifier("agent.capabilities.open")
 
@@ -1830,6 +1836,7 @@ struct AgentCapabilitiesInspector: View {
                     icon:"puzzlepiece.extension",
                     title:"Plugins",
                     detail:pluginSummary,
+                    identifier:AgentCapabilitiesContract.pluginIdentifier,
                     status:pluginStatus,
                     active:hasActiveInstalledPlugin || !readyProjectPlugins.isEmpty
                 )
@@ -1897,12 +1904,13 @@ struct AgentCapabilitiesInspector: View {
                     .padding(.leading,30)
                 }
 
-                VStack(alignment:.leading,spacing:2) {
-                    Text("扩展预留")
+                HStack(spacing:8) {
+                    Text("扩展能力")
                         .font(.system(size:10.5,weight:.semibold))
                         .foregroundStyle(ForgePalette.secondary)
-                    Text("后端接入后原位激活，Inspector 结构保持不变。")
-                        .font(.system(size:9.5))
+                    Spacer(minLength:8)
+                    Text("待接入")
+                        .font(.system(size:9.25,weight:.medium))
                         .foregroundStyle(.tertiary)
                 }
                 .padding(.top,4)
@@ -1911,7 +1919,9 @@ struct AgentCapabilitiesInspector: View {
                     capabilityRow(
                         icon:extensionPoint.symbol,
                         title:extensionPoint.title,
-                        detail:extensionPoint.summary
+                        detail:extensionPoint.summary,
+                        identifier:extensionPoint.accessibilityIdentifier,
+                        muted:true
                     )
                 }
             }
@@ -1923,7 +1933,7 @@ struct AgentCapabilitiesInspector: View {
                 await model.loadPluginManagement()
             }
         }
-        .accessibilityIdentifier("agent.capabilities")
+        .accessibilityIdentifier(AgentCapabilitiesContract.panelIdentifier)
     }
 
     private var pluginStatus: String {
@@ -1952,8 +1962,10 @@ struct AgentCapabilitiesInspector: View {
         icon: String,
         title: String,
         detail: String,
+        identifier: String,
         status: String? = nil,
-        active: Bool = false
+        active: Bool = false,
+        muted: Bool = false
     ) -> some View {
         HStack(alignment:.top,spacing:10) {
             Image(systemName:icon)
@@ -1964,7 +1976,7 @@ struct AgentCapabilitiesInspector: View {
             VStack(alignment:.leading,spacing:2) {
                 Text(title)
                     .font(.system(size:11.5,weight:.medium))
-                    .foregroundStyle(ForgePalette.ink)
+                    .foregroundStyle(muted ? ForgePalette.secondary : ForgePalette.ink)
                 Text(detail)
                     .font(.system(size:9.75))
                     .foregroundStyle(.tertiary)
@@ -1979,6 +1991,8 @@ struct AgentCapabilitiesInspector: View {
             }
         }
         .padding(.vertical,6)
+        .accessibilityElement(children:.combine)
+        .accessibilityIdentifier(identifier)
     }
 }
 

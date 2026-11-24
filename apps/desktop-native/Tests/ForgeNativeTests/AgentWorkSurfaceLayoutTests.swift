@@ -42,12 +42,23 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
   }
 
   func testCapabilityExtensionSlotsKeepStableBackendIndependentIdentity() {
+    XCTAssertEqual(AgentCapabilitiesContract.panelIdentifier, "agent.capabilities.panel")
+    XCTAssertEqual(AgentCapabilitiesContract.pluginIdentifier, "agent.capability.plugins")
     XCTAssertEqual(
       AgentCapabilityExtension.allCases.map(\.rawValue),
       ["skills", "mcp", "agents", "commands", "hooks"])
     XCTAssertEqual(
       AgentCapabilityExtension.allCases.map(\.title),
       ["Skills", "MCP / 外部工具", "Agents", "Commands", "Hooks"])
+    XCTAssertEqual(
+      AgentCapabilityExtension.allCases.map(\.accessibilityIdentifier),
+      [
+        "agent.capability.skills",
+        "agent.capability.mcp",
+        "agent.capability.agents",
+        "agent.capability.commands",
+        "agent.capability.hooks",
+      ])
   }
 
   func testInspectorReopensLastAvailableTabAndFallsBackWhenContextChanges() {
