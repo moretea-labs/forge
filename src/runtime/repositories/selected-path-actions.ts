@@ -1,5 +1,6 @@
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join, relative, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { buildPatchHandoffArtifact } from '../../runtime/recovery/patch-handoff';
@@ -18,6 +19,8 @@ const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024;
 const MAX_OUTPUT_BYTES = 512 * 1024;
 const MAX_SELECTED_PATHS = 128;
 const MAX_PATH_LENGTH = 4096;
+const MAX_EXACT_PATCH_BYTES = 4 * 1024 * 1024;
+const EXACT_PATCH_REF_RETRIES = 3;
 
 export interface SelectedPathDiffResult {
   repoId: string;
@@ -37,6 +40,25 @@ export interface SelectedPathCommitResult {
   stagedPaths: string[];
   commit?: RepositoryGitExecution;
   error?: { code: string; message: string };
+}
+
+export interface SelectedPatchCommitResult {
+  paths: string[];
+  patchPaths: string[];
+  headRef: string;
+  baseHead: string;
+  committedHead: string;
+  attempts: number;
+  indexReset: { ok: boolean; exitCode: number; stdout: string; stderr: string };
+  error?: { code: string; message: string };
+}
+
+export interface SelectedPatchBeforeRefUpdateInput {
+  repository: RepositoryRecord;
+  attempt: number;
+  baseHead: string;
+  candidateHead: string;
+  headRef: string;
 }
 
 export interface SelectedPathRestoreResult {
@@ -134,6 +156,7 @@ function runGit(
   repository: RepositoryRecord,
   args: string[],
   maxOutputBytes: number,
+  options: { input?: string; env?: Record<string, string> } = {},
 ): { ok: boolean; exitCode: number; stdout: string; stderr: string } {
   const result = spawnSync('git', ['-C', repository.canonicalRoot, ...args], {
     cwd: repository.canonicalRoot,
@@ -143,8 +166,10 @@ function runGit(
       GIT_TERMINAL_PROMPT: '0',
       GIT_CONFIG_NOSYSTEM: '1',
       CI: '1',
+      ...options.env,
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    ...(options.input !== undefined ? { input: options.input } : {}),
+    stdio: [options.input !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     maxBuffer: Math.max(maxOutputBytes, 1024 * 1024),
   });
   const stderr = [
@@ -331,6 +356,232 @@ export function stageSelectedPaths(
       authorization: 'explicit_user_request',
     }),
   };
+}
+
+function currentHeadRef(repository: RepositoryRecord): string {
+  return gitText(repository, ['symbolic-ref', '-q', 'HEAD']) || 'HEAD';
+}
+
+function patchPathInScope(path: string, selectedPaths: string[]): boolean {
+  return selectedPaths.some((selected) => path === selected || path.startsWith(`${selected}/`));
+}
+
+function nulSeparatedPaths(output: string): string[] {
+  return output
+    .split('\0')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .sort();
+}
+
+function exactPatchCandidate(
+  repository: RepositoryRecord,
+  baseHead: string,
+  patch: string,
+  selectedPaths: string[],
+  message: string,
+): { candidateHead: string; patchPaths: string[] } {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'forge-exact-index-'));
+  const indexPath = join(tempRoot, 'index');
+  const env = { GIT_INDEX_FILE: indexPath };
+  try {
+    const readTree = runGit(repository, ['read-tree', baseHead], 64 * 1024, { env });
+    if (!readTree.ok) {
+      throw new Error(`SELECTED_PATCH_INDEX_INIT_FAILED: ${readTree.stderr || `exit ${readTree.exitCode}`}`);
+    }
+    const applied = runGit(repository, ['apply', '--cached', '--whitespace=nowarn', '-'], 128 * 1024, {
+      env,
+      input: patch,
+    });
+    if (!applied.ok) {
+      throw new Error(`SELECTED_PATCH_CONFLICT: ${applied.stderr || `exit ${applied.exitCode}`}`);
+    }
+    const names = runGit(
+      repository,
+      ['diff', '--cached', '--no-renames', '--name-only', '-z', baseHead, '--'],
+      128 * 1024,
+      { env },
+    );
+    if (!names.ok) {
+      throw new Error(`SELECTED_PATCH_SCOPE_READ_FAILED: ${names.stderr || `exit ${names.exitCode}`}`);
+    }
+    const patchPaths = nulSeparatedPaths(names.stdout);
+    if (patchPaths.length === 0) throw new Error('SELECTED_PATCH_EMPTY: patch produced no staged changes');
+    const outOfScope = patchPaths.filter((path) => !patchPathInScope(path, selectedPaths));
+    if (outOfScope.length > 0) {
+      throw new Error(`SELECTED_PATCH_SCOPE_DENIED: patch touches unselected paths: ${outOfScope.join(', ')}`);
+    }
+    const tree = runGit(repository, ['write-tree'], 64 * 1024, { env });
+    if (!tree.ok || !tree.stdout.trim()) {
+      throw new Error(`SELECTED_PATCH_WRITE_TREE_FAILED: ${tree.stderr || `exit ${tree.exitCode}`}`);
+    }
+    const commit = runGit(repository, ['commit-tree', tree.stdout.trim(), '-p', baseHead], 64 * 1024, {
+      env,
+      input: `${message}\n`,
+    });
+    if (!commit.ok || !commit.stdout.trim()) {
+      throw new Error(`SELECTED_PATCH_COMMIT_TREE_FAILED: ${commit.stderr || `exit ${commit.exitCode}`}`);
+    }
+    return { candidateHead: commit.stdout.trim(), patchPaths };
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function assertPatchPresentInWorkingTree(repository: RepositoryRecord, patch: string): void {
+  const reverse = runGit(repository, ['apply', '--reverse', '--check', '--whitespace=nowarn', '-'], 128 * 1024, {
+    input: patch,
+  });
+  if (!reverse.ok) {
+    throw new Error(
+      `SELECTED_PATCH_WORKTREE_CHANGED: reviewed patch is not the current working-tree after-image: ${reverse.stderr || `exit ${reverse.exitCode}`}`,
+    );
+  }
+}
+
+type SelectedPatchAttemptResult =
+  | {
+      status: 'retry';
+      baseHead: string;
+      patchPaths: string[];
+    }
+  | {
+      status: 'committed';
+      baseHead: string;
+      patchPaths: string[];
+      committedHead: string;
+      indexReset: { ok: boolean; exitCode: number; stdout: string; stderr: string };
+      error?: { code: string; message: string };
+    };
+
+function selectedPatchCommitAttempt(
+  repository: RepositoryRecord,
+  input: {
+    paths: string[];
+    patch: string;
+    message: string;
+    headRef: string;
+    attempt: number;
+    beforeRefUpdateGuard?: (input: SelectedPatchBeforeRefUpdateInput) => void;
+  },
+): SelectedPatchAttemptResult {
+  const currentRef = currentHeadRef(repository);
+  if (currentRef !== input.headRef) {
+    throw new Error(`SELECTED_PATCH_BRANCH_CHANGED: expected ${input.headRef}, found ${currentRef}`);
+  }
+  const baseHead = gitText(repository, ['rev-parse', '--verify', 'HEAD']);
+  if (!baseHead) throw new Error('SELECTED_PATCH_HEAD_MISSING: HEAD could not be resolved');
+
+  assertPatchPresentInWorkingTree(repository, input.patch);
+  const candidate = exactPatchCandidate(repository, baseHead, input.patch, input.paths, input.message);
+  input.beforeRefUpdateGuard?.({
+    repository,
+    attempt: input.attempt,
+    baseHead,
+    candidateHead: candidate.candidateHead,
+    headRef: input.headRef,
+  });
+
+  const refUpdate = runGit(repository, ['update-ref', input.headRef, candidate.candidateHead, baseHead], 64 * 1024);
+  if (!refUpdate.ok) {
+    const latestHead = gitText(repository, ['rev-parse', '--verify', 'HEAD']);
+    if (latestHead && latestHead !== baseHead && input.attempt < EXACT_PATCH_REF_RETRIES) {
+      return { status: 'retry', baseHead, patchPaths: candidate.patchPaths };
+    }
+    throw new Error(`SELECTED_PATCH_REF_UPDATE_FAILED: ${refUpdate.stderr || `exit ${refUpdate.exitCode}`}`);
+  }
+
+  const indexReset = runGit(repository, ['reset', candidate.candidateHead, '--', ...input.paths], 64 * 1024);
+  return {
+    status: 'committed',
+    baseHead,
+    patchPaths: candidate.patchPaths,
+    committedHead: candidate.candidateHead,
+    indexReset,
+    ...(!indexReset.ok
+      ? {
+          error: {
+            code: 'SELECTED_PATCH_INDEX_RECONCILE_FAILED',
+            message: indexReset.stderr || 'commit succeeded but selected-path index reconciliation failed',
+          },
+        }
+      : {}),
+  };
+}
+
+function commitSelectedPatchUnderLease(
+  repository: RepositoryRecord,
+  paths: string[],
+  patch: string,
+  message: string,
+  beforeRefUpdateGuard?: (input: SelectedPatchBeforeRefUpdateInput) => void,
+): SelectedPatchCommitResult {
+  const initiallyStaged = stagedPaths(repository, paths);
+  if (initiallyStaged.length > 0) {
+    throw new Error(
+      `SELECTED_PATCH_TARGET_STAGED: selected paths already contain staged changes: ${initiallyStaged.join(', ')}`,
+    );
+  }
+  const headRef = currentHeadRef(repository);
+  let firstBaseHead = '';
+
+  for (let attempt = 1; attempt <= EXACT_PATCH_REF_RETRIES; attempt++) {
+    const result = selectedPatchCommitAttempt(repository, {
+      paths,
+      patch,
+      message,
+      headRef,
+      attempt,
+      beforeRefUpdateGuard,
+    });
+    if (!firstBaseHead) firstBaseHead = result.baseHead;
+    if (result.status === 'retry') continue;
+    return {
+      paths,
+      patchPaths: result.patchPaths,
+      headRef,
+      baseHead: firstBaseHead,
+      committedHead: result.committedHead,
+      attempts: attempt,
+      indexReset: result.indexReset,
+      ...(result.error ? { error: result.error } : {}),
+    };
+  }
+  throw new Error('SELECTED_PATCH_REF_RETRY_EXHAUSTED');
+}
+
+/**
+ * Commit only the reviewed patch hunks. A private temporary index builds the
+ * candidate tree, while update-ref performs short ref CAS. Unrelated dirty
+ * hunks — including hunks in the same file — stay in the working tree.
+ */
+export function commitSelectedPatch(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  input: {
+    paths: unknown;
+    patch: unknown;
+    message: unknown;
+    beforeRefUpdateGuard?: (input: SelectedPatchBeforeRefUpdateInput) => void;
+  },
+): SelectedPatchCommitResult {
+  const paths = normalizeSelectedPaths(repository, input.paths);
+  const patch = String(input.patch ?? '');
+  const message = String(input.message ?? '').trim();
+  if (!message) throw new Error('COMMIT_MESSAGE_REQUIRED: message is required');
+  if (!patch.trim()) throw new Error('SELECTED_PATCH_REQUIRED: patch is required');
+  if (Buffer.byteLength(patch, 'utf8') > MAX_EXACT_PATCH_BYTES) {
+    throw new Error(`SELECTED_PATCH_TOO_LARGE: patch exceeds ${MAX_EXACT_PATCH_BYTES} bytes`);
+  }
+
+  return withRepositoryMutationExclusion(
+    controllerHome,
+    repository.repoId,
+    `selected-patch-commit:${repository.activeCheckoutId}`,
+    () => commitSelectedPatchUnderLease(repository, paths, patch, message, input.beforeRefUpdateGuard),
+    undefined,
+    selectedPathMutationClaims(repository, paths, 'commit'),
+  );
 }
 
 export function restoreSelectedPaths(

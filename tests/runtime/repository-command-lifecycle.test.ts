@@ -30,6 +30,7 @@ import { addRepositoryCheckout, getRepository, registerRepository } from '../../
 import { repositoryGitRemoveWorktree } from '../../src/runtime/repositories/structured-worktree-cleanup';
 import { recordOwnedResource } from '../../packages/kernel/identity/api/index';
 import {
+  commitSelectedPatch,
   commitSelectedPaths,
   restoreSelectedPaths,
   selectedPathDiff,
@@ -82,6 +83,12 @@ function gitOutput(root: string, args: string[]): string {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
   if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(' ')} failed`);
   return String(result.stdout ?? '').trim();
+}
+
+function gitRawOutput(root: string, args: string[]): string {
+  const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(' ')} failed`);
+  return String(result.stdout ?? '');
 }
 
 function seedRepo(controllerHome: string, repoRoot: string) {
@@ -670,6 +677,148 @@ describe('repository command execution lifecycle', () => {
           releaseExecutionLeases(controllerHome, repository.repoId, 'foreign-overlap', held.leases, opts);
       }
     }
+  });
+
+  test('exact patch commit preserves foreign hunks in the same file and unrelated staged paths (#716)', () => {
+    const controllerHome = tempRoot('forge-716-exact-patch-home-');
+    const repoRoot = tempRoot('forge-716-exact-patch-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+
+    const base = [
+      'function alpha() {',
+      "  return 'alpha-base';",
+      '}',
+      '',
+      '// spacer 01',
+      '// spacer 02',
+      '// spacer 03',
+      '// spacer 04',
+      '// spacer 05',
+      '// spacer 06',
+      '// spacer 07',
+      '// spacer 08',
+      '',
+      'function beta() {',
+      "  return 'beta-base';",
+      '}',
+      '',
+    ].join('\n');
+    writeFileSync(join(repoRoot, 'README.md'), base);
+    git(repoRoot, ['add', 'README.md']);
+    git(repoRoot, ['commit', '-m', 'seed exact patch file']);
+
+    const owned = base.replace("'alpha-base'", "'alpha-owned'");
+    writeFileSync(join(repoRoot, 'README.md'), owned);
+    const exactPatch = gitRawOutput(repoRoot, ['diff', '--binary', '--', 'README.md']);
+    expect(exactPatch).toContain('alpha-owned');
+    expect(exactPatch).not.toContain('beta-foreign');
+
+    const combined = owned.replace("'beta-base'", "'beta-foreign'");
+    writeFileSync(join(repoRoot, 'README.md'), combined);
+    writeFileSync(join(repoRoot, 'other.txt'), 'foreign staged\n');
+    git(repoRoot, ['add', 'other.txt']);
+
+    const committed = commitSelectedPatch(controllerHome, repository, {
+      paths: ['README.md'],
+      patch: exactPatch,
+      message: 'commit only alpha hunk',
+    });
+    expect(committed.error).toBeUndefined();
+    expect(committed.attempts).toBe(1);
+    expect(committed.patchPaths).toEqual(['README.md']);
+    expect(gitRawOutput(repoRoot, ['show', 'HEAD:README.md'])).toContain("'alpha-owned'");
+    expect(gitRawOutput(repoRoot, ['show', 'HEAD:README.md'])).toContain("'beta-base'");
+    expect(readFileSync(join(repoRoot, 'README.md'), 'utf8')).toContain("'beta-foreign'");
+
+    const residual = gitRawOutput(repoRoot, ['diff', '--unified=0', '--', 'README.md']);
+    expect(residual).toContain('beta-foreign');
+    expect(residual).not.toContain('alpha-base');
+    expect(gitOutput(repoRoot, ['diff', '--cached', '--name-only'])).toBe('other.txt');
+    expect(gitOutput(repoRoot, ['show', '--pretty=format:', '--name-only', 'HEAD'])).toBe('README.md');
+  });
+
+  test('exact patch commit retries a concurrent ref advance without redoing source edits (#716)', () => {
+    const controllerHome = tempRoot('forge-716-ref-cas-home-');
+    const repoRoot = tempRoot('forge-716-ref-cas-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+
+    writeFileSync(join(repoRoot, 'README.md'), 'race-base\n');
+    git(repoRoot, ['add', 'README.md']);
+    git(repoRoot, ['commit', '-m', 'seed ref race']);
+    writeFileSync(join(repoRoot, 'README.md'), 'race-owned\n');
+    const exactPatch = gitRawOutput(repoRoot, ['diff', '--binary', '--', 'README.md']);
+    let advanced = false;
+
+    const committed = commitSelectedPatch(controllerHome, repository, {
+      paths: ['README.md'],
+      patch: exactPatch,
+      message: 'exact commit after ref race',
+      beforeRefUpdateGuard: ({ attempt }) => {
+        if (attempt !== 1 || advanced) return;
+        advanced = true;
+        git(repoRoot, ['commit', '--allow-empty', '-m', 'foreign ref advance']);
+      },
+    });
+
+    expect(advanced).toBe(true);
+    expect(committed.error).toBeUndefined();
+    expect(committed.attempts).toBe(2);
+    expect(gitOutput(repoRoot, ['log', '-2', '--pretty=%s']).split(/\r?\n/)).toEqual([
+      'exact commit after ref race',
+      'foreign ref advance',
+    ]);
+    expect(gitOutput(repoRoot, ['show', 'HEAD:README.md'])).toBe('race-owned');
+    expect(gitOutput(repoRoot, ['status', '--short', '--', 'README.md'])).toBe('');
+  });
+
+  test('exact patch rejects out-of-scope files before ref mutation (#716)', () => {
+    const controllerHome = tempRoot('forge-716-patch-scope-home-');
+    const repoRoot = tempRoot('forge-716-patch-scope-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+
+    writeFileSync(join(repoRoot, 'other.txt'), 'other-base\n');
+    git(repoRoot, ['add', 'other.txt']);
+    git(repoRoot, ['commit', '-m', 'seed scope files']);
+    const beforeHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(repoRoot, 'README.md'), 'hello-owned\n');
+    writeFileSync(join(repoRoot, 'other.txt'), 'other-owned\n');
+    const patch = gitRawOutput(repoRoot, ['diff', '--binary', '--', 'README.md', 'other.txt']);
+
+    expect(() =>
+      commitSelectedPatch(controllerHome, repository, {
+        paths: ['README.md'],
+        patch,
+        message: 'must not cross scope',
+      }),
+    ).toThrow('SELECTED_PATCH_SCOPE_DENIED');
+    expect(gitOutput(repoRoot, ['rev-parse', 'HEAD'])).toBe(beforeHead);
+    expect(readFileSync(join(repoRoot, 'README.md'), 'utf8')).toBe('hello-owned\n');
+    expect(readFileSync(join(repoRoot, 'other.txt'), 'utf8')).toBe('other-owned\n');
+  });
+
+  test('exact patch localizes a changed target as a worktree conflict without ref mutation (#716)', () => {
+    const controllerHome = tempRoot('forge-716-patch-conflict-home-');
+    const repoRoot = tempRoot('forge-716-patch-conflict-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+
+    const beforeHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(repoRoot, 'README.md'), 'owned-version\n');
+    const patch = gitRawOutput(repoRoot, ['diff', '--binary', '--', 'README.md']);
+    writeFileSync(join(repoRoot, 'README.md'), 'different-writer-version\n');
+
+    expect(() =>
+      commitSelectedPatch(controllerHome, repository, {
+        paths: ['README.md'],
+        patch,
+        message: 'conflicting exact patch',
+      }),
+    ).toThrow('SELECTED_PATCH_WORKTREE_CHANGED');
+    expect(gitOutput(repoRoot, ['rev-parse', 'HEAD'])).toBe(beforeHead);
+    expect(readFileSync(join(repoRoot, 'README.md'), 'utf8')).toBe('different-writer-version\n');
   });
 
   test('reviewed selected-path restore shares checkout with unrelated Process but observes index/ref (#713)', () => {
