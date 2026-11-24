@@ -38,6 +38,7 @@ type RpcRequest = {
 export type RuntimeComputerChatgptActionInput =
   | { kind: 'ensure'; identity: ComputerChatgptTargetIdentity }
   | { kind: 'observe'; identity: ComputerChatgptConversationIdentity }
+  | { kind: 'refresh'; identity: ComputerChatgptConversationIdentity }
   | { kind: 'find_marker'; marker: string; bootstrapKey: string }
   | { kind: 'prepare' | 'dispatch'; identity: ComputerChatgptTargetIdentity; prompt: string; mode?: 'send' | 'resume' | 'recover' };
 
@@ -118,7 +119,7 @@ function runtimeActionInput(value: unknown): RuntimeComputerChatgptActionInput {
     return { kind, marker, bootstrapKey };
   }
   if (kind === 'ensure') return { kind, identity: runtimeTargetIdentity(record.identity) };
-  if (kind === 'observe') return { kind, identity: runtimeConversationIdentity(record.identity) };
+  if (kind === 'observe' || kind === 'refresh') return { kind, identity: runtimeConversationIdentity(record.identity) };
   if (kind !== 'prepare' && kind !== 'dispatch') throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_INVALID');
   const prompt = typeof record.prompt === 'string' ? record.prompt : '';
   if (!prompt.trim()) throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_PROMPT_REQUIRED');
@@ -151,9 +152,11 @@ async function executeRuntimeAction(
     }
     return { matches };
   }
-  const exact = action.identity.namespace === 'chatgpt.bootstrap'
-    ? await port.openBootstrap(action.identity.projectUrl, action.identity.bootstrapKey)
-    : await port.ensureExact(action.identity, { createIfMissing: action.kind !== 'observe' });
+  const exact = action.kind === 'refresh'
+    ? await port.refreshExact(action.identity)
+    : action.identity.namespace === 'chatgpt.bootstrap'
+      ? await port.openBootstrap(action.identity.projectUrl, action.identity.bootstrapKey)
+      : await port.ensureExact(action.identity, { createIfMissing: action.kind !== 'observe' });
   if (exact.state !== 'ready') {
     return { state: exact.state, failure: exact.failure, ...(exact.observation ? { observation: exact.observation } : {}) };
   }
@@ -163,7 +166,7 @@ async function executeRuntimeAction(
       observation: exact.observation ?? await exact.target.observe({ includeUserHistory: false, includePageText: false }),
     };
   }
-  if (action.kind === 'observe') {
+  if (action.kind === 'observe' || action.kind === 'refresh') {
     return {
       state: 'ready', targetId: exact.target.targetId, identity: action.identity,
       observation: exact.observation ?? await exact.target.observe({ includeUserHistory: false, includePageText: false }),

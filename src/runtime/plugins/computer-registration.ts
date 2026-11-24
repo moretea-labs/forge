@@ -61,6 +61,7 @@ import type {
 const COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION = 'chatgpt_target_inventory';
 const COMPUTER_CHATGPT_TARGET_ENSURE_ACTION = 'chatgpt_target_ensure';
 const COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION = 'chatgpt_target_observe';
+const COMPUTER_CHATGPT_TARGET_REFRESH_ACTION = 'chatgpt_target_refresh';
 const COMPUTER_CHATGPT_TARGET_FIND_MARKER_ACTION = 'chatgpt_target_find_marker';
 const COMPUTER_CHATGPT_TARGET_PREPARE_ACTION = 'chatgpt_target_prepare';
 const COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION = 'chatgpt_target_dispatch';
@@ -68,6 +69,7 @@ const COMPUTER_CHATGPT_TARGET_ACTION_IDS = new Set([
   COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION,
   COMPUTER_CHATGPT_TARGET_ENSURE_ACTION,
   COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION,
+  COMPUTER_CHATGPT_TARGET_REFRESH_ACTION,
   COMPUTER_CHATGPT_TARGET_FIND_MARKER_ACTION,
   COMPUTER_CHATGPT_TARGET_PREPARE_ACTION,
   COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION,
@@ -358,6 +360,30 @@ function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
       },
     },
     {
+      actionId: COMPUTER_CHATGPT_TARGET_REFRESH_ACTION,
+      title: 'Refresh exact ChatGPT target',
+      description:
+        'Close only the attested Computer-owned physical tab for one exact existing conversation and reopen that same conversation with the current browser provider projection. Never changes the composer or clicks Send.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'none',
+      defaultTimeoutMs: 30_000,
+      cancellable: true,
+      idempotent: true,
+      foregroundEffect: 'possible',
+      scopes: ['browser.read', 'browser.profile'],
+      resourceClaims: [
+        { resource: 'provider-state', mode: 'write' },
+        { resource: 'remote', mode: 'write' },
+      ],
+      argumentsSchema: {
+        type: 'object',
+        properties: conversationIdentitySchema,
+        required: ['canonical_url'],
+        additionalProperties: false,
+      },
+    },
+    {
       actionId: COMPUTER_CHATGPT_TARGET_FIND_MARKER_ACTION,
       title: 'Find submitted ChatGPT marker',
       description:
@@ -577,6 +603,10 @@ async function executeComputerChatgptTargetAction(
   if (input.actionId === COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION) {
     const identity = computerChatgptConversationIdentity(input.args);
     return await runtimeComputerChatgptAction(input.controllerHome, { kind: 'observe', identity }, input.timeoutMs);
+  }
+  if (input.actionId === COMPUTER_CHATGPT_TARGET_REFRESH_ACTION) {
+    const identity = computerChatgptConversationIdentity(input.args);
+    return await runtimeComputerChatgptAction(input.controllerHome, { kind: 'refresh', identity }, input.timeoutMs);
   }
   const identity = computerChatgptTargetIdentity(input.args);
   if (input.actionId === COMPUTER_CHATGPT_TARGET_ENSURE_ACTION) {
