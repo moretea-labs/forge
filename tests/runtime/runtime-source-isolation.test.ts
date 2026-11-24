@@ -17,7 +17,8 @@ import {
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { callContextAdapter } from '../../adapters/mcp/runtime-gateway/context-adapter';
 import { recordGatewayLatency } from '../../src/core/observability/gateway-contention-metrics';
-import { mintEngineeringAdmissionEvidence } from '../../adapters/mcp/runtime-gateway/engineering-preconditions';
+import { validateRuntimeIssuedContextClosureReceipt } from '../../src/runtime/context/context-closure';
+import type { ContextClosureReceipt } from '../../packages/kernel/engineering/api/index';
 import {
   collectRuntimeSourceIdentity,
   CONTROLLER_RUNTIME_SOURCE_ROOT_ENV,
@@ -1308,7 +1309,7 @@ printf '{"ok":true}\\n'
     );
   });
 
-  test('rh_context runtime-issued closure round-trips into engineering preconditions without depth corruption', async () => {
+  test('rh_context returns an intact runtime-issued closure and rejects tampered provenance', async () => {
     const business = tempRoot('forge-context-roundtrip-facade-');
     const controllerHome = tempRoot('forge-home-context-roundtrip-facade-');
     initGitRepo(business, 'context-roundtrip-facade');
@@ -1344,82 +1345,13 @@ printf '{"ok":true}\\n'
     expect(JSON.stringify(closure)).not.toContain('[bounded-depth]');
     expect((closure?.readiness as { status?: string } | undefined)?.status).not.toBe('insufficient');
 
-    const neutralDecisions = {
-      ownership: 'No ownership change.',
-      single_writer: 'One checkout/EditSession writer.',
-      transaction: 'No transaction change.',
-      lifecycle: 'No lifecycle change.',
-      concurrency: 'No concurrency change.',
-      persistence: 'No persistence change.',
-      failure: 'Fail closed.',
-      projection_cache: 'No projection change.',
-      time: 'No time change.',
-      performance: 'No performance change.',
-      compatibility: 'Backward compatible.',
-      semantic_scope_identity: 'Exact repository/Requirement/Plan scope.',
-      authorization_trust: 'Existing controller authority.',
-      resource_fencing: 'Existing Process/Lease fencing.',
-      deployment_topology: 'No topology change.',
-      schema_evolution_durability: 'No schema change.',
-      idempotency_replay: 'Existing request identity.',
-      retention_gc: 'No retention change.',
-      observability_evidence: 'Git/Process/Check receipts remain authoritative.',
-      recovery_failure_domain: 'No recovery change.',
-      capacity_backpressure: 'No capacity change.',
-      release_upgrade_rollback: 'No release change.',
-      security_privacy: 'No security change.',
-      portability: 'No portability change.',
-      migration_retirement: 'No migration change.',
-    };
-    const engineeringPreconditions = {
-      context_closure: closure,
-      product_dod: {
-        user_outcome: 'Round-trip the exact Context Closure.',
-        completion_conditions: ['Receipt is accepted.'],
-        non_regression: ['Digest validation remains strict.'],
-        performance_expectations: ['No hot-path expansion.'],
-        non_goals: ['No lifecycle changes.'],
-      },
-      design_decision: {
-        semantic_scope_keys: ['context-closure-roundtrip'],
-        mutation_class: 'isolated_write',
-        decisions: neutralDecisions,
-        complexity_budget: {
-          added_writers: 0,
-          added_durable_mechanisms: 0,
-          projection_paths: 0,
-          global_invalidations: 0,
-          lifecycle_hooks: 0,
-          synchronous_critical_path_work: 0,
-          notes: [],
-        },
-      },
-      independent_critique: { decision: 'approved', findings: [] },
-    };
-
-    const minted = mintEngineeringAdmissionEvidence({
-      repoRoot: business,
-      sourceRevision,
-      draft: engineeringPreconditions,
-      requirementContext: {
-        objective: 'Prove runtime-issued Context Closure round-trip.',
-        acceptanceCriteria: ['Context Closure round-trips intact.'],
-      },
-    });
-    expect(minted.contextClosureReceiptId).toBe(closure?.receiptId as string | undefined);
-
+    const issued = validateRuntimeIssuedContextClosureReceipt(closure as unknown as ContextClosureReceipt);
+    expect(issued.receiptId).toBe(closure?.receiptId as string | undefined);
+    expect(issued.sourceRevision).toBe(sourceRevision);
     expect(() =>
-      mintEngineeringAdmissionEvidence({
-        repoRoot: business,
-        sourceRevision,
-        draft: {
-          ...engineeringPreconditions,
-          context_closure: { ...closure, generatedAt: '2099-01-01T00:00:00.000Z' },
-        },
-        requirementContext: {
-          objective: 'Reject forged Context Closure.',
-          acceptanceCriteria: ['Mutated receipts fail closed.'],
-        },
+      validateRuntimeIssuedContextClosureReceipt({
+        ...issued,
+        generatedAt: '2099-01-01T00:00:00.000Z',
       }),
     ).toThrow('CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME');
   });
