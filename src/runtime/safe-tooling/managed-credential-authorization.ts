@@ -6,9 +6,9 @@ import {
 } from '../../../packages/kernel/identity/api';
 
 const CAPABILITY = 'credential:use';
-export type CredentialUseProvider = 'api' | 'browser_password_manager';
+export type CredentialUseProvider = 'api' | 'browser_password_manager' | 'forge_local_vault';
 const DEFAULT_PROVIDER: CredentialUseProvider = 'api';
-const PROVIDERS = new Set<CredentialUseProvider>(['api', 'browser_password_manager']);
+const PROVIDERS = new Set<CredentialUseProvider>(['api', 'browser_password_manager', 'forge_local_vault']);
 
 function required(value: string, code: string): string {
   const normalized = value.trim();
@@ -72,7 +72,7 @@ export function credentialUseStatus(input: {
   const endpoint = required(input.endpoint, 'CREDENTIAL_ENDPOINT_REQUIRED');
   const selectedProvider = provider(input.provider);
   const selectedAccount = account(input.account);
-  if (selectedProvider === 'browser_password_manager' && !selectedAccount) throw new Error('CREDENTIAL_ACCOUNT_REQUIRED');
+  if ((selectedProvider === 'browser_password_manager' || selectedProvider === 'forge_local_vault') && !selectedAccount) throw new Error('CREDENTIAL_ACCOUNT_REQUIRED');
   const grant = matchingGrant({
     controllerHome: input.controllerHome,
     credentialRef,
@@ -107,7 +107,7 @@ export function authorizeCredentialUse(input: {
   const endpoint = required(input.endpoint, 'CREDENTIAL_ENDPOINT_REQUIRED');
   const selectedProvider = provider(input.provider);
   const selectedAccount = account(input.account);
-  if (selectedProvider === 'browser_password_manager' && !selectedAccount) throw new Error('CREDENTIAL_ACCOUNT_REQUIRED');
+  if ((selectedProvider === 'browser_password_manager' || selectedProvider === 'forge_local_vault') && !selectedAccount) throw new Error('CREDENTIAL_ACCOUNT_REQUIRED');
   const current = credentialUseStatus({
     controllerHome: input.controllerHome,
     credentialRef,

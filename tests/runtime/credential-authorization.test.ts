@@ -130,6 +130,48 @@ describe('credential use authorization', () => {
     })).toThrow('CREDENTIAL_USE_NOT_AUTHORIZED');
   });
 
+  test('Forge-owned vault grants are separate from Apple/browser password-manager grants', () => {
+    const controllerHome = home();
+    const origin = 'https://login.example.test';
+    const account = 'owner@example.test';
+    const ref = 'credref:v1:synthetic-forge-vault';
+    const browser = authorizeCredentialUse({
+      controllerHome, credentialRef: ref, endpoint: origin,
+      provider: 'browser_password_manager', account, confirmAuthorization: true,
+    });
+    expect(browser.reused).toBe(false);
+    expect(credentialUseStatus({
+      controllerHome, credentialRef: ref, endpoint: origin,
+      provider: 'forge_local_vault', account,
+    }).authorized).toBe(false);
+    expect(() => assertCredentialUseAuthorized({
+      controllerHome, credentialRef: ref, endpoint: origin,
+      provider: 'forge_local_vault', account,
+    })).toThrow('CREDENTIAL_USE_NOT_AUTHORIZED');
+    const vault = authorizeCredentialUse({
+      controllerHome, credentialRef: ref, endpoint: origin,
+      provider: 'forge_local_vault', account, confirmAuthorization: true,
+    });
+    expect(vault.reused).toBe(false);
+    expect(credentialUseStatus({
+      controllerHome, credentialRef: ref, endpoint: origin,
+      provider: 'forge_local_vault', account,
+    }).authorized).toBe(true);
+    expect(credentialUseStatus({
+      controllerHome, credentialRef: ref, endpoint: 'https://evil.example.test',
+      provider: 'forge_local_vault', account,
+    }).authorized).toBe(false);
+    expect(credentialUseStatus({
+      controllerHome, credentialRef: ref, endpoint: origin,
+      provider: 'forge_local_vault', account: 'other@example.test',
+    }).authorized).toBe(false);
+    expect(() => authorizeCredentialUse({
+      controllerHome, credentialRef: ref, endpoint: origin,
+      provider: 'forge_local_vault', confirmAuthorization: true,
+    })).toThrow('CREDENTIAL_ACCOUNT_REQUIRED');
+    revokeCredentialUse({ controllerHome, credentialRef: ref });
+  });
+
   test('status is metadata-only', () => {
     const controllerHome = home();
     const status = credentialUseStatus({

@@ -84,7 +84,7 @@ export function browserCapabilities(): AssistantPluginCapability[] {
       description: 'Perform explicit form and pointer interactions on HTTP(S) pages through the persistent Playwright profile.',
       scopes: ['browser.interact', 'browser.profile'],
       actions: [
-        'activate_page', 'click', 'click_text', 'double_click', 'hover', 'focus', 'autofill_saved_password', 'type', 'fill', 'select_option',
+        'activate_page', 'click', 'click_text', 'double_click', 'hover', 'focus', 'autofill_saved_password', 'autofill_forge_vault_password', 'type', 'fill', 'select_option',
         'check', 'uncheck', 'press', 'keyboard_shortcut', 'trusted_input', 'dispatch_event', 'wait_for_selector', 'attach_local_file', 'await_file_transfer',
       ],
     },
@@ -515,6 +515,20 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
       argumentsSchema: interactSchema({ selector: { type: 'string' } }, ['selector']),
+    },
+    {
+      actionId: 'autofill_forge_vault_password',
+      title: 'Fill exact authorized Forge-owned local vault password',
+      description: 'Use an existing Playwright browser session and canonical exact-origin/account rh_credential grant to unlock local Forge vault inside the trusted Computer process and fill one verified password field. No passwords or tokens may appear in action arguments, receipts or logs. Never submits login; native Apple Events is forbidden.',
+      readOnly: false, risk: 'remote_write', confirmation: 'authorization',
+      defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
+      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
+      argumentsSchema: interactSchema({
+        expected_origin: { type: 'string', description: 'Exact HTTPS origin; no path.' },
+        selector: { type: 'string', minLength: 1, maxLength: 1000 },
+        username_selector: { type: 'string', minLength: 1, maxLength: 1000 },
+        credential_ref: { type: 'string', minLength: 1, maxLength: 512 },
+      }, ['session_id', 'expected_origin', 'selector', 'username_selector', 'credential_ref']),
     },
     {
       actionId: 'autofill_saved_password',

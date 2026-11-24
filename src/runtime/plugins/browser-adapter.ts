@@ -15,6 +15,7 @@ import type {
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { assertCredentialUseAuthorized } from '../safe-tooling/managed-credential-authorization';
+import { fillForgeVaultPasswordInComputer } from '../safe-tooling/forge-local-vault-computer';
 import { inspectSavedPasswordTarget } from './browser-password-target-policy';
 import { listCanonicalGrants } from '../../../packages/kernel/identity/api/index';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
@@ -5158,6 +5159,74 @@ async function executeBrowserPluginActionInternal(
             },
           );
         }
+      }
+      case 'autofill_forge_vault_password': {
+        const target = resolveActionTarget(input.repoRoot, input.args);
+        if (!stringValue(input.args.session_id) || !target.existingSession) {
+          throw new AssistantPluginError('FORGE_VAULT_BROWSER_SESSION_REQUIRED',
+            'Forge vault fill requires an exact existing browser session.', { retryable: false });
+        }
+        const expectedOrigin = requiredString(input.args.expected_origin, 'expected_origin');
+        let parsedOrigin: URL;
+        try { parsedOrigin = new URL(expectedOrigin); } catch {
+          throw new AssistantPluginError('FORGE_VAULT_BROWSER_ORIGIN_INVALID',
+            'Forge vault fill requires an exact HTTPS origin.', { retryable: false });
+        }
+        if (parsedOrigin.protocol !== 'https:' || parsedOrigin.origin !== expectedOrigin
+          || parsedOrigin.username || parsedOrigin.password) {
+          throw new AssistantPluginError('FORGE_VAULT_BROWSER_ORIGIN_INVALID',
+            'Forge vault fill requires an exact HTTPS origin without URL path.', { retryable: false });
+        }
+        if (new URL(target.url).origin !== expectedOrigin) {
+          throw new AssistantPluginError('FORGE_VAULT_BROWSER_ORIGIN_MISMATCH',
+            'The existing browser tab differs from the credential site.', { retryable: false });
+        }
+        const selector = requiredString(input.args.selector, 'selector');
+        const usernameSelector = requiredString(input.args.username_selector, 'username_selector');
+        const credentialRef = requiredString(input.args.credential_ref, 'credential_ref');
+        // Canonical credential grants are never cloned into external plugins.
+        // Validate before reattaching the browser or reading Keychain.
+        let account: string;
+        try {
+          const grant = assertCredentialUseAuthorized({
+            controllerHome: input.controllerHome, credentialRef,
+            endpoint: expectedOrigin, provider: 'forge_local_vault',
+          });
+          account = typeof grant.constraints?.account === 'string' ? grant.constraints.account : '';
+          if (!account) throw new Error('VAULT_ACCOUNT_REQUIRED');
+        } catch {
+          throw new AssistantPluginError('FORGE_VAULT_CREDENTIAL_NOT_AUTHORIZED',
+            'No exact active canonical account grant exists for Forge vault fill.', { retryable: false });
+        }
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args,
+          async (page, _diagnostics, connection) => {
+            if (connection.provider === 'macos-apple-events') {
+              throw new AssistantPluginError('FORGE_VAULT_NATIVE_BROWSER_UNSAFE',
+                'Local Forge vault passwords cannot traverse the macOS Apple Events JavaScript adapter.',
+                { retryable: false });
+            }
+            if (new URL(page.url()).origin !== expectedOrigin) {
+              throw new AssistantPluginError('FORGE_VAULT_BROWSER_ORIGIN_MISMATCH',
+                'Browser origin changed before the trusted vault fill.', { retryable: false });
+            }
+            try {
+              const filled = await fillForgeVaultPasswordInComputer({
+                controllerHome: input.controllerHome, credentialRef,
+                origin: expectedOrigin, account, selector, usernameSelector,
+                page, browserProvider: 'playwright',
+              });
+              return {
+                ...filled, provider: browserResultProvider(connection.provider),
+                sessionId: target.sessionId, origin: expectedOrigin,
+                accountMatched: true, loginVerified: false,
+                credentialMaterialReturned: false,
+              };
+            } catch {
+              throw new AssistantPluginError('FORGE_VAULT_FILL_REJECTED_OR_UNKNOWN',
+                'Forge vault fill refused or could have changed the selected field; do not blindly replay.',
+                { retryable: false, effectOutcome: 'outcome_unknown' });
+            }
+          }, { requireExistingResource: true });
       }
       case 'autofill_saved_password': {
         const target = resolveActionTarget(input.repoRoot, input.args);

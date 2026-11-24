@@ -97,6 +97,28 @@ test('saved password autofill is an exact-session trusted-foreground action with
   expect(browserActionCanReplayAfterDispatch('autofill_saved_password')).toBe(false);
 });
 
+test('Forge vault browser fill has no plaintext input and requires exact session, grant and trusted input', () => {
+  const descriptor = browserActions().find((action) => action.actionId === 'autofill_forge_vault_password');
+  expect(descriptor).toBeDefined();
+  expect(descriptor?.readOnly).toBe(false);
+  expect(descriptor?.idempotent).toBe(false);
+  expect(descriptor?.confirmation).toBe('authorization');
+  const schema = descriptor?.argumentsSchema as { required?: string[]; properties?: Record<string, unknown> };
+  expect(schema.required).toEqual(expect.arrayContaining([
+    'session_id', 'expected_origin', 'selector', 'username_selector', 'credential_ref',
+  ]));
+  expect(schema.properties).not.toHaveProperty('password');
+  expect(schema.properties).not.toHaveProperty('text');
+  expect(browserCapabilities().find((cap) => cap.capabilityId === 'browser-interaction')?.actions)
+    .toContain('autofill_forge_vault_password');
+  expect(browserRuntimeActionPolicy('autofill_forge_vault_password')).toEqual({
+    requiredCapabilities: ['browser.trusted_input', 'browser.foreground', 'browser.transaction'],
+    foreground: 'explicit_required',
+    replaySafety: 'non_idempotent',
+  });
+  expect(browserActionCanReplayAfterDispatch('autofill_forge_vault_password')).toBe(false);
+});
+
 test('bounded browser batches use the existing non-replayable mutation transaction authority', () => {
   expect(browserRuntimeActionPolicy('run_steps')).toEqual({
     requiredCapabilities: ['dom.interact', 'browser.transaction'],
