@@ -160,6 +160,41 @@ final class AgentResponseRenderingTests: XCTestCase {
         XCTAssertEqual(parsedInputs, ["{\"state\":", "{\"state\":\"ready\"}"])
     }
 
+    func testAgentScrollMetricsTrackerSeparatesGeometrySamplesFromFollowStateTransitions() {
+        let tracker = AgentScrollMetricsTracker()
+
+        let initial = tracker.update(
+            AgentScrollMetrics(offset: 450, contentHeight: 1_000, viewportHeight: 500)
+        )
+        XCTAssertEqual(initial.initialIsNearBottom, true)
+        XCTAssertFalse(initial.movedAway)
+        XCTAssertFalse(initial.contentGrew)
+
+        let subThresholdMovement = tracker.update(
+            AgentScrollMetrics(offset: 449, contentHeight: 1_000, viewportHeight: 500)
+        )
+        XCTAssertFalse(subThresholdMovement.movedAway)
+        XCTAssertFalse(subThresholdMovement.movedToBottom)
+
+        let userScrollAway = tracker.update(
+            AgentScrollMetrics(offset: 438, contentHeight: 1_000, viewportHeight: 500)
+        )
+        XCTAssertTrue(userScrollAway.movedAway)
+
+        let userReturnsToBottom = tracker.update(
+            AgentScrollMetrics(offset: 450, contentHeight: 1_000, viewportHeight: 500)
+        )
+        XCTAssertTrue(userReturnsToBottom.movedToBottom)
+        XCTAssertTrue(userReturnsToBottom.isNearBottom)
+
+        let contentGrowsWhilePinned = tracker.update(
+            AgentScrollMetrics(offset: 450, contentHeight: 1_200, viewportHeight: 500)
+        )
+        XCTAssertTrue(contentGrowsWhilePinned.contentGrew)
+        XCTAssertFalse(contentGrowsWhilePinned.isNearBottom)
+        XCTAssertFalse(contentGrowsWhilePinned.movedAway)
+    }
+
     func testSelectedChecklistItemsUsesInitialAndUserOverridesWithoutBodyRescans() {
         let blocks: [AgentMessageBlock] = [
             .markdown("Choose one"),

@@ -124,6 +124,43 @@ struct AgentScrollMetrics: Equatable {
     var isNearBottom: Bool { viewportHeight > 0 && distanceToBottom <= 72 }
 }
 
+struct AgentScrollMetricsUpdate: Equatable {
+    let initialIsNearBottom: Bool?
+    let movedAway: Bool
+    let movedToBottom: Bool
+    let contentGrew: Bool
+    let isNearBottom: Bool
+}
+
+/// Stores every geometry sample without publishing a SwiftUI state change.
+/// The view only mutates observed state when follow-latest behavior changes.
+final class AgentScrollMetricsTracker {
+    private(set) var previous: AgentScrollMetrics?
+
+    func update(_ metrics: AgentScrollMetrics) -> AgentScrollMetricsUpdate {
+        let previous = self.previous
+        self.previous = metrics
+
+        guard let previous else {
+            return AgentScrollMetricsUpdate(
+                initialIsNearBottom: metrics.isNearBottom,
+                movedAway: false,
+                movedToBottom: false,
+                contentGrew: false,
+                isNearBottom: metrics.isNearBottom
+            )
+        }
+
+        return AgentScrollMetricsUpdate(
+            initialIsNearBottom: nil,
+            movedAway: metrics.offset < previous.offset - 2,
+            movedToBottom: metrics.offset > previous.offset + 2 && metrics.isNearBottom,
+            contentGrew: metrics.contentHeight > previous.contentHeight + 1,
+            isNearBottom: metrics.isNearBottom
+        )
+    }
+}
+
 struct AgentScrollMetricsPreferenceKey: PreferenceKey {
     static var defaultValue = AgentScrollMetrics(offset:0, contentHeight:0, viewportHeight:0)
 
@@ -145,7 +182,7 @@ struct AgentPane: View {
     @State private var pendingAgentCommand: String?
     @State private var showProviderThinking = false
     @State private var isComposerDropTarget = false
-    @State private var conversationScrollMetrics: AgentScrollMetrics?
+    @State private var conversationScrollTracker = AgentScrollMetricsTracker()
     @State private var conversationViewportHeight: CGFloat = 0
     @State private var followsLatestConversation = true
     @StateObject private var voiceDictation = AgentVoiceDictation()
@@ -737,22 +774,23 @@ struct AgentPane: View {
                 }
                 .coordinateSpace(name:"agent.conversation")
                 .onPreferenceChange(AgentScrollMetricsPreferenceKey.self) { metrics in
-                    let previous = conversationScrollMetrics
-                    guard previous != metrics else { return }
-                    conversationScrollMetrics = metrics
-                    guard let previous else {
-                        followsLatestConversation = metrics.isNearBottom
+                    let update = conversationScrollTracker.update(metrics)
+                    if let initial = update.initialIsNearBottom {
+                        if followsLatestConversation != initial {
+                            followsLatestConversation = initial
+                        }
                         return
                     }
-                    if metrics.offset < previous.offset - 2 {
-                        followsLatestConversation = false
+                    if update.movedAway {
+                        if followsLatestConversation {
+                            followsLatestConversation = false
+                        }
                         return
                     }
-                    if metrics.offset > previous.offset + 2 && metrics.isNearBottom {
+                    if update.movedToBottom && !followsLatestConversation {
                         followsLatestConversation = true
                     }
-                    let contentGrew = metrics.contentHeight > previous.contentHeight + 1
-                    if contentGrew {
+                    if update.contentGrew {
                         guard followsLatestConversation else { return }
                         Task { @MainActor in
                             await Task.yield()
@@ -763,7 +801,7 @@ struct AgentPane: View {
                         }
                         return
                     }
-                    if metrics.isNearBottom {
+                    if update.isNearBottom && !followsLatestConversation {
                         followsLatestConversation = true
                     }
                 }
