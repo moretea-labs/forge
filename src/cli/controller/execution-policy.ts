@@ -96,7 +96,7 @@ export function completionEvidenceComplete(
   return Boolean(runId
     && (!expected.runId || runId === expected.runId)
     && integration?.runId === runId
-    && cleanup?.runId === runId
+    && cleanup
     && integration.reachable
     && integration.targetBranch.trim()
     && integration.targetRevision.trim()

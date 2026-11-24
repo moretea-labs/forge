@@ -84,7 +84,6 @@ export interface IntegrationEvidence {
 }
 
 export interface CleanupEvidence {
-  runId: string;
   worktreeRemovedOrNotCreated: boolean;
   branchDeletedOrRetained: boolean;
   leasesReleased: boolean;

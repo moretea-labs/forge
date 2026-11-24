@@ -1174,7 +1174,6 @@ export function markAgentJobReviewedCompletion(
     integrationEvidence?.targetRevision ? undefined : 'targetRevision',
   ].filter((field): field is string => Boolean(field));
   const cleanupMissing = [
-    cleanupEvidence?.runId === runId ? undefined : 'runId',
     cleanupEvidence?.worktreeRemovedOrNotCreated || cleanupHasMaintenanceWarnings
       ? undefined
       : 'worktreeRemovedOrNotCreated',
@@ -1222,7 +1221,6 @@ export function markAgentJobReviewedCompletion(
   meta.integrationEvidence = integrationEvidence;
   meta.cleanupEvidence = {
     ...cleanupEvidence,
-    runId,
     runTerminal: true,
   };
   meta.closureState = 'completed';
