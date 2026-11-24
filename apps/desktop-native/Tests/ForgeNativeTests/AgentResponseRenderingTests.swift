@@ -11,10 +11,11 @@ final class AgentResponseRenderingTests: XCTestCase {
         let text = "# Title\n\n- [ ] First\n- [x] Second"
 
         let first = cache.blocks(for: text)
+        let parseCountAfterFirst = parseCount
         let second = cache.blocks(for: text)
 
         XCTAssertEqual(first, second)
-        XCTAssertEqual(parseCount, 1)
+        XCTAssertEqual(parseCount, parseCountAfterFirst)
     }
 
     func testMessageBlockCacheInvalidatesWhenStreamingTextChanges() {
@@ -31,6 +32,132 @@ final class AgentResponseRenderingTests: XCTestCase {
         XCTAssertEqual(streamed, [.markdown("Hello world")])
         XCTAssertEqual(repeated, streamed)
         XCTAssertEqual(parseCount, 2)
+    }
+
+    func testMessageBlockCacheReusesCompletedParagraphsDuringAppendOnlyStreaming() {
+        var parsedInputs: [String] = []
+        let cache = AgentMessageBlockCache { source in
+            parsedInputs.append(source)
+            return AgentMessageBlock.parse(source)
+        }
+        let initial = "First paragraph\n\nSecond paragraph"
+
+        _ = cache.blocks(for: initial)
+        let updated = cache.blocks(for: initial + " updated")
+        let final = cache.blocks(for: initial + " updated again")
+
+        XCTAssertEqual(
+            updated,
+            [.markdown("First paragraph"), .markdown("Second paragraph updated")]
+        )
+        XCTAssertEqual(
+            final,
+            [.markdown("First paragraph"), .markdown("Second paragraph updated again")]
+        )
+        XCTAssertEqual(
+            parsedInputs,
+            [
+                initial,
+                "Second paragraph",
+                "Second paragraph updated",
+                "Second paragraph updated again"
+            ]
+        )
+    }
+
+    func testMessageBlockCacheDoesNotCheckpointBlankLinesInsideFencedCode() {
+        var parsedInputs: [String] = []
+        let cache = AgentMessageBlockCache { source in
+            parsedInputs.append(source)
+            return AgentMessageBlock.parse(source)
+        }
+        let codeTail = "\u{60}\u{60}\u{60}swift\nlet a = 1\n\nlet b = 2"
+        let initial = "Before\n\n" + codeTail
+        _ = cache.blocks(for: initial)
+
+        let completed = cache.blocks(for: initial + "\n\u{60}\u{60}\u{60}\n\nAfter")
+
+        XCTAssertEqual(
+            completed,
+            [
+                .markdown("Before"),
+                .code(language: "swift", text: "let a = 1\n\nlet b = 2"),
+                .markdown("After")
+            ]
+        )
+        XCTAssertEqual(
+            parsedInputs,
+            [
+                initial,
+                codeTail,
+                codeTail + "\n\u{60}\u{60}\u{60}\n\n",
+                "After"
+            ]
+        )
+    }
+
+    func testIncrementalBlockCacheMatchesFullParserAcrossMixedMarkdownChunks() {
+        let cache = AgentMessageBlockCache()
+        let chunks = [
+            "# Header\n\n",
+            "A paragraph\ncontinued\n\n",
+            "- first\n- second\n\n",
+            "> quote\n> second\n\n",
+            "| Key | Value |\n| --- | --- |\n| a | b |\n\n",
+            "\u{60}\u{60}\u{60}swift\nlet x = 1\n\nlet y = 2\n\u{60}\u{60}\u{60}\n\n",
+            "tail"
+        ]
+        var accumulated = ""
+
+        for chunk in chunks {
+            accumulated += chunk
+            XCTAssertEqual(
+                cache.blocks(for: accumulated),
+                AgentMessageBlock.parse(accumulated),
+                "Incremental parse diverged after chunk: \(chunk)"
+            )
+        }
+    }
+
+    func testMessageBlockCacheRebuildsWhenAnEarlierParagraphChanges() {
+        let cache = AgentMessageBlockCache()
+        _ = cache.blocks(for: "Original paragraph\n\nUnchanged tail")
+
+        let rebuilt = cache.blocks(for: "Edited paragraph\n\nUnchanged tail")
+
+        XCTAssertEqual(
+            rebuilt,
+            [.markdown("Edited paragraph"), .markdown("Unchanged tail")]
+        )
+    }
+
+    func testMessageBlockCacheDoesNotApplyJSONSpecialCaseToLaterParagraph() {
+        let cache = AgentMessageBlockCache()
+        let incomplete = "Intro\n\n{\"state\":"
+        _ = cache.blocks(for: incomplete)
+
+        let completed = cache.blocks(for: incomplete + "\"ready\"}")
+
+        XCTAssertEqual(
+            completed,
+            [.markdown("Intro"), .markdown("{\"state\":\"ready\"}")]
+        )
+    }
+
+    func testMessageBlockCachePreservesJSONPresentationDuringStreaming() {
+        var parsedInputs: [String] = []
+        let cache = AgentMessageBlockCache { source in
+            parsedInputs.append(source)
+            return AgentMessageBlock.parse(source)
+        }
+        _ = cache.blocks(for: "{\"state\":")
+        let completed = cache.blocks(for: "{\"state\":\"ready\"}")
+
+        guard case .code(let language, _) = completed.first else {
+            return XCTFail("Expected JSON to remain a formatted code block")
+        }
+        XCTAssertEqual(language, "json")
+        XCTAssertEqual(parsedInputs, ["{\"state\":", "{\"state\":\"ready\"}"])
     }
 
     func testInlineMarkdownCacheReusesAttributedParsingForSameSnapshot() {

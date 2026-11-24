@@ -256,13 +256,16 @@ enum AgentMessageBlock: Equatable {
 }
 
 
-/// View-local memoization for one assistant message. SwiftUI may read the parsed
-/// blocks more than once in a single update (rendering and checklist selection).
-/// Keep one parse result for an exact text snapshot; streamed text invalidates it.
+/// View-local memoization for one assistant message. Append-only stream updates
+/// keep completed blocks ending at a blank line outside fenced code; only the
+/// unfinished tail is reparsed. Replacements and JSON-shaped payloads use a full
+/// parse so edits and the parser's JSON presentation rule remain exact.
 final class AgentMessageBlockCache {
     private let parser: (String) -> [AgentMessageBlock]
     private var source: String?
     private var cachedBlocks: [AgentMessageBlock] = []
+    private var stablePrefix = ""
+    private var stableBlocks: [AgentMessageBlock] = []
 
     init(parser: @escaping (String) -> [AgentMessageBlock] = AgentMessageBlock.parse) {
         self.parser = parser
@@ -270,10 +273,106 @@ final class AgentMessageBlockCache {
 
     func blocks(for source: String) -> [AgentMessageBlock] {
         guard self.source != source else { return cachedBlocks }
-        let parsed = parser(source)
+
+        if let previousSource = self.source,
+           source.hasPrefix(previousSource),
+           !Self.isJSONShaped(source) {
+            append(source)
+        } else {
+            rebuild(source)
+        }
+
         self.source = source
+        return cachedBlocks
+    }
+
+    private func rebuild(_ source: String) {
+        stablePrefix = ""
+        stableBlocks = []
+        let parsed = parser(source)
         cachedBlocks = parsed
-        return parsed
+
+        guard !Self.isJSONShaped(source),
+              let boundary = Self.lastStableBoundary(in: source) else { return }
+
+        let prefix = String(source[..<boundary])
+        let tail = String(source[boundary...])
+        let tailBlocks = tail.isEmpty ? [] : parser(tail)
+        guard tailBlocks.count <= parsed.count,
+              Array(parsed.suffix(tailBlocks.count)) == tailBlocks else { return }
+
+        stablePrefix = prefix
+        stableBlocks = Array(parsed.dropLast(tailBlocks.count))
+    }
+
+    private func append(_ source: String) {
+        guard source.hasPrefix(stablePrefix) else {
+            stablePrefix = ""
+            stableBlocks = []
+            cachedBlocks = parser(source)
+            return
+        }
+
+        let pending = String(source.dropFirst(stablePrefix.count))
+        guard !Self.isJSONShaped(pending) else {
+            cachedBlocks = parser(source)
+            return
+        }
+
+        if let boundary = Self.lastStableBoundary(in: pending) {
+            let completed = String(pending[..<boundary])
+            if !completed.isEmpty {
+                stableBlocks.append(contentsOf: parser(completed))
+                stablePrefix += completed
+            }
+        }
+
+        let tail = String(source.dropFirst(stablePrefix.count))
+        guard !Self.isJSONShaped(tail) else {
+            cachedBlocks = parser(source)
+            return
+        }
+        let tailBlocks = tail.isEmpty ? [] : parser(tail)
+        cachedBlocks = stableBlocks + tailBlocks
+    }
+
+    private static func isJSONShaped(_ source: String) -> Bool {
+        guard let first = source.unicodeScalars.first(where: {
+            !CharacterSet.whitespacesAndNewlines.contains($0)
+        }) else { return false }
+        return first == "{" || first == "["
+    }
+
+    /// A blank line closes the preceding Markdown block, except while a fenced
+    /// code block is open. Keep the scanner aligned with AgentMessageBlock.parse.
+    private static func lastStableBoundary(in source: String) -> String.Index? {
+        var lineStart = source.startIndex
+        var openFence: (marker: Character, count: Int)?
+        var lastBoundary: String.Index?
+
+        while lineStart < source.endIndex {
+            let lineEnd = source[lineStart...].firstIndex(of: "\n") ?? source.endIndex
+            let line = source[lineStart..<lineEnd]
+            let clean = line.trimmingCharacters(in: .whitespaces)
+
+            if let fence = openFence {
+                if clean.count >= fence.count && clean.allSatisfy({ $0 == fence.marker }) {
+                    openFence = nil
+                }
+            } else if let marker = clean.first, marker == "\u{60}" || marker == "~" {
+                let count = clean.prefix(while: { $0 == marker }).count
+                if count >= 3 {
+                    openFence = (marker, count)
+                }
+            } else if clean.isEmpty, lineEnd < source.endIndex {
+                lastBoundary = source.index(after: lineEnd)
+            }
+
+            guard lineEnd < source.endIndex else { break }
+            lineStart = source.index(after: lineEnd)
+        }
+
+        return lastBoundary
     }
 }
 
