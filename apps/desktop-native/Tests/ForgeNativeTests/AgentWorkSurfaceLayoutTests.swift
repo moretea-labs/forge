@@ -35,7 +35,8 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
     XCTAssertEqual(
       AgentConversationToolbarContract.requiredActionIdentifiers, ["agent.inspector.toggle"])
     XCTAssertEqual(
-      AgentWorkSurface.allCases.map(\.rawValue), ["changes", "files", "planning", "knowledge", "capabilities"])
+      AgentWorkSurface.allCases.map(\.rawValue),
+      ["changes", "files", "planning", "knowledge", "capabilities"])
     XCTAssertEqual(AgentConversationToolbarContract.filesIdentifier, "agent.files")
     XCTAssertFalse(
       AgentConversationToolbarContract.requiredActionIdentifiers.contains("agent.changes"))
