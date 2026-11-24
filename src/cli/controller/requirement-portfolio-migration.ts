@@ -434,7 +434,7 @@ function taskEvidence(issueId: string, task: ControllerTask): EvidenceRef[] {
     evidence.push({
       evidenceId: task.verification.completionReceipt.receiptId,
       title: 'Completion receipt',
-      summary: `Delivered ${task.verification.completionReceipt.targetRevision}; blockers=${task.verification.completionReceipt.cleanup.blockers.length}; warnings=${task.verification.completionReceipt.cleanup.warnings.length}.`,
+      summary: `Delivered ${task.verification.completionReceipt.targetRevision}; blockers=${task.verification.completionReceipt.resourceBlockers.length}; warnings=${task.verification.completionReceipt.maintenanceWarnings.length}.`,
       detailLevel: 'detail',
     });
   }

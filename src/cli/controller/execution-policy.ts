@@ -33,8 +33,8 @@ export function completionReceiptComplete(
     && receipt.editSessionId.trim()
     && (!expected.targetBranch || receipt.targetBranch === expected.targetBranch)
     && receipt.reachable
-    && Array.isArray(receipt.cleanup.blockers)
-    && receipt.cleanup.blockers.length === 0);
+    && Array.isArray(receipt.resourceBlockers)
+    && receipt.resourceBlockers.length === 0);
 }
 
 function cleanupBlocker(

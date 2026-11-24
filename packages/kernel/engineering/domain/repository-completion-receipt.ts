@@ -35,9 +35,7 @@ export interface RepositoryCompletionReceipt {
   targetRevision: string;
   changedPaths: string[];
   reachable: boolean;
-  cleanup: {
-    warnings: CompletionMaintenanceWarning[];
-    blockers: CompletionResourceBlocker[];
-  };
+  maintenanceWarnings: CompletionMaintenanceWarning[];
+  resourceBlockers: CompletionResourceBlocker[];
   recordedAt: string;
 }

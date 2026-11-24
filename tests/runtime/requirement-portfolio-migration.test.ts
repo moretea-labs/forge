@@ -34,7 +34,8 @@ function completionReceipt(issueId: string, taskId: string) {
     targetRevision: `rev-${issueId}`,
     changedPaths: [`src/${issueId}.ts`],
     reachable: true,
-    cleanup: { warnings: [], blockers: [] },
+    maintenanceWarnings: [],
+    resourceBlockers: [],
     recordedAt: NOW,
   };
 }

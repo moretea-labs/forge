@@ -260,7 +260,7 @@ function completionEvidence(
     {
       evidenceId: receipt.receiptId,
       title: 'Completion receipt',
-      summary: `Delivered ${receipt.targetRevision}; reachable=${receipt.reachable}; blockers=${receipt.cleanup.blockers.length}; warnings=${receipt.cleanup.warnings.length}; reviewer=${input.reviewer}.`,
+      summary: `Delivered ${receipt.targetRevision}; reachable=${receipt.reachable}; blockers=${receipt.resourceBlockers.length}; warnings=${receipt.maintenanceWarnings.length}; reviewer=${input.reviewer}.`,
       detailLevel: 'detail',
     },
   ];

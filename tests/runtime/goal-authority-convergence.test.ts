@@ -41,10 +41,8 @@ function completionReceipt(receiptKey: string, targetRevision: string) {
     targetRevision,
     changedPaths: ['src/example.ts'],
     reachable: true,
-    cleanup: {
-      warnings: [],
-      blockers: [],
-    },
+    maintenanceWarnings: [],
+    resourceBlockers: [],
     recordedAt: '2026-09-05T00:00:00.000Z',
   };
 }

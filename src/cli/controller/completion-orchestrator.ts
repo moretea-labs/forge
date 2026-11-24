@@ -620,10 +620,10 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
     changedPaths,
     cleanupBlockers,
   });
-  if (completionReceipt.cleanup.blockers.length > 0) {
+  if (completionReceipt.resourceBlockers.length > 0) {
     updateTask(repoRoot, issue.id, task.id, {
       status: 'cleanup_blocked',
-      note: completionReceipt.cleanup.blockers.map((entry) => entry.message).join(' '),
+      note: completionReceipt.resourceBlockers.map((entry) => entry.message).join(' '),
     });
     return editResult(repoRoot, {
       action: 'blocked',
@@ -634,7 +634,7 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
       taskStatus: 'cleanup_blocked',
       changedPaths,
       completionReceipt,
-      reason: completionReceipt.cleanup.blockers.map((entry) => entry.message).join(' '),
+      reason: completionReceipt.resourceBlockers.map((entry) => entry.message).join(' '),
       commitSha,
     });
   }
@@ -857,10 +857,8 @@ function buildDirectEditCompletionReceipt(input: {
     targetRevision: input.integrationEvidence.targetRevision,
     changedPaths: Array.from(new Set(input.changedPaths)).sort((left, right) => left.localeCompare(right)),
     reachable: input.integrationEvidence.reachable,
-    cleanup: {
-      warnings,
-      blockers,
-    },
+    maintenanceWarnings: warnings,
+    resourceBlockers: blockers,
     recordedAt,
   };
 }

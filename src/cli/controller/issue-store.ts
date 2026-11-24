@@ -306,8 +306,8 @@ function summarizeVerification(verification?: TaskVerification) {
           targetBranch: verification.completionReceipt.targetBranch,
           targetRevision: verification.completionReceipt.targetRevision,
           changedPathCount: verification.completionReceipt.changedPaths.length,
-          maintenanceWarningCount: verification.completionReceipt.cleanup.warnings.length,
-          blockerCount: verification.completionReceipt.cleanup.blockers.length,
+          maintenanceWarningCount: verification.completionReceipt.maintenanceWarnings.length,
+          blockerCount: verification.completionReceipt.resourceBlockers.length,
         }
       : undefined,
     reviewer: verification.reviewer,
