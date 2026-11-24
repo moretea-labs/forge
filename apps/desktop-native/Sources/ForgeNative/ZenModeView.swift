@@ -1028,8 +1028,6 @@ struct ZenWorkspacePane: View {
                                                                              columnCount:visibleStages.count),
                                        alignment:.topLeading)
                                 .frame(maxHeight:.infinity)
-                                .background(ForgeBoardAppearance.columnSurface,
-                                            in:RoundedRectangle(cornerRadius:13,style:.continuous))
                             }
                         }
                         .padding(.horizontal,ForgeBoardAppearance.boardInset).padding(.bottom,ForgeBoardAppearance.boardInset)

@@ -26,7 +26,6 @@ enum ForgeBoardAppearance {
     static let boardInset: CGFloat = 20
     static let columnInset: CGFloat = 12
     static let cardInset: CGFloat = 12
-    static let columnSurface = ForgePalette.softFill
 
     static func marker(_ tone:ForgeBoardTone) -> Color {
         switch tone {
@@ -97,8 +96,6 @@ struct ZenGitHubBoardView: View {
                                                                       columnCount:statuses.count),
                                alignment:.topLeading)
                         .frame(maxHeight:.infinity)
-                        .background(ForgeBoardAppearance.columnSurface,
-                                    in:RoundedRectangle(cornerRadius:13,style:.continuous))
                     }
                 }
                 .padding(.horizontal,ForgeBoardAppearance.boardInset).padding(.bottom,ForgeBoardAppearance.boardInset)

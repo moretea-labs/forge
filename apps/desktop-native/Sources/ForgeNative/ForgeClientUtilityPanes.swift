@@ -3565,6 +3565,7 @@ struct SettingsPane: View {
                         .disabled(saveDisabled)
                         .accessibilityIdentifier("settings.save")
                     }
+                    .frame(maxWidth:514,alignment:.trailing)
 
                     Text("API Key 安全保存在 macOS 钥匙串中。")
                         .font(.system(size:11)).foregroundStyle(.tertiary)

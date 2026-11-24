@@ -13,7 +13,6 @@ struct ForgeNativeApp: App {
     var body: some Scene {
         WindowGroup("Forge") {
             ForgeWorkspaceView(model: workspace)
-                .preferredColorScheme(.dark)
                 .frame(minWidth:860,minHeight:570)
                 .tint(ForgePalette.accent)
                 .navigationTitle("")

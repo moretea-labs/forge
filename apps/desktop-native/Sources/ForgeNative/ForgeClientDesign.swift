@@ -231,10 +231,9 @@ struct ForgeWindowConfigurator: NSViewRepresentable {
 
   private func configure(_ window: NSWindow?) {
     guard let window else { return }
-    // Forge owns a dark glass workspace independent of the macOS global
-    // appearance. This matches the product's reference shell while leaving the
-    // user's system theme untouched.
-    window.appearance = NSAppearance(named: .darkAqua)
+    // Follow the user's macOS appearance. Palette washes and native materials
+    // are semantic, so light and dark modes share the same visual hierarchy.
+    window.appearance = nil
     window.isOpaque = false
     window.backgroundColor = .clear
     window.titlebarAppearsTransparent = true
