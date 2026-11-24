@@ -38,21 +38,49 @@ describe('controller hotpath timing integrity', () => {
   });
 
   test('rejects failed tool responses even when they contain timing metadata', () => {
-    expect(() => duration({ isError: true, structuredContent: { responseMeta: { serverDurationMs: 1 } } })).toThrow('CONTROLLER_HOTPATH_TOOL_ERROR');
-    expect(() => duration({ structuredContent: { status: 'error', responseMeta: { serverDurationMs: 1 } } })).toThrow('CONTROLLER_HOTPATH_TOOL_ERROR');
+    expect(() => duration({ isError: true, structuredContent: { responseMeta: { serverDurationMs: 1 } } })).toThrow(
+      'CONTROLLER_HOTPATH_TOOL_ERROR',
+    );
+    expect(() => duration({ structuredContent: { status: 'error', responseMeta: { serverDurationMs: 1 } } })).toThrow(
+      'CONTROLLER_HOTPATH_TOOL_ERROR',
+    );
   });
 });
 
 describe('controller hotpath acceptance', () => {
-  const git = { identityCounters: { subprocesses: 1 }, snapshotCounters: { subprocesses: 1 }, snapshotIdentityCounters: { subprocesses: 1 } };
-  const sample = { scale: 0, coldSummaryMs: 2, coldSummaryResponseBytes: 2600, coldSummaryPhaseTimingsMs: { repositoryRouting: 0.1 }, hotP95Ms: 20, maxSummaryBytes: 6400 };
+  const git = {
+    identityCounters: { subprocesses: 1 },
+    snapshotCounters: { subprocesses: 1 },
+    snapshotIdentityCounters: { subprocesses: 1 },
+  };
+  const sample = {
+    scale: 0,
+    coldSummaryMs: 2,
+    coldSummaryResponseBytes: 2600,
+    coldSummaryPhaseTimingsMs: { repositoryRouting: 0.1 },
+    hotP95Ms: 20,
+    maxSummaryBytes: 6400,
+  };
 
   test('passes valid samples within actual thresholds', () => {
     expect(controllerHotpathAcceptance([sample], git)).toMatchObject({ passed: true, failures: [] });
   });
 
   test('rejects a slow sample, oversized response, excessive subprocesses and missing scale data', () => {
-    const failed = controllerHotpathAcceptance([{ ...sample, scale: 25, coldSummaryMs: 26, coldSummaryResponseBytes: 9000, coldSummaryPhaseTimingsMs: { gitIdentity: 12 }, hotP95Ms: 101, maxSummaryBytes: 32769 }], { ...git, identityCounters: { subprocesses: 2 } });
+    const failed = controllerHotpathAcceptance(
+      [
+        {
+          ...sample,
+          scale: 25,
+          coldSummaryMs: 26,
+          coldSummaryResponseBytes: 9000,
+          coldSummaryPhaseTimingsMs: { gitIdentity: 12 },
+          hotP95Ms: 101,
+          maxSummaryBytes: 32769,
+        },
+      ],
+      { ...git, identityCounters: { subprocesses: 2 } },
+    );
     expect(failed.passed).toBe(false);
     expect(failed.failures.length).toBeGreaterThanOrEqual(6);
     expect(controllerHotpathAcceptance([], git).passed).toBe(false);

@@ -30,11 +30,14 @@ export function fileSha256(absolutePath: string): string {
 /**
  * Merge success requires exit 0, no unmerged paths, no MERGE_HEAD, and expected tree state.
  */
-export function validateMergeSuccess(repoRoot: string, opts: {
-  exitCode: number;
-  expectClean?: boolean;
-  expectedBranch?: string;
-} = { exitCode: 0 }): PostconditionResult {
+export function validateMergeSuccess(
+  repoRoot: string,
+  opts: {
+    exitCode: number;
+    expectClean?: boolean;
+    expectedBranch?: string;
+  } = { exitCode: 0 },
+): PostconditionResult {
   const failures: string[] = [];
   if (opts.exitCode !== 0) failures.push(`merge exitCode=${opts.exitCode}`);
   const unmerged = git(repoRoot, ['diff', '--name-only', '--diff-filter=U']);
@@ -82,10 +85,12 @@ export function validatePatchSuccess(input: {
   const root = resolve(input.repoRoot);
   for (const relative of input.changedFiles) {
     if (input.allowedPaths && input.allowedPaths.length > 0) {
-      const allowed = input.allowedPaths.some((pattern) =>
-        relative === pattern
-        || relative.startsWith(`${pattern.replace(/\/$/, '')}/`)
-        || pattern.endsWith('/**') && relative.startsWith(pattern.slice(0, -3)));
+      const allowed = input.allowedPaths.some(
+        (pattern) =>
+          relative === pattern ||
+          relative.startsWith(`${pattern.replace(/\/$/, '')}/`) ||
+          (pattern.endsWith('/**') && relative.startsWith(pattern.slice(0, -3))),
+      );
       if (!allowed) failures.push(`changed path outside allow-list: ${relative}`);
     }
     const absolute = join(root, relative);
@@ -95,7 +100,8 @@ export function validatePatchSuccess(input: {
     }
     try {
       const content = readFileSync(absolute, 'utf8');
-      if (content.includes('<<<<<<<') || content.includes('>>>>>>>') || content.includes('=======')) {
+      const conflictMarker = /^\s*(?:<{7}(?:\s|$)|={7}(?:\s|$)|>{7}(?:\s|$))/m;
+      if (conflictMarker.test(content)) {
         failures.push(`conflict markers in ${relative}`);
       }
     } catch {
@@ -110,7 +116,10 @@ export function validatePatchSuccess(input: {
   }
 
   // Executable bit surprises: if git reports mode change without content intent, flag it.
-  const modeDiff = git(root, ['diff', '--summary']);
+  const modeDiff =
+    input.changedFiles.length > 0
+      ? git(root, ['diff', '--summary', '--', ...input.changedFiles])
+      : { ok: true, stdout: '', stderr: '', status: 0 };
   if (modeDiff.ok) {
     for (const line of modeDiff.stdout.split(/\n/)) {
       if (/mode change/.test(line) && /100755|100644/.test(line)) {

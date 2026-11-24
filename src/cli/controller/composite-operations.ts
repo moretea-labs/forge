@@ -4,12 +4,7 @@ import { createHash } from 'crypto';
 import { runProcess } from '../../effects/process-runner';
 import { resolveMcpRepoRoot } from '../../../adapters/mcp/repo';
 import { listControllerChecks, runControllerCheck } from '../../runtime/execution/process-runtime/check-runner';
-import {
-  compositeFailed,
-  compositeSucceeded,
-  usefulTail,
-  type CompositeToolResult,
-} from './composite-result';
+import { compositeFailed, compositeSucceeded, usefulTail, type CompositeToolResult } from './composite-result';
 import { validatePatchSuccess } from './postcondition';
 import { gitSnapshot } from '../../runtime/repositories/inspector';
 
@@ -24,6 +19,48 @@ function git(repoRoot: string, args: string[]) {
     timeoutMs: 20_000,
     maxOutputBytes: 512 * 1024,
   });
+}
+
+function inspectPatchPaths(
+  repoRoot: string,
+  patch: string,
+): {
+  ok: boolean;
+  paths: string[];
+  status: number;
+  output: string;
+} {
+  const result = runProcess('git', ['-C', repoRoot, 'apply', '--numstat', '-z', '-'], {
+    timeoutMs: 20_000,
+    maxOutputBytes: 256 * 1024,
+    input: patch,
+  });
+  if (!result.ok) {
+    return {
+      ok: false,
+      paths: [],
+      status: result.status,
+      output: result.stderr || result.error || result.stdout,
+    };
+  }
+  const paths = new Set<string>();
+  for (const field of result.stdout.split('\0')) {
+    if (!field) continue;
+    const firstTab = field.indexOf('\t');
+    const secondTab = firstTab < 0 ? -1 : field.indexOf('\t', firstTab + 1);
+    const path = (secondTab >= 0 ? field.slice(secondTab + 1) : field).replace(/\r?\n$/, '');
+    if (path) paths.add(path);
+  }
+  return { ok: true, paths: [...paths], status: 0, output: '' };
+}
+
+function isAllowedPatchPath(relative: string, allowedPaths: string[]): boolean {
+  return allowedPaths.some(
+    (pattern) =>
+      relative === pattern ||
+      relative.startsWith(`${pattern.replace(/\/$/, '')}/`) ||
+      (pattern.endsWith('/**') && relative.startsWith(pattern.slice(0, -3))),
+  );
 }
 
 export interface RepositoryChangeVerifyInput {
@@ -83,7 +120,42 @@ export function repositoryChangeVerify(input: RepositoryChangeVerifyInput): Comp
     }
   }
 
-  let changedFiles: string[] = [];
+  const inspectedPatch = input.patch?.trim()
+    ? inspectPatchPaths(repoRoot, input.patch)
+    : { ok: true, paths: [], status: 0, output: '' };
+  if (!inspectedPatch.ok) {
+    return compositeFailed({
+      phase: 'patch',
+      summary: 'failed to inspect patch paths',
+      failedCheck: 'git_apply_numstat',
+      exitCode: inspectedPatch.status,
+      keyOutput: usefulTail('', inspectedPatch.output),
+      nextAction: 'fix patch context against current file SHAs',
+    });
+  }
+  const changedFiles = inspectedPatch.paths;
+  if (input.patch?.trim() && changedFiles.length === 0) {
+    return compositeFailed({
+      phase: 'patch',
+      summary: 'patch contains no file paths',
+      failedCheck: 'patch_paths',
+      nextAction: 'provide a valid file patch with explicit paths',
+    });
+  }
+  const allowedPaths = input.allowedPaths ?? [];
+  if (allowedPaths.length > 0) {
+    const outsidePaths = changedFiles.filter((path) => !isAllowedPatchPath(path, allowedPaths));
+    if (outsidePaths.length > 0) {
+      return compositeFailed({
+        phase: 'preflight',
+        summary: 'patch contains paths outside allow-list',
+        failedCheck: 'allowed_paths',
+        changedFiles,
+        keyOutput: outsidePaths.join('\n'),
+        nextAction: 'regenerate the patch using only allowed paths',
+      });
+    }
+  }
   if (input.patch?.trim()) {
     const apply = runProcess('git', ['-C', repoRoot, 'apply', '--whitespace=nowarn', '-'], {
       timeoutMs: 20_000,
@@ -101,18 +173,7 @@ export function repositoryChangeVerify(input: RepositoryChangeVerifyInput): Comp
       });
     }
   }
-
-  const nameOnly = git(repoRoot, ['diff', '--name-only']);
-  const nameOnlyCached = git(repoRoot, ['diff', '--cached', '--name-only']);
-  const untracked = git(repoRoot, ['ls-files', '--others', '--exclude-standard']);
-  changedFiles = [
-    ...new Set([
-      ...nameOnly.stdout.split(/\n/).filter(Boolean),
-      ...nameOnlyCached.stdout.split(/\n/).filter(Boolean),
-      ...untracked.stdout.split(/\n/).filter(Boolean),
-    ]),
-  ];
-  const diffStat = git(repoRoot, ['diff', '--stat']);
+  const diffStat = changedFiles.length > 0 ? git(repoRoot, ['diff', '--stat', '--', ...changedFiles]) : { stdout: '' };
 
   const patchPost = validatePatchSuccess({
     repoRoot,
@@ -132,9 +193,7 @@ export function repositoryChangeVerify(input: RepositoryChangeVerifyInput): Comp
     });
   }
 
-  const checkIds = input.checks?.length
-    ? input.checks
-    : [];
+  const checkIds = input.checks?.length ? input.checks : [];
   const available = new Set(listControllerChecks(repoRoot).map((c) => c.id));
   for (const id of checkIds) {
     if (!available.has(id)) {
@@ -159,9 +218,10 @@ export function repositoryChangeVerify(input: RepositoryChangeVerifyInput): Comp
         keyOutput: usefulTail(result.stdout, result.stderr),
         evidenceRefs,
         retryable: result.failureClass === 'infrastructure_failure',
-        nextAction: result.failureClass === 'infrastructure_failure'
-          ? 'retry the same check after infrastructure recovers'
-          : 'fix the failing assertion and re-run repository_change_verify',
+        nextAction:
+          result.failureClass === 'infrastructure_failure'
+            ? 'retry the same check after infrastructure recovers'
+            : 'fix the failing assertion and re-run repository_change_verify',
         details: {
           timedOut: result.timedOut,
           failureClass: result.failureClass,
@@ -182,7 +242,7 @@ export function repositoryChangeVerify(input: RepositoryChangeVerifyInput): Comp
       `branch=${after.branch}`,
       `head=${after.head}`,
       `changed=${changedFiles.join(', ') || '(none)'}`,
-      diffStat.stdout || snapshot.diffStat,
+      diffStat.stdout || (changedFiles.length > 0 ? '(no tracked diff stat for patch paths)' : '(no patch paths)'),
     ].join('\n'),
     evidenceRefs,
     nextAction: 'review diff, commit when ready; do not push unless requested',

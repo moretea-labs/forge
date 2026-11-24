@@ -60,6 +60,8 @@ import {
   PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,
   processRunnerReleaseCanaryChildCommand,
 } from '../../src/runtime/execution/process-runtime/canary';
+import { repositoryChangeVerify } from '../../src/cli/controller/composite-operations';
+import { fileSha256, validatePatchSuccess } from '../../src/cli/controller/postcondition';
 
 function observations(overrides: Partial<RuntimeHealthObservations> = {}): RuntimeHealthObservations {
   return {
@@ -1157,5 +1159,111 @@ describe('runtime observability', () => {
         rmSync(root, { recursive: true, force: true });
       }
     });
+  });
+});
+
+describe('repository change verification patch scope', () => {
+  const createRepo = (prefix: string) => {
+    const repoRoot = mkdtempSync(join(tmpdir(), prefix));
+    const git = (args: string[]) => spawnSync('git', ['-C', repoRoot, ...args], { encoding: 'utf8' });
+    expect(spawnSync('git', ['init', '-b', 'main', repoRoot], { encoding: 'utf8' }).status).toBe(0);
+    expect(git(['config', 'user.name', 'Test']).status).toBe(0);
+    expect(git(['config', 'user.email', 'test@example.com']).status).toBe(0);
+    expect(git(['config', 'core.filemode', 'true']).status).toBe(0);
+    const targetPath = join(repoRoot, 'target.ts');
+    const unrelatedPath = join(repoRoot, 'unrelated.ts');
+    writeFileSync(targetPath, 'const target = 1;\n');
+    writeFileSync(unrelatedPath, 'const unrelated = 1;\n');
+    expect(git(['add', '.']).status).toBe(0);
+    expect(git(['commit', '-m', 'initial']).status).toBe(0);
+    return { repoRoot, git, head: git(['rev-parse', 'HEAD']).stdout.trim(), targetPath, unrelatedPath };
+  };
+
+  test('does not claim unrelated pre-existing dirty paths as part of this patch', () => {
+    const fixture = createRepo('forge-change-verify-scope-');
+    try {
+      writeFileSync(fixture.unrelatedPath, 'const unrelated = 2;\n');
+      chmodSync(fixture.unrelatedPath, 0o755);
+      const untrackedPath = join(fixture.repoRoot, 'untracked.txt');
+      writeFileSync(untrackedPath, 'another writer\n');
+      expect(fixture.git(['diff', '--summary']).stdout).toContain('mode change');
+      const result = repositoryChangeVerify({
+        repo: fixture.repoRoot,
+        expectedBranch: 'main',
+        expectedHead: fixture.head,
+        expectedFileShas: { 'target.ts': fileSha256(fixture.targetPath) },
+        patch: [
+          'diff --git a/target.ts b/target.ts',
+          '--- a/target.ts',
+          '+++ b/target.ts',
+          '@@ -1 +1 @@',
+          '-const target = 1;',
+          '+const target = 2;',
+          '',
+        ].join('\n'),
+        allowedPaths: ['target.ts'],
+      });
+      expect(result.status).toBe('succeeded');
+      expect(result.changedFiles).toEqual(['target.ts']);
+      expect(readFileSync(fixture.targetPath, 'utf8')).toBe('const target = 2;\n');
+      expect(readFileSync(fixture.unrelatedPath, 'utf8')).toBe('const unrelated = 2;\n');
+      expect(existsSync(untrackedPath)).toBe(true);
+      expect(fixture.git(['diff', '--summary']).stdout).toContain('mode change');
+    } finally {
+      rmSync(fixture.repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects patch paths outside the allow-list before applying any path', () => {
+    const fixture = createRepo('forge-change-verify-allow-list-');
+    try {
+      const result = repositoryChangeVerify({
+        repo: fixture.repoRoot,
+        expectedBranch: 'main',
+        expectedHead: fixture.head,
+        expectedFileShas: {
+          'target.ts': fileSha256(fixture.targetPath),
+          'unrelated.ts': fileSha256(fixture.unrelatedPath),
+        },
+        patch: [
+          'diff --git a/target.ts b/target.ts',
+          '--- a/target.ts',
+          '+++ b/target.ts',
+          '@@ -1 +1 @@',
+          '-const target = 1;',
+          '+const target = 2;',
+          'diff --git a/unrelated.ts b/unrelated.ts',
+          '--- a/unrelated.ts',
+          '+++ b/unrelated.ts',
+          '@@ -1 +1 @@',
+          '-const unrelated = 1;',
+          '+const unrelated = 2;',
+          '',
+        ].join('\n'),
+        allowedPaths: ['target.ts'],
+      });
+      expect(result.status).toBe('failed');
+      expect(result.phase).toBe('preflight');
+      expect(result.failedCheck).toBe('allowed_paths');
+      expect(readFileSync(fixture.targetPath, 'utf8')).toBe('const target = 1;\n');
+      expect(readFileSync(fixture.unrelatedPath, 'utf8')).toBe('const unrelated = 1;\n');
+    } finally {
+      rmSync(fixture.repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('detects conflict markers as lines without matching marker-like string literals', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-conflict-marker-scan-'));
+    const path = join(repoRoot, 'safe.ts');
+    try {
+      writeFileSync(path, "const left = '<<<<<<<';\nconst divider = '=======';\nconst right = '>>>>>>>';\n");
+      expect(validatePatchSuccess({ repoRoot, changedFiles: ['safe.ts'] }).ok).toBe(true);
+      writeFileSync(path, '<<<<<<< HEAD\nconst value = 1;\n=======\nconst value = 2;\n>>>>>>> branch\n');
+      const result = validatePatchSuccess({ repoRoot, changedFiles: ['safe.ts'] });
+      expect(result.ok).toBe(false);
+      expect(result.failures).toContain('conflict markers in safe.ts');
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 });
