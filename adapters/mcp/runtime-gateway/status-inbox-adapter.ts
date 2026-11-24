@@ -18,7 +18,7 @@ import {
 import type { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
 import { buildCheckExecutionSchedule } from '../../../src/runtime/execution/process-runtime/check-scheduling';
 import { listAssistantPluginManifests } from '../../../src/runtime/plugins/store';
-import { cachedGitIdentity, gitSnapshot } from '../../../src/runtime/repositories/inspector';
+import { cachedGitIdentityAsync, gitSnapshot } from '../../../src/runtime/repositories/inspector';
 import { buildRuntimeMaintenanceStatus } from '../../../src/runtime/recovery';
 import {
   allowedFacadeOperations,
@@ -255,7 +255,7 @@ export async function callStatusInboxAdapter(
       // Summary answers only whether this repository can work now. Reuse one
       // porcelain-v2 sample for branch/HEAD/dirty and avoid the full Git
       // status/diff-stat, access-policy, and inventory construction paths.
-      const repositoryIdentity = repository ? cachedGitIdentity(repository.canonicalRoot) : undefined;
+      const repositoryIdentity = repository ? await cachedGitIdentityAsync(repository.canonicalRoot) : undefined;
       const repositoryIdentityAgeMs = repositoryIdentity
         ? Math.max(0, Date.now() - repositoryIdentity.sampledAt)
         : undefined;
