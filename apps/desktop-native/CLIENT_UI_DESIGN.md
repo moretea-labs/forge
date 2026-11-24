@@ -1,41 +1,41 @@
 # Forge Client UI Design Contract
 
-Authority: moretea-labs/forge#649 — 2026-11-23 (flat-glass visual refresh on the four-column shell).
+Authority: moretea-labs/forge#649 — 2026-11-24 (user-authorized compact toolbar and on-demand inspector).
 Scope: native macOS Client window architecture, layout, navigation, typography, panels and focus. This contract does not create or change Project/Requirement/Plan, Checkout, Provider, Git or Runtime authority.
 
 ## Locked product decisions
 
-- **Four-column shell.** Visual columns are: (1) icon rail 会话/项目/看板 + 自动任务/资源/统计, 设置 pinned at bottom, (2) list (threads / projects / Zen context), (3) main board — Agent chat **or** Zen board, (4) persistent right activity rail (附件 / 规划 / 知识) matching the left rail. Work-surface content between chat and the rail is **hidden by default**. Titlebar shows only Changes.
+- **Default three-column shell + on-demand inspector.** Left icon rail (会话/项目/看板 + 自动任务/资源/统计, 设置 pinned below), list, and main Agent or Zen workspace. No permanent right rail. The only Agent tool opener is the top-right inspector toggle; its panel contains 改动 / 附件 / 规划 / 知识 tabs. New windows start closed; the last available tab is remembered.
 - **1A cold start.** Empty store opens Agent (`zenMode=false`, `page=.agent`) with a bootstrap thread.
 - **2B dual primary surfaces.** 会话 and 看板 remain peer destinations via the icon rail; Zen is not merged into the Agent right pane. 项目 is a first-class list-column mode for repository/project selection.
 - **Browser deferred.** Never show Browser as an active enabled control until a separate authorized pane exists.
-- **Cursor density.** Prefer quieter chrome: denser thread rows, icon-first conversation tools, flatter composer, list-header New Chat (`sidebar.thread.new`), and a persistent right activity rail instead of a titlebar tool strip.
-- **No duplicate chrome.** Titlebar shows only Changes. Files / planning / knowledge live on the right rail; the conversation column does not repeat those openers. Window title shows workspace scope + honest status color (orange when checkout unavailable), not a second copy of the selected thread title.
-- **App-owned Floating Dark Glass.** Forge owns a Dark appearance independent of the macOS global theme: SwiftUI uses a dark root color scheme and the NSWindow uses `darkAqua`, while remaining non-opaque with shared behind-window material. The outer shell is a custom divider-free `HStack`, not `NavigationSplitView`: left navigation glass and main glass are separate rounded panels with an 8pt air gap, never a black/system splitter. The left panel uses only a slightly stronger tonal wash; the right activity rail floats directly in main glass with no slab. Search/input/composer/work-surface controls are nested translucent glass with near-invisible rims; the composer shows a stronger edge only while focused.
+- **Cursor density.** Prefer quieter chrome: denser thread rows, icon-first conversation tools, flatter composer, list-header New Chat (`sidebar.thread.new`), and a single on-demand inspector toggle instead of a persistent tool rail.
+- **No duplicate chrome.** A compact 32pt header at the top of the main glass pane hosts the conversation title, truthful workspace status, and one trailing inspector toggle; the native toolbar remains transparent and compact. Do not repeat status as an overlay in the transcript.
+- **App-owned Floating Dark Glass.** Forge owns a Dark appearance independent of the macOS global theme: SwiftUI uses a dark root color scheme and the NSWindow uses `darkAqua`, while remaining non-opaque with shared behind-window material. The outer shell is a custom divider-free `HStack`, not `NavigationSplitView`: left navigation glass and main glass are separate rounded panels with an 8pt air gap, never a black/system splitter. The left panel uses only a slightly stronger tonal wash; the inspector occupies no space until opened. Search/input/composer/work-surface controls are nested translucent glass with near-invisible rims; the composer shows a stronger edge only while focused.
 - **Icon optical contract.** Chrome glyphs use `ForgeClientDesign.Icon`: 13pt / 28pt hit for toolbar·sidebar·composer, 15pt rail glyphs + 9pt labels; hierarchical rendering, medium weight.
 
 ## 1. Overall layout
 
 ~~~text
-macOS unified toolbar: traffic lights + Changes (Agent)
-+------+--------------+----------------------------------+--------+
-| Icons| List         | Main board                       | Tools  |
-| 52pt | 200–280pt    | Chat OR Zen board                | 52pt   |
-| 会话 | threads /    | Agent: transcript + composer     | 附件   |
-| 项目 | projects /   | optional work surface in between | 规划   |
-| 看板 | Zen context  | Zen: board / canvas              | 知识   |
-| 工具 | New Chat in  |                                  | close  |
-| 设置 | list header  |                                  |        |
-+------+--------------+----------------------------------+--------+
+macOS compact unified toolbar: traffic lights
+Main pane header (32pt): conversation title | status | inspector toggle
++------+--------------+------------------------------------------+
+| Icons| List         | Main board                              |
+| 52pt | 236pt        | Chat OR Zen board                        |
+| 会话 | threads /    | Transcript + fixed composer              |
+| 项目 | projects /   | Inspector only when opened               |
+| 看板 | Zen context  | Tabs: 改动 / 附件 / 规划 / 知识          |
+| 设置 | list header  | Compact width: inspector replaces chat  |
++------+--------------+------------------------------------------+
 ~~~
 
-Default visible columns: left icon rail + list + main + right activity rail. The icon rail + list live in one 288pt floating glass panel (52 + 236); the main workspace is a second floating glass panel separated by an 8pt transparent gap. No outer native split divider is allowed. The entire shell shares one dark translucent backdrop independent of macOS system appearance; hierarchy comes from material/tone/spacing rather than separators, borders, or opaque slabs. The right activity rail has no independent background slab. Titlebar exposes only Changes; 附件 / 规划 / 知识 stay on the right rail. Clicking Changes or a rail tool expands the work-surface column between chat and the rail. It supports resize, close, and maximize without destroying chat state. The side-by-side threshold is 840pt (420pt conversation + 360pt work surface + 60pt native split/spacing allowance) inside the work area; width changes switch presentation without clearing the selected surface.
+Default visible columns: icon rail + list + main. The 288pt left glass (52 + 236) and main glass share an 8pt transparent gap. No outer native split divider. Closed inspector consumes zero width; opened inspector splits the main workspace when at least 840pt is available after the 16pt outer inset, otherwise replaces the conversation presentation without unmounting it. Preserve draft, attachments, scroll, selected tab and running tasks. The transcript starts at 8pt top inset and 24pt horizontal inset; empty state uses only its intrinsic height plus 20pt top spacing.
 
 ## 2. Toolbar ownership
 
 - **No titlebar content band.** `.toolbarBackground(.hidden)` — traffic lights sit on the same surface as content. Do not host breadcrumb/status in a filled toolbar strip.
-- **Titlebar default:** only Changes (`agent.changes`). Files / planning / knowledge are not titlebar actions.
-- **Right rail:** always-visible left-mirrored activity rail (附件 / 规划 / 知识). Clicking a rail tool (or Changes) expands work-surface content between chat and the rail; maximize/close appear at the bottom of that rail while the pane is open. Empty Files pane omits search chrome until there is something to filter. Browser remains deferred.
+- **Main pane header:** `agent.inspector.toggle` is the sole Agent tool opener, pinned to the trailing edge. The same compact header displays the conversation title and honest workspace status; no centered native toolbar items.
+- **Inspector:** tabs 改动 / 附件 / 规划 / 知识 are available only when opened. Maximize and close live in its header. Unavailable tabs remain disabled; reopening restores the last available tab or falls back to 附件. Browser remains deferred.
 - **List header (会话):** New Chat, Search, Inbox — New Chat uses `sidebar.thread.new`; icons share `ForgeClientDesign.Icon`.
 - **Composer:** provider/model/attachments/voice/send; chrome icons share the same 13/28 optical size; focus ring only while focused.
 
@@ -56,7 +56,7 @@ NO decorative card/capsule/softFill wrapping every toolbar, rail, tab, commit fo
 
 ## 5. Source ownership
 
-- `ForgeClientShell.swift`: window shell, icon rail, list column, SceneStorage for right pane.
+- `ForgeClientShell.swift`: window shell, icon rail, list column, remembered inspector tab and per-window visibility state.
 - `ForgeClientSidebar.swift`: destination enum (会话/项目/看板 + utilities).
 - `AgentWorkbenchViews.swift`: AgentPane, conversation toolbar, right work surface.
 - `ZenModeView.swift`: peer board destination.
@@ -67,8 +67,8 @@ NO decorative card/capsule/softFill wrapping every toolbar, rail, tab, commit fo
 
 1. Cold start shows Agent with right pane closed.
 2. Icon rail switches 会话 / 项目 / 看板 without losing draft or return context.
-3. The window toolbar exposes only Changes (`agent.changes`) by default; list header exposes New Chat (`sidebar.thread.new`).
-4. Opening Changes (or a right-rail tool) expands the pane with a 附件/规划/知识 activity rail, stays selected through wide → compact → wide transitions, and can close or maximize without losing chat state.
+3. The Agent header exposes a single trailing inspector opener (`agent.inspector.toggle`); no permanent right rail or hidden panel tabs in the closed state. List header exposes New Chat (`sidebar.thread.new`).
+4. Open inspector, switch 改动/附件/规划/知识, close/reopen the same available tab, resize wide → compact → wide, maximize/restore/close without losing chat state. Verify header context and reduced top whitespace in both empty and populated conversations.
 5. `swift test` / `swift build`; GUI/AX at 860 / 1100 / 1260 / 1440 / 1800+ when authorized. The app remains Dark Glass under either macOS Light or Dark system appearance; system appearance is never changed. At 860 and 1260 the outer left/main glass panels must remain divider-free and readable; a high-contrast/purple backdrop must visibly sample through the shell rather than reveal an opaque gray canvas.
 
 Do not replace the installed App or activate Runtime without separate authorization.

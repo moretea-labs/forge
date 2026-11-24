@@ -21,7 +21,7 @@ struct ForgeNativeApp: App {
                 .task { await workspace.refresh() }
         }
         .defaultSize(width:1260,height:790)
-        .windowToolbarStyle(.unified)
+        .windowToolbarStyle(.unifiedCompact)
         .commands {
             CommandGroup(replacing:.newItem) {
                 Button("新会话") {

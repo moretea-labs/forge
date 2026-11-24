@@ -33,10 +33,10 @@ struct ForgeWorkspaceView: View {
     @State private var inboxDismissRequestId: String?
     @State private var expandedInboxRequestIds: Set<String> = []
     @FocusState private var sidebarSearchFocused: Bool
-    // Four-column shell: icon rail + list + main + optional right pane (hidden by default).
+    // Restore the last tab, but open every new window with the inspector closed.
     @SceneStorage("forge.shell.v5.surface.tab") private var selectedWorkSurfaceRaw = "changes"
-    @SceneStorage("forge.shell.v5.surface.visible") private var workSurfaceVisible = false
-    @SceneStorage("forge.shell.v5.surface.maximized") private var workSurfaceMaximized = false
+    @State private var workSurfaceVisible = false
+    @State private var workSurfaceMaximized = false
     @SceneStorage("forge.shell.v5.rail") private var primaryRailRaw = "agent"
 
     var body: some View {

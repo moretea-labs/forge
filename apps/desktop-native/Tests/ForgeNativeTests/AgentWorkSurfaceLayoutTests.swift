@@ -46,18 +46,20 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
         )
     }
 
-    func testWindowToolbarExposesOnlyChangesByDefault() {
-        XCTAssertEqual(
-            AgentConversationToolbarContract.requiredActionIdentifiers,
-            ["agent.changes"]
-        )
-        XCTAssertEqual(
-            AgentWorkSurface.railTools.map(\.rawValue),
-            ["files", "planning", "knowledge"]
-        )
+    func testWindowToolbarExposesOnlyInspectorByDefault() {
+        XCTAssertEqual(AgentConversationToolbarContract.requiredActionIdentifiers, ["agent.inspector.toggle"])
+        XCTAssertEqual(AgentWorkSurface.allCases.map(\.rawValue), ["changes", "files", "planning", "knowledge"])
         XCTAssertEqual(AgentConversationToolbarContract.filesIdentifier, "agent.files")
-        XCTAssertFalse(
-            AgentConversationToolbarContract.requiredActionIdentifiers.contains("agent.files")
-        )
+        XCTAssertFalse(AgentConversationToolbarContract.requiredActionIdentifiers.contains("agent.changes"))
+    }
+
+    func testInspectorReopensLastAvailableTabAndFallsBackWhenContextChanges() {
+        let all = AgentWorkSurface.availableTabs(hasCheckout:true,hasProject:true,hasRepository:true)
+        XCTAssertEqual(all, AgentWorkSurface.allCases)
+        XCTAssertEqual(AgentWorkSurface.preferredTab(selected:.knowledge,available:all), .knowledge)
+        let noWorkspace = AgentWorkSurface.availableTabs(hasCheckout:false,hasProject:false,hasRepository:false)
+        XCTAssertEqual(noWorkspace, [.files])
+        XCTAssertEqual(AgentWorkSurface.preferredTab(selected:.changes,available:noWorkspace), .files)
+        XCTAssertEqual(AgentWorkSurface.preferredTab(selected:.files,available:noWorkspace), .files)
     }
 }

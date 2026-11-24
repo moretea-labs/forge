@@ -2,8 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// Cursor-style right tools: Changes stays a titlebar toggle; other tools
-/// live on a persistent activity rail (same visual language as the left rail).
+/// On-demand inspector tabs, never a permanently visible right activity rail.
 enum AgentWorkSurface: String, CaseIterable, Identifiable, Equatable {
     case changes, files, planning, knowledge
     var id: String { rawValue }
@@ -23,15 +22,28 @@ enum AgentWorkSurface: String, CaseIterable, Identifiable, Equatable {
         case .knowledge: return "books.vertical"
         }
     }
-    /// Tools shown in the expanded right rail (Changes stays in the titlebar).
-    static var railTools: [AgentWorkSurface] { [.files, .planning, .knowledge] }
+    static func availableTabs(hasCheckout: Bool, hasProject: Bool, hasRepository: Bool) -> [Self] {
+        allCases.filter {
+            switch $0 {
+            case .changes: return hasCheckout
+            case .files: return true
+            case .planning: return hasProject
+            case .knowledge: return hasRepository
+            }
+        }
+    }
+
+    static func preferredTab(selected: Self, available: [Self]) -> Self {
+        available.contains(selected) ? selected : .files
+    }
 }
 
-/// Stable AX ids: Changes is the only default titlebar action.
+/// The sole default Agent tool opener is the inspector toggle.
 enum AgentConversationToolbarContract {
+    static let inspectorIdentifier = "agent.inspector.toggle"
     static let changesIdentifier = "agent.changes"
     static let filesIdentifier = "agent.files"
-    static let requiredActionIdentifiers = [changesIdentifier]
+    static let requiredActionIdentifiers = [inspectorIdentifier]
 }
 
 /// The split is available only when both real pane minima and native divider
@@ -115,17 +127,18 @@ struct AgentPane: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            agentContent(availableWidth:geometry.size.width)
-        }
-        // Cursor titlebar: only Changes is visible by default.
-        // Files / planning / knowledge live on a persistent right activity rail.
-        .toolbar {
-            ToolbarItemGroup(placement:.primaryAction) {
-                workspaceChangesControl
+        VStack(spacing:0) {
+            conversationHeader
+            GeometryReader { geometry in
+                agentContent(availableWidth:geometry.size.width)
             }
         }
         .toolbarBackground(.hidden, for:.windowToolbar)
+        .onChange(of:availableWorkSurfaces) { available in
+            if workSurfaceVisible && !available.contains(selectedWorkSurface) {
+                openWorkSurface(AgentWorkSurface.preferredTab(selected:selectedWorkSurface,available:available))
+            }
+        }
         .task(id: workSurfaceVisible && selectedWorkSurface == .changes
               ? model.checkoutId : nil) {
             // Right pane stays hidden until Changes/Files is opened.
@@ -134,6 +147,28 @@ struct AgentPane: View {
                   model.checkoutId != nil else { return }
             await model.refreshAgentChanges(staged:model.agentChanges?.staged ?? false)
         }
+    }
+
+    /// One compact header aligned with the left workspace switcher.
+    /// Keep the trailing toggle inside the main pane, not the system-centered toolbar.
+    private var conversationHeader: some View {
+        HStack(spacing:8) {
+            Text(model.thread?.title ?? "新会话")
+                .font(.system(size:12,weight:.medium))
+                .foregroundStyle(ForgePalette.ink)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .accessibilityIdentifier("agent.conversation.title")
+            Spacer(minLength:8)
+            agentWorkspaceStatusChip
+                .fixedSize(horizontal:true,vertical:false)
+            inspectorToggle
+        }
+        .padding(.horizontal,16)
+        .padding(.top,4)
+        .frame(height:32)
+        .accessibilityElement(children:.contain)
+        .accessibilityIdentifier("agent.conversation.header")
     }
 
     private var agentScopeLabel: String {
@@ -150,7 +185,7 @@ struct AgentPane: View {
         return ForgePalette.secondary
     }
 
-    /// Quiet in-content status — never hosted in a titlebar band.
+    /// Quiet status in the compact transparent workspace header.
     private var agentWorkspaceStatusChip: some View {
         Button { Task { await model.refresh() } } label: {
             HStack(spacing:5) {
@@ -173,131 +208,82 @@ struct AgentPane: View {
         .accessibilityIdentifier("agent.workspace-scope")
     }
 
-    /// Right activity rail: same visual language as the left icon rail.
-    private var rightToolRail: some View {
-        VStack(spacing:4) {
-            ForEach(AgentWorkSurface.railTools, id: \.self) { surface in
-                rightRailButton(surface)
-            }
-            Spacer(minLength:0)
+    private var availableWorkSurfaces: [AgentWorkSurface] {
+        AgentWorkSurface.availableTabs(
+            hasCheckout:model.checkoutId != nil,
+            hasProject:model.thread?.projectId != nil,
+            hasRepository:model.repoId != nil
+        )
+    }
+
+    private var inspectorToggle: some View {
+        Button {
             if workSurfaceVisible {
-                Button {
-                    withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
-                        workSurfaceMaximized.toggle()
-                    }
-                } label: {
-                    VStack(spacing:3) {
-                        Image(systemName:workSurfaceMaximized
-                              ? "arrow.down.right.and.arrow.up.left"
-                              : "arrow.up.left.and.arrow.down.right")
-                            .forgeRailIcon(active:false)
-                        Text(workSurfaceMaximized ? "还原" : "扩展")
-                            .font(.system(size:ForgeClientDesign.Icon.railLabel,weight:.regular))
-                            .lineLimit(1)
-                    }
-                    .foregroundStyle(ForgePalette.secondary)
-                    .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
-                    .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
-                    .forgeChromeSurface(cornerRadius:9)
-                }
-                .buttonStyle(.plain)
-                .help(workSurfaceMaximized ? "退出扩展视图" : "扩展右侧分栏")
-                .accessibilityIdentifier("agent.work-surface.maximize")
-                Button { closeWorkSurface() } label: {
-                    VStack(spacing:3) {
-                        Image(systemName:"xmark").forgeRailIcon(active:false)
-                        Text("关闭")
-                            .font(.system(size:ForgeClientDesign.Icon.railLabel,weight:.regular))
-                            .lineLimit(1)
-                    }
-                    .foregroundStyle(ForgePalette.secondary)
-                    .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
-                    .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
-                    .forgeChromeSurface(cornerRadius:9)
-                }
-                .buttonStyle(.plain)
-                .help("关闭右侧分栏")
-                .accessibilityLabel("关闭右侧分栏")
-                .accessibilityIdentifier("agent.work-surface.close")
+                closeWorkSurface()
+            } else {
+                openWorkSurface(AgentWorkSurface.preferredTab(
+                    selected: selectedWorkSurface, available: availableWorkSurfaces))
             }
+        } label: {
+            Image(systemName:"sidebar.right")
+                .forgeChromeIcon(active:workSurfaceVisible)
+                .forgeChromeSurface(selected:workSurfaceVisible,cornerRadius:8)
         }
-        .padding(.vertical,8)
-        .frame(width:ForgeClientDesign.Shell.iconRailWidth)
-        .frame(maxHeight:.infinity)
-        .background(Color.clear)
+        .buttonStyle(.plain)
+        .help(workSurfaceVisible ? "隐藏工作面板" : "显示工作面板")
+        .accessibilityLabel(workSurfaceVisible ? "隐藏工作面板" : "显示工作面板")
+        .accessibilityAddTraits(workSurfaceVisible ? [.isSelected] : [])
+        .accessibilityIdentifier(AgentConversationToolbarContract.inspectorIdentifier)
+    }
+
+    private var inspectorHeader: some View {
+        HStack(spacing:3) {
+            ForEach(AgentWorkSurface.allCases) { surface in
+                let selected = selectedWorkSurface == surface
+                Button { openWorkSurface(surface) } label: {
+                    Text(surface.title)
+                        .font(.system(size:11,weight:selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+                        .padding(.horizontal,7)
+                        .frame(height:28)
+                        .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+                        .forgeChromeSurface(selected:selected,cornerRadius:8)
+                }
+                .buttonStyle(.plain)
+                .disabled(!availableWorkSurfaces.contains(surface))
+                .accessibilityAddTraits(selected ? [.isSelected] : [])
+                .accessibilityIdentifier("agent.\(surface.rawValue)")
+            }
+            Spacer(minLength:2)
+            Button {
+                withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
+                    workSurfaceMaximized.toggle()
+                }
+            } label: {
+                Image(systemName:workSurfaceMaximized
+                      ? "arrow.down.right.and.arrow.up.left"
+                      : "arrow.up.left.and.arrow.down.right")
+                    .forgeChromeIcon()
+                    .forgeChromeSurface(cornerRadius:8)
+            }
+            .buttonStyle(.plain)
+            .help(workSurfaceMaximized ? "还原工作面板" : "扩展工作面板")
+            .accessibilityLabel(workSurfaceMaximized ? "还原工作面板" : "扩展工作面板")
+            .accessibilityIdentifier("agent.work-surface.maximize")
+            Button { closeWorkSurface() } label: {
+                Image(systemName:"xmark")
+                    .forgeChromeIcon()
+                    .forgeChromeSurface(cornerRadius:8)
+            }
+            .buttonStyle(.plain)
+            .help("关闭工作面板")
+            .accessibilityLabel("关闭工作面板")
+            .accessibilityIdentifier("agent.work-surface.close")
+        }
+        .padding(.horizontal,8)
+        .padding(.vertical,4)
         .accessibilityElement(children:.contain)
-        .accessibilityIdentifier("agent.right-rail")
-    }
-
-    private func rightRailButton(_ surface: AgentWorkSurface) -> some View {
-        let selected = selectedWorkSurface == surface
-        let disabled: Bool = {
-            switch surface {
-            case .files: return false
-            case .planning: return model.thread?.projectId == nil
-            case .knowledge: return model.repoId == nil
-            case .changes: return model.checkoutId == nil
-            }
-        }()
-        return Button {
-            toggleWorkSurface(surface)
-        } label: {
-            VStack(spacing:3) {
-                Image(systemName:surface.symbol).forgeRailIcon(active:selected)
-                Text(surface.title)
-                    .font(.system(size:ForgeClientDesign.Icon.railLabel,
-                                  weight:selected ? .semibold : .regular))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-            .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
-            .contentShape(RoundedRectangle(cornerRadius:10,style:.continuous))
-            .forgeChromeSurface(selected:selected,cornerRadius:10)
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .help(surface.title)
-        .accessibilityLabel(surface.title)
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
-        .accessibilityIdentifier(surface == .files
-                                 ? AgentConversationToolbarContract.filesIdentifier
-                                 : "agent.right-rail.\(surface.rawValue)")
-    }
-
-    private var workspaceReviewFileCount: Int {
-        model.agentChanges?.reviewScopeFileCount ?? 0
-    }
-
-    private var workspaceReviewSummary: String {
-        guard let changes = model.agentChanges else { return "尚未读取改动" }
-        let scope = changes.staged ? "已暂存" : "未暂存"
-        let count = changes.reviewScopeFileCount
-        return count > 0 ? "\(scope) \(count) 个文件" : "\(scope)范围无改动"
-    }
-
-    private var workspaceChangesControl: some View {
-        let active = workSurfaceVisible && selectedWorkSurface == .changes
-        return Button {
-            toggleWorkSurface(.changes)
-        } label: {
-            HStack(spacing:3) {
-                Image(systemName:"doc.text.magnifyingglass").forgeChromeIcon(active:active)
-                if workspaceReviewFileCount > 0 {
-                    Text("\(workspaceReviewFileCount)")
-                        .font(.system(size:10,weight:.medium))
-                        .monospacedDigit()
-                        .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
-                }
-            }
-            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
-            .forgeChromeSurface(selected:active,cornerRadius:8)
-        }
-        .buttonStyle(.plain)
-        .disabled(model.checkoutId == nil)
-        .help("改动：\(workspaceReviewSummary)")
-        .accessibilityLabel("改动审查")
-        .accessibilityValue(workspaceReviewSummary)
-        .accessibilityIdentifier(AgentConversationToolbarContract.changesIdentifier)
+        .accessibilityIdentifier("agent.inspector.tabs")
     }
 
     private var composerInputHeight: CGFloat {
@@ -307,17 +293,16 @@ struct AgentPane: View {
     }
 
     private func agentContent(availableWidth:CGFloat) -> some View {
-        let splitWidth = max(0, availableWidth - ForgeClientDesign.Shell.iconRailWidth)
+        let splitWidth = max(0, availableWidth - 16)
         let workSurfacePresentation = AgentWorkSurfaceLayout.presentation(
             availableWidth:splitWidth,
             isVisible:workSurfaceVisible,
             isMaximized:workSurfaceMaximized
         )
-        return HStack(spacing:8) {
-            HSplitView {
+        return HSplitView {
                 ZStack {
                     // Keep the composer and transcript mounted during review.
-                    // No titleband and no in-content tool strip.
+                    // The compact workspace header owns context and the single inspector toggle.
                     VStack(spacing:0) {
                         ScrollViewReader { reader in
                 ScrollView {
@@ -373,8 +358,8 @@ struct AgentPane: View {
                                     }
                                 }
                             }
-                            .frame(maxWidth:.infinity,minHeight:260)
-                            .padding(.top,36)
+                            .frame(maxWidth:.infinity)
+                            .padding(.top,20)
                         }
                         ForEach(model.thread?.messages ?? []) { message in
                             if message.role == "user" {
@@ -719,7 +704,7 @@ struct AgentPane: View {
                     }
                     .frame(maxWidth:ForgeClientDesign.Shell.readingColumn,alignment:.leading)
                     .frame(maxWidth:.infinity)
-                    .padding(.horizontal,32).padding(.top,32).padding(.bottom,22)
+                    .padding(.horizontal,24).padding(.top,8).padding(.bottom,18)
                     .background {
                         GeometryReader { content in
                             Color.clear.preference(
@@ -1076,8 +1061,7 @@ struct AgentPane: View {
             }
             .frame(minWidth:AgentWorkSurfaceLayout.conversationMinimumWidth)
             .frame(maxWidth:.infinity,maxHeight:.infinity)
-            .padding(.trailing,6)
-            .forgeSplitSeamMask()
+            .padding(.trailing,workSurfacePresentation == .sideBySide ? 6 : 0)
 
             if workSurfacePresentation == .sideBySide {
                 workSurfaceContent()
@@ -1087,20 +1071,8 @@ struct AgentPane: View {
                     .forgeFloatingGlass(cornerRadius:18)
                     .padding(.leading,6)
             }
-            }
-            .frame(maxWidth:.infinity,maxHeight:.infinity)
-            .overlay(alignment:.topTrailing) {
-                if !workSurfaceVisible {
-                    agentWorkspaceStatusChip
-                        .padding(.top,8)
-                        .padding(.trailing,14)
-                }
-            }
-
-            rightToolRail
-                .padding(.vertical,8)
-                .padding(.trailing,2)
         }
+        .frame(maxWidth:.infinity,maxHeight:.infinity)
         .padding(8)
         .background(ForgePalette.canvas)
         .animation(reduceMotion ? nil : .easeOut(duration:0.20),value:workSurfaceVisible)
@@ -1221,15 +1193,8 @@ struct AgentPane: View {
         return "描述你想完成的工作，或选择下方的常用操作。"
     }
 
-    private func toggleWorkSurface(_ surface: AgentWorkSurface) {
-        if workSurfaceVisible && selectedWorkSurface == surface {
-            closeWorkSurface()
-        } else {
-            openWorkSurface(surface)
-        }
-    }
-
     private func openWorkSurface(_ surface: AgentWorkSurface) {
+        guard availableWorkSurfaces.contains(surface) else { return }
         let newlyOpened = !workSurfaceVisible || selectedWorkSurface != surface
         selectedWorkSurfaceRaw = surface.rawValue
         workSurfaceVisible = true
@@ -1245,7 +1210,9 @@ struct AgentPane: View {
     }
 
     private func workSurfaceContent() -> some View {
-        ZStack {
+        VStack(spacing:0) {
+            inspectorHeader
+            ZStack {
             AgentChangesPane(model:model)
                 .opacity(selectedWorkSurface == .changes ? 1 : 0)
                 .allowsHitTesting(selectedWorkSurface == .changes)
@@ -1276,6 +1243,8 @@ struct AgentPane: View {
             .opacity(selectedWorkSurface == .knowledge ? 1 : 0)
             .allowsHitTesting(selectedWorkSurface == .knowledge)
             .accessibilityHidden(selectedWorkSurface != .knowledge)
+        }
+            .frame(maxWidth:.infinity,maxHeight:.infinity)
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .background(ForgePalette.canvas)
