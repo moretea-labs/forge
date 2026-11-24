@@ -86,14 +86,9 @@ import {
   defaultLocalAgentRunners,
 } from '../../runtime/shared/runtime-config';
 import { taskWriteScopesConflict } from '../controller/execution-policy';
-import {
-  applyCompletionDecision,
-  completionDecisionQueues,
-  finishCompletionBacklog,
-  inspectCompletionBacklog,
-} from '../controller/completion-backlog';
+import { completionDecisionQueues, inspectCompletionBacklog } from '../controller/completion-backlog';
+import { inspectStuckControllerStates } from '../controller/stuck-state-migration';
 import { finishEditSession, finishTaskRun } from '../controller/completion-orchestrator';
-import { applyStuckStateMigration, inspectStuckControllerStates } from '../controller/stuck-state-migration';
 import { getToolPolicy } from '../../runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
 import { createMcpToolContext as createControllerMcpToolContext } from '../../../adapters/mcp/server';
@@ -2117,84 +2112,6 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
         return;
       }
       response.status(400).json({ error: message });
-    }
-  });
-  app.get('/api/completion/backlog', (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const limit = Number(request.query.limit);
-      response.json(inspectCompletionBacklog(repoRoot, { limit: Number.isFinite(limit) ? limit : 100 }));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get('/api/completion/queues', (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const limit = Number(request.query.limit);
-      response.json(completionDecisionQueues(repoRoot, { limit: Number.isFinite(limit) ? limit : 100 }));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post('/api/completion/finish-ready-runs', (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const result = finishCompletionBacklog(repoRoot, {
-        dryRun: request.body?.apply !== true,
-        limit: typeof request.body?.limit === 'number' ? request.body.limit : undefined,
-        commit: request.body?.commit !== false,
-        cleanup: request.body?.keepWorktree !== true,
-        reviewer: queryString(request.body?.reviewer) ?? 'local-bridge-completion',
-      });
-      localSnapshotCache.delete(repoRoot);
-      response.json(result);
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post('/api/completion/decision', (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const result = applyCompletionDecision(repoRoot, {
-        action: String(request.body?.action ?? '').replace(/-/g, '_') as never,
-        runId: queryString(request.body?.runId) ?? queryString(request.body?.run_id),
-        issueId: queryString(request.body?.issueId) ?? queryString(request.body?.issue_id),
-        taskId: queryString(request.body?.taskId) ?? queryString(request.body?.task_id),
-        reviewer: queryString(request.body?.reviewer) ?? 'local-bridge-completion',
-        note: queryString(request.body?.note),
-        commit: request.body?.commit !== false,
-        cleanup: request.body?.keepWorktree !== true,
-      });
-      localSnapshotCache.delete(repoRoot);
-      response.json(result);
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get('/api/completion/stuck', (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const limit = Number(request.query.limit);
-      response.json(inspectStuckControllerStates(repoRoot, { limit: Number.isFinite(limit) ? limit : 100 }));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post('/api/completion/stuck/migrate', (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const result = applyStuckStateMigration(repoRoot, {
-        dryRun: request.body?.apply !== true,
-        limit: typeof request.body?.limit === 'number' ? request.body.limit : undefined,
-        reviewer: queryString(request.body?.reviewer) ?? 'local-bridge-stuck-migration',
-        markRetryRequired: request.body?.markRetryRequired === true,
-        markNoRunEvidence: request.body?.markNoRunEvidence === true,
-      });
-      localSnapshotCache.delete(repoRoot);
-      response.json(result);
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
     }
   });
   app.get('/api/stream', (request, response) => {

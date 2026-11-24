@@ -428,6 +428,18 @@ describe('runtime command surface', () => {
     expect(localBridgeServer).not.toContain('scheduleControllerServiceRestart');
     expect(localBridgeServer).not.toContain('RUNTIME_LIFECYCLE_ACTION_RETIRED');
     expect(localBridgeServer).not.toContain('detached coordinator owns the full stack restart');
+    for (const retiredCompletionRoute of [
+      '/api/completion/backlog',
+      '/api/completion/queues',
+      '/api/completion/finish-ready-runs',
+      '/api/completion/decision',
+      '/api/completion/stuck',
+      '/api/completion/stuck/migrate',
+      '/api/controller/codex-continuation',
+    ]) {
+      expect(localBridgeServer).not.toContain(retiredCompletionRoute);
+    }
+
     expect(existsSync(join(ROOT, 'src/runtime/execution/jobs/restart-resume.ts'))).toBe(false);
     expect(executionWorker).not.toContain('runtimeToolArgumentsForExecutionJob');
     expect(executionWorker).not.toContain('jobs/restart-resume');
