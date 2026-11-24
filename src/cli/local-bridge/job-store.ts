@@ -28,7 +28,6 @@ import {
   readLocalBridgeJob,
   readStoredJobs,
 } from '../../runtime/local-bridge/read-model';
-import type { LocalBridgeJobOutputResult } from '../../runtime/local-bridge/read-model';
 import {
   projectedExecutionJobId,
   reconcileLocalBridgeJobs as reconcileLocalBridgeJobsInRuntime,
@@ -428,22 +427,6 @@ function refreshLocalBridgeJob(repoRoot: string, job: LocalBridgeJob, checkRevis
 
 export function getLocalBridgeJob(repoRoot: string, jobId: string): LocalBridgeJob {
   return refreshLocalBridgeJob(repoRoot, readLocalBridgeJob(repoRoot, jobId));
-}
-
-export interface LocalBridgeJobHandoff {
-  jobId: string;
-  status: LocalBridgeJob['status'] | 'not_found' | 'rejected';
-  stdoutPath?: string;
-  stderrPath?: string;
-  stdout?: string;
-  stderr?: string;
-  outputStatus?: {
-    stdout: LocalBridgeJobOutputResult['status'];
-    stderr: LocalBridgeJobOutputResult['status'];
-  };
-  changedPaths?: string[];
-  nextLocalCommand?: string;
-  error?: { code: string; message: string };
 }
 
 export function listLocalBridgeJobs(repoRoot: string, limit = 100): LocalBridgeJob[] {
