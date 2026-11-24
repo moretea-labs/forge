@@ -419,9 +419,14 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       ...providerState,
       heartbeat: { ...providerState.heartbeat, conversations: remaining },
     });
-    if (remaining.some((entry) => entry.conversationId === identity.conversationId)) {
+    const remainingOwnedExact = remaining.filter((entry) => entry.conversationId === identity.conversationId
+      && Boolean(entry.providerBinding?.ownerToken));
+    if (remainingOwnedExact.length > 0) {
       return failure('COMPUTER_CHATGPT_EXTENSION_REFRESH_EXACT_TARGET_AMBIGUOUS', { retryable: false, failoverSafe: false });
     }
+    // Unbound exact URLs are page identity, not ownership. Re-enter Ensure with
+    // no durable binding so the extension creates a fresh attested tab instead
+    // of borrowing or closing any restored/user tab that remains visible.
     return await this.ensureExact(identity, { createIfMissing: true }, false);
   }
 
@@ -482,6 +487,12 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     // is from the same pinned provider/profile (or the sole live provider when
     // no durable binding exists). Never use focus/current-tab as authority.
     const ownedExact = exact.filter(({ entry }) => Boolean(entry.providerBinding?.ownerToken));
+    const firstEnsureNeedsOwnedAllocation = exact.length > 0
+      && !binding
+      && ownedExact.length === 0
+      && fresh.length === 1
+      && options.createIfMissing !== false;
+    if (firstEnsureNeedsOwnedAllocation) candidates = [];
     if (exact.length > 1 && !binding?.ownerToken) {
       const candidate = ownedExact.length === 1 ? ownedExact[0] : undefined;
       const samePinnedProvider = Boolean(candidate && binding?.providerId === PROVIDER_ID
@@ -499,12 +510,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     // owner token. The extension's resolveTarget intentionally ignores all such
     // unbound tabs and creates/attests a dedicated tab before returning. Read-only
     // Observe, multiple providers, or any competing owned tab remain fail-closed.
-    const allowFreshOwnedAllocation = exact.length > 1
-      && candidates.length !== 1
-      && !binding
-      && ownedExact.length === 0
-      && fresh.length === 1
-      && options.createIfMissing !== false;
+    const allowFreshOwnedAllocation = firstEnsureNeedsOwnedAllocation;
     // A stale binding must not turn two observed exact tabs into a third tab.
     if (exact.length > 1 && candidates.length !== 1 && !allowFreshOwnedAllocation) {
       return failure('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS', { failoverSafe: false });
