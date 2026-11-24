@@ -1,8 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import {
-  normalizeCheckIds,
-  classifyVerificationOutcome,
-} from '../../src/runtime/control-plane/facade/check-normalization';
+import { normalizeCheckIds } from '../../src/runtime/control-plane/facade/check-normalization';
 import {
   getCoreCapabilityExecutionSchema,
   listCapabilityDescriptors,
@@ -978,15 +975,8 @@ describe('handoff and facade contracts', () => {
     expect(normalized.validCheckIds).toEqual(['package:check:type', 'package:test']);
     expect(normalized.invalidCheckIds).toEqual(['docs']);
     expect(normalized.warnings[0]).toContain('invalid_check_id');
-  });
-
-  test('classifies invalid check id as non-acceptance failure', () => {
-    const classified = classifyVerificationOutcome({
-      checkId: 'docs',
-      available: [{ id: 'package:check:type' }],
-    });
-    expect(classified.outcome).toBe('invalid_check_id');
-    expect(classified.isAcceptanceFailure).toBe(false);
+    expect(normalized.warnings[0]).toContain('not an actual check failure');
+    expect(normalized.suggestedNextActions).toEqual([]);
   });
 });
 
