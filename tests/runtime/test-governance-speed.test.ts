@@ -11,7 +11,7 @@ import {
   testInputPaths,
   workspaceMutationDigest,
 } from '../../scripts/testing/test-governance';
-import { gateDefinitionDigest, stepsFor } from '../../scripts/run-governed-gate';
+import { gateContentDigest, gateDefinitionDigest, stepsFor } from '../../scripts/run-governed-gate';
 import { runCandidateModuleBoundaries } from '../../scripts/check-candidate-module-boundaries';
 import {
   committedSourceCandidate,
@@ -182,13 +182,37 @@ describe('execution-speed test governance', () => {
     }
   });
 
-  test('governed gate does not rescan whole Git delta after each step, but checks final candidate before caching', () => {
+  test('governed gate checks one candidate identity before caching without rescanning after every step', () => {
     const source = readFileSync(join(ROOT, 'scripts/run-governed-gate.ts'), 'utf8');
     expect(source).not.toContain('workspaceMutationDigest');
-    expect(source).toContain('if (testContentDigest(ROOT) !== contentDigest)');
-    expect(source.indexOf('if (testContentDigest(ROOT) !== contentDigest)')).toBeLessThan(
+    expect(source).toContain('if (gateContentDigest() !== contentDigest)');
+    expect(source.indexOf('if (gateContentDigest() !== contentDigest)')).toBeLessThan(
       source.indexOf('atomicJson(cachePath, {'),
     );
+  });
+
+  test('committed Gate content identity ignores unrelated Writer dirty and follows the exact candidate tree', () => {
+    const repo = temporaryRepository();
+    try {
+      const candidate = git(repo, 'rev-parse', 'HEAD');
+      const env = {
+        ...process.env,
+        FORGE_CHECK_SOURCE_QUALITY_MODE: 'committed',
+        FORGE_CHECK_CANDIDATE_SHA: candidate,
+      };
+      const committed = gateContentDigest(repo, env);
+      writeFileSync(join(repo, 'src/unrelated.ts'), 'export const unrelated = 42;\n');
+      writeFileSync(join(repo, 'untracked.txt'), 'other Writer\n');
+      expect(gateContentDigest(repo, env)).toBe(committed);
+
+      git(repo, 'add', 'src/unrelated.ts');
+      git(repo, 'commit', '-qm', 'successor');
+      expect(gateContentDigest(repo, env)).toBe(committed);
+      env.FORGE_CHECK_CANDIDATE_SHA = git(repo, 'rev-parse', 'HEAD');
+      expect(gateContentDigest(repo, env)).not.toBe(committed);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   test('checks committed blobs despite concurrent dirty files, but rejects committed bad formatting', () => {

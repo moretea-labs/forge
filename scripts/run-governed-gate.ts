@@ -161,6 +161,22 @@ function resolvedGateCommit(ref: string, label: string): string {
   return sha;
 }
 
+export function gateContentDigest(repoRoot = ROOT, env: NodeJS.ProcessEnv = process.env): string {
+  if (env.FORGE_CHECK_SOURCE_QUALITY_MODE?.trim() !== 'committed') return testContentDigest(repoRoot);
+  const candidateRef = env.FORGE_CHECK_CANDIDATE_SHA?.trim();
+  if (!candidateRef) throw new Error('GATE_COMMITTED_CANDIDATE_REQUIRED');
+  const result = spawnSync('git', ['rev-parse', '--verify', '--end-of-options', candidateRef + '^{tree}'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout: 3_000,
+  });
+  const tree = result.stdout?.trim() ?? '';
+  if (result.error || result.status !== 0 || !/^[0-9a-f]{40,64}$/.test(tree)) {
+    throw new Error('GATE_COMMITTED_CANDIDATE_UNRESOLVED');
+  }
+  return createHash('sha256').update(`forge-gate-content-git-tree-v1\n${tree}`).digest('hex');
+}
+
 function gateCandidateIdentity(): unknown {
   return {
     // Resolve Git refs: origin/main's name alone does not bind its moving SHA.
@@ -248,7 +264,7 @@ async function runGate(gate: Gate, contentDigest: string): Promise<number> {
   // A different Writer may change unrelated files between steps. Do not
   // repeatedly scan and veto the entire Git delta after every command.
   // Only cache a full Gate result if its input candidate is still identical.
-  if (testContentDigest(ROOT) !== contentDigest) {
+  if (gateContentDigest() !== contentDigest) {
     console.error(`[gate:${gate}] candidate content changed; run checks against the current candidate`);
     return 1;
   }
@@ -273,14 +289,14 @@ export async function main(args = process.argv.slice(2)): Promise<number> {
   const gate = args[0] as Gate;
   if (!['task', 'main', 'release'].includes(gate)) throw new Error('expected gate: task, main, or release');
   const definitionDigest = gateDefinitionDigest(gate);
-  const contentDigest = testContentDigest(ROOT);
+  const contentDigest = gateContentDigest();
   const status = await runGate(gate, contentDigest);
   if (status !== 0) return status;
   if (gateDefinitionDigest(gate) !== definitionDigest) {
     console.error(`[gate:${gate}] Git candidate/baseline moved before completion; current candidate requires checks`);
     return 1;
   }
-  if (testContentDigest(ROOT) !== contentDigest) {
+  if (gateContentDigest() !== contentDigest) {
     console.error(`[gate:${gate}] candidate content changed; current candidate requires checks`);
     return 1;
   }
