@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { MCP_TRUNCATED_TEXT_MESSAGE, refreshMcpTextMirror } from '../../adapters/mcp/response-text';
+import {
+  MCP_TRUNCATED_TEXT_MESSAGE,
+  budgetMcpTextMirror,
+  refreshMcpTextMirror,
+} from '../../adapters/mcp/response-text';
 import { createServer, type ServerResponse } from 'http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -83,6 +87,36 @@ describe('MCP text-channel response budget', () => {
     expect(JSON.parse(mirror)).toEqual({ ...summary, ...cognition, ...gateway });
     expect(Buffer.byteLength(mirror)).toBeLessThan(1024);
     expect(structured.stdout.length).toBe(65536);
+  });
+
+  test('bounds oversized successful text mirrors while preserving structuredContent authority fields', () => {
+    const structured = {
+      repoId: 'repo-test',
+      process: { processId: 'proc-test', status: 'succeeded' },
+      stdout: 'x'.repeat(64 * 1024),
+      responseMeta: { traceId: 'trace-test' },
+    };
+    const full = JSON.stringify(structured);
+    const mirror = budgetMcpTextMirror(full, structured);
+    expect(Buffer.byteLength(mirror, 'utf8')).toBeLessThan(1024);
+    expect(JSON.parse(mirror)).toMatchObject({
+      repoId: 'repo-test',
+      processId: 'proc-test',
+      status: 'succeeded',
+      responseMeta: { traceId: 'trace-test' },
+      truncatedTextChannel: true,
+      message: MCP_TRUNCATED_TEXT_MESSAGE,
+    });
+    expect(structured.stdout.length).toBe(64 * 1024);
+  });
+
+  test('keeps small successful mirrors and oversized error mirrors complete', () => {
+    const small = { repoId: 'repo-test', status: 'ok' };
+    expect(budgetMcpTextMirror(JSON.stringify(small), small)).toBe(JSON.stringify(small));
+
+    const error = { error: { code: 'TEST', details: 'x'.repeat(20 * 1024) } };
+    const fullError = JSON.stringify(error);
+    expect(budgetMcpTextMirror(fullError, error, true)).toBe(fullError);
   });
 
   test('keeps ordinary and error text mirrors complete; nested or malformed markers do not trigger truncation', () => {

@@ -8,7 +8,7 @@ import {
   StreamableHTTPClientTransport,
 } from '@modelcontextprotocol/client';
 import { mcpServerInstructions } from './instructions';
-import { refreshMcpTextMirror } from './response-text';
+import { budgetMcpTextMirror, refreshMcpTextMirror } from './response-text';
 import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext } from './tool-mapping/tools';
 import {
   mcpToolDefinitionFromSdk,
@@ -182,7 +182,11 @@ function tracedResult(
       index === 0 && block.type === 'text'
         ? {
             ...block,
-            text: refreshMcpTextMirror(block.text, structuredContent, { responseMeta: structuredContent.responseMeta }),
+            text: budgetMcpTextMirror(
+              refreshMcpTextMirror(block.text, structuredContent, { responseMeta: structuredContent.responseMeta }),
+              structuredContent,
+              value.isError === true,
+            ),
           }
         : block,
     ),
