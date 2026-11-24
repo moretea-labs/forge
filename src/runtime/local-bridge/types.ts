@@ -158,13 +158,3 @@ export interface LocalBridgeJob {
   ephemeral?: boolean;
   cleanupAt?: string;
 }
-
-export interface LocalBridgeConfig {
-  version: 1;
-  host?: string;
-  port?: number;
-  /** Allow only authenticated /mobile/intent requests on a wildcard/LAN bind. */
-  allowLanMobileIntents?: boolean;
-  defaultTimeoutMs?: number;
-  maxTimeoutMs?: number;
-}

@@ -37,7 +37,6 @@ import {
 export { projectAgentRunToLocalBridgeStatus } from '../../runtime/local-bridge/lifecycle';
 import type {
   LocalBridgeApproval,
-  LocalBridgeConfig,
   LocalBridgeJob,
   LocalBridgeJobEvent,
   RepositoryCommandPayload,
@@ -46,7 +45,6 @@ import type {
 } from '../../runtime/local-bridge/types';
 
 const ACTIVE_INDEX_PATH = `${LOCAL_BRIDGE_JOB_ROOT}/active-index.json`;
-const CONFIG_PATH = '.forge/local-bridge.json';
 
 interface LocalBridgeActiveIndex {
   schemaVersion: 1;
@@ -218,30 +216,18 @@ function appendEvent(repoRoot: string, jobId: string, event: Omit<LocalBridgeJob
   });
 }
 
-export function loadLocalBridgeConfig(repoRoot: string): LocalBridgeConfig {
-  const path = join(repoRoot, CONFIG_PATH);
-  if (!existsSync(path)) return { version: 1 };
-  try {
-    const parsed = readJson<LocalBridgeConfig>(path);
-    return { ...parsed, version: 1 };
-  } catch (_error) {
-    return { version: 1 };
-  }
-}
-
 export function localBridgeTimeoutPolicy(repoRoot: string): {
   defaultTimeoutMs: number;
   maxTimeoutMs: number;
 } {
-  const local = loadLocalBridgeConfig(repoRoot);
   const controllerHome = resolveRepoPreferredControllerHome(repoRoot);
   const mcp = loadMcpServiceLocalConfig(controllerHome);
-  const maxTimeoutMs = normalizeAgentTimeoutMs(local.maxTimeoutMs ?? mcp?.devMode?.maxTimeoutMs, {
+  const maxTimeoutMs = normalizeAgentTimeoutMs(mcp?.devMode?.maxTimeoutMs, {
     defaultMs: MAX_AGENT_TIMEOUT_MS,
     maxMs: MAX_AGENT_TIMEOUT_MS,
     label: 'local bridge max timeout',
   });
-  const defaultTimeoutMs = normalizeAgentTimeoutMs(local.defaultTimeoutMs ?? mcp?.devMode?.timeoutMs, {
+  const defaultTimeoutMs = normalizeAgentTimeoutMs(mcp?.devMode?.timeoutMs, {
     defaultMs: DEFAULT_AGENT_TIMEOUT_MS,
     maxMs: maxTimeoutMs,
     label: 'local bridge default timeout',
