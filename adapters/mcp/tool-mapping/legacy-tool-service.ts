@@ -434,12 +434,19 @@ export function buildMcpToolDefinitions(
       {
         name: 'controller_context',
         description:
-          'Return one compact controller start-work context: Git status, current Issue focus, active Runs and Jobs, and available checks.',
+          'Return a lightweight Context Index by default. Request only named sections through sections[]; legacy detail_level=detail remains available for the full diagnostic payload.',
         inputSchema: {
           type: 'object',
           properties: {
             description: { type: 'string' },
             known_paths: { type: 'array', items: { type: 'string' } },
+            detail_level: { type: 'string', enum: ['summary', 'detail'] },
+            sections: {
+              type: 'array',
+              uniqueItems: true,
+              items: { type: 'string', enum: ['git', 'focus', 'taskLedger', 'readiness', 'activeRuns', 'localBridge', 'history', 'checks', 'plugins'] },
+              description: 'Omit for the lightweight Context Index. Request only the named sections to read them on demand; multiple sections are batched without loading unrelated sections.',
+            },
             needs_dependencies: { type: 'boolean' },
             risk: { type: 'string', enum: ['readonly', 'low', 'medium', 'high', 'destructive'] },
           },

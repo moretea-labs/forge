@@ -735,6 +735,213 @@ export async function callRuntimeObservationAdapter(
         const repository = selected(ctx, args);
         markPhase('repositoryRouting', repositoryStartedAt);
         const variant = args.detail_level === 'detail' ? ('detail' as const) : ('summary' as const);
+        const requestedSections = Array.isArray(args.sections)
+          ? [...new Set(args.sections.filter((value): value is string => typeof value === 'string'))]
+          : [];
+        const supportedSections = [
+          'git',
+          'focus',
+          'taskLedger',
+          'readiness',
+          'activeRuns',
+          'localBridge',
+          'history',
+          'checks',
+          'plugins',
+        ] as const;
+        const unknownSections = requestedSections.filter(
+          (section) => !supportedSections.includes(section as (typeof supportedSections)[number]),
+        );
+        if (unknownSections.length > 0) {
+          return result({
+            error: {
+              code: 'CONTROLLER_CONTEXT_UNKNOWN_SECTION',
+              message: `Unsupported Context section(s): ${unknownSections.join(', ')}`,
+              errorClass: 'validation',
+              summary: 'Request only sections advertised by the Context Index.',
+            },
+            supportedSections,
+          }, true);
+        }
+
+        // Default summary is a true Context Index: repository identity and bounded
+        // section pointers only. It deliberately performs no Git sampling, issue
+        // hydration, readiness, plugin, check, or job reads.
+        const usesSectionRead = (): boolean => variant === 'summary' || requestedSections.length > 0;
+        if (usesSectionRead()) {
+          const selectedSections = requestedSections;
+          const sectionPayload: Record<string, unknown> = {};
+          const sectionStartedAt = performance.now();
+          const storageInspection = selectedSections.includes('readiness')
+            ? inspectRepositoryRuntimeStorage(repository, ctx.controllerHome)
+            : undefined;
+          const runtimeSnapshot = selectedSections.includes('readiness')
+            ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId)
+            : undefined;
+
+          if (selectedSections.includes('git')) {
+            sectionPayload.git = gitSnapshot(repository.canonicalRoot);
+          }
+          if (selectedSections.includes('focus') || selectedSections.includes('taskLedger')) {
+            const legacyIssuesRetired = legacyIssueAuthorityRetired(repository.canonicalRoot);
+            const board = legacyIssuesRetired ? undefined : projectBoard(repository.canonicalRoot);
+            if (selectedSections.includes('focus')) {
+              const issue = board?.currentIssueId
+                ? board.issues.find((candidate) => candidate.id === board.currentIssueId)
+                : undefined;
+              sectionPayload.focus = {
+                currentIssueId: board?.currentIssueId,
+                currentIssue: issue
+                  ? {
+                      id: issue.id,
+                      title: issue.title,
+                      status: issue.status,
+                      lifecycleStatus: issue.lifecycleStatus,
+                      updatedAt: issue.updatedAt,
+                    }
+                  : undefined,
+              };
+            }
+            if (selectedSections.includes('taskLedger')) {
+              sectionPayload.taskLedger = buildControllerTaskLedgerProjection(
+                repository.canonicalRoot,
+                board,
+                undefined,
+                { includeRecentEvents: false },
+              );
+            }
+          }
+          if (selectedSections.includes('readiness')) {
+            sectionPayload.readiness = await controllerReadiness(ctx, repository, {}, {
+              projectionSnapshot: runtimeSnapshot!,
+              runtimeStorageInspection: storageInspection!,
+            });
+          }
+          if (selectedSections.includes('activeRuns')) {
+            sectionPayload.activeRuns = listActiveAgentJobSnapshots(repository.canonicalRoot, 20).map((run) => ({
+              runId: run.runId,
+              issueId: run.issueId,
+              taskId: run.taskId,
+              status: run.status,
+              agent: run.agent,
+              provider: run.provider,
+              executionMode: run.executionMode,
+              progress: run.progress,
+              lastHeartbeatAt: run.lastHeartbeatAt,
+              error: run.error,
+            }));
+          }
+          if (selectedSections.includes('localBridge')) {
+            const jobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 12);
+            sectionPayload.localBridge = {
+              activeCount: jobs.filter((job) => ['approved', 'running', 'dispatched'].includes(job.status)).length,
+              recentJobs: jobs.map((job) => ({
+                jobId: job.jobId,
+                action: job.action,
+                status: job.status,
+                runId: job.runId,
+                issueId: job.issueId,
+                taskId: job.taskId,
+                createdAt: job.createdAt,
+                updatedAt: job.updatedAt,
+                finishedAt: job.finishedAt,
+                error: job.error?.slice(0, 300),
+              })),
+            };
+          }
+          if (selectedSections.includes('history')) {
+            sectionPayload.history = listExecutionJobs(ctx.controllerHome, repository.repoId, 20).map((job) =>
+              summarizeExecutionJob(job, repository.canonicalRoot),
+            );
+          }
+          if (selectedSections.includes('checks')) {
+            sectionPayload.checks = listControllerChecks(repository.canonicalRoot).map((check) => {
+              const evidence = readLatestControllerCheckEvidence(repository.canonicalRoot, check.id);
+              return {
+                id: check.id,
+                description: check.description,
+                timeoutMs: check.timeoutMs,
+                source: check.source,
+                ...(evidence
+                  ? { lastFailureAt: evidence.ok ? undefined : evidence.executedAt, failed: !evidence.ok }
+                  : {}),
+              };
+            });
+          }
+          if (selectedSections.includes('plugins')) {
+            sectionPayload.plugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
+              preferStored: true,
+              fallbackToLive: false,
+            }).map((plugin) => ({
+              pluginId: plugin.pluginId,
+              provider: plugin.provider,
+              enabled: plugin.enabled,
+              revision: plugin.revision,
+              lifecycle: plugin.lifecycle,
+              health: plugin.health,
+              actionCount: plugin.actions.length,
+              actions: plugin.actions.map((action) => ({
+                actionId: action.actionId,
+                readOnly: action.readOnly,
+                risk: action.risk,
+                confirmation: action.confirmation,
+              })),
+            }));
+          }
+
+          markPhase('build.requested_sections', sectionStartedAt);
+          const runtimeProjection = runtimeSnapshot?.projection;
+          const index = {
+            detailLevel: selectedSections.length > 0 ? 'sections' : 'summary',
+            repoId: repository.repoId,
+            repository: repositorySummary(repository),
+            contextIndex: {
+              schemaVersion: 1,
+              sourceRevision: runtimeProjection
+                ? String(runtimeProjection.metadata?.contentRevision ?? runtimeProjection.revision)
+                : undefined,
+              sections: supportedSections.map((section) => ({
+                id: section,
+                availability: 'available',
+                requested: selectedSections.includes(section),
+              })),
+              detailPointers: Object.fromEntries(
+                supportedSections.map((section) => [
+                  section,
+                  {
+                    tool: 'controller_context',
+                    arguments: { repo_id: repository.repoId, sections: [section] },
+                  },
+                ]),
+              ),
+            },
+            health: {
+              status: selectedSections.includes('readiness') ? 'observed' : 'not_requested',
+              ready: selectedSections.includes('readiness')
+                ? (sectionPayload.readiness as Record<string, unknown> | undefined)?.ready === true
+                : null,
+            },
+            sections: sectionPayload,
+            nonBlocking: true,
+          };
+          const response = withRuntimeResponseMeta(index, responseStartedAt, {
+            phaseTimingsMs,
+            transport: 'runtime-local',
+            sessionId: ctx.sessionId,
+            routing: { repoId: repository.repoId, checkoutId: repository.activeCheckoutId },
+            cacheHit: false,
+            stale: false,
+          });
+          const responseBytes = Buffer.byteLength(JSON.stringify(response), 'utf8');
+          recordControllerContextRead({
+            durationMs: performance.now() - responseStartedAt,
+            cacheHit: false,
+            stale: false,
+            responseBytes,
+            phaseDurationsMs: phaseTimingsMs,
+          });
+          return result(response);
+        }
         // One read-only storage observation shared with readiness/status;
         // a context read never creates or migrates storage.
         const storageInspection = inspectRepositoryRuntimeStorage(repository, ctx.controllerHome);

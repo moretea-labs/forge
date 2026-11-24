@@ -45,16 +45,17 @@ describe('controller hotpath timing integrity', () => {
 
 describe('controller hotpath acceptance', () => {
   const git = { identityCounters: { subprocesses: 1 }, snapshotCounters: { subprocesses: 1 }, snapshotIdentityCounters: { subprocesses: 1 } };
+  const sample = { scale: 0, coldSummaryMs: 2, coldSummaryResponseBytes: 2600, coldSummaryPhaseTimingsMs: { repositoryRouting: 0.1 }, hotP95Ms: 20, maxSummaryBytes: 6400 };
 
   test('passes valid samples within actual thresholds', () => {
-    expect(controllerHotpathAcceptance([{ scale: 0, hotP95Ms: 20, maxSummaryBytes: 6400 }], git)).toMatchObject({ passed: true, failures: [] });
+    expect(controllerHotpathAcceptance([sample], git)).toMatchObject({ passed: true, failures: [] });
   });
 
   test('rejects a slow sample, oversized response, excessive subprocesses and missing scale data', () => {
-    const failed = controllerHotpathAcceptance([{ scale: 25, hotP95Ms: 101, maxSummaryBytes: 32769 }], { ...git, identityCounters: { subprocesses: 2 } });
+    const failed = controllerHotpathAcceptance([{ ...sample, scale: 25, coldSummaryMs: 26, coldSummaryResponseBytes: 9000, coldSummaryPhaseTimingsMs: { gitIdentity: 12 }, hotP95Ms: 101, maxSummaryBytes: 32769 }], { ...git, identityCounters: { subprocesses: 2 } });
     expect(failed.passed).toBe(false);
-    expect(failed.failures).toHaveLength(3);
+    expect(failed.failures.length).toBeGreaterThanOrEqual(6);
     expect(controllerHotpathAcceptance([], git).passed).toBe(false);
-    expect(controllerHotpathAcceptance([{ scale: 0, hotP95Ms: Number.NaN, maxSummaryBytes: 2 }], git).passed).toBe(false);
+    expect(controllerHotpathAcceptance([{ ...sample, hotP95Ms: Number.NaN }], git).passed).toBe(false);
   });
 });

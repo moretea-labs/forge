@@ -122,6 +122,20 @@ async function benchmarkScale(scale: number): Promise<Record<string, unknown>> {
     }) as unknown as MultiRepositoryMcpToolContext;
 
     const coldSummary = duration(await callRuntimeTool(ctx, 'controller_context', { repo_id: repository.repoId }));
+    const sectionReadResult = await callRuntimeTool(ctx, 'controller_context', {
+      repo_id: repository.repoId,
+      sections: ['git', 'focus'],
+    });
+    const sectionRead = duration(sectionReadResult);
+    const sectionValue = (sectionReadResult?.structuredContent
+      ?? JSON.parse(sectionReadResult?.content?.[0]?.text ?? '{}')) as Record<string, unknown>;
+    const returnedSections = sectionValue.sections && typeof sectionValue.sections === 'object'
+      ? sectionValue.sections as Record<string, unknown>
+      : {};
+    if (sectionValue.detailLevel !== 'sections' || !('git' in returnedSections) || !('focus' in returnedSections)
+      || 'taskLedger' in returnedSections || 'readiness' in returnedSections) {
+      throw new Error('CONTROLLER_CONTEXT_SECTION_SELECTION_FAILED: requested sections were not isolated');
+    }
     const coldResult = await callRuntimeTool(ctx, 'controller_context', { repo_id: repository.repoId, detail_level: 'detail' });
     const cold = duration(coldResult!);
     const samples: number[] = [];
@@ -140,6 +154,8 @@ async function benchmarkScale(scale: number): Promise<Record<string, unknown>> {
       coldSummaryMs: coldSummary.ms,
       coldSummaryPhaseTimingsMs: coldSummary.phaseTimingsMs,
       coldSummaryResponseBytes: coldSummary.bytes,
+      requestedSectionReadMs: sectionRead.ms,
+      requestedSectionResponseBytes: sectionRead.bytes,
       coldMs: cold.ms,
       coldPhaseTimingsMs: cold.phaseTimingsMs,
       coldResponseBytes: cold.bytes,
@@ -194,10 +210,15 @@ function benchmarkGitSampling(): Record<string, unknown> {
   }
 }
 
-export function controllerHotpathAcceptance(scales: Array<{ scale: number; hotP95Ms: number; maxSummaryBytes: number }>, gitSampling: { identityCounters: { subprocesses: number }; snapshotCounters: { subprocesses: number }; snapshotIdentityCounters: { subprocesses: number } }) {
-  const thresholds = { warmP95Ms: 100, maxSummaryBytes: 32 * 1024, identitySubprocessesPerSample: 1, snapshotUniqueSubprocesses: 2 };
+export function controllerHotpathAcceptance(scales: Array<{ scale: number; coldSummaryMs: number; coldSummaryResponseBytes: number; coldSummaryPhaseTimingsMs: Record<string, number>; hotP95Ms: number; maxSummaryBytes: number }>, gitSampling: { identityCounters: { subprocesses: number }; snapshotCounters: { subprocesses: number }; snapshotIdentityCounters: { subprocesses: number } }) {
+  const thresholds = { coldSummaryMs: 25, maxColdSummaryBytes: 8 * 1024, warmP95Ms: 100, maxSummaryBytes: 32 * 1024, identitySubprocessesPerSample: 1, snapshotUniqueSubprocesses: 2 };
+  const forbiddenSummaryPhases = ['gitIdentity', 'build.task_board', 'build.task_ledger', 'build.readiness', 'build.git', 'build.jobs', 'build.checks', 'build.plugins'];
   const failures: string[] = [];
   for (const scale of scales) {
+    if (!Number.isFinite(scale.coldSummaryMs) || scale.coldSummaryMs < 0 || scale.coldSummaryMs > thresholds.coldSummaryMs) failures.push(`scale=${scale.scale}: coldSummaryMs=${scale.coldSummaryMs}`);
+    if (!Number.isFinite(scale.coldSummaryResponseBytes) || scale.coldSummaryResponseBytes < 1 || scale.coldSummaryResponseBytes > thresholds.maxColdSummaryBytes) failures.push(`scale=${scale.scale}: coldSummaryResponseBytes=${scale.coldSummaryResponseBytes}`);
+    const eagerPhases = forbiddenSummaryPhases.filter((phase) => Object.hasOwn(scale.coldSummaryPhaseTimingsMs, phase));
+    if (eagerPhases.length) failures.push(`scale=${scale.scale}: summary eagerly executed ${eagerPhases.join(', ')}`);
     if (!Number.isFinite(scale.hotP95Ms) || scale.hotP95Ms < 0 || scale.hotP95Ms > thresholds.warmP95Ms) failures.push(`scale=${scale.scale}: hotP95Ms=${scale.hotP95Ms}`);
     if (!Number.isFinite(scale.maxSummaryBytes) || scale.maxSummaryBytes < 1 || scale.maxSummaryBytes > thresholds.maxSummaryBytes) failures.push(`scale=${scale.scale}: maxSummaryBytes=${scale.maxSummaryBytes}`);
   }
@@ -220,7 +241,7 @@ async function main(): Promise<void> {
     gitInit(repoRoot);
     const ctx = createMcpToolContext({ repo: repoRoot, profile: 'controller', controllerHome }) as MultiRepositoryMcpToolContext;
     const exposedTools = exposedControllerToolDefinitions(ctx).length;
-    const acceptance = controllerHotpathAcceptance(scaleResults as Array<{ scale: number; hotP95Ms: number; maxSummaryBytes: number }>, gitSampling as { identityCounters: { subprocesses: number }; snapshotCounters: { subprocesses: number }; snapshotIdentityCounters: { subprocesses: number } });
+    const acceptance = controllerHotpathAcceptance(scaleResults as Array<{ scale: number; coldSummaryMs: number; coldSummaryResponseBytes: number; coldSummaryPhaseTimingsMs: Record<string, number>; hotP95Ms: number; maxSummaryBytes: number }>, gitSampling as { identityCounters: { subprocesses: number }; snapshotCounters: { subprocesses: number }; snapshotIdentityCounters: { subprocesses: number } });
     console.log(JSON.stringify({
       benchmark: 'controller-hotpath',
       hotReads: HOT_READS,

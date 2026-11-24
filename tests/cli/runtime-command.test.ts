@@ -345,6 +345,12 @@ describe('runtime command surface', () => {
     const contextHandlerStart = runtimeObservation.indexOf("case 'controller_context':");
     const contextHandlerEnd = runtimeObservation.indexOf("case 'controller_ready':", contextHandlerStart);
     const contextHandlerBlock = runtimeObservation.slice(contextHandlerStart, contextHandlerEnd);
+    expect(contextHandlerBlock).toContain('requestedSections');
+    expect(contextHandlerBlock.indexOf('if (usesSectionRead)')).toBeLessThan(
+      contextHandlerBlock.indexOf('cachedGitIdentity('),
+    );
+    expect(contextHandlerBlock).toContain('CONTROLLER_CONTEXT_UNKNOWN_SECTION');
+    expect(contextHandlerBlock).toContain("status: selectedSections.includes('readiness') ? 'observed' : 'not_requested'");
     expect(contextHandlerBlock).toMatch(/await controllerReadiness\(\s*ctx,\s*repository,\s*\{\},\s*\{/s);
     expect(contextHandlerBlock).toContain('taskLedger,');
     expect(contextHandlerBlock).toContain('projectionSnapshot: runtimeSnapshot');
