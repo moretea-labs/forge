@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'crypto';
+import { createHash } from 'crypto';
 import { existsSync, opendirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import {
@@ -21,7 +21,7 @@ import {
   type ExecutionJob,
   type ExecutionJobStatus,
 } from './types';
-import { deadlineAfter, normalizeExecutionTimeoutPolicy } from './timeouts';
+import { deadlineAfter } from './timeouts';
 
 interface ActiveJobIndex {
   schemaVersion: 1;
