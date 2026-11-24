@@ -306,7 +306,7 @@ export function boundExecutionResult(
           artifactId: artifact.artifactId,
           maxBytes,
         },
-        next: `Call get_artifact with artifact_id=${artifact.artifactId} (ART-..., not EVD-...).`,
+        next: `Call get_artifact with artifact_id=${artifact.artifactId}.`,
       },
     };
   }
@@ -329,7 +329,7 @@ export function boundExecutionResult(
         artifactId: artifact.artifactId,
         maxBytes,
       },
-      next: `Call get_artifact with artifact_id=${artifact.artifactId} (ART-..., not EVD-...).`,
+      next: `Call get_artifact with artifact_id=${artifact.artifactId}.`,
     },
   };
 }

@@ -43,7 +43,6 @@ import {
   processRuntimeResourceDiagnostics,
 } from '../../../src/runtime/execution/process-runtime';
 import { readExecutionArtifact } from '../../../src/runtime/evidence/artifact-store';
-import { readExecutionEvidence } from '../../../src/runtime/evidence/evidence-store';
 import { readForgeRuntimeStatus } from '../../../src/runtime/control-plane/runtime-status-client';
 import { readSchedulerHealthSnapshot } from '../../../src/runtime/control-plane/global-scheduler/scheduler';
 import {
@@ -1186,14 +1185,12 @@ export async function callRuntimeObservationAdapter(
             changedFiles: jobSummary.changedFiles,
             suggestedNextActions: jobSummary.suggestedNextActions,
             artifactRefs: jobSummary.artifactRefs,
-            evidenceIds: jobSummary.evidenceIds,
-            evidenceRefs: jobSummary.evidenceRefs,
             waited: args.wait === true || typeof args.wait_ms === 'number',
             timedOut,
             waitedMs,
             ...(args.include_events === true ? { events: summarizeJobEvents(ctx, job.repoId, job.jobId) } : {}),
             next: full
-              ? 'Raw job state is intentionally not returned through MCP. Use the bounded job summary, events, and get_artifact with artifactId (ART-...), not evidenceId (EVD-...).'
+              ? 'Raw job state is intentionally not returned through MCP. Use the bounded job summary, events, and get_artifact with artifactId (ART-...).'
               : jobSummary.terminal
                 ? String(jobSummary.summary ?? '')
                 : 'Historical Job is still active. Continue independent work; read it only if an observation can change the next decision, and join only the exact underlying managed process when this result becomes a dependency. Do not periodically poll.',
@@ -1205,30 +1202,12 @@ export async function callRuntimeObservationAdapter(
         const artifactId = String(args.artifact_id ?? '').trim();
         const legacyArtifactRepoId = String(args.repo_id ?? '').trim() || undefined;
         const artifactPrincipalId = ctx.principalId?.trim() || '__anonymous__';
-        if (artifactId.startsWith('EVD-')) {
-          const evidence = readExecutionEvidence(ctx.controllerHome, artifactId, {
-            legacyRepoId: legacyArtifactRepoId,
-            principalId: artifactPrincipalId,
-          });
-          return result({
-            referenceType: 'evidence',
-            evidenceId: evidence.evidenceId,
-            repoId: evidence.repoId,
-            jobId: evidence.jobId,
-            outcome: evidence.outcome,
-            operation: evidence.operation,
-            revision: evidence.revision,
-            executedAt: evidence.executedAt,
-            note: 'This is an evidenceId (EVD-...), not an artifactId (ART-...). Evidence holds audit metadata; command output lives under artifactRefs/artifactId.',
-            next: `For output content, call get_job with job_id=${evidence.jobId} and use artifactRefs.artifactId, then get_artifact with that ART-... id.`,
-          });
-        }
         if (!artifactId.startsWith('ART-') && artifactId) {
           return result(
             {
               error: {
                 code: 'ARTIFACT_ID_EXPECTED',
-                message: `Expected artifactId starting with ART- (got ${artifactId.slice(0, 40)}). evidenceId (EVD-...) is audit metadata; use get_job artifactRefs for content.`,
+                message: `Expected artifactId starting with ART- (got ${artifactId.slice(0, 40)}).`,
               },
               referenceType: 'unknown',
               next: 'Call get_job, read artifactRefs[].artifactId (ART-...), then get_artifact with that id. repo_id is only a legacy adoption hint.',

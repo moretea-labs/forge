@@ -921,7 +921,6 @@ const required = [
   'docs/architecture/CURRENT.md',
   'src/runtime/resources/leases/store.ts',
   'src/runtime/evidence/event-ledger.ts',
-  'src/runtime/evidence/evidence-store.ts',
   'src/runtime/evidence/artifact-store.ts',
   'src/runtime/projections/materialized-view.ts',
   'src/runtime/projections/task-ledger-types.ts',

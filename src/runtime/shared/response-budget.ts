@@ -234,20 +234,3 @@ export function artifactRef(input: {
     next: `Call get_artifact with artifact_id=${input.artifactId}.`,
   };
 }
-
-export function evidenceRef(input: {
-  evidenceId: string;
-  repoId?: string;
-  jobId?: string;
-}): Record<string, unknown> {
-  return {
-    referenceType: 'evidence',
-    evidenceId: input.evidenceId,
-    ...(input.repoId ? { repoId: input.repoId } : {}),
-    ...(input.jobId ? { jobId: input.jobId } : {}),
-    note: 'evidenceId is not an artifactId. Use evidenceIds for audit; use artifactRefs/artifactId for command output.',
-    next: input.repoId
-      ? `Evidence metadata is available via job summary evidenceIds. For output content call get_artifact with an artifactId (ART-...), not ${input.evidenceId}.`
-      : 'Evidence metadata is available via job summary evidenceIds. For output content use artifactId (ART-...).',
-  };
-}

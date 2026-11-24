@@ -8,7 +8,7 @@ export const OUTPUT_HANDLE_INDEX_NAMESPACE = 'output_handle_index';
 const OUTPUT_HANDLE_INDEX_SCOPE = 'instance';
 const OUTPUT_HANDLE_INDEX_SCHEMA_VERSION = 1;
 
-export type OutputHandleKind = 'result' | 'artifact' | 'evidence';
+export type OutputHandleKind = 'result' | 'artifact';
 export type OutputHandleStorage = { scope: 'instance' } | { scope: 'legacy_repository'; repositoryId: string };
 
 export interface OutputHandleIndexEntry {

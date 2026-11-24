@@ -13,7 +13,6 @@ import {
   artifactRef,
   boundText,
   compactErrorMessage,
-  evidenceRef,
   RESPONSE_BUDGET,
 } from '../shared/response-budget';
 
@@ -201,12 +200,6 @@ export function summarizeExecutionJobForMcp(job: ExecutionJob, repoRoot: string 
     repoId: job.repoId,
     jobId: job.jobId,
   }));
-  const evidenceIds = job.evidenceIds.slice(-8);
-  const evidenceRefs = evidenceIds.map((evidenceId) => evidenceRef({
-    evidenceId,
-    repoId: job.repoId,
-    jobId: job.jobId,
-  }));
   const errorDetailsAvailable = job.error?.details !== undefined;
   const rawDigest = enrichDelegatedDigest(job, buildJobOperationDigest(job), repoRoot);
   // Compact digest: drop nested suggested actions duplication; top-level keeps them once.
@@ -269,21 +262,15 @@ export function summarizeExecutionJobForMcp(job: ExecutionJob, repoRoot: string 
     finishedAt: job.finishedAt,
     attempt: job.attempt,
     maxAttempts: job.maxAttempts,
-    evidenceCount: job.evidenceIds.length,
-    evidenceIds,
-    evidenceRefs,
-    evidenceIdsTruncated: job.evidenceIds.length > evidenceIds.length,
     ...(artifactRefs.length ? { artifactRefs } : {}),
     detailPointers: {
       includeEvents: `Call get_job with job_id=${job.jobId} and include_events=true for bounded event previews.`,
       ...(artifactRefs.length
         ? {
           artifacts: artifactRefs,
-          note: 'Use artifactId (ART-...) with get_artifact. evidenceId (EVD-...) is audit metadata, not artifact content.',
         }
         : {}),
-      evidenceIds,
-      rawJobStateReturned: false,
+        rawJobStateReturned: false,
     },
     outcome: job.outcome?.infrastructureError ? {
       infrastructureError: {
@@ -343,7 +330,6 @@ export function summarizeJobResultForLowInterception(job: ExecutionJob): SafeJob
     } : undefined,
     resultAvailable: job.result !== undefined,
     ...(resultPreview ? { resultPreview } : {}),
-    evidenceIds: [...job.evidenceIds],
     ...(artifactRefs.length ? { artifactRefs, detailPointers: { artifacts: artifactRefs, rawJobStateReturned: false } } : {}),
     redaction: {
       rawStdoutReturned: false,
