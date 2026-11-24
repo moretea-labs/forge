@@ -41,6 +41,15 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
       AgentConversationToolbarContract.requiredActionIdentifiers.contains("agent.changes"))
   }
 
+  func testCapabilityExtensionSlotsKeepStableBackendIndependentIdentity() {
+    XCTAssertEqual(
+      AgentCapabilityExtension.allCases.map(\.rawValue),
+      ["skills", "mcp", "agents", "commands", "hooks"])
+    XCTAssertEqual(
+      AgentCapabilityExtension.allCases.map(\.title),
+      ["Skills", "MCP / 外部工具", "Agents", "Commands", "Hooks"])
+  }
+
   func testInspectorReopensLastAvailableTabAndFallsBackWhenContextChanges() {
     let all = AgentWorkSurface.availableTabs(
       hasCheckout: true, hasProject: true, hasRepository: true)
