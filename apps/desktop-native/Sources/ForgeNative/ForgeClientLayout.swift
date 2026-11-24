@@ -14,19 +14,11 @@ extension ForgeClientDesign.Shell {
     let width = min(readingColumn, max(0, conversationWidth - 2 * readingGutter))
     return width - 2 * composerControlInset < 564
   }
-  /// Compact windows can reclaim up to 24pt from the list while keeping the icon rail unchanged.
-  static let compactSidebarListMin: CGFloat = 152
-  static let compactSidebarListIdeal: CGFloat = 176
 
-  /// Keep navigation usable on compact windows without reserving desktop-width space.
-  /// The compact list grows continuously from 152pt to 176pt, avoiding a resize breakpoint jump.
+  /// A labeled 52pt rail and 176pt list remain readable at compact widths.
+  /// The shell grows continuously to its 288pt desktop cap without breakpoint jumps.
   static func sidebarWidth(windowWidth: CGFloat) -> CGFloat {
-    let compactList = min(
-      compactSidebarListIdeal,
-      max(compactSidebarListMin, windowWidth * 0.28 - iconRailWidth)
-    )
-    let compactFloor = iconRailWidth + compactList
-    return min(sidebarIdeal, max(compactFloor, windowWidth * 0.21))
+    min(sidebarIdeal, max(sidebarMin, windowWidth * 0.21))
   }
 }
 

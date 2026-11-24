@@ -6,12 +6,13 @@ import XCTest
 
 final class ForgeClientLayoutTests: XCTestCase {
   func testCompactWindowsReclaimSidebarWidthWithoutCollapsingNavigation() {
-    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 720), 201.6, accuracy: 0.001)
-    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 800), 218)
-    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 860), 218)
+    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 720), 228)
+    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 800), 228)
+    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 860), 228)
     XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1100), 231)
     XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1260), 264.6, accuracy: 0.001)
-    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1800), 266)
+    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1440), 288)
+    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1800), 288)
   }
 
   func testSidebarWidthStaysWithinExistingDesignBounds() {
@@ -20,15 +21,15 @@ final class ForgeClientLayoutTests: XCTestCase {
     XCTAssertEqual(result, result.sorted())
     XCTAssertTrue(
       result.allSatisfy {
-        $0 >= ForgeClientDesign.Shell.iconRailWidth + ForgeClientDesign.Shell.compactSidebarListMin
+        $0 >= ForgeClientDesign.Shell.sidebarMin
           && $0 <= ForgeClientDesign.Shell.sidebarIdeal
       })
   }
 
   func testSidebarWidthChangesContinuouslyAboveCompactMinimum() {
-    let narrowBefore = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 719)
-    let narrowAfter = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 720)
-    XCTAssertEqual(narrowAfter - narrowBefore, 0.28, accuracy: 0.001)
+    let narrowBefore = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1087)
+    let narrowAfter = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1088)
+    XCTAssertEqual(narrowAfter - narrowBefore, 0.21, accuracy: 0.001)
 
     let before = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1259)
     let after = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1260)
@@ -40,7 +41,9 @@ final class ForgeClientLayoutTests: XCTestCase {
     XCTAssertEqual(ForgeClientDesign.Icon.hit, 28)
     XCTAssertEqual(ForgeClientDesign.Icon.railPoint, 14)
     XCTAssertEqual(ForgeClientDesign.Icon.railLabel, 9.5)
-    XCTAssertEqual(ForgeClientDesign.Shell.iconRailWidth, 42)
+    XCTAssertEqual(ForgeClientDesign.Shell.iconRailWidth, 52)
+    XCTAssertEqual(ForgeClientDesign.Shell.sidebarMin, 228)
+    XCTAssertEqual(ForgeClientDesign.Shell.sidebarIdeal, 288)
     XCTAssertEqual(ForgeClientDesign.Shell.destinationRowHeight, 36)
     let glyphs = ForgeSidebarDestination.allCases.map(\.glyph)
     XCTAssertEqual(Set(glyphs).count, glyphs.count)
@@ -89,8 +92,6 @@ final class ForgeClientLayoutTests: XCTestCase {
     XCTAssertEqual(ForgeClientDesign.Shell.workspaceStatusSlotWidth, 28)
     XCTAssertEqual(ForgeClientDesign.Shell.composerTextHeight, 38)
     XCTAssertEqual(ForgeClientDesign.Shell.readingGutter, 18)
-    XCTAssertEqual(ForgeClientDesign.Shell.compactSidebarListMin, 152)
-    XCTAssertEqual(ForgeClientDesign.Shell.compactSidebarListIdeal, 176)
   }
 
   func testDropdownsDoNotRegressToRaisedPopupPickers() throws {

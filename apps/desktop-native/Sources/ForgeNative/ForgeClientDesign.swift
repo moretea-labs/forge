@@ -296,10 +296,10 @@ enum ForgeClientDesign {
   }
   enum Shell {
     /// Narrow left activity rail (会话 / 项目 / 看板), Cursor-like density.
-    static let iconRailWidth: CGFloat = 42
-    static let listMin: CGFloat = 188
-    static let listIdeal: CGFloat = 224
-    static let listMax: CGFloat = 268
+    static let iconRailWidth: CGFloat = 52
+    static let listMin: CGFloat = 176
+    static let listIdeal: CGFloat = 236
+    static let listMax: CGFloat = 236
     static let sidebarMin: CGFloat = iconRailWidth + listMin
     static let sidebarIdeal: CGFloat = iconRailWidth + listIdeal
     static let sidebarMax: CGFloat = iconRailWidth + listMax

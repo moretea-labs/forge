@@ -219,14 +219,20 @@ struct ForgeWorkspaceView: View {
         return Button {
             openSidebarDestination(destination)
         } label: {
-            Image(systemName:destination.railSystemImage)
-                .font(.system(size:ForgeClientDesign.Icon.railPoint,weight:.regular))
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                .frame(width:32,height:32)
-                .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
-                .forgeChromeSurface(selected:selected,cornerRadius:8)
-                .frame(width:34,height:ForgeClientDesign.Shell.destinationRowHeight)
+            VStack(spacing:1) {
+                Image(systemName:destination.railSystemImage)
+                    .forgeRailIcon(active:selected)
+                Text(destination.title)
+                    .font(ForgeClientDesign.Icon.railLabelFont)
+                    .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .fixedSize(horizontal:false,vertical:true)
+            }
+            .frame(width:48,height:ForgeClientDesign.Shell.destinationRowHeight)
+            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+            .forgeChromeSurface(selected:selected,cornerRadius:8)
+            .frame(width:52,height:ForgeClientDesign.Shell.destinationRowHeight)
         }
         .buttonStyle(.plain)
         .help(destination.title)
