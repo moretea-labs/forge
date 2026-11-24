@@ -382,36 +382,6 @@ const WAITING_JOB_STATUSES = new Set<ExecutionJobStatus>([
   'waiting_for_approval',
 ]);
 
-function writeJobState(
-  controllerHome: string,
-  repoId: string,
-  jobId: string,
-  writer: (
-    current: ExecutionJob,
-  ) => { next: ExecutionJob; eventType?: string; eventData?: Record<string, unknown> } | undefined,
-  reason: string,
-): ExecutionJob | undefined {
-  return withControllerLock(
-    controllerHome,
-    { scope: 'task', repoId, taskId: `execution-job-${jobId}` },
-    reason,
-    () => {
-      const current = getExecutionJob(controllerHome, repoId, jobId);
-      const written = writer(structuredClone(current));
-      if (!written) return undefined;
-      const { next, eventType, eventData } = written;
-      if (next.jobId !== current.jobId || next.repoId !== current.repoId) throw new Error('JOB_IDENTITY_IMMUTABLE');
-      next.revision = current.revision + 1;
-      next.updatedAt = now();
-      const persisted = persistJob(controllerHome, next);
-      if (eventType) appendJobEvent(controllerHome, persisted, eventType, eventData);
-      touchSchedulerWakeSignal(controllerHome, `job-state:${jobId}`);
-      return persisted;
-    },
-    10_000,
-  );
-}
-
 function transitionAllowed(from: ExecutionJobStatus, to: ExecutionJobStatus): boolean {
   if (from === to) return true;
   if (TERMINAL_JOB_STATUSES.has(from)) return false;
@@ -499,56 +469,6 @@ export function transitionExecutionJob(
     `job_${status}`,
     eventData,
     true,
-  );
-}
-
-export function attachExecutionWorker(
-  controllerHome: string,
-  repoId: string,
-  jobId: string,
-  workerPid: number,
-): ExecutionJob | undefined {
-  return writeJobState(
-    controllerHome,
-    repoId,
-    jobId,
-    (current) => {
-      const spawnable =
-        current.status === 'dispatched' || (current.status === 'running' && current.workerPid === undefined);
-      if (!spawnable) return current.workerPid === workerPid ? { next: current } : undefined;
-      if (current.workerPid !== undefined && current.workerPid !== workerPid) return undefined;
-      const timestamp = now();
-      const executionDeadlineAt = current.timeoutPolicy
-        ? deadlineAfter(timestamp, current.timeoutPolicy.executionTimeoutMs)
-        : current.executionDeadlineAt;
-      return {
-        next: {
-          ...current,
-          status: 'running',
-          workerPid,
-          executionDeadlineAt,
-          deadlineAt: executionDeadlineAt ?? current.deadlineAt,
-          workerLifecycle: current.workerLifecycle
-            ? {
-                ...current.workerLifecycle,
-                attachedAt: timestamp,
-                processGroupId: process.platform !== 'win32' ? workerPid : undefined,
-                workerPid,
-                startupState: 'registered',
-              }
-            : current.workerLifecycle,
-          heartbeatAt: timestamp,
-          startedAt: current.startedAt ?? timestamp,
-          timings: {
-            ...current.timings,
-            workerRunningAt: timestamp,
-          },
-        },
-        eventType: 'job_running',
-        eventData: { workerPid },
-      };
-    },
-    `attach-worker:${jobId}`,
   );
 }
 

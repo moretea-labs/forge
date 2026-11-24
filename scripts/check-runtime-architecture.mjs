@@ -868,7 +868,6 @@ const required = [
   'src/runtime/control-plane/global-scheduler/projection-refresh.ts',
   'src/runtime/control-plane/global-scheduler/worker-lifecycle.ts',
   'src/runtime/control-plane/global-scheduler/worker-stderr.ts',
-  'src/runtime/control-plane/global-scheduler/worker-attachment.ts',
   'src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts',
   'src/runtime/control-plane/global-scheduler/maintenance.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-decision.ts',
@@ -2193,6 +2192,7 @@ forbid(
   /export function rebuildExecutionJobIndexes\b/,
   'tests-only ExecutionJob index rebuild API must stay physically absent',
 );
+requireMissing('src/runtime/control-plane/global-scheduler/worker-attachment.ts');
 requireMissing('src/runtime/execution/jobs/legacy-adapter.ts');
 requireMissing('src/cli/controller/migrated-issue-decision.ts');
 requireMissing('src/cli/mcp/oauth-client-retirement.ts');
@@ -2398,7 +2398,6 @@ requireText(
 );
 requireText('src/runtime/control-plane/global-scheduler/worker-lifecycle.ts', 'buildSchedulerWorkerExitFailure');
 requireText('src/runtime/control-plane/global-scheduler/worker-stderr.ts', 'MAX_SCHEDULER_WORKER_STDERR_BYTES');
-requireText('src/runtime/control-plane/global-scheduler/worker-attachment.ts', 'attachExecutionWorker');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'runSchedulerPeriodicCleanup');
 requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'runSchedulerValidationReconciliation');
 requireMatch(
@@ -2438,9 +2437,27 @@ requireText('src/runtime/control-plane/global-scheduler/worker-exit-decision.ts'
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'releaseExecutionLeases');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'cleanupSchedulerWorkerProcesses');
 requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', 'cleanupSchedulerWorkerProcesses');
-requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', 'dependencies.spawnProcess');
+forbid(
+  'src/runtime/control-plane/global-scheduler/worker-process.ts',
+  /spawnSchedulerWorkerProcess|registerSchedulerWorkerProcess|wireSchedulerWorkerProcess/,
+  'Scheduler new-worker process wrappers must stay physically absent',
+);
+forbid(
+  'src/runtime/control-plane/global-scheduler/worker-lifecycle.ts',
+  /buildSchedulerWorker(?:SpawnFailure|Spawned|Exited|Registered)Lifecycle/,
+  'Scheduler new-worker lifecycle builders must stay physically absent',
+);
+forbid(
+  'src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts',
+  /persistSchedulerSpawnedWorkerLifecycle/,
+  'Scheduler spawned-worker persistence wrapper must stay physically absent',
+);
+forbid(
+  'src/runtime/execution/jobs/store.ts',
+  /export function attachExecutionWorker\b/,
+  'retired Scheduler attachment mutation must stay physically absent',
+);
 requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', 'terminateProcessTree');
-requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', "child.once('close'");
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeAgentExecutableReadinessSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'sampleRepositoryGitStatusForRepositories');
 requireText('src/runtime/agents/executable-resolver.ts', 'revalidateAgentExecutable');

@@ -27,22 +27,6 @@ const DEFAULT_DEPENDENCIES: SchedulerWorkerLifecycleStoreDependencies = {
   rebuildProjection: rebuildRepositoryProjection,
 };
 
-export function persistSchedulerSpawnedWorkerLifecycle(input: {
-  controllerHome: string;
-  repoId: string;
-  jobId: string;
-  lifecycle: ExecutionWorkerLifecycle;
-}, dependencies: SchedulerWorkerLifecycleStoreDependencies = DEFAULT_DEPENDENCIES): void {
-  try {
-    dependencies.updateJob(input.controllerHome, input.repoId, input.jobId, (current) => {
-      if (!['dispatched', 'running'].includes(current.status) || current.workerPid !== undefined) return current;
-      return { ...current, workerLifecycle: input.lifecycle };
-    });
-  } catch {
-    // The Job may have been superseded or made terminal.
-  }
-}
-
 export function persistSchedulerTerminalWorkerLifecycle(input: {
   controllerHome: string;
   repoId: string;
