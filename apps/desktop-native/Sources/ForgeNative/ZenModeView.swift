@@ -946,7 +946,7 @@ struct ZenWorkspacePane: View {
                 } else {
                 GeometryReader { frame in
                     ScrollView(.horizontal) {
-                        HStack(alignment:.top,spacing:14) {
+                        HStack(alignment:.top,spacing:ForgeBoardAppearance.columnSpacing) {
                             ForEach(visibleStages,id:\.rawValue) { stage in
                                 let items = visibleRequirements.filter { bucket($0) == stage }
                                 VStack(alignment:.leading,spacing:0) {
@@ -958,9 +958,7 @@ struct ZenWorkspacePane: View {
                                         Text("\(items.count)")
                                             .font(.system(size:10.5,weight:.medium))
                                             .foregroundStyle(.secondary)
-                                            .padding(.horizontal,9).padding(.vertical,4)
-                                            .background(ForgeBoardAppearance.cardSurface.opacity(0.9),
-                                                        in:Capsule())
+                                            .monospacedDigit()
                                     }
                                     .padding(.bottom,13)
                                     ScrollView {
@@ -999,16 +997,11 @@ struct ZenWorkspacePane: View {
                                                                  if let priority=ZenWorkspacePane.priorityLabel(item.priority) {
                                                                      Text(priority)
                                                                          .foregroundStyle(priority == "紧急" ? Color.orange : Color.secondary)
-                                                                         .padding(.horizontal,7).padding(.vertical,3)
-                                                                         .background(priority == "紧急" ? Color.orange.opacity(0.10) : Color.primary.opacity(0.045),
-                                                                                     in:Capsule())
                                                                  }
                                                                  if let assignee=item.assignee,!assignee.isEmpty {
                                                                      Text(assignee)
                                                                          .foregroundStyle(.secondary)
                                                                          .lineLimit(1)
-                                                                         .padding(.horizontal,7).padding(.vertical,3)
-                                                                         .background(Color.primary.opacity(0.045),in:Capsule())
                                                                          .help(assignee)
                                                                  }
                                                              }
@@ -1017,7 +1010,7 @@ struct ZenWorkspacePane: View {
                                                         }
                                                         .foregroundStyle(.secondary)
                                                     }
-                                                    .padding(13)
+                                                    .padding(ForgeBoardAppearance.cardInset)
                                                     .frame(maxWidth:.infinity,alignment:.leading)
                                                     .background(ForgeBoardAppearance.cardSurface,
                                                                 in:RoundedRectangle(cornerRadius:10,style:.continuous))
@@ -1030,16 +1023,16 @@ struct ZenWorkspacePane: View {
                                     }
                                     .scrollIndicators(.hidden)
                                 }
-                                .padding(13)
+                                .padding(ForgeBoardAppearance.columnInset)
                                 .frame(width:ForgeBoardAppearance.columnWidth(available:frame.size.width,
                                                                              columnCount:visibleStages.count),
                                        alignment:.topLeading)
                                 .frame(maxHeight:.infinity)
-                                .background(ForgeBoardAppearance.columnColor(boardTone(stage),scheme:colorScheme),
+                                .background(ForgeBoardAppearance.columnSurface,
                                             in:RoundedRectangle(cornerRadius:13,style:.continuous))
                             }
                         }
-                        .padding(.horizontal,24).padding(.bottom,24)
+                        .padding(.horizontal,ForgeBoardAppearance.boardInset).padding(.bottom,ForgeBoardAppearance.boardInset)
                     }
                     .scrollIndicators(.hidden)
                 }
@@ -3310,9 +3303,8 @@ struct ZenProjectDetailPane: View {
         VStack(alignment:.leading,spacing:12) {
             HStack {
                 Button(action:onBack) {
-                    Label("返回项目",systemImage:"chevron.left")
-                        .labelStyle(.iconOnly)
-                        .frame(width:30,height:30)
+                    ForgeGlyph(.back)
+                        .forgeChromeSurface(cornerRadius:8)
                 }
                 .accessibilityLabel("返回项目")
                     .buttonStyle(.plain)
@@ -3325,8 +3317,8 @@ struct ZenProjectDetailPane: View {
                         await restoreRequirementPosition(using:proxy)
                     }
                 } label: {
-                    Image(systemName:"arrow.clockwise")
-                        .frame(width:30,height:30)
+                    ForgeGlyph(.refresh)
+                        .forgeChromeSurface(cornerRadius:8)
                 }
                 .buttonStyle(.plain)
                 .help("刷新项目")

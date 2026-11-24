@@ -3389,8 +3389,8 @@ struct SettingsPane: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment:.leading,spacing:36) {
-                Text("设置").font(.system(size:22,weight:.semibold)).tracking(-0.3)
+            VStack(alignment:.leading,spacing:ForgeClientDesign.Spacing.section + 6) {
+                Text("设置").font(ForgeClientDesign.Typography.sheetTitle)
                 VStack(alignment:.leading,spacing:12) {
                     HStack(spacing:9) {
                         Circle().fill(model.selectedProviderReady ? Color.green : Color.orange)
@@ -3398,10 +3398,10 @@ struct SettingsPane: View {
                         Text("当前会话 · \(selectedProviderLabel)")
                             .font(.system(size:14,weight:.semibold))
                         Spacer()
+                        Text(model.selectedProviderReady ? "配置完整" : "待完善")
+                            .font(ForgeClientDesign.Typography.supporting)
+                            .foregroundStyle(model.selectedProviderReady ? ForgePalette.secondary : Color.orange)
                     }
-                    Text(model.selectedProviderReady ? "配置完整" : "待完善")
-                        .font(.system(size:11,weight:.medium))
-                        .foregroundStyle(model.selectedProviderReady ? ForgePalette.secondary : Color.orange)
                     LazyVGrid(columns:[GridItem(.adaptive(minimum:145,maximum:260),spacing:14,alignment:.leading)],
                               alignment:.leading,spacing:10) {
                         settingMeta("会话模型",NativeWorkspace.matchesExternalProvider(model.selectedProvider)
@@ -3467,20 +3467,13 @@ struct SettingsPane: View {
                     }
 
                     if profiles.isEmpty {
-                        VStack(spacing:10) {
-                            Image(systemName:"server.rack").font(.system(size:24))
-                                .foregroundStyle(ForgePalette.secondary)
-                            Text("还没有 API 配置").font(.system(size:14,weight:.semibold))
-                            Text("点击「添加模型服务」，选择 DeepSeek 或其他服务。")
-                                .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-                        }
-                        .frame(maxWidth:.infinity,minHeight:190)
+                        ForgeInspectorEmptyState(title:"暂无自定义 API 服务",symbol:"server.rack")
                     } else {
                         VStack(alignment:.leading,spacing:16) {
                             // One content column rather than a second fixed sidebar.
                             if profiles.count > 1 {
                             ScrollView(.horizontal) {
-                                HStack(spacing:18) {
+                                HStack(spacing:6) {
                                     ForEach(profiles) { profile in
                                         let selected=selectedProfileId == profile.id
                                         Button {
@@ -3498,8 +3491,9 @@ struct SettingsPane: View {
                                                 }
                                             }
                                             .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                                            .padding(.horizontal,2).frame(height:26)
+                                            .padding(.horizontal,9).frame(height:30)
                                             .contentShape(Rectangle())
+                                            .forgeChromeSurface(selected:selected,cornerRadius:8)
                                         }
                                         .buttonStyle(.plain)
                                         .accessibilityAddTraits(selected ? [.isSelected] : [])
@@ -3579,7 +3573,7 @@ struct SettingsPane: View {
 
                 RuntimeSettingsSection(model:model)
             }
-            .padding(.horizontal,40).padding(.vertical,32)
+            .padding(.horizontal,24).padding(.vertical,24)
             .frame(maxWidth:760,alignment:.leading)
             .frame(maxWidth:.infinity,alignment:.center)
         }
