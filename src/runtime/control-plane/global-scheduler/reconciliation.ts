@@ -15,7 +15,7 @@ import {
 import { recoverCompletedReceipt } from '../../execution/jobs/receipt-recovery';
 import { operationReceiptMatchesJobOwnership, readOperationReceipt } from '../../execution/jobs/receipt-store';
 import { releaseExecutionLeases, renewExecutionLeases } from '../../resources/leases/store';
-import { isProcessAlive, terminateProcessTree, terminateProcessTreeSync, type ProcessTreeTerminationResult } from '../../shared/process-tree';
+import { isProcessAlive, terminateProcessTree, type ProcessTreeTerminationResult } from '../../shared/process-tree';
 import { settleScheduledExecution } from '../../../../packages/kernel/scheduler/api/index';
 import { isRuntimeWriteFenceError } from '../../root/write-fence';
 
@@ -120,70 +120,8 @@ function workerLostMessage(
     : `${processMissing} The job was safely requeued before its outcome became ambiguous.`;
 }
 
-export function reconcileExecutionJobs(controllerHome: string, repoId?: string): ReconcileSummary {
-  return reconcileExecutionJobsWith(controllerHome, (pid) => terminateProcessTreeSync(pid), repoId);
-}
-
 export async function reconcileExecutionJobsAsync(controllerHome: string, repoId?: string): Promise<ReconcileSummary> {
   return reconcileExecutionJobsAsyncWith(controllerHome, (pid) => terminateProcessTree(pid), repoId);
-}
-
-function reconcileExecutionJobsWith(
-  controllerHome: string,
-  terminateWorker: (pid: number | undefined) => ProcessTreeTerminationResult,
-  repoId?: string,
-): ReconcileSummary {
-  const jobs = reconcileActiveExecutionJobIndex(controllerHome, repoId);
-  let requeued = 0;
-  let terminal = 0;
-  let recovered = 0;
-  let isolated = 0;
-  for (const job of jobs) {
-    try {
-      if (job.status !== 'running') {
-        const timeout = executionTimeoutDecision(job);
-        if (timeout) {
-          releaseExecutionLeases(controllerHome, job.repoId, job.jobId, job.leaseRefs);
-          const terminalJob = transitionExecutionJob(controllerHome, job.repoId, job.jobId, 'timed_out', {
-            error: {
-              code: timeout.code,
-              message: timeout.message,
-              retryable: false,
-              details: { timeoutPhase: timeout.phase, deadlineAt: timeout.deadlineAt },
-            },
-            leaseRefs: [],
-          });
-          settleScheduledExecution(controllerHome, terminalJob, 'failed', `Scheduled operation exceeded its ${timeout.phase} timeout.`);
-          terminal += 1;
-        }
-        continue;
-      }
-
-      const timeout = executionTimeoutDecision(job);
-      const loss = workerLossContext(job);
-      let lossReason: WorkerLossReason = loss.reason;
-      if (!timeout && !loss.workerLost) {
-        try {
-          if (job.leaseRefs.length > 0) {
-            renewExecutionLeases(controllerHome, job.repoId, job.jobId, 30_000, job.leaseRefs);
-          }
-          continue;
-        } catch {
-          lossReason = 'lease_lost';
-        }
-      }
-
-      const termination = terminateWorker(job.workerPid);
-      const outcome = finalizeRunningJob(controllerHome, job, timeout, termination, lossReason, loss.heartbeatAgeMs);
-      requeued += outcome.requeued;
-      terminal += outcome.terminal;
-      recovered += outcome.recovered;
-    } catch (error) {
-      recordIsolatedReconciliationFailure(job, error);
-      isolated += 1;
-    }
-  }
-  return { inspected: jobs.length, requeued, terminal, recovered, isolated };
 }
 
 async function reconcileExecutionJobsAsyncWith(

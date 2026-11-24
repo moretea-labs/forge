@@ -2363,6 +2363,11 @@ requireText('src/runtime/execution/jobs/types.ts', 'admissionTimeoutMs: number')
 requireText('src/runtime/execution/jobs/types.ts', 'queueTimeoutMs: number');
 requireText('src/runtime/execution/jobs/types.ts', 'executionTimeoutMs: number');
 requireText('src/runtime/execution/jobs/types.ts', 'interactiveWaitMs: number');
+forbid(
+  'src/runtime/control-plane/global-scheduler/reconciliation.ts',
+  /export function reconcileExecutionJobs\b|function reconcileExecutionJobsWith\b|terminateProcessTreeSync/,
+  'synchronous duplicate ExecutionJob reconciliation must stay physically absent',
+);
 requireText('src/runtime/execution/jobs/timeouts.ts', 'executionTimeoutDecision');
 forbid(
   'src/runtime/execution/jobs/timeouts.ts',
