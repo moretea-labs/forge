@@ -179,23 +179,57 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
   let startedAt: String
   let completedAt: String?
   let toolCallId: String?
+  var eventId: String? = nil
   var output: String? = nil
   var outputTruncated: Bool? = nil
-  var id: String { toolCallId ?? "\(startedAt)|\(phase)|\(label)|\(detail ?? "")" }
+  var durationMs: Double? = nil
 
+  var id: String { eventId ?? toolCallId ?? "\(startedAt)|\(phase)|\(label)|\(detail ?? "")" }
+  var displayTitle: String { Self.displayTitle(for: label) }
+  var correlationLabel: String? {
+    guard let detail, !detail.isEmpty else { return nil }
+    if detail.hasPrefix("proc_") { return "Process · \(detail)" }
+    if detail.hasPrefix("mcp-call:") || detail.hasPrefix("forge-desktop-api-") {
+      return "Request · \(detail)"
+    }
+    return detail
+  }
+  var statusLabel: String {
+    switch status {
+    case "running": return "执行中"
+    case "output": return "输出中"
+    case "completed": return "已完成"
+    case "failed": return "失败"
+    case "unknown": return "结果未知"
+    case "cancelled": return "已取消"
+    default: return status
+    }
+  }
   var durationLabel: String? {
-    guard let completedAt,
-      let started = Self.parseTimestamp(startedAt),
-      let completed = Self.parseTimestamp(completedAt)
+    let measured = durationMs ?? completedAt.flatMap {
+      Self.elapsedMilliseconds(startedAt: startedAt, completedAt: $0)
+    }
+    guard let measured, measured.isFinite, measured > 0 else { return nil }
+    let milliseconds = Int(measured.rounded())
+    if milliseconds < 1_000 { return "\(milliseconds) ms" }
+    if milliseconds < 60_000 {
+      let tenths = (milliseconds + 50) / 100
+      return "\(tenths / 10).\(tenths % 10) s"
+    }
+    return "\(milliseconds / 60_000)m \((milliseconds % 60_000) / 1_000)s"
+  }
+
+  static func displayTitle(for label: String) -> String {
+    toolDisplayTitles[label] ?? label
+  }
+
+  static func elapsedMilliseconds(startedAt: String, completedAt: String) -> Double? {
+    guard let started = parseTimestamp(startedAt),
+      let completed = parseTimestamp(completedAt)
     else { return nil }
     let elapsed = completed.timeIntervalSince(started)
     guard elapsed.isFinite, elapsed > 0 else { return nil }
-    let milliseconds = Int((elapsed * 1_000).rounded())
-    if milliseconds < 1_000 { return "\(milliseconds) ms" }
-    if milliseconds < 60_000 {
-      return String(format: "%.1f s", Double(milliseconds) / 1_000)
-    }
-    return "\(milliseconds / 60_000)m \((milliseconds % 60_000) / 1_000)s"
+    return (elapsed * 1_000).rounded()
   }
 
   private static func parseTimestamp(_ value: String) -> Date? {
@@ -206,6 +240,27 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
     standard.formatOptions = [.withInternetDateTime]
     return standard.date(from: value)
   }
+
+  private static let toolDisplayTitles: [String: String] = [
+    "read_repository_file": "读取文件",
+    "repository_git_status": "检查 Git 状态",
+    "repository_git_diff": "查看代码差异",
+    "git_diff_paths": "查看代码差异",
+    "execute_command": "执行命令",
+    "run_command": "运行命令",
+    "repository_safe_patch_apply": "修改源码",
+    "apply_patch": "修改源码",
+    "repository_git_commit": "提交代码",
+    "git_commit_paths": "提交代码",
+    "rh_status": "读取运行状态",
+    "rh_context": "读取项目上下文",
+    "rh_work": "更新任务记录",
+    "mcp_doctor": "检查 MCP 连接",
+    "process_get": "查询执行状态",
+    "process_wait": "等待执行结果",
+    "plugin_action_execute": "调用插件",
+    "computer": "桌面操作",
+  ]
 }
 
 struct AgentLiveActivity: Codable {
@@ -5736,7 +5791,7 @@ final class NativeWorkspace: ObservableObject {
       let events = try? JSONDecoder().decode([AgentLiveActivityEvent].self, from: bytes),
       !events.isEmpty
     else { return nil }
-    return events
+    return boundedActivityEvents(events)
   }
 
   nonisolated static func providerPrompt(
@@ -6030,6 +6085,37 @@ final class NativeWorkspace: ObservableObject {
     activityOutputPresentation(for: event)?.truncationLabel
   }
 
+  nonisolated static func boundedActivityEvents(
+    _ events: [AgentLiveActivityEvent],
+    limit: Int = 40
+  ) -> [AgentLiveActivityEvent] {
+    guard limit > 0, events.count > limit else { return events }
+    let activeIDs = Set(events.filter {
+      $0.phase == "tool" && ["running", "output"].contains($0.status)
+    }.map(\.id))
+    let completedLimit = max(0, limit - activeIDs.count)
+    let retainedIDs = activeIDs.union(
+      events.filter { !activeIDs.contains($0.id) }.suffix(completedLimit).map(\.id)
+    )
+    return events.filter { retainedIDs.contains($0.id) }
+  }
+
+  nonisolated static func toolActivityCountAfterProgress(
+    previousCount: Int,
+    existingEvents: [AgentLiveActivityEvent],
+    payload: [String: Any]
+  ) -> Int {
+    let phase = payload["phase"] as? String ?? "running"
+    guard phase == "started" || phase == "running" else { return previousCount }
+    if let callId = (payload["toolCallId"] as? String).flatMap({ $0.isEmpty ? nil : $0 }) {
+      let alreadyObserved = existingEvents.contains {
+        $0.phase == "tool" && $0.toolCallId == callId
+      }
+      return alreadyObserved ? previousCount : previousCount + 1
+    }
+    return previousCount + 1
+  }
+
   nonisolated static func apiActivityEvents(_ raw: Any?) -> [AgentLiveActivityEvent]? {
     guard let rows = raw as? [[String: Any]], !rows.isEmpty else { return nil }
     let now = ISO8601DateFormatter().string(from: Date())
@@ -6044,17 +6130,27 @@ final class NativeWorkspace: ObservableObject {
       let completedAt =
         ["running", "output"].contains(status) ? nil : (row["completedAt"] as? String ?? now)
       let rawOutput = row["output"] as? String
+      let toolCallId = (row["toolCallId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+      let durationMs = (row["durationMs"] as? NSNumber)?.doubleValue
+        ?? (row["duration_ms"] as? NSNumber)?.doubleValue
+        ?? completedAt.flatMap {
+          row["startedAt"] == nil
+            ? nil
+            : AgentLiveActivityEvent.elapsedMilliseconds(startedAt: startedAt, completedAt: $0)
+        }
       return AgentLiveActivityEvent(
         phase: "tool", label: name,
         detail: row["processId"] as? String ?? row["requestId"] as? String,
-        status: status,
-        startedAt: startedAt, completedAt: completedAt,
-        toolCallId: row["toolCallId"] as? String,
+        status: status, startedAt: startedAt, completedAt: completedAt,
+        toolCallId: toolCallId,
+        eventId: toolCallId == nil ? UUID().uuidString : nil,
         output: rawOutput.map { String($0.prefix(2_000)) },
-        outputTruncated: rawOutput.map { $0.count > 2_000 }
+        outputTruncated: rawOutput.map { $0.count > 2_000 },
+        durationMs: durationMs
       )
     }
-    return events.isEmpty ? nil : events
+    let bounded = boundedActivityEvents(events)
+    return bounded.isEmpty ? nil : bounded
   }
 
   nonisolated static func apiToolProgressEvents(
@@ -6065,60 +6161,84 @@ final class NativeWorkspace: ObservableObject {
     guard let name = payload["name"] as? String else { return existing }
     let transportPhase = payload["phase"] as? String ?? "running"
     let status = transportPhase == "started" ? "running" : transportPhase
-    let toolCallId = payload["toolCallId"] as? String
+    let activeStatuses = ["running", "output"]
+    let toolCallId = (payload["toolCallId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     let detail = payload["processId"] as? String ?? payload["requestId"] as? String
     let rawOutput = payload["output"] as? String
     let output = rawOutput.map { String($0.prefix(2_000)) }
     let outputTruncated = rawOutput.map { $0.count > 2_000 }
     var events = existing
-    let matchingIndex = events.lastIndex { event in
-      if let toolCallId {
-        return event.toolCallId == toolCallId
-          && ["running", "output"].contains(event.status)
+    let activeMatches = events.indices.filter { index in
+      let event = events[index]
+      return event.phase == "tool" && activeStatuses.contains(event.status) && event.label == name
+    }
+    let matchingIndex: Int?
+    if let toolCallId {
+      matchingIndex = events.lastIndex { event in
+        event.phase == "tool" && event.toolCallId == toolCallId
+          && activeStatuses.contains(event.status)
       }
-      return event.status == "running" && event.label == name
+    } else if status == "running" {
+      // A new start without a call ID is kept distinct from earlier calls
+      // with the same tool name; only a unique active call can receive output.
+      matchingIndex = nil
+    } else {
+      matchingIndex = activeMatches.count == 1 ? activeMatches.first : nil
     }
     if let matchingIndex {
       let started = events[matchingIndex]
+      let completedAt = activeStatuses.contains(status) ? nil : now
       events[matchingIndex] = AgentLiveActivityEvent(
         phase: "tool", label: name,
         detail: detail ?? started.detail,
         status: status, startedAt: started.startedAt,
-        completedAt: ["running", "output"].contains(status) ? nil : now,
+        completedAt: completedAt,
         toolCallId: toolCallId ?? started.toolCallId,
+        eventId: started.eventId,
         output: output ?? started.output,
-        outputTruncated: outputTruncated ?? started.outputTruncated
+        outputTruncated: outputTruncated ?? started.outputTruncated,
+        durationMs: completedAt.flatMap {
+          started.durationMs
+            ?? AgentLiveActivityEvent.elapsedMilliseconds(startedAt: started.startedAt, completedAt: $0)
+        }
       )
-      return events
+      return boundedActivityEvents(events)
     }
-    if status == "running", let toolCallId,
-      events.contains(where: { $0.toolCallId == toolCallId })
+    if let toolCallId,
+      events.contains(where: { $0.phase == "tool" && $0.toolCallId == toolCallId })
     {
-      return events
+      return boundedActivityEvents(events)
     }
+    let ambiguous = toolCallId == nil && status != "running" && activeMatches.count > 1
+    let eventStatus = ambiguous ? "unknown" : status
+    let eventDetail = detail ?? (ambiguous ? "存在多个同名调用，缺少 toolCallId，无法可靠关联" : nil)
     events.append(
       AgentLiveActivityEvent(
         phase: "tool", label: name,
-        detail: detail, status: status,
-        startedAt: now, completedAt: ["running", "output"].contains(status) ? nil : now,
-        toolCallId: toolCallId, output: output, outputTruncated: outputTruncated
+        detail: eventDetail, status: eventStatus,
+        startedAt: now, completedAt: activeStatuses.contains(eventStatus) ? nil : now,
+        toolCallId: toolCallId,
+        eventId: toolCallId == nil ? UUID().uuidString : nil,
+        output: output, outputTruncated: outputTruncated
       ))
-    return events
+    return boundedActivityEvents(events)
   }
 
   nonisolated static func finalizeFailedToolEvents(
     _ events: [AgentLiveActivityEvent],
     now: String
   ) -> [AgentLiveActivityEvent] {
-    events.map { event in
+    boundedActivityEvents(events.map { event in
       guard event.status == "running" || event.status == "output" else { return event }
       return AgentLiveActivityEvent(
         phase: event.phase, label: event.label, detail: event.detail,
         status: "unknown", startedAt: event.startedAt, completedAt: now,
-        toolCallId: event.toolCallId, output: event.output,
-        outputTruncated: event.outputTruncated
+        toolCallId: event.toolCallId, eventId: event.eventId,
+        output: event.output, outputTruncated: event.outputTruncated,
+        durationMs: event.durationMs
+          ?? AgentLiveActivityEvent.elapsedMilliseconds(startedAt: event.startedAt, completedAt: now)
       )
-    }
+    })
   }
 
   func applyApiModelProgress(_ payload: [String: Any], conversationId: String) {
@@ -6154,6 +6274,7 @@ final class NativeWorkspace: ObservableObject {
       }
     default: return
     }
+    events = Self.boundedActivityEvents(events)
     liveActivity = AgentLiveActivity(
       conversationId: conversationId, status: "running", phase: phase,
       toolActivityCount: liveActivity?.toolActivityCount ?? 0,
@@ -6171,7 +6292,8 @@ final class NativeWorkspace: ObservableObject {
     return AgentLiveActivityEvent(
       phase: "message", label: "模型过程说明",
       detail: String(summary.prefix(800)), status: "completed",
-      startedAt: now, completedAt: now, toolCallId: nil
+      startedAt: now, completedAt: now, toolCallId: nil,
+      eventId: UUID().uuidString
     )
   }
 
@@ -6204,14 +6326,28 @@ final class NativeWorkspace: ObservableObject {
   ) -> [AgentLiveActivityEvent] {
     var unused = receipts
     var result: [AgentLiveActivityEvent] = []
+    let uncorrelatedEventCounts = Dictionary(
+      grouping: events.filter { $0.phase == "tool" && $0.toolCallId == nil },
+      by: \.label
+    ).mapValues(\.count)
+    let uncorrelatedReceiptCounts = Dictionary(
+      grouping: receipts.filter { $0.toolCallId == nil },
+      by: \.label
+    ).mapValues(\.count)
+
     for event in events {
       guard event.phase == "tool" else {
         result.append(event)
         continue
       }
-      let index = unused.firstIndex { receipt in
-        if let call = event.toolCallId { return receipt.toolCallId == call }
-        return receipt.label == event.label
+      let index: Int?
+      if let call = event.toolCallId {
+        index = unused.firstIndex { $0.toolCallId == call }
+      } else if uncorrelatedEventCounts[event.label] == 1
+        && uncorrelatedReceiptCounts[event.label] == 1 {
+        index = unused.firstIndex { $0.toolCallId == nil && $0.label == event.label }
+      } else {
+        index = nil
       }
       if let index {
         let receipt = unused.remove(at: index)
@@ -6222,28 +6358,37 @@ final class NativeWorkspace: ObservableObject {
             && event.detail.map(Self.isCanonicalProcessId) == true
             && receipt.detail.map(Self.isCanonicalProcessId) != true
           ? event.detail : nil
+        let completedAt = receipt.completedAt ?? event.completedAt
+        let durationMs = event.durationMs ?? receipt.durationMs
+          ?? completedAt.flatMap {
+            AgentLiveActivityEvent.elapsedMilliseconds(startedAt: event.startedAt, completedAt: $0)
+          }
         result.append(
           AgentLiveActivityEvent(
             phase: receipt.phase, label: receipt.label,
             detail: processId ?? receipt.detail,
             status: receipt.status, startedAt: event.startedAt,
-            completedAt: receipt.completedAt, toolCallId: receipt.toolCallId,
+            completedAt: completedAt, toolCallId: receipt.toolCallId ?? event.toolCallId,
+            eventId: event.eventId ?? receipt.eventId,
             output: event.output ?? receipt.output,
-            outputTruncated: event.outputTruncated ?? receipt.outputTruncated
+            outputTruncated: event.outputTruncated ?? receipt.outputTruncated,
+            durationMs: durationMs
           ))
       } else {
-        // Missing canonical receipt is an unknown outcome, never
+        // Missing or ambiguous correlation is an unknown outcome, never
         // promote an advisory progress event into a success claim.
         result.append(
           AgentLiveActivityEvent(
             phase: event.phase, label: event.label, detail: event.detail,
             status: "unknown", startedAt: event.startedAt,
             completedAt: event.completedAt, toolCallId: event.toolCallId,
-            output: event.output, outputTruncated: event.outputTruncated
+            eventId: event.eventId,
+            output: event.output, outputTruncated: event.outputTruncated,
+            durationMs: event.durationMs
           ))
       }
     }
-    return result + unused
+    return boundedActivityEvents(result + unused)
   }
 
   nonisolated static func appendBoundedPreview(_ current: String, delta: String, limit: Int)
@@ -6258,17 +6403,18 @@ final class NativeWorkspace: ObservableObject {
       let name = payload["name"] as? String
     else { return }
     let now = ISO8601DateFormatter().string(from: Date())
-    let events = Self.apiToolProgressEvents(
-      liveActivity?.events ?? [], payload: payload, now: now
+    let previousEvents = liveActivity?.events ?? []
+    let toolActivityCount = Self.toolActivityCountAfterProgress(
+      previousCount: liveActivity?.toolActivityCount ?? 0,
+      existingEvents: previousEvents,
+      payload: payload
     )
-    let completedCount = events.filter {
-      $0.phase == "tool" && !["running", "output"].contains($0.status)
-    }.count
+    let events = Self.apiToolProgressEvents(previousEvents, payload: payload, now: now)
     liveActivity = AgentLiveActivity(
       conversationId: conversationId,
       status: "running", phase: "tool",
-      toolActivityCount: completedCount,
-      lastActivity: name,
+      toolActivityCount: toolActivityCount,
+      lastActivity: AgentLiveActivityEvent.displayTitle(for: name),
       startedAt: liveActivity?.startedAt ?? now,
       updatedAt: now,
       events: events
@@ -6554,6 +6700,7 @@ final class NativeWorkspace: ObservableObject {
       guard let current = threads.firstIndex(where: { $0.id == id }) else { return }
       let answer = response["output"] as? String ?? ""
       let toolActivityCount = response["toolActivityCount"] as? Int
+        ?? liveActivity?.toolActivityCount
       let usage = (response["usage"] as? [String: Any])
         .flatMap(AgentTokenUsage.fromProviderReceipt)
       let activityEvents =
@@ -6589,7 +6736,8 @@ final class NativeWorkspace: ObservableObject {
       let now = ISO8601DateFormatter().string(from: Date())
       let activityEvents = Self.finalizeFailedToolEvents(liveActivity?.events ?? [], now: now)
       let failure = Self.agentTurnFailure(rawError, toolName: activityEvents.last?.label)
-      let completedCount = activityEvents.filter { $0.status != "running" }.count
+      let completedCount = liveActivity?.toolActivityCount
+        ?? activityEvents.filter { $0.phase == "tool" }.count
       let incompleteReply = ChatMessage(
         role: "assistant",
         text: Self.incompleteTurnReplyText(

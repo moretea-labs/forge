@@ -683,12 +683,19 @@ struct AgentPane: View {
                                         }
                                         if expandedMessageActivities.contains(message.id),
                                            let events = message.activityEvents, !events.isEmpty {
+                                            let retainedToolCount = events.filter { $0.phase == "tool" }.count
                                             VStack(alignment:.leading,spacing:7) {
                                                 ForEach(events) { event in
                                                     activityTrailRow(event)
                                                 }
                                             }
                                             .padding(.leading,4).padding(.vertical,4)
+                                            if let total = message.toolActivityCount, total > retainedToolCount {
+                                                Text("仅显示最近 \(retainedToolCount) 条调用记录 · 本轮共 \(total) 次")
+                                                    .font(.system(size:9.5))
+                                                    .foregroundStyle(.tertiary)
+                                                    .accessibilityIdentifier("agent.activity.retention-note")
+                                            }
                                         }
                                     }
                                     Spacer(minLength:0)
@@ -767,6 +774,7 @@ struct AgentPane: View {
                                 }
 
                                 let allActivityEvents = model.liveActivity?.events ?? []
+                                let retainedToolCount = allActivityEvents.filter { $0.phase == "tool" }.count
                                 let activityEvents = showActivityDetails
                                     ? allActivityEvents
                                     : Array(allActivityEvents.suffix(4))
@@ -775,6 +783,12 @@ struct AgentPane: View {
                                         ForEach(activityEvents) { event in
                                             activityTrailRow(event)
                                         }
+                                    }
+                                    if let total = model.liveActivity?.toolActivityCount, total > retainedToolCount {
+                                        Text("仅显示最近 \(retainedToolCount) 条调用记录 · 共 \(total) 次")
+                                            .font(.system(size:9.5))
+                                            .foregroundStyle(.tertiary)
+                                            .accessibilityIdentifier("agent.activity.live-retention-note")
                                     }
                                 }
                             }
@@ -1382,7 +1396,7 @@ struct AgentPane: View {
             }
             VStack(alignment:.leading,spacing:4) {
                 HStack(spacing:6) {
-                    Text(event.phase == "tool" ? "工具 · \(event.label)" : event.label)
+                    Text(event.phase == "tool" ? "工具 · \(event.displayTitle)" : event.displayTitle)
                         .font(.system(size:10.5,weight:.medium))
                         .foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
@@ -1401,12 +1415,19 @@ struct AgentPane: View {
                             .accessibilityIdentifier("agent.activity.status.\(event.id)")
                     }
                 }
-                if let detail = event.detail, !detail.isEmpty {
+                if event.phase == "tool", event.displayTitle != event.label {
+                    Text(event.label)
+                        .font(.system(size:8.5,design:.monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+                if let detail = event.correlationLabel {
                     Text(detail)
                         .font(.system(size:9.5,design:.monospaced))
                         .foregroundStyle(.tertiary)
                         .lineLimit(event.phase == "message" ? 7 : 2)
                         .textSelection(.enabled)
+                        .help(event.detail ?? detail)
                 }
                 if let output=NativeWorkspace.activityOutputPresentation(for:event) {
                     let isExpanded=expandedActivityEventIDs.contains(event.id)
@@ -1484,15 +1505,7 @@ struct AgentPane: View {
 
     private func activityStatusTitle(_ event: AgentLiveActivityEvent) -> String? {
         guard event.phase == "tool" else { return nil }
-        switch event.status {
-        case "running": return "执行中"
-        case "output": return "输出中"
-        case "completed": return "已完成"
-        case "failed": return "失败"
-        case "unknown": return "结果未知"
-        case "cancelled": return "已取消"
-        default: return nil
-        }
+        return event.statusLabel
     }
 
     private func activityStatusColor(_ event: AgentLiveActivityEvent) -> Color {

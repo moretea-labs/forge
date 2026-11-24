@@ -6139,3 +6139,123 @@ extension NativeWorkspaceTests {
     XCTAssertEqual(ZenWorkspacePane.editableTaskStatuses(from: "done"), ["done"])
   }
 }
+
+ 
+extension NativeWorkspaceTests {
+  func testAgentToolActivityDurationAndLocalizedDisplay() {
+    let started = NativeWorkspace.apiToolProgressEvents(
+      [],
+      payload: ["name": "execute_command", "phase": "started", "toolCallId": "call-duration"],
+      now: "2026-11-25T00:00:00.000Z"
+    )
+    let completed = NativeWorkspace.apiToolProgressEvents(
+      started,
+      payload: ["name": "execute_command", "phase": "completed", "toolCallId": "call-duration"],
+      now: "2026-11-25T00:00:01.250Z"
+    )
+
+    XCTAssertEqual(completed.first?.durationMs ?? -1, 1_250, accuracy: 0.001)
+    XCTAssertEqual(completed.first?.durationLabel, "1.3 s")
+    XCTAssertEqual(completed.first?.displayTitle, "执行命令")
+    XCTAssertEqual(completed.first?.statusLabel, "已完成")
+  }
+
+  func testAgentToolActivityCountTracksNewStartsNotOutputUpdates() {
+    let start = ["name": "run_command", "phase": "started", "toolCallId": "call-1"]
+    let firstEvents = NativeWorkspace.apiToolProgressEvents([], payload: start, now: "start")
+    let firstCount = NativeWorkspace.toolActivityCountAfterProgress(
+      previousCount: 0, existingEvents: [], payload: start
+    )
+    let output = ["name": "run_command", "phase": "output", "toolCallId": "call-1"]
+    let outputCount = NativeWorkspace.toolActivityCountAfterProgress(
+      previousCount: firstCount, existingEvents: firstEvents, payload: output
+    )
+    let secondStart = ["name": "run_command", "phase": "started", "toolCallId": "call-2"]
+    let secondCount = NativeWorkspace.toolActivityCountAfterProgress(
+      previousCount: outputCount, existingEvents: firstEvents, payload: secondStart
+    )
+
+    XCTAssertEqual(firstCount, 1)
+    XCTAssertEqual(outputCount, 1)
+    XCTAssertEqual(secondCount, 2)
+  }
+
+  func testAgentToolActivityRetentionKeepsActiveCallsAndBoundsHistory() {
+    let completed = (0..<50).map { index in
+      AgentLiveActivityEvent(
+        phase: "tool", label: "read_repository_file", detail: nil,
+        status: "completed", startedAt: "start-\(index)", completedAt: "end-\(index)",
+        toolCallId: "call-\(index)", eventId: nil
+      )
+    }
+    let running = AgentLiveActivityEvent(
+      phase: "tool", label: "execute_command", detail: nil,
+      status: "running", startedAt: "running", completedAt: nil,
+      toolCallId: "call-running", eventId: nil
+    )
+
+    let bounded = NativeWorkspace.boundedActivityEvents(completed + [running])
+
+    XCTAssertEqual(bounded.count, 40)
+    XCTAssertEqual(bounded.first?.toolCallId, "call-11")
+    XCTAssertTrue(bounded.contains { $0.toolCallId == "call-running" })
+  }
+
+  func testAgentToolProgressWithoutCallIdDoesNotMergeAmbiguousSameNameCalls() {
+    let first = NativeWorkspace.apiToolProgressEvents(
+      [],
+      payload: ["name": "git_status", "phase": "started"],
+      now: "start-1"
+    )
+    let second = NativeWorkspace.apiToolProgressEvents(
+      first,
+      payload: ["name": "git_status", "phase": "started"],
+      now: "start-2"
+    )
+    let ambiguous = NativeWorkspace.apiToolProgressEvents(
+      second,
+      payload: ["name": "git_status", "phase": "completed"],
+      now: "finish"
+    )
+
+    XCTAssertEqual(ambiguous.count, 3)
+    XCTAssertEqual(ambiguous[0].status, "running")
+    XCTAssertEqual(ambiguous[1].status, "running")
+    XCTAssertEqual(ambiguous[2].status, "unknown")
+    XCTAssertNotNil(ambiguous[2].eventId)
+  }
+
+  func testAgentToolReceiptFallbackRequiresUniqueUncorrelatedName() {
+    let start = "2026-11-25T00:00:00.000Z"
+    let end = "2026-11-25T00:00:01.250Z"
+    let uniqueEvent = AgentLiveActivityEvent(
+      phase: "tool", label: "git_status", detail: nil,
+      status: "running", startedAt: start, completedAt: nil,
+      toolCallId: nil, eventId: "event-1"
+    )
+    let uniqueReceipt = AgentLiveActivityEvent(
+      phase: "tool", label: "git_status", detail: nil,
+      status: "completed", startedAt: start, completedAt: end,
+      toolCallId: nil, eventId: "receipt-1"
+    )
+    let uniqueMerge = NativeWorkspace.mergeActivityReceipts([uniqueEvent], receipts: [uniqueReceipt])
+    XCTAssertEqual(uniqueMerge.count, 1)
+    XCTAssertEqual(uniqueMerge.first?.status, "completed")
+    XCTAssertEqual(uniqueMerge.first?.durationMs ?? -1, 1_250, accuracy: 0.001)
+
+    let ambiguousEvents = [
+      uniqueEvent,
+      AgentLiveActivityEvent(
+        phase: "tool", label: "git_status", detail: nil,
+        status: "running", startedAt: start, completedAt: nil,
+        toolCallId: nil, eventId: "event-2"
+      ),
+    ]
+    let ambiguousMerge = NativeWorkspace.mergeActivityReceipts(
+      ambiguousEvents,
+      receipts: [uniqueReceipt]
+    )
+    XCTAssertEqual(Array(ambiguousMerge.prefix(2)).map(\.status), ["unknown", "unknown"])
+    XCTAssertEqual(ambiguousMerge.last?.eventId, "receipt-1")
+  }
+}
