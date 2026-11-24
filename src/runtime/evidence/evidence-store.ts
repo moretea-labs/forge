@@ -1,10 +1,8 @@
-import { createHash, randomUUID } from 'crypto';
+import { createHash } from 'crypto';
 import { existsSync } from 'fs';
-import { spawnSync } from 'child_process';
 import { join } from 'path';
 import { controllerSystemRoot, repositoryControllerRoot } from '../../effects/controller-home';
-import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
-import type { ExecutionJob } from '../execution/jobs/types';
+import { readJsonFile, sanitizeFileComponent } from '../shared/json-files';
 import { recordOutputHandleIndexEntry, readOutputHandleIndexEntry, type OutputHandleStorage } from './output-handle-index';
 
 export interface ExecutionEvidence {
@@ -21,20 +19,6 @@ export interface ExecutionEvidence {
   executedAt: string;
   outcome: 'succeeded' | 'failed';
   details?: Record<string, unknown>;
-}
-
-function gitRevision(repoRoot: string): string {
-  const result = spawnSync('git', ['-C', repoRoot, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf8', timeout: 5_000 });
-  return result.status === 0 ? result.stdout.trim() : 'unversioned';
-}
-
-function environmentFingerprint(): string {
-  return createHash('sha256').update(JSON.stringify({
-    platform: process.platform,
-    arch: process.arch,
-    node: process.version,
-    bun: process.versions.bun ?? null,
-  })).digest('hex').slice(0, 24);
 }
 
 function canonicalEvidencePath(controllerHome: string, evidenceId: string): string {
@@ -140,33 +124,5 @@ export function readExecutionEvidence(
   const evidence = loadEvidenceAt(controllerHome, evidenceId, storage);
   registerEvidence(controllerHome, evidence, storage);
   assertEvidenceAccess(evidence, options.principalId);
-  return evidence;
-}
-
-export function recordExecutionEvidence(
-  controllerHome: string,
-  repoRoot: string,
-  job: ExecutionJob,
-  outcome: 'succeeded' | 'failed',
-  details?: Record<string, unknown>,
-): ExecutionEvidence {
-  const principalId = job.origin.actor?.trim();
-  const evidence: ExecutionEvidence = {
-    schemaVersion: 1,
-    evidenceId: `EVD-${Date.now()}-${randomUUID().slice(0, 8)}`,
-    ...(job.repoId?.trim() ? { repoId: job.repoId.trim() } : {}),
-    checkoutId: job.checkoutId,
-    jobId: job.jobId,
-    ...(principalId ? { principalId } : {}),
-    revision: gitRevision(repoRoot),
-    operation: job.payload.operation,
-    environmentFingerprint: environmentFingerprint(),
-    executedAt: new Date().toISOString(),
-    outcome,
-    details,
-  };
-  const storage: OutputHandleStorage = { scope: 'instance' };
-  writeJsonAtomic(evidencePath(controllerHome, storage, evidence.evidenceId), evidence);
-  registerEvidence(controllerHome, evidence, storage);
   return evidence;
 }

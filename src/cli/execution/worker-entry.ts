@@ -2,7 +2,6 @@
 import { ensureControllerHome } from '../../effects/controller-home';
 import { getExecutionJob, heartbeatExecutionJob, transitionExecutionJobFromWorker } from '../../runtime/execution/jobs/store';
 import { assertFencingToken, releaseExecutionLeases, renewExecutionLeases } from '../../runtime/resources/leases/store';
-import { recordExecutionEvidence } from '../../runtime/evidence/evidence-store';
 import { boundExecutionResult } from '../../runtime/evidence/artifact-store';
 import { executeExecutionJob } from '../../runtime/execution/workers/executor';
 import { dispatchLocalBridgeJob, getLocalBridgeJob } from '../local-bridge/job-store';
@@ -202,14 +201,6 @@ async function main(): Promise<void> {
     : execution.error?.details
       ? boundExecutionResult(controllerHome, current, execution.error.details, 'job-error')
       : undefined;
-  const evidence = recordExecutionEvidence(
-    controllerHome,
-    execution.repoRoot,
-    current,
-    execution.ok ? 'succeeded' : 'failed',
-    bounded?.result,
-  );
-  const evidenceIds = [...current.evidenceIds, evidence.evidenceId];
   const terminalError = execution.error ? { ...execution.error, details: bounded?.result } : undefined;
   const candidateReceipt = readOperationReceipt(controllerHome, repoId, jobId);
   const trustedReceipt = candidateReceipt && operationReceiptMatchesJobOwnership(candidateReceipt, current) ? candidateReceipt : undefined;
@@ -222,23 +213,20 @@ async function main(): Promise<void> {
     outcome: execution.ok ? 'succeeded' : 'failed',
     result: execution.ok ? bounded?.result : undefined,
     error: terminalError,
-    evidenceIds,
     ...(childReference ? { childReference } : {}),
   });
   if (execution.ok) {
     transitionExecutionJobFromWorker(controllerHome, repoId, jobId, owner, 'succeeded', {
       result: bounded?.result,
       outcome: execution.outcome,
-      evidenceIds,
       leaseRefs: [],
-    }, { evidenceId: evidence.evidenceId });
+    });
   } else {
     transitionExecutionJobFromWorker(controllerHome, repoId, jobId, owner, 'failed', {
       error: terminalError,
       outcome: execution.outcome ?? (terminalError ? { infrastructureError: { code: terminalError.code, message: terminalError.message } } : undefined),
-      evidenceIds,
       leaseRefs: [],
-    }, { evidenceId: evidence.evidenceId, error: execution.error });
+    }, { error: execution.error });
   }
 }
 
