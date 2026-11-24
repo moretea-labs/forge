@@ -868,22 +868,13 @@ function buildDirectEditCompletionReceipt(input: {
     baseRevision: input.integrationEvidence.baseRevision,
     changedPaths: Array.from(new Set(input.changedPaths)).sort((left, right) => left.localeCompare(right)),
     delivery: {
-      kind: input.integrationEvidence.kind,
       status: blockers.some((entry) => entry.code === 'target_revision_unreachable') ? 'blocked' : 'integrated',
-      strategy:
-        input.integrationEvidence.strategy === 'already_integrated'
-          ? 'already_integrated'
-          : input.integrationEvidence.strategy === 'no_change'
-            ? 'no_change'
-            : 'edit_session_commit',
       reachable: input.integrationEvidence.reachable,
-      recordedAt: input.integrationEvidence.recordedAt,
     },
     cleanup: {
       status: cleanupStatus(warnings, blockers),
       warnings,
       blockers,
-      recordedAt,
     },
     verifiedAt: input.verifiedAt ?? recordedAt,
     recordedAt,

@@ -37,17 +37,13 @@ export interface RepositoryCompletionReceipt {
   baseRevision?: string;
   changedPaths: string[];
   delivery: {
-    kind: 'commit' | 'no_change' | 'remote' | 'superseded';
     status: 'integrated' | 'blocked';
-    strategy: 'edit_session_commit' | 'already_integrated' | 'no_change' | 'remote';
     reachable: boolean;
-    recordedAt: string;
   };
   cleanup: {
     status: 'complete' | 'maintenance_warning' | 'blocked';
     warnings: CompletionMaintenanceWarning[];
     blockers: CompletionResourceBlocker[];
-    recordedAt: string;
   };
   verifiedAt: string;
   recordedAt: string;

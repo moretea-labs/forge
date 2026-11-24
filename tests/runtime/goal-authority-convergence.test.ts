@@ -41,17 +41,13 @@ function completionReceipt(receiptKey: string, targetRevision: string) {
     targetRevision,
     changedPaths: ['src/example.ts'],
     delivery: {
-      kind: 'commit' as const,
       status: 'integrated' as const,
-      strategy: 'edit_session_commit' as const,
       reachable: true,
-      recordedAt: '2026-09-05T00:00:00.000Z',
     },
     cleanup: {
       status: 'complete' as const,
       warnings: [],
       blockers: [],
-      recordedAt: '2026-09-05T00:00:00.000Z',
     },
     verifiedAt: '2026-09-05T00:00:00.000Z',
     recordedAt: '2026-09-05T00:00:00.000Z',
