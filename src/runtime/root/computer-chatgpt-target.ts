@@ -157,6 +157,15 @@ export async function runtimeComputerChatgptInventory(
   return await portFor(controllerHome, timeoutMs).inventory();
 }
 
+export function runtimeComputerChatgptLiveProviderStatus(controllerHome: string): {
+  observed: boolean;
+  ready: boolean;
+  providerCount: number;
+} {
+  if (process.platform === 'linux') return linuxExtension.runtimeComputerChatgptLiveProviderStatus(controllerHome);
+  return { observed: false, ready: false, providerCount: 0 };
+}
+
 export async function closeRuntimeComputerChatgptTarget(controllerHome: string): Promise<void> {
   if (process.platform === 'linux') {
     await linuxExtension.closeRuntimeComputerChatgptExtension(controllerHome);

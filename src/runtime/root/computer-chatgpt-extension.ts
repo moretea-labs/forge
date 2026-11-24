@@ -49,6 +49,18 @@ export type RuntimeComputerChatgptActionInput =
     };
 
 const runtimes = new Map<string, Promise<RuntimeComputerChatgptExtension>>();
+// Only the actual socket owner can attest a fresh provider heartbeat. Child
+// processes have no owner entry and must not infer readiness from socket files.
+const liveOwnerPorts = new Map<string, ChromeExtensionChatgptConversationTargetPort>();
+
+export function runtimeComputerChatgptLiveProviderStatus(controllerHome: string): {
+  observed: boolean; ready: boolean; providerCount: number;
+} {
+  const port = liveOwnerPorts.get(controllerHome);
+  if (!port) return { observed: false, ready: false, providerCount: 0 };
+  const providerCount = port.providerAvailability().freshProviderCount;
+  return { observed: true, ready: providerCount > 0, providerCount };
+}
 
 export function runtimeComputerChatgptExtensionSocketPath(controllerHome: string): string {
   return join(controllerHome, 'computer', 'chatgpt-extension.sock');
@@ -449,6 +461,7 @@ async function createRuntimeComputerChatgptExtension(controllerHome: string): Pr
     server.listen(socketPath, () => resolve());
   });
   server.unref();
+  liveOwnerPorts.set(controllerHome, port);
   return { controllerHome, socketPath, port, server };
 }
 
@@ -510,6 +523,7 @@ export async function closeRuntimeComputerChatgptExtension(controllerHome: strin
   const pending = runtimes.get(controllerHome);
   if (!pending) return;
   runtimes.delete(controllerHome);
+  liveOwnerPorts.delete(controllerHome);
   const runtime = await pending;
   await runtime.port.close();
   await new Promise<void>((resolve) => runtime.server.close(() => resolve()));

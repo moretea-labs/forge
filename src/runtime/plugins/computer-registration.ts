@@ -26,7 +26,11 @@ import {
   type ComputerSemanticSelector,
 } from '../../../packages/protocols/computer/index';
 import { executeRuntimeComputer, executeRuntimeComputerConsoleUnlock } from '../root/computer-composition';
-import { runtimeComputerChatgptAction, runtimeComputerChatgptInventory } from '../root/computer-chatgpt-target';
+import {
+  runtimeComputerChatgptAction,
+  runtimeComputerChatgptInventory,
+  runtimeComputerChatgptLiveProviderStatus,
+} from '../root/computer-chatgpt-target';
 import { runtimeComputerInteractionTargetAuthority } from '../root/computer-target-composition';
 import { currentComputerPlatform } from '../platform/computer-platform';
 import { isProcessAlive } from '../shared/process-tree';
@@ -1120,6 +1124,9 @@ function buildComputerManifest(
   const platform = currentComputerPlatform();
   const desktopSupported = platform === 'darwin';
   const browserReady = browser.enabled && browser.health.ready;
+  const chatgptProvider = context
+    ? runtimeComputerChatgptLiveProviderStatus(context.controllerHome)
+    : { observed: false, ready: false, providerCount: 0 };
   const desktopReady = desktopSupported && desktop?.enabled === true && desktop.health.ready;
   const physicalRepository = desktopSupported && context?.controllerScoped === false;
   const physicalReady = physicalRepository && iosPhysicalDeviceStatus().coreDeviceReady;
@@ -1128,7 +1135,7 @@ function buildComputerManifest(
   const hidStatus = physicalReady && context ? remoteXpcHidCachedStatus(context.controllerHome) : undefined;
   const physicalInputReady = physicalReady && hidStatus?.available === true;
   const ready = browserReady && desktopReady;
-  const partial = browserReady || desktopReady || physicalReady;
+  const partial = browserReady || chatgptProvider.ready || desktopReady || physicalReady;
   const checkedAt = new Date().toISOString();
   return {
     ...browser,
@@ -1147,20 +1154,22 @@ function buildComputerManifest(
         'controller-home:repository ios-device interactions and Controller-global UDID lock',
       ],
     },
-    enabled: browser.enabled || desktop?.enabled === true || physicalReady,
+    enabled: browser.enabled || chatgptProvider.ready || desktop?.enabled === true || physicalReady,
     lifecycle: {
       state: ready ? 'enabled' : partial ? 'degraded' : 'error',
       reason: ready
         ? 'Computer Browser and native Desktop semantic capabilities are ready.'
         : desktopSupported
           ? 'Computer is only partially ready; inspect Browser and native Desktop capability health.'
-          : `Computer has partial Browser-only support on ${platform}; native Desktop capabilities are unsupported on this platform.`,
+          : chatgptProvider.ready
+            ? 'Exact ChatGPT targets are available through the Chrome extension; native Browser/Desktop are unavailable on ' + platform + '.'
+            : 'Computer native Browser/Desktop providers are unavailable on ' + platform + '; inspect exact ChatGPT provider heartbeat separately.',
     },
     health: {
       state: ready ? 'ready' : partial ? 'degraded' : 'error',
       checkedAt,
       ready,
-      probed: browser.health.probed || desktop?.health.probed === true,
+      probed: browser.health.probed || desktop?.health.probed === true || chatgptProvider.observed,
       errors: ready
         ? []
         : [
@@ -1194,6 +1203,14 @@ function buildComputerManifest(
       details: {
         partial: !ready && partial,
         browser: { ready: browserReady, state: browser.health.state },
+        chatgpt: {
+          supported: true,
+          ready: chatgptProvider.ready,
+          state: chatgptProvider.ready ? 'ready' : chatgptProvider.observed ? 'unavailable' : 'unobserved',
+          provider: 'browser.chrome-extension',
+          providerCount: chatgptProvider.providerCount,
+          siteScope: 'https://chatgpt.com/*',
+        },
         desktop: {
           supported: desktopSupported,
           ready: desktopReady,

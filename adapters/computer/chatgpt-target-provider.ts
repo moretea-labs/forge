@@ -245,6 +245,11 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     return fresh.sort(([left], [right]) => left.localeCompare(right));
   }
 
+  /** Read-only capability signal. Never exposes provider instance IDs or tab handles. */
+  providerAvailability(): { freshProviderCount: number } {
+    return { freshProviderCount: this.freshProviders().length };
+  }
+
   private providerIsFresh(instanceId: string): boolean {
     return this.freshProviders().some(([candidate]) => candidate === instanceId);
   }

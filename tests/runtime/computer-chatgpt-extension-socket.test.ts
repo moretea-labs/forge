@@ -4,11 +4,13 @@ import { createServer, createConnection } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
+import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import {
   closeRuntimeComputerChatgptExtensionForTest,
   ensureRuntimeComputerChatgptExtension,
   runtimeComputerChatgptAction,
   runtimeComputerChatgptInventory,
+  runtimeComputerChatgptLiveProviderStatus,
 } from '../../src/runtime/root/computer-chatgpt-extension';
 import {
   closeRuntimeComputerChatgptTarget,
@@ -97,6 +99,31 @@ test('Computer heartbeat tolerates bounded Windows-to-WSL clock skew without tru
     conversations: [],
   });
   expect(tooFarFuture).toMatchObject({ ok: true, result: { recorded: false } });
+});
+
+test('Computer health reports live exact ChatGPT extension separately from unsupported native Browser/Desktop', async () => {
+  const controllerHome = home();
+  const manifest = () => computerPluginAdapter.buildManifest(1, undefined, controllerHome, {
+    controllerHome, repoId: 'fixture', repoRoot: controllerHome, controllerScoped: true,
+  });
+  expect(runtimeComputerChatgptLiveProviderStatus(controllerHome)).toMatchObject({ observed: false, ready: false });
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  expect(manifest().health.details?.chatgpt).toMatchObject({ state: 'unavailable', ready: false, providerCount: 0 });
+  await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension', providerInstanceId: 'windows-chrome',
+    observedAt: new Date().toISOString(), conversations: [],
+  });
+  expect(manifest().health).toMatchObject({
+    state: 'degraded', ready: false,
+    details: {
+      partial: true,
+      browser: { ready: false },
+      desktop: { supported: false, ready: false },
+      chatgpt: { state: 'ready', ready: true, providerCount: 1, siteScope: 'https://chatgpt.com/*' },
+    },
+  });
+  await closeRuntimeComputerChatgptExtensionForTest(controllerHome);
+  expect(runtimeComputerChatgptLiveProviderStatus(controllerHome)).toMatchObject({ observed: false, ready: false });
 });
 
 test('Computer exact-target socket owns heartbeat, claim, and completion without Supervisor state', async () => {
