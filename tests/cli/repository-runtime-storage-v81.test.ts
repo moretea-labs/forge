@@ -1,14 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  realpathSync,
-  symlinkSync,
-  writeFileSync,
-} from 'fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, realpathSync, symlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { callMultiRepositoryTool, createMcpToolContext } from '../../adapters/mcp/server';
 import { callRuntimeObservationAdapter } from '../../adapters/mcp/runtime-gateway/runtime-observation-adapter';
@@ -16,35 +7,58 @@ import { callRecoveryAdapter } from '../../adapters/mcp/runtime-gateway/recovery
 import { executeReadOnlyDiagnostic } from '../../src/runtime/diagnostics/read-only-tool';
 import { buildControllerWorkbench } from '../../src/runtime/repositories/workbench';
 import { listAssistantPluginManifests, listControllerPluginManifests } from '../../src/runtime/plugins/store';
-import { listExecutionJobs, findExecutionJob, getExecutionJobByRequestId } from '../../src/runtime/execution/jobs/store';
+import {
+  listExecutionJobs,
+  findExecutionJob,
+  getExecutionJobByRequestId,
+} from '../../src/runtime/execution/jobs/store';
 import { listRecoveryAuditRecords, listInstanceRecoveryAuditRecords } from '../../src/runtime/recovery/store';
 import { readHandoffInboxStore, handoffInboxPath } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { repositoryControllerRoot } from '../../src/effects/controller-home';
-import { ensureRepositoryRuntimeStorage, ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
+import {
+  ensureRepositoryRuntimeStorage,
+  ensureRepositoryRuntimeStorageBinding,
+} from '../../src/runtime/repositories/runtime-storage';
 import { beginEditSession } from '../../src/runtime/editing/edit-session';
 import { repositoryFixture } from './repository-v81-fixture';
 
 function writeRun(root: string, runId: string, status: string, marker: string): void {
   const directory = join(root, '.ai', 'harness', 'jobs', runId);
   mkdirSync(directory, { recursive: true });
-  writeFileSync(join(directory, 'meta.json'), `${JSON.stringify({
-    schemaVersion: 3,
-    runId,
-    status,
-    marker,
-  }, null, 2)}\n`, 'utf-8');
+  writeFileSync(
+    join(directory, 'meta.json'),
+    `${JSON.stringify(
+      {
+        schemaVersion: 3,
+        runId,
+        status,
+        marker,
+      },
+      null,
+      2,
+    )}\n`,
+    'utf-8',
+  );
 }
 
 function writeLocalJob(root: string, jobId: string, status: string, marker: string, runId?: string): void {
   const directory = join(root, '.ai', 'harness', 'local-jobs', jobId);
   mkdirSync(directory, { recursive: true });
-  writeFileSync(join(directory, 'job.json'), `${JSON.stringify({
-    schemaVersion: 1,
-    jobId,
-    status,
-    marker,
-    ...(runId ? { runId } : {}),
-  }, null, 2)}\n`, 'utf-8');
+  writeFileSync(
+    join(directory, 'job.json'),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        jobId,
+        status,
+        marker,
+        ...(runId ? { runId } : {}),
+      },
+      null,
+      2,
+    )}\n`,
+    'utf-8',
+  );
 }
 
 type RepositoryFixture = ReturnType<typeof repositoryFixture>;
@@ -69,29 +83,33 @@ describe('v8.1 repository runtime storage isolation', () => {
     const fixture = repositoryFixture();
     try {
       const editSource = join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'edit-sessions');
-      expect(() => beginEditSession(fixture.repoA.canonicalRoot, {
-        purpose: 'durable storage invariant',
-        allowedPaths: ['src/**'],
-        binding: {
-          repoId: fixture.repoA.repoId,
-          checkoutId: fixture.repoA.activeCheckoutId,
-          principalId: 'test-principal',
-        },
-      })).toThrow('EDIT_SESSION_STORAGE_NOT_BOUND');
+      expect(() =>
+        beginEditSession(fixture.repoA.canonicalRoot, {
+          purpose: 'durable storage invariant',
+          allowedPaths: ['src/**'],
+          binding: {
+            repoId: fixture.repoA.repoId,
+            checkoutId: fixture.repoA.activeCheckoutId,
+            principalId: 'test-principal',
+          },
+        }),
+      ).toThrow('EDIT_SESSION_STORAGE_NOT_BOUND');
       expect(existsSync(editSource)).toBe(false);
 
       const wrongTarget = join(fixture.root, 'wrong-edit-session-target');
       mkdirSync(wrongTarget, { recursive: true });
       symlinkSync(wrongTarget, editSource, 'dir');
-      expect(() => beginEditSession(fixture.repoA.canonicalRoot, {
-        purpose: 'durable storage wrong-target invariant',
-        allowedPaths: ['src/**'],
-        binding: {
-          repoId: fixture.repoA.repoId,
-          checkoutId: fixture.repoA.activeCheckoutId,
-          principalId: 'test-principal',
-        },
-      })).toThrow('EDIT_SESSION_STORAGE_NOT_BOUND');
+      expect(() =>
+        beginEditSession(fixture.repoA.canonicalRoot, {
+          purpose: 'durable storage wrong-target invariant',
+          allowedPaths: ['src/**'],
+          binding: {
+            repoId: fixture.repoA.repoId,
+            checkoutId: fixture.repoA.activeCheckoutId,
+            principalId: 'test-principal',
+          },
+        }),
+      ).toThrow('EDIT_SESSION_STORAGE_NOT_BOUND');
       rmSync(editSource, { force: true });
 
       const storage = ensureRepositoryRuntimeStorageBinding(fixture.repoA, 'edit-sessions', fixture.controllerHome);
@@ -109,7 +127,11 @@ describe('v8.1 repository runtime storage isolation', () => {
     try {
       const editSource = join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'edit-sessions');
       mkdirSync(join(editSource, 'EDIT-legacy'), { recursive: true });
-      writeFileSync(join(editSource, 'EDIT-legacy', 'session.json'), '{"schemaVersion":3,"sessionId":"EDIT-legacy"}\n', 'utf-8');
+      writeFileSync(
+        join(editSource, 'EDIT-legacy', 'session.json'),
+        '{"schemaVersion":3,"sessionId":"EDIT-legacy"}\n',
+        'utf-8',
+      );
 
       const binding = ensureRepositoryRuntimeStorageBinding(fixture.repoA, 'edit-sessions', fixture.controllerHome);
       const editTarget = join(repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId), 'edit-sessions');
@@ -322,12 +344,20 @@ describe('v8.1 repository runtime storage isolation', () => {
       rmSync(source, { recursive: true, force: true });
       mkdirSync(oldRunsTarget, { recursive: true });
       mkdirSync(legacyRun, { recursive: true });
-      writeFileSync(join(legacyRun, 'meta.json'), `${JSON.stringify({
-        schemaVersion: 3,
-        runId: 'RUN-legacy',
-        status: 'succeeded',
-        marker: 'from-old-controller-home',
-      }, null, 2)}\n`, 'utf-8');
+      writeFileSync(
+        join(legacyRun, 'meta.json'),
+        `${JSON.stringify(
+          {
+            schemaVersion: 3,
+            runId: 'RUN-legacy',
+            status: 'succeeded',
+            marker: 'from-old-controller-home',
+          },
+          null,
+          2,
+        )}\n`,
+        'utf-8',
+      );
       symlinkSync(oldRunsTarget, source, 'dir');
 
       const storage = ensureRepositoryRuntimeStorage(fixture.repoA, fixture.controllerHome);
@@ -414,7 +444,10 @@ describe('v8.1 repository runtime storage isolation', () => {
     const fixture = repositoryFixture();
     try {
       const source = join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'worktrees');
-      const controllerTarget = join(repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId), 'worktrees');
+      const controllerTarget = join(
+        repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId),
+        'worktrees',
+      );
       const activeTarget = join(controllerTarget, 'controller-active-worktree');
       mkdirSync(join(source, 'legacy-metadata'), { recursive: true });
       writeFileSync(join(source, 'legacy-metadata', 'marker.txt'), 'must remain repository-local\n', 'utf-8');
@@ -427,7 +460,9 @@ describe('v8.1 repository runtime storage isolation', () => {
       expect(storage.readyForExecution).toBe(false);
       expect(binding?.status).toBe('legacy-active');
       expect(binding?.message).toContain('cannot be merged while Controller Home contains live Git worktrees');
-      expect(readFileSync(join(source, 'legacy-metadata', 'marker.txt'), 'utf-8')).toBe('must remain repository-local\n');
+      expect(readFileSync(join(source, 'legacy-metadata', 'marker.txt'), 'utf-8')).toBe(
+        'must remain repository-local\n',
+      );
       expect(readFileSync(join(activeTarget, 'baseline.txt'), 'utf-8')).toBe('must remain in Controller Home\n');
     } finally {
       fixture.cleanup();
@@ -482,7 +517,12 @@ describe('v8.1 repository runtime storage isolation', () => {
       expectLegacyControllerStateNotMigrated(state);
       expect(lstatSync(legacyPluginRoot).isSymbolicLink()).toBe(true);
 
-      const diagnostic = await executeReadOnlyDiagnostic('capability_recovery_probe', fixture.controllerHome, fixture.repoA, {});
+      const diagnostic = await executeReadOnlyDiagnostic(
+        'capability_recovery_probe',
+        fixture.controllerHome,
+        fixture.repoA,
+        {},
+      );
       expect(diagnostic.recovery).toBeDefined();
       expect(Array.isArray(diagnostic.audit)).toBe(true);
       expectLegacyControllerStateNotMigrated(state);
@@ -518,10 +558,18 @@ describe('v8.1 repository runtime storage isolation', () => {
 
       const location = { controllerHome: fixture.controllerHome, repoId: fixture.repoA.repoId };
       const legacyPath = handoffInboxPath(location);
-      mkdirSync(join(fixture.controllerHome, 'repositories', fixture.repoA.repoId, 'handoff-inbox'), { recursive: true });
+      mkdirSync(join(fixture.controllerHome, 'repositories', fixture.repoA.repoId, 'handoff-inbox'), {
+        recursive: true,
+      });
       const legacyStore = { schemaVersion: 1 as const, updatedAt: '2026-11-13T00:00:00.000Z', items: [] };
       writeFileSync(legacyPath, `${JSON.stringify(legacyStore, null, 2)}\n`, 'utf-8');
-      const migrationMarker = join(fixture.controllerHome, 'system', 'user-requests', 'migrations', `handoff-inbox-${fixture.repoA.repoId}.json`);
+      const migrationMarker = join(
+        fixture.controllerHome,
+        'system',
+        'user-requests',
+        'migrations',
+        `handoff-inbox-${fixture.repoA.repoId}.json`,
+      );
 
       expect(readHandoffInboxStore(location)).toEqual(legacyStore);
       expect(existsSync(legacyPath)).toBe(true);

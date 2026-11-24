@@ -138,7 +138,11 @@ export interface ExecutionJobOutcome {
   failureClass?: 'acceptance_failure' | 'infrastructure_failure';
   acceptanceFailure?: { code: string; message: string };
   process?: { exitCode?: number | null; timedOut?: boolean; stdoutPath?: string; stderrPath?: string };
-  policy?: { decision: 'allowed' | 'approval_required' | 'rejected'; repositoryChanged?: boolean; changedPaths?: string[] };
+  policy?: {
+    decision: 'allowed' | 'approval_required' | 'rejected';
+    repositoryChanged?: boolean;
+    changedPaths?: string[];
+  };
   infrastructureError?: { code: string; message: string };
 }
 
@@ -200,10 +204,23 @@ export interface ExecutionJobEvent {
 }
 
 export const TERMINAL_JOB_STATUSES = new Set<ExecutionJobStatus>([
-  'succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned', 'stale', 'human_attention_required',
+  'succeeded',
+  'failed',
+  'timed_out',
+  'cancelled',
+  'orphaned',
+  'stale',
+  'human_attention_required',
 ]);
 
 export const ACTIVE_JOB_STATUSES = new Set<ExecutionJobStatus>([
-  'queued', 'waiting_for_dependency', 'waiting_for_workspace', 'waiting_for_heavy_check',
-  'waiting_for_integration', 'waiting_for_release_barrier', 'waiting_for_approval', 'running', 'dispatched',
+  'queued',
+  'waiting_for_dependency',
+  'waiting_for_workspace',
+  'waiting_for_heavy_check',
+  'waiting_for_integration',
+  'waiting_for_release_barrier',
+  'waiting_for_approval',
+  'running',
+  'dispatched',
 ]);

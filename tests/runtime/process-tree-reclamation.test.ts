@@ -1,8 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import {
-  isProcessStatAlive,
-  parseProcessGroupMembersPosix,
-} from '../../src/runtime/shared/process-tree';
+import { isProcessStatAlive, parseProcessGroupMembersPosix } from '../../src/runtime/shared/process-tree';
 
 describe('worker process-tree reclamation', () => {
   test('treats POSIX zombie states as already exited', () => {
@@ -13,19 +10,10 @@ describe('worker process-tree reclamation', () => {
   });
 
   test('filters POSIX process listings by exact process-group id', () => {
-    const output = [
-      ' 101  77 S',
-      ' 102  88 S+',
-      ' 103  77 Z',
-      ' 104  77 R',
-      ' malformed',
-      '',
-    ].join('\n');
+    const output = [' 101  77 S', ' 102  88 S+', ' 103  77 Z', ' 104  77 R', ' malformed', ''].join('\n');
 
     expect(parseProcessGroupMembersPosix(output, 77)).toEqual([101, 104]);
     expect(parseProcessGroupMembersPosix(output, 88)).toEqual([102]);
     expect(parseProcessGroupMembersPosix(output, 99)).toEqual([]);
   });
-
-
 });

@@ -330,7 +330,7 @@ describe('runtime command surface', () => {
     expect(contextHandlerBlock).toContain('projectionSnapshot: runtimeSnapshot');
     expect(contextHandlerBlock).toContain('runtimeStorageInspection: storageInspection');
     expect(contextHandlerBlock).not.toContain('buildControllerOperationalPlan');
-    expect(contextHandlerBlock).not.toContain("build.operational_plan");
+    expect(contextHandlerBlock).not.toContain('build.operational_plan');
     expect(contextHandlerBlock).toContain("markPhase('build.task_board', taskBoardStartedAt)");
     expect(contextHandlerBlock).toContain("markPhase('build.task_ledger', taskLedgerStartedAt)");
     expect(contextHandlerBlock).not.toContain('await controllerReadinessEvidence(ctx, repository)');

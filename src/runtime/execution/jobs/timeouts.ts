@@ -30,19 +30,17 @@ function expired(deadlineAt: string | undefined, nowMs: number): deadlineAt is s
   return Number.isFinite(parsed) && parsed <= nowMs;
 }
 
-export function executionTimeoutDecision(
-  job: ExecutionJob,
-  nowMs = Date.now(),
-): ExecutionTimeoutDecision | undefined {
+export function executionTimeoutDecision(job: ExecutionJob, nowMs = Date.now()): ExecutionTimeoutDecision | undefined {
   if (!job.timeoutPolicy) {
     if (!expired(job.deadlineAt, nowMs)) return undefined;
     return {
       phase: 'legacy',
       deadlineAt: job.deadlineAt,
       code: 'DEADLINE_EXCEEDED',
-      message: job.status === 'running'
-        ? 'Execution deadline elapsed while the Worker was running.'
-        : 'Execution deadline elapsed before dispatch.',
+      message:
+        job.status === 'running'
+          ? 'Execution deadline elapsed while the Worker was running.'
+          : 'Execution deadline elapsed before dispatch.',
     };
   }
 

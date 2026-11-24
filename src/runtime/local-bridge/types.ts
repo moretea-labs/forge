@@ -1,29 +1,29 @@
-import type { ControllerAgent } from "../agents/types";
-import type { ControllerCheckSnapshot } from "../execution/process-runtime/check-runner";
-import type { RepositoryCommandValue } from "../../core/repository-command/normalization";
+import type { ControllerAgent } from '../agents/types';
+import type { ControllerCheckSnapshot } from '../execution/process-runtime/check-runner';
+import type { RepositoryCommandValue } from '../../core/repository-command/normalization';
 
 export type TaskRisk = 'readonly' | 'low' | 'medium' | 'high' | 'destructive';
 
-export type LocalBridgeApproval = "auto" | "confirm" | "manual-only";
-export type LocalExecutionPreference = "auto" | "workspace" | "worktree";
+export type LocalBridgeApproval = 'auto' | 'confirm' | 'manual-only';
+export type LocalExecutionPreference = 'auto' | 'workspace' | 'worktree';
 export type LocalBridgeJobStatus =
-  | "pending_approval"
-  | "approved"
-  | "running"
-  | "dispatched"
-  | "succeeded"
-  | "timed_out"
-  | "orphaned"
-  | "stale"
-  | "failed"
-  | "cancelled";
+  | 'pending_approval'
+  | 'approved'
+  | 'running'
+  | 'dispatched'
+  | 'succeeded'
+  | 'timed_out'
+  | 'orphaned'
+  | 'stale'
+  | 'failed'
+  | 'cancelled';
 
 export type LocalBridgeJobAction =
-  | "launch-task"
-  | "quick-agent-session"
-  | "run-check"
-  | "verify-edit-session"
-  | "repository-command";
+  | 'launch-task'
+  | 'quick-agent-session'
+  | 'run-check'
+  | 'verify-edit-session'
+  | 'repository-command';
 
 export interface LaunchTaskPayload {
   issueId: string;
@@ -50,7 +50,7 @@ export interface QuickAgentSessionPayload {
   checks?: string[];
   acceptanceCriteria?: string[];
   risk?: TaskRisk;
-  agent?: Exclude<ControllerAgent, "github-copilot">;
+  agent?: Exclude<ControllerAgent, 'github-copilot'>;
   isolate?: boolean;
   executionMode?: LocalExecutionPreference;
   timeoutMs?: number;
@@ -98,23 +98,23 @@ export type LocalBridgeJobPayload =
 export interface LocalBridgeJobEvent {
   at: string;
   type:
-    | "job_created"
-    | "job_approved"
-    | "job_started"
-    | "job_dispatched"
-    | "job_progress"
-    | "job_approval_required"
-    | "job_succeeded"
-    | "job_failed"
-    | "job_cancelled"
-    | "job_cleaned";
+    | 'job_created'
+    | 'job_approved'
+    | 'job_started'
+    | 'job_dispatched'
+    | 'job_progress'
+    | 'job_approval_required'
+    | 'job_succeeded'
+    | 'job_failed'
+    | 'job_cancelled'
+    | 'job_cleaned';
   message?: string;
   data?: Record<string, unknown>;
 }
 
 export interface LocalBridgeJobOutcome {
   /** Optional semantic classification; acceptance failures are not infrastructure failures. */
-  failureClass?: "acceptance_failure" | "infrastructure_failure";
+  failureClass?: 'acceptance_failure' | 'infrastructure_failure';
   acceptanceFailure?: { code: string; message: string };
   process?: {
     exitCode?: number | null;
@@ -123,7 +123,7 @@ export interface LocalBridgeJobOutcome {
     stderrPath?: string;
   };
   policy?: {
-    decision: "allowed" | "approval_required" | "rejected";
+    decision: 'allowed' | 'approval_required' | 'rejected';
     repositoryChanged?: boolean;
     changedPaths?: string[];
   };

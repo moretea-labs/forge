@@ -8,7 +8,10 @@ import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runti
 describe('interactive sync routing policy', () => {
   test('router marks interactive write tools as sync-by-default and supports wait', () => {
     const routerSource = readFileSync(join(import.meta.dir, '../../adapters/mcp/runtime-gateway/router.ts'), 'utf8');
-    const policySource = readFileSync(join(import.meta.dir, '../../adapters/mcp/runtime-gateway/routing-policy.ts'), 'utf8');
+    const policySource = readFileSync(
+      join(import.meta.dir, '../../adapters/mcp/runtime-gateway/routing-policy.ts'),
+      'utf8',
+    );
     expect(policySource).toContain('INTERACTIVE_SYNC_WRITE_TOOLS');
     expect(policySource).toContain('repository_safe_patch_apply');
     expect(policySource).toContain('begin_edit_session');
@@ -49,7 +52,12 @@ describe('interactive sync routing policy', () => {
     const stableNames = new Set<string>(PREFERRED_CONTROLLER_TOOL_NAMES);
     expect(stableNames.has('computer_console_unlock_prepare')).toBe(false);
     expect(stableNames.has('computer_console_unlock')).toBe(false);
-    for (const name of ['computer_console_unlock_enroll', 'computer_console_unlock_status', 'computer_console_unlock_recover', 'computer_console_unlock_revoke']) {
+    for (const name of [
+      'computer_console_unlock_enroll',
+      'computer_console_unlock_status',
+      'computer_console_unlock_recover',
+      'computer_console_unlock_revoke',
+    ]) {
       expect(stableNames.has(name)).toBe(false);
     }
     expect(PREFERRED_CONTROLLER_TOOL_NAMES).not.toContain('repository_git_create_branch');

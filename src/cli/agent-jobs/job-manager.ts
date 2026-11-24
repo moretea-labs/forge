@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+import { createHash } from 'crypto';
 import {
   closeSync,
   existsSync,
@@ -10,19 +10,16 @@ import {
   rmSync,
   writeFileSync,
   appendFileSync,
-} from "fs";
-import { dirname, join } from "path";
-import { spawn } from "child_process";
-import { fileURLToPath } from "url";
-import { runProcess } from "../../effects/process-runner";
-import {
-  getGitHubAgentSession,
-  getGitHubAgentSessionLog,
-} from "../github/session";
-import { getIssue, inspectTaskReadiness, removeEphemeralIssue, updateTask } from "../controller/issue-store";
-import { readTaskRunEvidence } from "../controller/run-evidence";
-import { resolveEffectiveTaskState } from "../controller/task-status-resolver";
-import { tryAppendControllerWorklogEvent } from "../../runtime/evidence/controller-worklog";
+} from 'fs';
+import { dirname, join } from 'path';
+import { spawn } from 'child_process';
+import { fileURLToPath } from 'url';
+import { runProcess } from '../../effects/process-runner';
+import { getGitHubAgentSession, getGitHubAgentSessionLog } from '../github/session';
+import { getIssue, inspectTaskReadiness, removeEphemeralIssue, updateTask } from '../controller/issue-store';
+import { readTaskRunEvidence } from '../controller/run-evidence';
+import { resolveEffectiveTaskState } from '../controller/task-status-resolver';
+import { tryAppendControllerWorklogEvent } from '../../runtime/evidence/controller-worklog';
 import {
   ensureControllerEpoch,
   hasControllerOwnershipMetadata,
@@ -30,8 +27,8 @@ import {
   isPidAlive,
   matchesAgentWorkerCommand,
   shouldTolerateOwnedFinalizationInvalidation,
-} from "./worker-lifecycle";
-import { terminateProcessTreeSync } from "../../runtime/shared/process-tree";
+} from './worker-lifecycle';
+import { terminateProcessTreeSync } from '../../runtime/shared/process-tree';
 import type {
   AgentExecutionMode,
   AgentJobEvent,
@@ -40,7 +37,7 @@ import type {
   AgentJobPreservationReason,
   AgentJobStatus,
   AgentJobWorkerConfig,
-} from "./types";
+} from './types';
 import {
   AGENT_JOB_ROOT,
   eventPath,
@@ -53,23 +50,23 @@ import {
   runIndexPath,
   taskRunIndexPath,
   type AgentRunIndexEntry as RuntimeAgentRunIndexEntry,
-} from "../../runtime/agent-jobs/read-model";
+} from '../../runtime/agent-jobs/read-model';
 import {
   classifyExecutorFailure,
   classifyGitHubCopilotPreflight,
   classifyLocalExecutorHealth,
   ExecutorHealthError,
   isExecutorHealthError,
-} from "./executor-health";
+} from './executor-health';
 
 type AgentRunIndexEntry = RuntimeAgentRunIndexEntry<AgentJobStatus, AgentExecutionMode>;
 
-const RUN_INDEX_LOCK = ".ai/harness/controller/run-index.lock";
+const RUN_INDEX_LOCK = '.ai/harness/controller/run-index.lock';
 
 function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
   const temporaryPath = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
+  writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
   renameSync(temporaryPath, path);
 }
 
@@ -80,21 +77,21 @@ function isAlive(pid: number | undefined): boolean {
 function atomicCreateJson(path: string, value: unknown): boolean {
   mkdirSync(dirname(path), { recursive: true });
   try {
-    const fd = openSync(path, "wx", 0o600);
+    const fd = openSync(path, 'wx', 0o600);
     try {
-      writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
+      writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
     } finally {
       closeSync(fd);
     }
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
     throw error;
   }
 }
 
 function eventReceiptPath(repoRoot: string, runId: string, eventId: string): string {
-  return join(jobDir(repoRoot, runId), "event-receipts", `${createHash("sha256").update(eventId).digest("hex")}.json`);
+  return join(jobDir(repoRoot, runId), 'event-receipts', `${createHash('sha256').update(eventId).digest('hex')}.json`);
 }
 
 function withRunIndexLock<T>(repoRoot: string, action: () => T): T {
@@ -105,21 +102,31 @@ function withRunIndexLock<T>(repoRoot: string, action: () => T): T {
   while (descriptor < 0) {
     try {
       descriptor = openSync(path, 'wx', 0o600);
-      writeFileSync(descriptor, `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`, 'utf8');
+      writeFileSync(
+        descriptor,
+        `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+        'utf8',
+      );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       let stale = false;
       try {
         const lock = readJson<{ pid?: number; createdAt?: string }>(path);
         stale = !lock.pid || !isAlive(lock.pid) || Date.now() - Date.parse(lock.createdAt ?? '') > 30_000;
-      } catch { stale = true; }
+      } catch {
+        stale = true;
+      }
       if (stale) rmSync(path, { force: true });
       else if (Date.now() >= deadline) throw new Error('agent run index is busy; retry');
       else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
     }
   }
-  try { return action(); }
-  finally { closeSync(descriptor); rmSync(path, { force: true }); }
+  try {
+    return action();
+  } finally {
+    closeSync(descriptor);
+    rmSync(path, { force: true });
+  }
 }
 
 function updateRunIndexes(repoRoot: string, meta: AgentJobMeta): void {
@@ -150,27 +157,57 @@ function updateRunIndexes(repoRoot: string, meta: AgentJobMeta): void {
 
     const pendingIntegration = readRunIndex<AgentJobStatus, AgentExecutionMode>(repoRoot, 'pending-integration');
     pendingIntegration.runs = pendingIntegration.runs.filter((candidate) => candidate.runId !== meta.runId);
-    if (meta.closureState && [
-      'ready_to_integrate', 'integration_pending', 'integrating', 'integration_blocked',
-      'integrated', 'cleanup_pending', 'cleaning', 'cleanup_blocked', 'preserved',
-    ].includes(meta.closureState)) pendingIntegration.runs.push(entry);
+    if (
+      meta.closureState &&
+      [
+        'ready_to_integrate',
+        'integration_pending',
+        'integrating',
+        'integration_blocked',
+        'integrated',
+        'cleanup_pending',
+        'cleaning',
+        'cleanup_blocked',
+        'preserved',
+      ].includes(meta.closureState)
+    )
+      pendingIntegration.runs.push(entry);
     pendingIntegration.updatedAt = new Date().toISOString();
-    pendingIntegration.runs = pendingIntegration.runs.sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-5000);
+    pendingIntegration.runs = pendingIntegration.runs
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .slice(-5000);
     writeJson(runIndexPath(repoRoot, 'pending-integration'), pendingIntegration);
 
     const taskPath = taskRunIndexPath(repoRoot, meta.issueId, meta.taskId);
     const taskIndex = existsSync(taskPath)
-      ? readJson<{ schemaVersion: 1; issueId: string; taskId: string; runIds: string[]; activeRunId?: string; updatedAt: string }>(taskPath)
-      : { schemaVersion: 1 as const, issueId: meta.issueId, taskId: meta.taskId, runIds: [], updatedAt: new Date().toISOString() };
+      ? readJson<{
+          schemaVersion: 1;
+          issueId: string;
+          taskId: string;
+          runIds: string[];
+          activeRunId?: string;
+          updatedAt: string;
+        }>(taskPath)
+      : {
+          schemaVersion: 1 as const,
+          issueId: meta.issueId,
+          taskId: meta.taskId,
+          runIds: [],
+          updatedAt: new Date().toISOString(),
+        };
     taskIndex.runIds = [meta.runId, ...taskIndex.runIds.filter((runId) => runId !== meta.runId)].slice(0, 500);
-    taskIndex.activeRunId = ['queued', 'starting', 'running'].includes(meta.status) ? meta.runId : (taskIndex.activeRunId === meta.runId ? undefined : taskIndex.activeRunId);
+    taskIndex.activeRunId = ['queued', 'starting', 'running'].includes(meta.status)
+      ? meta.runId
+      : taskIndex.activeRunId === meta.runId
+        ? undefined
+        : taskIndex.activeRunId;
     taskIndex.updatedAt = new Date().toISOString();
     writeJson(taskPath, taskIndex);
   });
 }
 
 function writeAgentMeta(repoRoot: string, path: string, meta: AgentJobMeta): void {
-  if (meta.status === "succeeded") normalizeSuccessfulAgentRunMeta(meta);
+  if (meta.status === 'succeeded') normalizeSuccessfulAgentRunMeta(meta);
   writeJson(path, meta);
   updateRunIndexes(repoRoot, meta);
 }
@@ -184,32 +221,36 @@ function terminateRunProcess(pid: number | undefined): void {
   });
 }
 
-function terminateRunProcesses(meta: Pick<AgentJobMeta, "agentPid" | "workerPid" | "launchPid">): void {
+function terminateRunProcesses(meta: Pick<AgentJobMeta, 'agentPid' | 'workerPid' | 'launchPid'>): void {
   for (const pid of [meta.agentPid, meta.workerPid, meta.launchPid]) {
     terminateRunProcess(pid);
   }
 }
 
 function cancellationCleanupClaimPath(repoRoot: string, runId: string): string {
-  return join(jobDir(repoRoot, runId), "cancel-cleanup.lock.json");
+  return join(jobDir(repoRoot, runId), 'cancel-cleanup.lock.json');
 }
 
-function cancellationProcessIds(meta: Pick<AgentJobMeta, "agentPid" | "workerPid" | "launchPid" | "cancellationPids">): number[] {
-  return [...new Set([
-    ...(meta.cancellationPids ?? []),
-    meta.agentPid,
-    meta.workerPid,
-    meta.launchPid,
-  ].filter((pid): pid is number => Boolean(pid && pid > 0 && pid !== process.pid)))];
+function cancellationProcessIds(
+  meta: Pick<AgentJobMeta, 'agentPid' | 'workerPid' | 'launchPid' | 'cancellationPids'>,
+): number[] {
+  return [
+    ...new Set(
+      [...(meta.cancellationPids ?? []), meta.agentPid, meta.workerPid, meta.launchPid].filter((pid): pid is number =>
+        Boolean(pid && pid > 0 && pid !== process.pid),
+      ),
+    ),
+  ];
 }
 
 function claimCancellationCleanup(repoRoot: string, runId: string): boolean {
   const path = cancellationCleanupClaimPath(repoRoot, runId);
-  const claim = () => atomicCreateJson(path, {
-    pid: process.pid,
-    runId,
-    claimedAt: new Date().toISOString(),
-  });
+  const claim = () =>
+    atomicCreateJson(path, {
+      pid: process.pid,
+      runId,
+      claimedAt: new Date().toISOString(),
+    });
   if (claim()) return true;
   try {
     const existing = readJson<{ pid?: number }>(path);
@@ -234,14 +275,14 @@ function requestCancellationCleanup(repoRoot: string, runId: string): void {
     }
     const cleaner = spawn(
       process.execPath,
-      [fileURLToPath(new URL("./job-manager.ts", import.meta.url)), "cancel-cleanup", repoRoot, runId],
-      { cwd: repoRoot, detached: true, stdio: "ignore" },
+      [fileURLToPath(new URL('./job-manager.ts', import.meta.url)), 'cancel-cleanup', repoRoot, runId],
+      { cwd: repoRoot, detached: true, stdio: 'ignore' },
     );
     cleaner.unref();
-    cleaner.once("error", (error) => {
+    cleaner.once('error', (error) => {
       try {
         const current = getAgentJob(repoRoot, runId);
-        if (current.status !== "cancelled" || !current.cleanupPending) return;
+        if (current.status !== 'cancelled' || !current.cleanupPending) return;
         const { stdoutTail: _stdout, stderrTail: _stderr, ...meta } = current;
         meta.cleanupError = error.message;
         writeAgentMeta(repoRoot, metaPath(repoRoot, runId), meta);
@@ -251,7 +292,7 @@ function requestCancellationCleanup(repoRoot: string, runId: string): void {
     });
   } catch (error) {
     const current = getAgentJob(repoRoot, runId);
-    if (current.status !== "cancelled" || !current.cleanupPending) return;
+    if (current.status !== 'cancelled' || !current.cleanupPending) return;
     const { stdoutTail: _stdout, stderrTail: _stderr, ...meta } = current;
     meta.cleanupError = error instanceof Error ? error.message : String(error);
     writeAgentMeta(repoRoot, metaPath(repoRoot, runId), meta);
@@ -263,7 +304,7 @@ export function completeAgentJobCancellation(repoRoot: string, runId: string): A
   if (!claimCancellationCleanup(repoRoot, runId)) return getAgentJob(repoRoot, runId);
   try {
     const current = getAgentJob(repoRoot, runId);
-    if (current.status !== "cancelled" || !current.cleanupPending) return current;
+    if (current.status !== 'cancelled' || !current.cleanupPending) return current;
     const { stdoutTail: _stdout, stderrTail: _stderr, ...meta } = current;
     meta.cleanupStartedAt = meta.cleanupStartedAt ?? new Date().toISOString();
     meta.cleanupError = undefined;
@@ -272,7 +313,7 @@ export function completeAgentJobCancellation(repoRoot: string, runId: string): A
     for (const pid of cancellationProcessIds(meta)) terminateRunProcess(pid);
 
     const latest = getAgentJob(repoRoot, runId);
-    if (latest.status !== "cancelled") return latest;
+    if (latest.status !== 'cancelled') return latest;
     const { stdoutTail: _latestStdout, stderrTail: _latestStderr, ...cleaned } = latest;
     cleaned.agentPid = undefined;
     cleaned.workerPid = undefined;
@@ -284,10 +325,10 @@ export function completeAgentJobCancellation(repoRoot: string, runId: string): A
     // Persist the completion event before publishing cleanupPending=false. Readers
     // that observe terminal cleanup are therefore guaranteed to observe its event.
     // A crash between these writes is safely replayable without duplicating the event.
-    if (!hasAgentJobEvent(repoRoot, runId, "run_cleanup_completed")) {
+    if (!hasAgentJobEvent(repoRoot, runId, 'run_cleanup_completed')) {
       appendAgentJobEvent(repoRoot, runId, {
-        type: "run_cleanup_completed",
-        message: "Cancelled Run process cleanup completed.",
+        type: 'run_cleanup_completed',
+        message: 'Cancelled Run process cleanup completed.',
       });
     }
     writeAgentMeta(repoRoot, metaPath(repoRoot, runId), cleaned);
@@ -298,8 +339,8 @@ export function completeAgentJobCancellation(repoRoot: string, runId: string): A
         const state = resolveEffectiveTaskState({ issue, task, runs: readTaskRunEvidence(repoRoot, task) });
         if (!state.terminal && !state.inactive && (task.supersededBy?.length ?? 0) === 0) {
           updateTask(repoRoot, cleaned.issueId, cleaned.taskId, {
-            status: "blocked",
-            transition: "run_sync",
+            status: 'blocked',
+            transition: 'run_sync',
             note: `${runId} cancelled; explicit retry is required before another Run can be created.`,
           });
         }
@@ -311,13 +352,13 @@ export function completeAgentJobCancellation(repoRoot: string, runId: string): A
   } catch (error) {
     try {
       const current = getAgentJob(repoRoot, runId);
-      if (current.status === "cancelled") {
+      if (current.status === 'cancelled') {
         const { stdoutTail: _stdout, stderrTail: _stderr, ...meta } = current;
         meta.cleanupPending = true;
         meta.cleanupError = error instanceof Error ? error.message : String(error);
         writeAgentMeta(repoRoot, metaPath(repoRoot, runId), meta);
         appendAgentJobEvent(repoRoot, runId, {
-          type: "run_cleanup_failed",
+          type: 'run_cleanup_failed',
           message: meta.cleanupError,
         });
         return meta;
@@ -331,54 +372,45 @@ export function completeAgentJobCancellation(repoRoot: string, runId: string): A
   }
 }
 
-function markRunUnknown(
-  repoRoot: string,
-  path: string,
-  meta: AgentJobMeta,
-  reason: string,
-): void {
-  if (["succeeded", "failed", "cancelled", "unknown"].includes(meta.status)) return;
-  meta.status = "unknown";
+function markRunUnknown(repoRoot: string, path: string, meta: AgentJobMeta, reason: string): void {
+  if (['succeeded', 'failed', 'cancelled', 'unknown'].includes(meta.status)) return;
+  meta.status = 'unknown';
   meta.error = meta.error ?? reason;
   meta.finishedAt = meta.finishedAt ?? new Date().toISOString();
   meta.lastHeartbeatAt = meta.finishedAt;
   writeAgentMeta(repoRoot, path, meta);
   appendAgentJobEvent(repoRoot, meta.runId, {
-    type: "run_failed",
+    type: 'run_failed',
     message: meta.error,
   });
   reconcileLatestTerminalRun(repoRoot, meta);
 }
 
-function reconcileLocalRunOwnership(
-  repoRoot: string,
-  path: string,
-  meta: AgentJobMeta,
-): void {
-  if (!["queued", "starting", "running"].includes(meta.status)) return;
+function reconcileLocalRunOwnership(repoRoot: string, path: string, meta: AgentJobMeta): void {
+  if (!['queued', 'starting', 'running'].includes(meta.status)) return;
   const hasOwnershipMetadata = hasControllerOwnershipMetadata({
     controllerPid: meta.controllerPid,
     controllerEpoch: meta.controllerEpoch,
     controllerEpochPath: meta.controllerEpochPath,
   });
-  if (!hasOwnershipMetadata && meta.status !== "running") return;
+  if (!hasOwnershipMetadata && meta.status !== 'running') return;
   if (!hasOwnershipMetadata) {
     terminateRunProcesses(meta);
     meta.agentPid = undefined;
     meta.workerPid = undefined;
     meta.launchPid = undefined;
-    markRunUnknown(repoRoot, path, meta, "Run ownership metadata is missing");
+    markRunUnknown(repoRoot, path, meta, 'Run ownership metadata is missing');
     return;
   }
   const workerAlive = isAlive(meta.workerPid);
   if (workerAlive && meta.workerPid) {
-    const identity = runProcess("ps", ["-o", "command=", "-p", String(meta.workerPid)], {
+    const identity = runProcess('ps', ['-o', 'command=', '-p', String(meta.workerPid)], {
       timeoutMs: 1_000,
       maxOutputBytes: 32 * 1024,
     });
     if (identity.ok && identity.stdout.trim()) {
       const command = identity.stdout.trim();
-      const expectedConfig = join(repoRoot, AGENT_JOB_ROOT, meta.runId, "worker-config.json");
+      const expectedConfig = join(repoRoot, AGENT_JOB_ROOT, meta.runId, 'worker-config.json');
       if (!matchesAgentWorkerCommand(command, expectedConfig)) {
         meta.agentPid = undefined;
         meta.workerPid = undefined;
@@ -388,18 +420,21 @@ function reconcileLocalRunOwnership(
       }
     }
   }
-  const invalidation = invalidateAgentWorker(meta, {
-    controllerPid: meta.controllerPid,
-    controllerEpoch: meta.controllerEpoch,
-    controllerEpochPath: meta.controllerEpochPath
-      ? join(repoRoot, meta.controllerEpochPath)
-      : undefined,
-  }, {
-    workerPid: meta.workerPid,
-  });
+  const invalidation = invalidateAgentWorker(
+    meta,
+    {
+      controllerPid: meta.controllerPid,
+      controllerEpoch: meta.controllerEpoch,
+      controllerEpochPath: meta.controllerEpochPath ? join(repoRoot, meta.controllerEpochPath) : undefined,
+    },
+    {
+      workerPid: meta.workerPid,
+    },
+  );
   if (!invalidation) return;
-  const ownedCompletionInFlight = workerAlive
-    && shouldTolerateOwnedFinalizationInvalidation(meta, invalidation, {
+  const ownedCompletionInFlight =
+    workerAlive &&
+    shouldTolerateOwnedFinalizationInvalidation(meta, invalidation, {
       workerPid: meta.workerPid!,
       childExited: true,
     });
@@ -411,10 +446,10 @@ function reconcileLocalRunOwnership(
   markRunUnknown(repoRoot, path, meta, invalidation.message);
 }
 
-function hasAgentJobEvent(repoRoot: string, runId: string, type: AgentJobEvent["type"]): boolean {
+function hasAgentJobEvent(repoRoot: string, runId: string, type: AgentJobEvent['type']): boolean {
   const path = eventPath(repoRoot, runId);
   if (!existsSync(path)) return false;
-  return readFileSync(path, "utf-8")
+  return readFileSync(path, 'utf-8')
     .split(/\r?\n/)
     .filter(Boolean)
     .some((line) => {
@@ -429,7 +464,7 @@ function hasAgentJobEvent(repoRoot: string, runId: string, type: AgentJobEvent["
 export function appendAgentJobEvent(
   repoRoot: string,
   runId: string,
-  event: Omit<AgentJobEvent, "at"> & { at?: string },
+  event: Omit<AgentJobEvent, 'at'> & { at?: string },
 ): void {
   const path = eventPath(repoRoot, runId);
   mkdirSync(dirname(path), { recursive: true });
@@ -437,23 +472,23 @@ export function appendAgentJobEvent(
   const metaFile = metaPath(repoRoot, runId);
   const meta = existsSync(metaFile) ? readJson<AgentJobMeta>(metaFile) : undefined;
   const commandId = event.commandId ?? meta?.runId;
-  const terminal = ["run_succeeded", "run_failed", "run_cancelled"].includes(event.type);
-  const eventId = event.eventId ?? (commandId && (event.type === "run_started" || terminal)
-    ? `${commandId}:${event.type}`
-    : undefined);
+  const terminal = ['run_succeeded', 'run_failed', 'run_cancelled'].includes(event.type);
+  const eventId =
+    event.eventId ??
+    (commandId && (event.type === 'run_started' || terminal) ? `${commandId}:${event.type}` : undefined);
   if (eventId && !atomicCreateJson(eventReceiptPath(repoRoot, runId, eventId), { eventId, at })) return;
   appendFileSync(
     path,
     `${JSON.stringify({ ...event, at, eventId, requestId: event.requestId ?? meta?.requestId, commandId, executionId: event.executionId ?? commandId })}\n`,
-    "utf-8",
+    'utf-8',
   );
   try {
     tryAppendControllerWorklogEvent(repoRoot, {
       at,
-      category: "run",
+      category: 'run',
       action: event.type,
       summary: event.message || event.type,
-      actor: meta?.agent ?? "agent-runner",
+      actor: meta?.agent ?? 'agent-runner',
       issueId: meta?.issueId,
       taskId: meta?.taskId,
       runId,
@@ -463,7 +498,6 @@ export function appendAgentJobEvent(
     // The Run event remains authoritative even when the aggregate worklog is unavailable.
   }
 }
-
 
 function activeRunIndexEntries(repoRoot: string): AgentRunIndexEntry[] {
   let active = readRunIndex<AgentJobStatus, AgentExecutionMode>(repoRoot, 'active').runs;
@@ -475,21 +509,21 @@ function activeRunIndexEntries(repoRoot: string): AgentRunIndexEntry[] {
 }
 
 function reconcileLatestTerminalRun(repoRoot: string, meta: AgentJobMeta): void {
-  if (!["succeeded", "failed", "cancelled", "unknown"].includes(meta.status)) return;
+  if (!['succeeded', 'failed', 'cancelled', 'unknown'].includes(meta.status)) return;
   try {
     const issue = getIssue(repoRoot, meta.issueId);
     const task = issue.tasks.find((entry) => entry.id === meta.taskId);
     if (!task) return;
     const state = resolveEffectiveTaskState({ issue, task, runs: readTaskRunEvidence(repoRoot, task) });
     if (state.latestRunId !== meta.runId) return;
-    if (["done", "cancelled", "superseded"].includes(task.status)) return;
+    if (['done', 'cancelled', 'superseded'].includes(task.status)) return;
 
-    if (meta.status === "succeeded") {
-      if (!["review", "integrated", "verifying", "verified"].includes(task.status)) {
+    if (meta.status === 'succeeded') {
+      if (!['review', 'integrated', 'verifying', 'verified'].includes(task.status)) {
         updateTask(repoRoot, issue.id, task.id, {
-          status: "review",
+          status: 'review',
           runId: meta.runId,
-          transition: "run_sync",
+          transition: 'run_sync',
           note: `${meta.runId} succeeded and entered task-local continuation.`,
         });
       }
@@ -497,10 +531,10 @@ function reconcileLatestTerminalRun(repoRoot: string, meta: AgentJobMeta): void 
     }
 
     updateTask(repoRoot, issue.id, task.id, {
-      status: "blocked",
+      status: 'blocked',
       runId: meta.runId,
-      transition: "run_sync",
-      note: `${meta.runId} ended as ${meta.status}; explicit retry is required.${meta.error ? ` ${meta.error}` : ""}`,
+      transition: 'run_sync',
+      note: `${meta.runId} ended as ${meta.status}; explicit retry is required.${meta.error ? ` ${meta.error}` : ''}`,
     });
     // Failed/unknown/cancelled ephemeral Runs remain retryable evidence. Keep
     // their hidden Issue/Task metadata until a successful continuation reaches
@@ -510,45 +544,43 @@ function reconcileLatestTerminalRun(repoRoot: string, meta: AgentJobMeta): void 
   }
 }
 
-function reconcileIncompleteAutoIntegration(
-  repoRoot: string,
-  path: string,
-  meta: AgentJobMeta,
-): void {
+function reconcileIncompleteAutoIntegration(repoRoot: string, path: string, meta: AgentJobMeta): void {
   const cleanupWasPending = Boolean(meta.integratedSessionId);
-  const message = meta.autoIntegrationError?.trim() || (cleanupWasPending
-    ? "automatic worktree cleanup did not finish after integration; the isolated worktree was preserved for a safe retry"
-    : "automatic worktree integration did not finish after the worker exited; the isolated worktree was preserved for manual integration");
+  const message =
+    meta.autoIntegrationError?.trim() ||
+    (cleanupWasPending
+      ? 'automatic worktree cleanup did not finish after integration; the isolated worktree was preserved for a safe retry'
+      : 'automatic worktree integration did not finish after the worker exited; the isolated worktree was preserved for manual integration');
   const progressedAt = new Date().toISOString();
-  meta.status = "waiting_for_user";
-  meta.closureState = "preserved";
+  meta.status = 'waiting_for_user';
+  meta.closureState = 'preserved';
   meta.closureUpdatedAt = progressedAt;
   meta.preservationReason = cleanupWasPending
-    ? "cleanup_failed"
+    ? 'cleanup_failed'
     : meta.integrationReviewPath
-      ? "integration_review_required"
-      : "integration_failed";
+      ? 'integration_review_required'
+      : 'integration_failed';
   meta.preservationDetails = message;
   meta.autoIntegrationError = message;
   meta.lastHeartbeatAt = progressedAt;
   delete meta.finishedAt;
   meta.progress = {
-    phase: "waiting",
+    phase: 'waiting',
     currentActivity: `实现完成，但自动集成需要处理：${message}`,
     lastActivityAt: progressedAt,
     activityCount: (meta.progress?.activityCount ?? 0) + 1,
   };
   writeAgentMeta(repoRoot, path, meta);
   appendAgentJobEvent(repoRoot, meta.runId, {
-    type: "run_waiting",
-    message: "Automatic worktree integration did not finish; the worktree was preserved for manual integration.",
+    type: 'run_waiting',
+    message: 'Automatic worktree integration did not finish; the worktree was preserved for manual integration.',
     data: { error: message, recovered: true },
   });
   try {
     updateTask(repoRoot, meta.issueId, meta.taskId, {
-      status: "review",
+      status: 'review',
       runId: meta.runId,
-      transition: "run_sync",
+      transition: 'run_sync',
       note: `Automatic integration did not finish for ${meta.runId}: ${message}`,
     });
   } catch (_error) {
@@ -556,15 +588,21 @@ function reconcileIncompleteAutoIntegration(
   }
 }
 
-function executorFailureMessage(meta: Pick<AgentJobMeta, "agent" | "error">, stdoutTail?: string, stderrTail?: string): string {
-  return [meta.error, stderrTail, stdoutTail].filter((value): value is string => typeof value === "string" && value.trim().length > 0).join("\n");
+function executorFailureMessage(
+  meta: Pick<AgentJobMeta, 'agent' | 'error'>,
+  stdoutTail?: string,
+  stderrTail?: string,
+): string {
+  return [meta.error, stderrTail, stdoutTail]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n');
 }
 
 function attachExecutorFailureHealth(meta: AgentJobMeta, stdoutTail?: string, stderrTail?: string): AgentJobMeta {
-  if (meta.status === "succeeded") {
+  if (meta.status === 'succeeded') {
     // Successful Runs must not retain stale failure classification.
     delete meta.executorHealth;
-    if (meta.terminationReason && meta.terminationReason !== "cancelled") {
+    if (meta.terminationReason && meta.terminationReason !== 'cancelled') {
       delete meta.terminationReason;
     }
     if (meta.error) delete meta.error;
@@ -582,39 +620,35 @@ function attachExecutorFailureHealth(meta: AgentJobMeta, stdoutTail?: string, st
  * terminationReason do not linger after a recovered or reconciled success.
  */
 export function normalizeSuccessfulAgentRunMeta(meta: AgentJobMeta): AgentJobMeta {
-  if (meta.status !== "succeeded") return meta;
+  if (meta.status !== 'succeeded') return meta;
   delete meta.executorHealth;
   if (meta.error) delete meta.error;
-  if (meta.terminationReason && meta.terminationReason !== "cancelled") {
+  if (meta.terminationReason && meta.terminationReason !== 'cancelled') {
     delete meta.terminationReason;
   }
   return meta;
 }
 
-function failAcceptedTaskJob(
-  repoRoot: string,
-  runId: string,
-  reason: unknown,
-): AgentJobMeta {
+function failAcceptedTaskJob(repoRoot: string, runId: string, reason: unknown): AgentJobMeta {
   const current = getAgentJob(repoRoot, runId);
-  if (!["starting", "queued", "running"].includes(current.status)) return current;
+  if (!['starting', 'queued', 'running'].includes(current.status)) return current;
   const { stdoutTail: _stdout, stderrTail: _stderr, ...meta } = current;
-  meta.status = "failed";
+  meta.status = 'failed';
   meta.error = reason instanceof Error ? reason.message : String(reason);
   meta.finishedAt = new Date().toISOString();
   meta.lastHeartbeatAt = meta.finishedAt;
-  meta.terminationReason = "spawn_error";
+  meta.terminationReason = 'spawn_error';
   attachExecutorFailureHealth(meta);
   writeAgentMeta(repoRoot, metaPath(repoRoot, runId), meta);
   appendAgentJobEvent(repoRoot, runId, {
-    type: "run_failed",
+    type: 'run_failed',
     message: meta.error,
   });
   try {
     updateTask(repoRoot, meta.issueId, meta.taskId, {
-      status: "blocked",
+      status: 'blocked',
       runId: meta.runId,
-      transition: "run_sync",
+      transition: 'run_sync',
       note: `${meta.runId} failed before startup completed; explicit retry is required: ${meta.error}`,
     });
   } catch (_error) {
@@ -632,7 +666,7 @@ function scanLegacyJobMeta(repoRoot: string, limit = 50): AgentJobMeta[] {
     return match ? Number(match[1]) : 0;
   };
   return readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, "meta.json")))
+    .filter((entry) => entry.isDirectory() && existsSync(join(root, entry.name, 'meta.json')))
     .sort((a, b) => createdAtFromRunId(b.name) - createdAtFromRunId(a.name))
     .slice(0, boundedLimit)
     .flatMap((entry) => {
@@ -644,22 +678,22 @@ function scanLegacyJobMeta(repoRoot: string, limit = 50): AgentJobMeta[] {
 
 function mapGitHubState(state: string): AgentJobStatus {
   switch (state) {
-    case "completed":
-      return "succeeded";
-    case "failed":
-    case "timed_out":
-      return "failed";
-    case "cancelled":
-      return "cancelled";
-    case "idle":
-    case "waiting_for_user":
-      return "waiting_for_user";
-    case "queued":
-      return "queued";
-    case "in_progress":
-      return "running";
+    case 'completed':
+      return 'succeeded';
+    case 'failed':
+    case 'timed_out':
+      return 'failed';
+    case 'cancelled':
+      return 'cancelled';
+    case 'idle':
+    case 'waiting_for_user':
+      return 'waiting_for_user';
+    case 'queued':
+      return 'queued';
+    case 'in_progress':
+      return 'running';
     default:
-      return "unknown";
+      return 'unknown';
   }
 }
 
@@ -677,17 +711,12 @@ export function getAgentJob(
   let metaMutated = false;
 
   if (
-    meta.provider === "github" &&
+    meta.provider === 'github' &&
     meta.github &&
-    ["queued", "starting", "running", "waiting_for_user", "unknown"].includes(meta.status)
+    ['queued', 'starting', 'running', 'waiting_for_user', 'unknown'].includes(meta.status)
   ) {
     try {
-      const session = getGitHubAgentSession(
-        repoRoot,
-        meta.github.owner,
-        meta.github.repo,
-        meta.github.taskId,
-      );
+      const session = getGitHubAgentSession(repoRoot, meta.github.owner, meta.github.repo, meta.github.taskId);
       const previous = meta.status;
       meta.status = mapGitHubState(session.state);
       meta.github = {
@@ -697,24 +726,20 @@ export function getAgentJob(
         pullRequestUrl: session.pullRequestUrl ?? meta.github.pullRequestUrl,
         raw: session.raw,
       };
-      if (
-        meta.status === "succeeded" ||
-        meta.status === "failed" ||
-        meta.status === "cancelled"
-      )
+      if (meta.status === 'succeeded' || meta.status === 'failed' || meta.status === 'cancelled')
         meta.finishedAt = meta.finishedAt ?? new Date().toISOString();
       writeAgentMeta(repoRoot, path, meta);
       if (previous !== meta.status) {
         const eventType =
-          meta.status === "succeeded"
-            ? "run_succeeded"
-            : meta.status === "failed"
-              ? "run_failed"
-              : meta.status === "waiting_for_user"
-                ? "run_waiting"
-                : meta.status === "cancelled"
-                  ? "run_cancelled"
-                  : "log_updated";
+          meta.status === 'succeeded'
+            ? 'run_succeeded'
+            : meta.status === 'failed'
+              ? 'run_failed'
+              : meta.status === 'waiting_for_user'
+                ? 'run_waiting'
+                : meta.status === 'cancelled'
+                  ? 'run_cancelled'
+                  : 'log_updated';
         appendAgentJobEvent(repoRoot, runId, {
           type: eventType,
           message: `GitHub session state changed to ${session.state}.`,
@@ -723,14 +748,14 @@ export function getAgentJob(
             pullRequestUrl: meta.github.pullRequestUrl,
           },
         });
-        if (["succeeded", "failed", "cancelled", "unknown"].includes(meta.status)) {
+        if (['succeeded', 'failed', 'cancelled', 'unknown'].includes(meta.status)) {
           reconcileLatestTerminalRun(repoRoot, meta);
         } else {
           try {
             updateTask(repoRoot, meta.issueId, meta.taskId, {
-              status: meta.status === "waiting_for_user" ? "blocked" : "running",
+              status: meta.status === 'waiting_for_user' ? 'blocked' : 'running',
               runId: meta.runId,
-              transition: "run_sync",
+              transition: 'run_sync',
               note: `GitHub Run ${meta.runId} synchronized to ${meta.status}.`,
             });
           } catch (_error) {
@@ -745,14 +770,15 @@ export function getAgentJob(
       metaMutated = metaMutated || beforeReason !== meta.executorHealth?.reason;
       writeAgentMeta(repoRoot, path, meta);
     }
-  } else if (meta.provider === "local") {
+  } else if (meta.provider === 'local') {
     const resultAbsolute = join(repoRoot, meta.resultPath);
-    const autoIntegrationInFlight = meta.status === "running" &&
+    const autoIntegrationInFlight =
+      meta.status === 'running' &&
       meta.autoIntegrate === true &&
-      meta.executionMode === "worktree" &&
+      meta.executionMode === 'worktree' &&
       isAlive(meta.workerPid);
     if (
-      ["queued", "starting", "running"].includes(meta.status) &&
+      ['queued', 'starting', 'running'].includes(meta.status) &&
       existsSync(resultAbsolute) &&
       !autoIntegrationInFlight
     ) {
@@ -765,24 +791,17 @@ export function getAgentJob(
       const previous = meta.status;
       meta.exitCode = result.exitCode;
       meta.error = result.error;
-      if (
-        result.ok &&
-        meta.autoIntegrate === true &&
-        meta.executionMode === "worktree" &&
-        !meta.integratedSessionId
-      ) {
+      if (result.ok && meta.autoIntegrate === true && meta.executionMode === 'worktree' && !meta.integratedSessionId) {
         reconcileIncompleteAutoIntegration(repoRoot, path, meta);
       } else {
-        meta.status = result.ok ? "succeeded" : "failed";
+        meta.status = result.ok ? 'succeeded' : 'failed';
         meta.finishedAt = result.finishedAt;
         if (!result.ok) attachExecutorFailureHealth(meta);
         writeAgentMeta(repoRoot, path, meta);
         if (previous !== meta.status) {
           appendAgentJobEvent(repoRoot, runId, {
-            type: result.ok ? "run_succeeded" : "run_failed",
-            message: result.ok
-              ? "Local worker finished."
-              : (result.error ?? `exit ${result.exitCode}`),
+            type: result.ok ? 'run_succeeded' : 'run_failed',
+            message: result.ok ? 'Local worker finished.' : (result.error ?? `exit ${result.exitCode}`),
           });
           reconcileLatestTerminalRun(repoRoot, meta);
         }
@@ -791,61 +810,46 @@ export function getAgentJob(
       reconcileLocalRunOwnership(repoRoot, path, meta);
     }
     if (
-      ["queued", "starting"].includes(meta.status) &&
+      ['queued', 'starting'].includes(meta.status) &&
       meta.startupDeadlineAt &&
       Date.now() > Date.parse(meta.startupDeadlineAt) &&
       !isAlive(meta.workerPid) &&
       !isAlive(meta.launchPid)
     ) {
-      meta.status = "unknown";
-      meta.error = meta.error ?? "worker did not start before the startup deadline";
+      meta.status = 'unknown';
+      meta.error = meta.error ?? 'worker did not start before the startup deadline';
       meta.finishedAt = meta.finishedAt ?? new Date().toISOString();
       attachExecutorFailureHealth(meta);
       writeAgentMeta(repoRoot, path, meta);
-      appendAgentJobEvent(repoRoot, runId, { type: "run_failed", message: meta.error });
+      appendAgentJobEvent(repoRoot, runId, { type: 'run_failed', message: meta.error });
       reconcileLatestTerminalRun(repoRoot, meta);
-    } else if (meta.status === "running" && !isAlive(meta.workerPid)) {
-      meta.status = "unknown";
-      meta.error =
-        meta.error ??
-        "worker process is no longer running and no result file was produced";
+    } else if (meta.status === 'running' && !isAlive(meta.workerPid)) {
+      meta.status = 'unknown';
+      meta.error = meta.error ?? 'worker process is no longer running and no result file was produced';
       meta.finishedAt = meta.finishedAt ?? new Date().toISOString();
       attachExecutorFailureHealth(meta);
       writeAgentMeta(repoRoot, path, meta);
-      appendAgentJobEvent(repoRoot, runId, { type: "run_failed", message: meta.error });
+      appendAgentJobEvent(repoRoot, runId, { type: 'run_failed', message: meta.error });
       reconcileLatestTerminalRun(repoRoot, meta);
     }
   }
   const tail = (relativePath: string): string => {
     const absolute = join(repoRoot, relativePath);
-    if (!existsSync(absolute)) return "";
-    const content = readFileSync(absolute, "utf-8");
+    if (!existsSync(absolute)) return '';
+    const content = readFileSync(absolute, 'utf-8');
     return content.slice(-32 * 1024);
   };
-  const startMs = meta.startedAt
-    ? Date.parse(meta.startedAt)
-    : Date.parse(meta.createdAt);
+  const startMs = meta.startedAt ? Date.parse(meta.startedAt) : Date.parse(meta.createdAt);
   const endMs = meta.finishedAt ? Date.parse(meta.finishedAt) : Date.now();
-  const deadlineMs = meta.deadlineAt
-    ? Date.parse(meta.deadlineAt)
-    : meta.timeoutMs
-      ? startMs + meta.timeoutMs
-      : NaN;
-  const remainingMs =
-    Number.isFinite(deadlineMs) && !meta.finishedAt
-      ? Math.max(0, deadlineMs - Date.now())
-      : null;
+  const deadlineMs = meta.deadlineAt ? Date.parse(meta.deadlineAt) : meta.timeoutMs ? startMs + meta.timeoutMs : NaN;
+  const remainingMs = Number.isFinite(deadlineMs) && !meta.finishedAt ? Math.max(0, deadlineMs - Date.now()) : null;
   const beforeReason = meta.executorHealth?.reason;
-  if (meta.status === "succeeded") {
+  if (meta.status === 'succeeded') {
     const beforeHealth = meta.executorHealth;
     const beforeError = meta.error;
     const beforeTermination = meta.terminationReason;
     normalizeSuccessfulAgentRunMeta(meta);
-    if (
-      beforeHealth !== undefined
-      || beforeError !== undefined
-      || beforeTermination !== meta.terminationReason
-    ) {
+    if (beforeHealth !== undefined || beforeError !== undefined || beforeTermination !== meta.terminationReason) {
       metaMutated = true;
     }
   } else {
@@ -860,10 +864,7 @@ export function getAgentJob(
     timing: {
       elapsedMs: Math.max(0, endMs - startMs),
       remainingMs,
-      overdue:
-        Number.isFinite(deadlineMs) &&
-        !meta.finishedAt &&
-        Date.now() > deadlineMs,
+      overdue: Number.isFinite(deadlineMs) && !meta.finishedAt && Date.now() > deadlineMs,
     },
   };
 }
@@ -878,14 +879,11 @@ export function reconcileAgentJobs(repoRoot: string): {
     try {
       const path = metaPath(repoRoot, entry.runId);
       const before = readJson<AgentJobMeta>(path);
-      if (before.provider !== "local") continue;
+      if (before.provider !== 'local') continue;
       const previous = before.status;
       getAgentJob(repoRoot, entry.runId);
       const after = readJson<AgentJobMeta>(path);
-      if (
-        previous !== after.status &&
-        ["succeeded", "failed", "cancelled", "unknown"].includes(after.status)
-      ) {
+      if (previous !== after.status && ['succeeded', 'failed', 'cancelled', 'unknown'].includes(after.status)) {
         terminalized += 1;
       }
     } catch (_error) {
@@ -905,12 +903,25 @@ export function listPendingIntegrationRuns(repoRoot: string, limit = 500): Agent
   return pending.runs.slice(0, bounded).flatMap((entry) => {
     try {
       const { stdoutTail: _stdout, stderrTail: _stderr, ...meta } = getAgentJob(repoRoot, entry.runId);
-      if (meta.closureState && [
-        'ready_to_integrate', 'integration_pending', 'integrating', 'integration_blocked',
-        'integrated', 'cleanup_pending', 'cleaning', 'cleanup_blocked', 'preserved',
-      ].includes(meta.closureState)) return [meta];
+      if (
+        meta.closureState &&
+        [
+          'ready_to_integrate',
+          'integration_pending',
+          'integrating',
+          'integration_blocked',
+          'integrated',
+          'cleanup_pending',
+          'cleaning',
+          'cleanup_blocked',
+          'preserved',
+        ].includes(meta.closureState)
+      )
+        return [meta];
       return [];
-    } catch (_error) { return []; }
+    } catch (_error) {
+      return [];
+    }
   });
 }
 
@@ -962,23 +973,24 @@ export function getAgentJobEvents(
   getAgentJob(repoRoot, runId);
   const path = eventPath(repoRoot, runId);
   if (!existsSync(path)) return [];
-  const events = readFileSync(path, "utf-8")
+  const events = readFileSync(path, 'utf-8')
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => readJsonLine<AgentJobEvent>(line))
     .map((event, index) => ({ ...event, data: { ...(event.data ?? {}), eventIndex: index } }))
     .filter((event) => options.sinceIndex === undefined || Number(event.data?.eventIndex) > options.sinceIndex);
 
-  const filtered = options.includeHeartbeats === true
-    ? events
-    : events.filter((event, index, list) => {
-      if (!["run_heartbeat", "log_updated"].includes(event.type)) return true;
-      for (let cursor = index + 1; cursor < list.length; cursor += 1) {
-        if (["run_heartbeat", "log_updated"].includes(list[cursor].type)) continue;
-        return false;
-      }
-      return true;
-    });
+  const filtered =
+    options.includeHeartbeats === true
+      ? events
+      : events.filter((event, index, list) => {
+          if (!['run_heartbeat', 'log_updated'].includes(event.type)) return true;
+          for (let cursor = index + 1; cursor < list.length; cursor += 1) {
+            if (['run_heartbeat', 'log_updated'].includes(list[cursor].type)) continue;
+            return false;
+          }
+          return true;
+        });
 
   return filtered.slice(-Math.min(Math.max(limit, 1), 1000));
 }
@@ -1000,17 +1012,11 @@ export function getAgentJobLog(
   pullRequestUrl?: string;
 } {
   const run = getAgentJob(repoRoot, runId);
-  if (run.provider === "github" && run.github) {
-    const log = getGitHubAgentSessionLog(
-      repoRoot,
-      run.github.owner,
-      run.github.repo,
-      run.github.taskId,
-      follow,
-    );
+  if (run.provider === 'github' && run.github) {
+    const log = getGitHubAgentSessionLog(repoRoot, run.github.owner, run.github.repo, run.github.taskId, follow);
     return {
       runId,
-      provider: "github",
+      provider: 'github',
       log,
       url: run.github.url,
       pullRequestUrl: run.github.pullRequestUrl,
@@ -1018,36 +1024,33 @@ export function getAgentJobLog(
   }
   const readLog = (relativePath: string): string => {
     const absolute = join(repoRoot, relativePath);
-    if (!existsSync(absolute)) return "";
+    if (!existsSync(absolute)) return '';
     const bounded = Math.max(4 * 1024, Math.min(maxBytes, 1024 * 1024));
-    return readFileSync(absolute, "utf-8").slice(-bounded);
+    return readFileSync(absolute, 'utf-8').slice(-bounded);
   };
   return {
     runId,
-    provider: "local",
-    log: [readLog(run.stdoutPath), readLog(run.stderrPath)]
-      .filter(Boolean)
-      .join("\n"),
+    provider: 'local',
+    log: [readLog(run.stdoutPath), readLog(run.stderrPath)].filter(Boolean).join('\n'),
   };
 }
 
 export function cancelAgentJob(repoRoot: string, runId: string): AgentJobMeta {
   const current = getAgentJob(repoRoot, runId);
-  if (current.provider === "github")
+  if (current.provider === 'github')
     throw new Error(
-      "GitHub cloud sessions must currently be cancelled from the GitHub Agents UI; the public agent-task API does not expose a stable cancellation contract here.",
+      'GitHub cloud sessions must currently be cancelled from the GitHub Agents UI; the public agent-task API does not expose a stable cancellation contract here.',
     );
-  if (current.status === "cancelled") {
+  if (current.status === 'cancelled') {
     if (current.cleanupPending) requestCancellationCleanup(repoRoot, runId);
     return current;
   }
-  if (!["queued", "starting", "running", "unknown", "waiting_for_user"].includes(current.status))
-    return current;
+  if (!['queued', 'starting', 'running', 'unknown', 'waiting_for_user'].includes(current.status)) return current;
 
   const { stdoutTail: _stdout, stderrTail: _stderr, ...meta } = current;
   const requestedAt = new Date().toISOString();
-  meta.status = "cancelled";
-  meta.terminationReason = "cancelled";
+  meta.status = 'cancelled';
+  meta.terminationReason = 'cancelled';
   meta.cancellationRequestedAt = requestedAt;
   meta.cancellationPids = cancellationProcessIds(current);
   meta.cleanupPending = true;
@@ -1060,15 +1063,15 @@ export function cancelAgentJob(repoRoot: string, runId: string): AgentJobMeta {
   meta.finishedAt = requestedAt;
   meta.lastHeartbeatAt = requestedAt;
   meta.progress = {
-    phase: "finalizing",
-    currentActivity: "Cancellation persisted; process cleanup continues independently.",
+    phase: 'finalizing',
+    currentActivity: 'Cancellation persisted; process cleanup continues independently.',
     lastActivityAt: requestedAt,
     activityCount: (meta.progress?.activityCount ?? 0) + 1,
   };
   writeAgentMeta(repoRoot, metaPath(repoRoot, runId), meta);
   appendAgentJobEvent(repoRoot, runId, {
-    type: "run_cancelled",
-    message: "Local Run cancellation persisted; process cleanup scheduled.",
+    type: 'run_cancelled',
+    message: 'Local Run cancellation persisted; process cleanup scheduled.',
     data: { cleanupPending: true, processCount: meta.cancellationPids.length },
   });
   requestCancellationCleanup(repoRoot, runId);
@@ -1097,24 +1100,26 @@ export function markAgentJobClosure(
     meta.resources = meta.resources.map((resource) => ({
       ...resource,
       lastSeenAt: changedAt,
-      ...(input.worktreeCleaned && resource.type === "worktree"
-        ? { state: "removed" as const, cleanupAfter: undefined }
-        : input.state === "preserved" || input.state === "cleanup_blocked"
-          ? { state: "retained" as const, retentionReason: input.details }
+      ...(input.worktreeCleaned && resource.type === 'worktree'
+        ? { state: 'removed' as const, cleanupAfter: undefined }
+        : input.state === 'preserved' || input.state === 'cleanup_blocked'
+          ? { state: 'retained' as const, retentionReason: input.details }
           : {}),
     }));
   }
-  if (input.state === "preserved" || input.state === "integration_blocked" || input.state === "cleanup_blocked") {
-    meta.status = "waiting_for_user";
+  if (input.state === 'preserved' || input.state === 'integration_blocked' || input.state === 'cleanup_blocked') {
+    meta.status = 'waiting_for_user';
     delete meta.finishedAt;
-    meta.preservationReason = input.preservationReason ?? "unknown_worktree_state";
-    meta.preservationDetails = input.details ?? (input.state === "cleanup_blocked"
-      ? "Run cleanup is blocked because resource safety could not be proven."
-      : input.state === "integration_blocked"
-        ? "Run integration is blocked because target safety could not be proven."
-        : "Run closure was preserved because cleanup safety could not be proven.");
+    meta.preservationReason = input.preservationReason ?? 'unknown_worktree_state';
+    meta.preservationDetails =
+      input.details ??
+      (input.state === 'cleanup_blocked'
+        ? 'Run cleanup is blocked because resource safety could not be proven.'
+        : input.state === 'integration_blocked'
+          ? 'Run integration is blocked because target safety could not be proven.'
+          : 'Run closure was preserved because cleanup safety could not be proven.');
     meta.autoIntegrationError = meta.preservationDetails;
-  } else if (input.state === "completed") {
+  } else if (input.state === 'completed') {
     delete meta.preservationReason;
     delete meta.preservationDetails;
     delete meta.autoIntegrationError;
@@ -1125,7 +1130,10 @@ export function markAgentJobClosure(
   }
   writeAgentMeta(repoRoot, metaPath(repoRoot, runId), meta);
   appendAgentJobEvent(repoRoot, runId, {
-    type: input.state === "preserved" || input.state === "integration_blocked" || input.state === "cleanup_blocked" ? "run_waiting" : "run_activity",
+    type:
+      input.state === 'preserved' || input.state === 'integration_blocked' || input.state === 'cleanup_blocked'
+        ? 'run_waiting'
+        : 'run_activity',
     message: input.details ?? `Run closure moved to ${input.state}.`,
     data: {
       closureState: input.state,
@@ -1141,68 +1149,69 @@ export function markAgentJobReviewedCompletion(
   repoRoot: string,
   runId: string,
   options: {
-    changeOutcome?: AgentJobMeta["changeOutcome"];
+    changeOutcome?: AgentJobMeta['changeOutcome'];
     changedFiles?: string[];
     worktreeCleaned?: boolean;
     branchDeleted?: boolean;
-    integrationEvidence?: AgentJobMeta["integrationEvidence"];
-    cleanupEvidence?: AgentJobMeta["cleanupEvidence"];
+    integrationEvidence?: AgentJobMeta['integrationEvidence'];
+    cleanupEvidence?: AgentJobMeta['cleanupEvidence'];
   } = {},
 ): AgentJobMeta {
   const current = getAgentJob(repoRoot, runId);
-  if (current.provider !== "local") return current;
+  if (current.provider !== 'local') return current;
   const { stdoutTail: _stdout, stderrTail: _stderr, ...meta } = current;
   const completedAt = new Date().toISOString();
   const integrationEvidence = options.integrationEvidence ?? meta.integrationEvidence;
   const cleanupEvidence = options.cleanupEvidence ?? meta.cleanupEvidence;
   const cleanupHasMaintenanceWarnings = Boolean(
-    cleanupEvidence
-    && (cleanupEvidence.maintenanceWarnings?.length ?? 0) > 0
-    && (cleanupEvidence.resourceBlockers?.length ?? 0) === 0,
+    cleanupEvidence &&
+      (cleanupEvidence.maintenanceWarnings?.length ?? 0) > 0 &&
+      (cleanupEvidence.resourceBlockers?.length ?? 0) === 0,
   );
   const integrationMissing = [
-    integrationEvidence?.runId === runId ? undefined : "runId",
-    integrationEvidence?.reachable ? undefined : "reachable",
-    integrationEvidence?.targetRevision ? undefined : "targetRevision",
+    integrationEvidence?.runId === runId ? undefined : 'runId',
+    integrationEvidence?.reachable ? undefined : 'reachable',
+    integrationEvidence?.targetRevision ? undefined : 'targetRevision',
   ].filter((field): field is string => Boolean(field));
   const cleanupMissing = [
-    cleanupEvidence?.runId === runId ? undefined : "runId",
-    cleanupEvidence?.worktreeRemovedOrNotCreated || cleanupHasMaintenanceWarnings ? undefined : "worktreeRemovedOrNotCreated",
-    cleanupEvidence?.branchDeletedOrRetained || cleanupHasMaintenanceWarnings ? undefined : "branchDeletedOrRetained",
-    cleanupEvidence?.leasesReleased ? undefined : "leasesReleased",
-    cleanupEvidence?.editSessionClosedOrNotCreated ? undefined : "editSessionClosedOrNotCreated",
-    cleanupEvidence?.noActiveProcess ? undefined : "noActiveProcess",
-    cleanupEvidence?.noDirtyDiff ? undefined : "noDirtyDiff",
-    (cleanupEvidence?.resourceBlockers?.length ?? 0) === 0 ? undefined : "resourceBlockers",
+    cleanupEvidence?.runId === runId ? undefined : 'runId',
+    cleanupEvidence?.worktreeRemovedOrNotCreated || cleanupHasMaintenanceWarnings
+      ? undefined
+      : 'worktreeRemovedOrNotCreated',
+    cleanupEvidence?.branchDeletedOrRetained || cleanupHasMaintenanceWarnings ? undefined : 'branchDeletedOrRetained',
+    cleanupEvidence?.leasesReleased ? undefined : 'leasesReleased',
+    cleanupEvidence?.editSessionClosedOrNotCreated ? undefined : 'editSessionClosedOrNotCreated',
+    cleanupEvidence?.noActiveProcess ? undefined : 'noActiveProcess',
+    cleanupEvidence?.noDirtyDiff ? undefined : 'noDirtyDiff',
+    (cleanupEvidence?.resourceBlockers?.length ?? 0) === 0 ? undefined : 'resourceBlockers',
   ].filter((field): field is string => Boolean(field));
   const formatMissing = (label: string, fields: string[]): string => {
     const shown = fields.slice(0, 5);
-    const suffix = fields.length > shown.length ? `, and ${fields.length - shown.length} more` : "";
-    return `Run ${label} evidence is incomplete: ${shown.join(", ")}${suffix}.`;
+    const suffix = fields.length > shown.length ? `, and ${fields.length - shown.length} more` : '';
+    return `Run ${label} evidence is incomplete: ${shown.join(', ')}${suffix}.`;
   };
   const integrationProven = integrationMissing.length === 0;
-  const cleanupProven = Boolean(cleanupEvidence
-    && cleanupMissing.length === 0);
+  const cleanupProven = Boolean(cleanupEvidence && cleanupMissing.length === 0);
   if (!integrationProven || !cleanupProven || !cleanupEvidence) {
     return markAgentJobClosure(repoRoot, runId, {
-      state: !integrationProven ? "integration_blocked" : "cleanup_blocked",
-      preservationReason: !integrationProven ? "unmerged_branch" : "cleanup_failed",
+      state: !integrationProven ? 'integration_blocked' : 'cleanup_blocked',
+      preservationReason: !integrationProven ? 'unmerged_branch' : 'cleanup_failed',
       details: !integrationProven
-        ? formatMissing("integration", integrationMissing)
-        : formatMissing("cleanup", cleanupMissing),
+        ? formatMissing('integration', integrationMissing)
+        : formatMissing('cleanup', cleanupMissing),
       worktreeCleaned: options.worktreeCleaned,
       branchDeleted: options.branchDeleted,
     });
   }
-  meta.status = "succeeded";
+  meta.status = 'succeeded';
   meta.finishedAt = meta.finishedAt ?? completedAt;
   meta.lastHeartbeatAt = completedAt;
   if (meta.resources) {
     meta.resources = meta.resources.map((resource) => ({
       ...resource,
       lastSeenAt: completedAt,
-      ...(options.worktreeCleaned && resource.type === "worktree"
-        ? { state: "removed" as const, cleanupAfter: undefined }
+      ...(options.worktreeCleaned && resource.type === 'worktree'
+        ? { state: 'removed' as const, cleanupAfter: undefined }
         : {}),
     }));
   }
@@ -1216,13 +1225,13 @@ export function markAgentJobReviewedCompletion(
     runId,
     runTerminal: true,
   };
-  meta.closureState = "completed";
+  meta.closureState = 'completed';
   meta.closureUpdatedAt = completedAt;
   delete meta.preservationReason;
   delete meta.preservationDetails;
   meta.progress = {
-    phase: "completed",
-    currentActivity: "Run review, integration, and completion orchestration finished",
+    phase: 'completed',
+    currentActivity: 'Run review, integration, and completion orchestration finished',
     lastActivityAt: completedAt,
     activityCount: (meta.progress?.activityCount ?? 0) + 1,
   };
@@ -1230,9 +1239,13 @@ export function markAgentJobReviewedCompletion(
   delete meta.integrationReviewPath;
   writeAgentMeta(repoRoot, metaPath(repoRoot, runId), meta);
   appendAgentJobEvent(repoRoot, runId, {
-    type: "run_succeeded",
-    message: "Run completion was finalized by the completion orchestrator.",
-    data: { changeOutcome: meta.changeOutcome, changedFiles: meta.changedFiles, worktreeCleanedAt: meta.worktreeCleanedAt },
+    type: 'run_succeeded',
+    message: 'Run completion was finalized by the completion orchestrator.',
+    data: {
+      changeOutcome: meta.changeOutcome,
+      changedFiles: meta.changedFiles,
+      worktreeCleanedAt: meta.worktreeCleanedAt,
+    },
   });
   return meta;
 }
@@ -1243,55 +1256,51 @@ export function markAgentJobIntegrated(
   sessionId: string,
   options: {
     changedFiles?: string[];
-    changeOutcome?: AgentJobMeta["changeOutcome"];
+    changeOutcome?: AgentJobMeta['changeOutcome'];
   } = {},
 ): AgentJobMeta {
   const current = getAgentJob(repoRoot, runId);
-  if (current.provider !== "local")
+  if (current.provider !== 'local')
     throw new Error(
-      "GitHub cloud session changes are reviewed and merged through their pull request, not local edit-session integration.",
+      'GitHub cloud session changes are reviewed and merged through their pull request, not local edit-session integration.',
     );
   const { stdoutTail: _stdout, stderrTail: _stderr, ...meta } = current;
   meta.integratedSessionId = sessionId;
   meta.integratedAt = new Date().toISOString();
   if (options.changedFiles) meta.changedFiles = [...options.changedFiles];
   if (options.changeOutcome) meta.changeOutcome = options.changeOutcome;
-  meta.closureState = "integrated";
+  meta.closureState = 'integrated';
   meta.closureUpdatedAt = meta.integratedAt;
   delete meta.preservationReason;
   delete meta.preservationDetails;
   delete meta.integrationReviewPath;
   writeAgentMeta(repoRoot, metaPath(repoRoot, runId), meta);
   appendAgentJobEvent(repoRoot, runId, {
-    type: "run_integrated",
+    type: 'run_integrated',
     message: `Integrated through edit session ${sessionId}.`,
   });
   return markAgentJobClosure(repoRoot, runId, {
-    state: "cleanup_pending",
+    state: 'cleanup_pending',
     details: `Integration ${sessionId} completed; cleanup finalizer is pending.`,
   });
 }
 
-export function markAgentJobIntegrationReview(
-  repoRoot: string,
-  runId: string,
-  reviewPath: string,
-): AgentJobMeta {
+export function markAgentJobIntegrationReview(repoRoot: string, runId: string, reviewPath: string): AgentJobMeta {
   const current = getAgentJob(repoRoot, runId);
-  if (current.provider !== "local") return current;
+  if (current.provider !== 'local') return current;
   const { stdoutTail: _stdout, stderrTail: _stderr, ...meta } = current;
   const changedAt = new Date().toISOString();
-  meta.status = "waiting_for_user";
+  meta.status = 'waiting_for_user';
   delete meta.finishedAt;
   meta.integrationReviewPath = reviewPath;
-  meta.closureState = "preserved";
+  meta.closureState = 'preserved';
   meta.closureUpdatedAt = changedAt;
-  meta.preservationReason = "integration_review_required";
+  meta.preservationReason = 'integration_review_required';
   meta.preservationDetails = `Integration review is required: ${reviewPath}`;
   meta.autoIntegrationError = meta.preservationDetails;
   writeAgentMeta(repoRoot, metaPath(repoRoot, runId), meta);
   appendAgentJobEvent(repoRoot, runId, {
-    type: "run_activity",
+    type: 'run_activity',
     message: `Integration review packet recorded at ${reviewPath}.`,
     data: { reviewPath },
   });
@@ -1302,9 +1311,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const command = process.argv[2];
   const repoRoot = process.argv[3];
   const runId = process.argv[4];
-  if ((command === "launch" || command === "cancel-cleanup") && (!repoRoot || !runId)) process.exit(1);
+  if ((command === 'launch' || command === 'cancel-cleanup') && (!repoRoot || !runId)) process.exit(1);
 
-  if (command === "cancel-cleanup" && repoRoot && runId) {
+  if (command === 'cancel-cleanup' && repoRoot && runId) {
     try {
       completeAgentJobCancellation(repoRoot, runId);
       process.exit(0);
@@ -1313,15 +1322,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     }
   }
 
-  if (command === "launch" && repoRoot && runId) {
+  if (command === 'launch' && repoRoot && runId) {
     void (async () => {
       try {
         while (true) {
           const current = getAgentJob(repoRoot, runId);
-          if (
-            !["queued", "starting", "running"].includes(current.status) ||
-            !isAlive(current.workerPid)
-          ) {
+          if (!['queued', 'starting', 'running'].includes(current.status) || !isAlive(current.workerPid)) {
             break;
           }
           await new Promise((resolve) => setTimeout(resolve, 1_000));

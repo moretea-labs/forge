@@ -8,7 +8,11 @@ import { registerRepository } from '../../src/runtime/repositories/registry';
 import { getIssueReadView, createIssue, updateTask } from '../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../../src/cli/controller/task-ledger';
 import { inspectProjectGovernance, reconcileProjectGovernance } from '../../src/cli/controller/governance';
-import { clearCurrentIssue, loadControllerProjectState, saveControllerProjectState } from '../../src/cli/controller/project-state';
+import {
+  clearCurrentIssue,
+  loadControllerProjectState,
+  saveControllerProjectState,
+} from '../../src/cli/controller/project-state';
 import { finishEditSession } from '../../src/cli/controller/completion-orchestrator';
 
 const REPO_ID = 'repo_cutover_cli';
@@ -30,20 +34,36 @@ function withRepo(run: (repoRoot: string, controllerHome: string, issuePath: str
     process.env.FORGE_CONTROLLER_HOME = controllerHome;
     mkdirSync(join(repoRoot, '.ai', 'harness'), { recursive: true });
     mkdirSync(issueDir, { recursive: true });
-    writeFileSync(join(repoRoot, '.ai', 'harness', 'repository.json'), `${JSON.stringify({ schemaVersion: 1, repoId: REPO_ID }, null, 2)}\n`);
-    writeFileSync(join(repoRoot, '.ai', 'harness', 'project-state.json'), `${JSON.stringify({ schemaVersion: 1, currentIssueId: ISSUE_ID, issueCreationMode: 'open', updatedAt: NOW }, null, 2)}\n`);
-    writeFileSync(issuePath, `${JSON.stringify({
-      schemaVersion: 5,
-      id: ISSUE_ID,
-      title: 'Untrusted legacy title',
-      status: 'in_progress',
-      tasks: [{ id: 'T6', title: 'Untrusted task', status: 'running' }],
-      createdAt: NOW,
-      updatedAt: NOW,
-    }, null, 2)}\n`);
+    writeFileSync(
+      join(repoRoot, '.ai', 'harness', 'repository.json'),
+      `${JSON.stringify({ schemaVersion: 1, repoId: REPO_ID }, null, 2)}\n`,
+    );
+    writeFileSync(
+      join(repoRoot, '.ai', 'harness', 'project-state.json'),
+      `${JSON.stringify({ schemaVersion: 1, currentIssueId: ISSUE_ID, issueCreationMode: 'open', updatedAt: NOW }, null, 2)}\n`,
+    );
+    writeFileSync(
+      issuePath,
+      `${JSON.stringify(
+        {
+          schemaVersion: 5,
+          id: ISSUE_ID,
+          title: 'Untrusted legacy title',
+          status: 'in_progress',
+          tasks: [{ id: 'T6', title: 'Untrusted task', status: 'running' }],
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        null,
+        2,
+      )}\n`,
+    );
 
     writeControlPlaneRecord(controllerHome, {
-      namespace: 'requirement', scope: 'controller', key: REQUIREMENT_ID, schemaVersion: 1,
+      namespace: 'requirement',
+      scope: 'controller',
+      key: REQUIREMENT_ID,
+      schemaVersion: 1,
       value: {
         requirementId: REQUIREMENT_ID,
         title: 'SQLite authoritative control plane',
@@ -53,10 +73,14 @@ function withRepo(run: (repoRoot: string, controllerHome: string, issuePath: str
         legacyAliases: [ISSUE_ID],
         createdAt: NOW,
         updatedAt: NOW,
-      }, expectedRevision: null,
+      },
+      expectedRevision: null,
     });
     writeControlPlaneRecord(controllerHome, {
-      namespace: 'plan_contract', scope: REPO_ID, key: PLAN_ID, schemaVersion: 1,
+      namespace: 'plan_contract',
+      scope: REPO_ID,
+      key: PLAN_ID,
+      schemaVersion: 1,
       value: {
         schemaVersion: 1,
         planId: PLAN_ID,
@@ -65,16 +89,34 @@ function withRepo(run: (repoRoot: string, controllerHome: string, issuePath: str
         goal: 'Final SQLite cutover',
         status: 'completed',
         steps: [
-          { id: 'T6', objective: 'Remove legacy writers', status: 'completed', checks: ['package:check:type'], acceptanceCriteria: ['No dual writer'], evidenceRefs: [] },
-          { id: 'T7', objective: 'Verify recovery', status: 'completed', checks: ['package:test'], acceptanceCriteria: ['Restore verified'], evidenceRefs: [] },
+          {
+            id: 'T6',
+            objective: 'Remove legacy writers',
+            status: 'completed',
+            checks: ['package:check:type'],
+            acceptanceCriteria: ['No dual writer'],
+            evidenceRefs: [],
+          },
+          {
+            id: 'T7',
+            objective: 'Verify recovery',
+            status: 'completed',
+            checks: ['package:test'],
+            acceptanceCriteria: ['Restore verified'],
+            evidenceRefs: [],
+          },
         ],
         evidenceRefs: [],
         createdAt: NOW,
         updatedAt: NOW,
-      }, expectedRevision: null,
+      },
+      expectedRevision: null,
     });
     writeControlPlaneRecord(controllerHome, {
-      namespace: 'requirement_portfolio_migration', scope: REPO_ID, key: 'requirement-portfolio-20260802-v1', schemaVersion: 1,
+      namespace: 'requirement_portfolio_migration',
+      scope: REPO_ID,
+      key: 'requirement-portfolio-20260802-v1',
+      schemaVersion: 1,
       value: {
         schemaVersion: 1,
         migrationId: 'requirement-portfolio-20260802-v1',
@@ -89,7 +131,8 @@ function withRepo(run: (repoRoot: string, controllerHome: string, issuePath: str
         planIds: [PLAN_ID],
         requirementStateCounts: { planned: 0, active: 0, waiting_for_user: 0, done: 1, cancelled: 0 },
         appliedAt: NOW,
-      }, expectedRevision: null,
+      },
+      expectedRevision: null,
     });
     run(repoRoot, controllerHome, issuePath);
   } finally {
@@ -110,11 +153,21 @@ describe('legacy control-plane cutover', () => {
         status: 'done',
       });
       expect(before.tasks.find((task) => ('taskId' in task ? task.taskId : task.id) === 'T6')).toMatchObject({
-        status: 'done', planStepStatus: 'completed', deprecated: true, frozen: true, readOnly: true,
+        status: 'done',
+        planStepStatus: 'completed',
+        deprecated: true,
+        frozen: true,
+        readOnly: true,
       });
 
-      writeFileSync(issuePath, `${JSON.stringify({ id: ISSUE_ID, title: 'Late overwrite', status: 'cancelled', tasks: [{ id: 'T6', status: 'cancelled' }] }, null, 2)}\n`);
-      writeFileSync(join(repoRoot, '.ai', 'harness', 'project-state.json'), `${JSON.stringify({ schemaVersion: 1, currentIssueId: 'ISS-LATE', issueCreationMode: 'open', updatedAt: '2099-01-01T00:00:00.000Z' })}\n`);
+      writeFileSync(
+        issuePath,
+        `${JSON.stringify({ id: ISSUE_ID, title: 'Late overwrite', status: 'cancelled', tasks: [{ id: 'T6', status: 'cancelled' }] }, null, 2)}\n`,
+      );
+      writeFileSync(
+        join(repoRoot, '.ai', 'harness', 'project-state.json'),
+        `${JSON.stringify({ schemaVersion: 1, currentIssueId: 'ISS-LATE', issueCreationMode: 'open', updatedAt: '2099-01-01T00:00:00.000Z' })}\n`,
+      );
 
       expect(getIssueReadView(repoRoot, ISSUE_ID, 'full')).toEqual(before);
       const frozenState = loadControllerProjectState(repoRoot);
@@ -159,25 +212,42 @@ describe('legacy control-plane cutover', () => {
     withRepo((repoRoot, _controllerHome, issuePath) => {
       const before = readFileSync(issuePath, 'utf8');
       expect(() => createIssue(repoRoot, { title: 'Refused durable Issue' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
-      expect(() => updateTask(repoRoot, ISSUE_ID, 'T6', { status: 'cancelled' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
-      expect(() => saveControllerProjectState(repoRoot, { currentIssueId: ISSUE_ID })).toThrow('LEGACY_CURRENT_ISSUE_RETIRED');
-      expect(() => saveControllerProjectState(repoRoot, { issueCreationMode: 'open' })).toThrow('LEGACY_PROJECT_STATE_WRITES_RETIRED');
+      expect(() => updateTask(repoRoot, ISSUE_ID, 'T6', { status: 'cancelled' })).toThrow(
+        'LEGACY_ISSUE_WRITES_RETIRED',
+      );
+      expect(() => saveControllerProjectState(repoRoot, { currentIssueId: ISSUE_ID })).toThrow(
+        'LEGACY_CURRENT_ISSUE_RETIRED',
+      );
+      expect(() => saveControllerProjectState(repoRoot, { issueCreationMode: 'open' })).toThrow(
+        'LEGACY_PROJECT_STATE_WRITES_RETIRED',
+      );
       expect(() => reconcileProjectGovernance(repoRoot)).toThrow('LEGACY_GOVERNANCE_RECONCILIATION_RETIRED');
-      expect(() => finishEditSession(repoRoot, { sessionId: 'EDIT-MISSING' })).toThrow('LEGACY_EDIT_SESSION_COMPLETION_RETIRED');
+      expect(() => finishEditSession(repoRoot, { sessionId: 'EDIT-MISSING' })).toThrow(
+        'LEGACY_EDIT_SESSION_COMPLETION_RETIRED',
+      );
       expect(readFileSync(issuePath, 'utf8')).toBe(before);
 
       // Once the repo is registered, the repo-local projection is not authority:
       // deleting, corrupting or spoofing it must not reopen the old writer.
       expect(spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot }).status).toBe(0);
-      const registered = registerRepository({ path: repoRoot, controllerHome: _controllerHome, repoIdOverride: REPO_ID });
+      const registered = registerRepository({
+        path: repoRoot,
+        controllerHome: _controllerHome,
+        repoIdOverride: REPO_ID,
+      });
       expect(registered.repoId).toBe(REPO_ID);
       const projectionPath = join(repoRoot, '.ai', 'harness', 'repository.json');
       for (const contents of [null, '{invalid-json', JSON.stringify({ repoId: 'repo_spoofed' })]) {
         if (contents === null) rmSync(projectionPath);
         else writeFileSync(projectionPath, contents);
         expect(() => createIssue(repoRoot, { title: 'Must stay retired' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
-        expect(() => updateTask(repoRoot, ISSUE_ID, 'T6', { status: 'cancelled' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
-        expect(getIssueReadView(repoRoot, ISSUE_ID)).toMatchObject({ authority: 'controller-home-sqlite', frozen: true });
+        expect(() => updateTask(repoRoot, ISSUE_ID, 'T6', { status: 'cancelled' })).toThrow(
+          'LEGACY_ISSUE_WRITES_RETIRED',
+        );
+        expect(getIssueReadView(repoRoot, ISSUE_ID)).toMatchObject({
+          authority: 'controller-home-sqlite',
+          frozen: true,
+        });
       }
       expect(readFileSync(issuePath, 'utf8')).toBe(before);
     });
@@ -202,8 +272,17 @@ describe('legacy control-plane cutover', () => {
       '/api/issues/:issueId/tasks/:taskId/request-changes',
       '/api/issues/:issueId/tasks/:taskId/cancel',
       '/api/issues/:issueId/tasks/:taskId/dependencies',
-    ]) expect(source).not.toContain(retired);
-    for (const writer of ['saveControllerProjectState(', 'recordTaskVerification(', 'archiveIssue(', 'restoreIssue(', 'setTaskDependencies(', 'acceptVerifiedTask(', 'updateTask(']) {
+    ])
+      expect(source).not.toContain(retired);
+    for (const writer of [
+      'saveControllerProjectState(',
+      'recordTaskVerification(',
+      'archiveIssue(',
+      'restoreIssue(',
+      'setTaskDependencies(',
+      'acceptVerifiedTask(',
+      'updateTask(',
+    ]) {
       expect(source).not.toContain(writer);
     }
   });

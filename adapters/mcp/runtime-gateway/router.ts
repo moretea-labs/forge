@@ -1,9 +1,6 @@
 import { createHash } from 'crypto';
 import type { CallToolResult, McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
-import {
-  buildMultiRepositoryToolDefinitions,
-  type MultiRepositoryMcpToolContext,
-} from '../multi-repository';
+import { buildMultiRepositoryToolDefinitions, type MultiRepositoryMcpToolContext } from '../multi-repository';
 import { repositoryToolDefinitions } from '../tool-mapping/repository-tools';
 import { runtimeToolDefinitions } from './runtime-tool-definitions';
 import { executionToolDefinitions } from './execution-tools';
@@ -35,31 +32,48 @@ function result(value: Record<string, unknown>, isError = false): CallToolResult
 export function getMcpToolDefinition(ctx: MultiRepositoryMcpToolContext, name: string): McpToolDefinition | undefined {
   // Static tools already own their published schema. Do not rebuild the large
   // legacy policy-shaped inventory on every ordinary tools/call.
-  return runtimeToolDefinitions.find((tool) => tool.name === name)
-    ?? executionToolDefinitions.find((tool) => tool.name === name)
-    ?? processToolDefinitions.find((tool) => tool.name === name)
-    ?? repositoryToolDefinitions.find((tool) => tool.name === name)
-    ?? buildMultiRepositoryToolDefinitions(ctx).find((tool) => tool.name === name);
+  return (
+    runtimeToolDefinitions.find((tool) => tool.name === name) ??
+    executionToolDefinitions.find((tool) => tool.name === name) ??
+    processToolDefinitions.find((tool) => tool.name === name) ??
+    repositoryToolDefinitions.find((tool) => tool.name === name) ??
+    buildMultiRepositoryToolDefinitions(ctx).find((tool) => tool.name === name)
+  );
 }
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-      .filter(([key]) => key !== 'request_id')
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => [key, canonical(entry)]));
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => key !== 'request_id')
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonical(entry)]),
+    );
   }
   return value;
 }
 
 export function hashMcpToolArguments(args: Record<string, unknown>): string {
-  return createHash('sha256').update(JSON.stringify(canonical(args))).digest('hex').slice(0, 20);
+  return createHash('sha256')
+    .update(JSON.stringify(canonical(args)))
+    .digest('hex')
+    .slice(0, 20);
 }
 
-export function validateMcpToolArguments(name: string, definition: McpToolDefinition, args: Record<string, unknown>): void {
-  const schema = definition.inputSchema as { required?: unknown; properties?: Record<string, unknown>; additionalProperties?: unknown };
-  const required = Array.isArray(schema.required) ? schema.required.filter((value): value is string => typeof value === 'string') : [];
+export function validateMcpToolArguments(
+  name: string,
+  definition: McpToolDefinition,
+  args: Record<string, unknown>,
+): void {
+  const schema = definition.inputSchema as {
+    required?: unknown;
+    properties?: Record<string, unknown>;
+    additionalProperties?: unknown;
+  };
+  const required = Array.isArray(schema.required)
+    ? schema.required.filter((value): value is string => typeof value === 'string')
+    : [];
   const missing = required.filter((key) => args[key] === undefined || args[key] === null || args[key] === '');
   if (missing.length > 0) {
     throw new Error(`INVALID_ARGUMENT: ${name} is missing required argument(s): ${missing.join(', ')}`);
@@ -84,7 +98,8 @@ export function injectDurableCommandFields(tool: McpToolDefinition): McpToolDefi
         ...(schema.properties ?? {}),
         request_id: {
           type: 'string',
-          description: 'Idempotency key. Process Runtime retries return the original Process; durable operations return the original Work or historical Job.',
+          description:
+            'Idempotency key. Process Runtime retries return the original Process; durable operations return the original Work or historical Job.',
         },
         apply_mode: {
           type: 'string',
@@ -97,7 +112,8 @@ export function injectDurableCommandFields(tool: McpToolDefinition): McpToolDefi
         },
         wait_ms: {
           type: 'number',
-          description: 'Max wait for terminal job result. Only used when wait=true; never enables waiting by itself. Default 15000, max 120000.',
+          description:
+            'Max wait for terminal job result. Only used when wait=true; never enables waiting by itself. Default 15000, max 120000.',
         },
         admission_timeout_ms: {
           type: 'number',
@@ -109,7 +125,8 @@ export function injectDurableCommandFields(tool: McpToolDefinition): McpToolDefi
         },
         execution_timeout_ms: {
           type: 'number',
-          description: 'Operation execution budget. For Agent delegation this is the Child Run budget and is never silently reduced by the Parent Job.',
+          description:
+            'Operation execution budget. For Agent delegation this is the Child Run budget and is never silently reduced by the Parent Job.',
         },
         interactive_wait_ms: {
           type: 'number',
@@ -128,50 +145,59 @@ export async function routeDurableMcpCall(
 ): Promise<CallToolResult | undefined> {
   const definition = getMcpToolDefinition(ctx, name);
   if (!definition) {
-    return result({
-      accepted: false,
-      mode: 'reject',
-      path: 'reject',
-      rejectCode: 'TOOL_NOT_FOUND',
-      error: {
-        code: 'TOOL_NOT_FOUND',
-        message: `${name} is not registered by this forge build.`,
+    return result(
+      {
+        accepted: false,
+        mode: 'reject',
+        path: 'reject',
+        rejectCode: 'TOOL_NOT_FOUND',
+        error: {
+          code: 'TOOL_NOT_FOUND',
+          message: `${name} is not registered by this forge build.`,
+        },
       },
-    }, true);
+      true,
+    );
   }
 
   // Classify BEFORE creating any ExecutionJob / LocalJob / Worker.
   const classification = classifyGatewayExecutionPath(name, args, { ...opts, definition });
   if (classification.path === 'reject' && classification.reasons.includes('tool_not_found')) {
-    return result({
-      accepted: false,
-      mode: 'reject',
-      path: 'reject',
-      routing: {
+    return result(
+      {
+        accepted: false,
+        mode: 'reject',
         path: 'reject',
-        reasons: classification.reasons,
+        routing: {
+          path: 'reject',
+          reasons: classification.reasons,
+        },
+        rejectCode: 'TOOL_NOT_FOUND',
+        error: {
+          code: 'TOOL_NOT_FOUND',
+          message: `${name} is not registered by this forge build.`,
+        },
       },
-      rejectCode: 'TOOL_NOT_FOUND',
-      error: {
-        code: 'TOOL_NOT_FOUND',
-        message: `${name} is not registered by this forge build.`,
-      },
-    }, true);
+      true,
+    );
   }
   if (classification.path === 'reject' && classification.decision) {
-    return result({
-      accepted: false,
-      mode: 'reject',
-      path: 'reject',
-      routing: {
+    return result(
+      {
+        accepted: false,
+        mode: 'reject',
         path: 'reject',
-        reasons: classification.reasons,
-        decision: classification.decision,
+        routing: {
+          path: 'reject',
+          reasons: classification.reasons,
+          decision: classification.decision,
+        },
+        rejectCode: classification.decision.rejectCode,
+        message: classification.reasons.join('; ') || 'operation rejected by Thin Harness routing',
+        suggestedOperation: classification.decision.suggestedOperation,
       },
-      rejectCode: classification.decision.rejectCode,
-      message: classification.reasons.join('; ') || 'operation rejected by Thin Harness routing',
-      suggestedOperation: classification.decision.suggestedOperation,
-    }, true);
+      true,
+    );
   }
 
   // execute_command has its own durable boundary: non-destructive
@@ -189,7 +215,8 @@ export async function routeDurableMcpCall(
         ...(classification.decision ? { decision: classification.decision } : {}),
       },
       rejectCode: 'EXTERNAL_CONTROLLER_REQUIRED',
-      message: 'This operation needs external Controller or authorized domain capability; Forge does not create Work/Plans or prescribe a workflow to fulfill it.',
+      message:
+        'This operation needs external Controller or authorized domain capability; Forge does not create Work/Plans or prescribe a workflow to fulfill it.',
     });
   }
 

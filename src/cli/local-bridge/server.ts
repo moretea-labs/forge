@@ -2665,7 +2665,6 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
     }
   });
 
-
   const server = createServer(app);
   server.listen(requestedPort, host);
   await new Promise<void>((resolve, reject) => {

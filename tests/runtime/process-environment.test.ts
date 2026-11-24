@@ -313,20 +313,45 @@ describe('repository child process environment', () => {
     let updated: ExecutionJob | undefined;
     let rebuilds = 0;
     const dependencies = {
-      updateJob: (_controllerHome: string, _repoId: string, _jobId: string, updater: (current: ExecutionJob) => ExecutionJob) => {
+      updateJob: (
+        _controllerHome: string,
+        _repoId: string,
+        _jobId: string,
+        updater: (current: ExecutionJob) => ExecutionJob,
+      ) => {
         updated = updater(updated ?? current);
         return updated;
       },
-      rebuildProjection: () => { rebuilds += 1; },
+      rebuildProjection: () => {
+        rebuilds += 1;
+      },
     };
-    expect(persistSchedulerTerminalWorkerLifecycle({
-      controllerHome: '/controller', repoId: 'repo-a', jobId: 'job-a', status: 'succeeded', lifecycle,
-    }, dependencies)).toBe(true);
+    expect(
+      persistSchedulerTerminalWorkerLifecycle(
+        {
+          controllerHome: '/controller',
+          repoId: 'repo-a',
+          jobId: 'job-a',
+          status: 'succeeded',
+          lifecycle,
+        },
+        dependencies,
+      ),
+    ).toBe(true);
     expect(updated?.workerLifecycle).toEqual(lifecycle);
     expect(rebuilds).toBe(1);
-    expect(persistSchedulerTerminalWorkerLifecycle({
-      controllerHome: '/controller', repoId: 'repo-a', jobId: 'job-a', status: 'running', lifecycle,
-    }, dependencies)).toBe(false);
+    expect(
+      persistSchedulerTerminalWorkerLifecycle(
+        {
+          controllerHome: '/controller',
+          repoId: 'repo-a',
+          jobId: 'job-a',
+          status: 'running',
+          lifecycle,
+        },
+        dependencies,
+      ),
+    ).toBe(false);
   });
 
   test('cleans up all tracked Scheduler workers outside GlobalScheduler shutdown logic', async () => {
@@ -345,6 +370,4 @@ describe('repository child process environment', () => {
     expect(children.size).toBe(0);
     expect(terminated.sort()).toEqual([88, 99]);
   });
-
-
 });

@@ -670,6 +670,4 @@ describe('control-plane hardening', () => {
     } as ExecutionJob;
     expect(operationReceiptMatchesJobOwnership(legacyReceipt, legacyJob)).toBe(true);
   });
-
-
 });

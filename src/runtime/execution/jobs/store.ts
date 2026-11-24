@@ -15,12 +15,7 @@ import { readJsonFile, removeFile, sanitizeFileComponent, writeJsonAtomic } from
 import { terminateProcessTree } from '../../shared/process-tree';
 import { releaseExecutionLeases } from '../../resources/leases/store';
 import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from '../../root/write-fence';
-import {
-  ACTIVE_JOB_STATUSES,
-  TERMINAL_JOB_STATUSES,
-  type ExecutionJob,
-  type ExecutionJobStatus,
-} from './types';
+import { ACTIVE_JOB_STATUSES, TERMINAL_JOB_STATUSES, type ExecutionJob, type ExecutionJobStatus } from './types';
 import { deadlineAfter } from './timeouts';
 
 interface ActiveJobIndex {

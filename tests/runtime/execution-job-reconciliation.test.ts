@@ -6,19 +6,12 @@ import {
   reconcileExecutionJobs,
   reconcileExecutionJobsAsync,
 } from '../../src/runtime/control-plane/global-scheduler/reconciliation';
-import {
-  executionJobRoot,
-  getExecutionJob,
-  listActiveExecutionJobs,
-} from '../../src/runtime/execution/jobs/store';
+import { executionJobRoot, getExecutionJob, listActiveExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { ACTIVE_JOB_STATUSES, type ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import type { AgentJobMetaReadShape } from '../../src/runtime/agent-jobs/read-model';
 import type { LocalBridgeJob } from '../../src/runtime/local-bridge/types';
 import { summarizeExecutionJobForMcp } from '../../src/runtime/safe-tooling/job-summary';
-import {
-  acquireExecutionLeases,
-  listActiveLeases,
-} from '../../src/runtime/resources/leases/store';
+import { acquireExecutionLeases, listActiveLeases } from '../../src/runtime/resources/leases/store';
 
 const roots: string[] = [];
 
@@ -32,11 +25,7 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-function executionJob(
-  jobId: string,
-  status: ExecutionJob['status'],
-  patch: Partial<ExecutionJob> = {},
-): ExecutionJob {
+function executionJob(jobId: string, status: ExecutionJob['status'], patch: Partial<ExecutionJob> = {}): ExecutionJob {
   const timestamp = new Date().toISOString();
   return {
     schemaVersion: 1,
@@ -93,12 +82,9 @@ function persistFixtureJobs(controllerHome: string, jobs: ExecutionJob[]): void 
 
 async function exerciseIsolation(mode: 'startup' | 'scheduler') {
   const controllerHome = tempControllerHome();
-  const leaseAcquisition = acquireExecutionLeases(
-    controllerHome,
-    'repo-test',
-    'job-timeout',
-    [{ resourceKey: 'repo-state', mode: 'exclusive' }],
-  );
+  const leaseAcquisition = acquireExecutionLeases(controllerHome, 'repo-test', 'job-timeout', [
+    { resourceKey: 'repo-state', mode: 'exclusive' },
+  ]);
   expect(leaseAcquisition.acquired).toBe(true);
 
   const corrupt = executionJob('job-corrupt', 'running', {
@@ -121,9 +107,10 @@ async function exerciseIsolation(mode: 'startup' | 'scheduler') {
     return true;
   }) as typeof process.stderr.write;
   try {
-    const summary = mode === 'startup'
-      ? reconcileExecutionJobs(controllerHome, 'repo-test')
-      : await reconcileExecutionJobsAsync(controllerHome, 'repo-test');
+    const summary =
+      mode === 'startup'
+        ? reconcileExecutionJobs(controllerHome, 'repo-test')
+        : await reconcileExecutionJobsAsync(controllerHome, 'repo-test');
     expect(summary).toEqual({ inspected: 2, requeued: 0, terminal: 1, recovered: 0, isolated: 1 });
   } finally {
     process.stderr.write = originalWrite;
@@ -219,7 +206,12 @@ describe('ExecutionJob delegated summary snapshots', () => {
 
     expect(summary.childLocalJobStatus).toBe('running');
     expect(summary.childRunStatus).toBe('running');
-    expect(summary.childReference).toMatchObject({ localJobId: 'local-child', runId: 'run-child', issueId: 'ISSUE-7', taskId: 'task-7' });
+    expect(summary.childReference).toMatchObject({
+      localJobId: 'local-child',
+      runId: 'run-child',
+      issueId: 'ISSUE-7',
+      taskId: 'task-7',
+    });
     expect(readFileSync(localJobPath, 'utf8')).toBe(localJobContents);
     expect(readFileSync(agentMetaPath, 'utf8')).toBe(agentMetaContents);
   });

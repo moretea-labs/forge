@@ -18,22 +18,20 @@ export interface SchedulerWorkerLifecycleStoreDependencies {
 }
 
 const DEFAULT_DEPENDENCIES: SchedulerWorkerLifecycleStoreDependencies = {
-  updateJob: (controllerHome, repoId, jobId, updater) => updateExecutionJob(
-    controllerHome,
-    repoId,
-    jobId,
-    updater,
-  ),
+  updateJob: (controllerHome, repoId, jobId, updater) => updateExecutionJob(controllerHome, repoId, jobId, updater),
   rebuildProjection: rebuildRepositoryProjection,
 };
 
-export function persistSchedulerTerminalWorkerLifecycle(input: {
-  controllerHome: string;
-  repoId: string;
-  jobId: string;
-  status: ExecutionJobStatus;
-  lifecycle: ExecutionWorkerLifecycle;
-}, dependencies: SchedulerWorkerLifecycleStoreDependencies = DEFAULT_DEPENDENCIES): boolean {
+export function persistSchedulerTerminalWorkerLifecycle(
+  input: {
+    controllerHome: string;
+    repoId: string;
+    jobId: string;
+    status: ExecutionJobStatus;
+    lifecycle: ExecutionWorkerLifecycle;
+  },
+  dependencies: SchedulerWorkerLifecycleStoreDependencies = DEFAULT_DEPENDENCIES,
+): boolean {
   if (!TERMINAL_JOB_STATUSES.has(input.status)) return false;
   dependencies.updateJob(input.controllerHome, input.repoId, input.jobId, (latest) => ({
     ...latest,

@@ -1,21 +1,35 @@
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
-import { finalizeEditSession, getEditSession, revalidateEditSessionOwnership, rollbackEditSession, verifyEditSession } from '../../runtime/editing/edit-session';
+import {
+  finalizeEditSession,
+  getEditSession,
+  revalidateEditSessionOwnership,
+  rollbackEditSession,
+  verifyEditSession,
+} from '../../runtime/editing/edit-session';
 import { withControllerLock } from '../../effects/controller-locks';
 import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
-import { acceptVerifiedTask, getIssue, projectIssueEffectiveView, recordTaskVerification, updateTask } from './issue-store';
+import {
+  acceptVerifiedTask,
+  getIssue,
+  projectIssueEffectiveView,
+  recordTaskVerification,
+  updateTask,
+} from './issue-store';
 import { completionEvidenceComplete } from './execution-policy';
 import { currentCompletionTarget, resolveCompletionTargetBranch } from './completion-target';
 import { runControllerCheck } from '../../runtime/execution/process-runtime/check-runner';
 import type { ControllerIssue, ControllerTask, IntegrationEvidence, TaskVerification } from './types';
 import type { CompletionMaintenanceWarning, CompletionReceipt, CompletionResourceBlocker } from './types';
-import { legacyIssueAuthorityRetired, legacyIssueCutoverState, migratedTaskCompletionState, recordMigratedTaskCompletion, type LegacyIssueCutoverState } from './legacy-issue-cutover';
+import {
+  legacyIssueAuthorityRetired,
+  legacyIssueCutoverState,
+  migratedTaskCompletionState,
+  recordMigratedTaskCompletion,
+  type LegacyIssueCutoverState,
+} from './legacy-issue-cutover';
 
-export type TaskReviewDecision =
-  | 'auto'
-  | 'approve_and_finish'
-  | 'request_changes'
-  | 'discard';
+export type TaskReviewDecision = 'auto' | 'approve_and_finish' | 'request_changes' | 'discard';
 
 export interface FinishEditSessionOptions {
   sessionId: string;
@@ -42,7 +56,6 @@ export interface FinishEditSessionResult {
   maintenanceWarnings?: CompletionMaintenanceWarning[];
 }
 
-
 function gitText(repoRoot: string, args: string[]): { ok: boolean; stdout: string; stderr: string } {
   const result = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf-8', maxBuffer: 1024 * 1024 });
   return {
@@ -52,12 +65,16 @@ function gitText(repoRoot: string, args: string[]): { ok: boolean; stdout: strin
   };
 }
 
-function safeCommitChangedPaths(repoRoot: string, input: { issueId: string; taskId: string; sourceLabel: string; sourceId: string; changedPaths?: string[] }): { commitSha?: string; reusedHead?: boolean; error?: string } {
+function safeCommitChangedPaths(
+  repoRoot: string,
+  input: { issueId: string; taskId: string; sourceLabel: string; sourceId: string; changedPaths?: string[] },
+): { commitSha?: string; reusedHead?: boolean; error?: string } {
   const paths = Array.from(new Set((input.changedPaths ?? []).filter(Boolean)));
   if (paths.length === 0) return {};
   const staged = gitText(repoRoot, ['diff', '--cached', '--name-only']);
   if (!staged.ok) return { error: staged.stderr || 'failed to inspect staged changes' };
-  if (staged.stdout.trim()) return { error: 'index already has staged changes; refusing to mix completion commit with unrelated staged work' };
+  if (staged.stdout.trim())
+    return { error: 'index already has staged changes; refusing to mix completion commit with unrelated staged work' };
   const pending = gitText(repoRoot, ['status', '--porcelain', '--', ...paths]);
   if (!pending.ok) return { error: pending.stderr || 'failed to inspect selected-path changes' };
   if (!pending.stdout.trim()) {
@@ -85,7 +102,9 @@ function safeCommitChangedPaths(repoRoot: string, input: { issueId: string; task
     return { error: commit.stderr || commit.stdout || 'failed to create completion commit' };
   }
   const rev = gitText(repoRoot, ['rev-parse', 'HEAD']);
-  return rev.ok ? { commitSha: rev.stdout.trim() } : { error: rev.stderr || 'commit created but HEAD could not be resolved' };
+  return rev.ok
+    ? { commitSha: rev.stdout.trim() }
+    : { error: rev.stderr || 'commit created but HEAD could not be resolved' };
 }
 
 function latestDirectEditOperations(session: ReturnType<typeof getEditSession>) {
@@ -94,7 +113,11 @@ function latestDirectEditOperations(session: ReturnType<typeof getEditSession>) 
   return latest;
 }
 
-function directEditRevisionMismatches(repoRoot: string, revision: string, session: ReturnType<typeof getEditSession>): string[] {
+function directEditRevisionMismatches(
+  repoRoot: string,
+  revision: string,
+  session: ReturnType<typeof getEditSession>,
+): string[] {
   const mismatches: string[] = [];
   for (const operation of latestDirectEditOperations(session).values()) {
     const object = `${revision}:${operation.path}`;
@@ -103,7 +126,11 @@ function directEditRevisionMismatches(repoRoot: string, revision: string, sessio
       continue;
     }
     const content = gitText(repoRoot, ['show', object]);
-    if (!content.ok || !operation.afterSha256 || createHash('sha256').update(content.stdout).digest('hex') !== operation.afterSha256) {
+    if (
+      !content.ok ||
+      !operation.afterSha256 ||
+      createHash('sha256').update(content.stdout).digest('hex') !== operation.afterSha256
+    ) {
       mismatches.push(operation.path);
     }
   }
@@ -129,27 +156,36 @@ function editResult(repoRoot: string, input: Omit<FinishEditSessionResult, 'issu
   return { ...input, issue };
 }
 
-function directEditCheckIds(task: ControllerTask, session: ReturnType<typeof getEditSession>, override: readonly string[] | undefined): string[] {
-  return Array.from(new Set([
-    ...task.checks,
-    ...session.requestedChecks,
-    ...(override ?? []),
-  ].map((entry) => entry.trim()).filter(Boolean)));
+function directEditCheckIds(
+  task: ControllerTask,
+  session: ReturnType<typeof getEditSession>,
+  override: readonly string[] | undefined,
+): string[] {
+  return Array.from(
+    new Set(
+      [...task.checks, ...session.requestedChecks, ...(override ?? [])].map((entry) => entry.trim()).filter(Boolean),
+    ),
+  );
 }
 
 function directEditChangedPaths(session: ReturnType<typeof getEditSession>): string[] {
-  return Array.from(new Set(session.operations.map((operation) => operation.path).filter(Boolean)))
-    .sort((left, right) => left.localeCompare(right));
+  return Array.from(new Set(session.operations.map((operation) => operation.path).filter(Boolean))).sort(
+    (left, right) => left.localeCompare(right),
+  );
 }
 
-function directEditAcceptanceResults(task: ControllerTask, decision: TaskReviewDecision, reviewer: string): TaskVerification['acceptanceResults'] {
+function directEditAcceptanceResults(
+  task: ControllerTask,
+  decision: TaskReviewDecision,
+  reviewer: string,
+): TaskVerification['acceptanceResults'] {
   if (task.acceptanceCriteria.length === 0) return [];
   const accepted = decision === 'approve_and_finish';
   return task.acceptanceCriteria.map((criterion) => ({
     criterion,
     ok: accepted,
-    outcome: accepted ? 'passed' as const : 'not_evaluated' as const,
-    source: accepted ? 'human_review' as const : 'reported' as const,
+    outcome: accepted ? ('passed' as const) : ('not_evaluated' as const),
+    source: accepted ? ('human_review' as const) : ('reported' as const),
     evidence: accepted
       ? `Explicitly accepted by ${reviewer} for direct edit completion.`
       : 'Direct edit checks passed; acceptance was not independently evaluated.',
@@ -158,7 +194,8 @@ function directEditAcceptanceResults(task: ControllerTask, decision: TaskReviewD
 
 function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionOptions): FinishEditSessionResult {
   const decision = options.decision ?? 'auto';
-  const reviewer = options.reviewer?.trim() || (decision === 'auto' ? 'forge-direct-edit-completion' : 'controller-review');
+  const reviewer =
+    options.reviewer?.trim() || (decision === 'auto' ? 'forge-direct-edit-completion' : 'controller-review');
   const shouldCommit = options.commit !== false;
   const initialSession = getEditSession(repoRoot, options.sessionId);
   if (!initialSession.issueId || !initialSession.taskId) {
@@ -179,11 +216,13 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
     });
   }
   if (task.status === 'done') {
-    if (!completionEvidenceComplete(task.verification, {
-      issueId: issue.id,
-      taskId: task.id,
-      targetBranch: resolveCompletionTargetBranch(repoRoot),
-    })) {
+    if (
+      !completionEvidenceComplete(task.verification, {
+        issueId: issue.id,
+        taskId: task.id,
+        targetBranch: resolveCompletionTargetBranch(repoRoot),
+      })
+    ) {
       return editResult(repoRoot, {
         action: 'blocked',
         sessionId: initialSession.sessionId,
@@ -231,8 +270,13 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
         note: `Cannot discard superseded direct edit ${discardSession.sessionId}; newer changes are preserved.`,
       });
       return editResult(repoRoot, {
-        action: 'blocked', sessionId: discardSession.sessionId, issueId: issue.id, taskId: task.id, decision,
-        taskStatus: taskForRun(updated, task.id).status, changedPaths: discardPaths,
+        action: 'blocked',
+        sessionId: discardSession.sessionId,
+        issueId: issue.id,
+        taskId: task.id,
+        decision,
+        taskStatus: taskForRun(updated, task.id).status,
+        changedPaths: discardPaths,
         reason: 'Direct Edit was superseded and cannot be safely rolled back.',
       });
     }
@@ -240,8 +284,13 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
       const stagedOwned = gitText(repoRoot, ['diff', '--cached', '--name-only', '--', ...discardPaths]);
       if (!stagedOwned.ok || stagedOwned.stdout.trim()) {
         return editResult(repoRoot, {
-          action: 'blocked', sessionId: discardSession.sessionId, issueId: issue.id, taskId: task.id, decision,
-          taskStatus: task.status, changedPaths: discardPaths,
+          action: 'blocked',
+          sessionId: discardSession.sessionId,
+          issueId: issue.id,
+          taskId: task.id,
+          decision,
+          taskStatus: task.status,
+          changedPaths: discardPaths,
           reason: stagedOwned.ok
             ? `Direct Edit discard requires owned paths to be unstaged first: ${stagedOwned.stdout.trim().split('\n').join(', ')}`
             : stagedOwned.stderr || 'Unable to inspect staged Direct Edit paths before discard.',
@@ -253,8 +302,13 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
       const cleanOwnedPaths = discardPaths.filter((path) => !dirtyPaths.has(path));
       if (cleanOwnedPaths.length > 0) {
         return editResult(repoRoot, {
-          action: 'blocked', sessionId: discardSession.sessionId, issueId: issue.id, taskId: task.id, decision,
-          taskStatus: task.status, changedPaths: discardPaths,
+          action: 'blocked',
+          sessionId: discardSession.sessionId,
+          issueId: issue.id,
+          taskId: task.id,
+          decision,
+          taskStatus: task.status,
+          changedPaths: discardPaths,
           reason: `Finalized Direct Edit has clean or integrated owned paths and requires an explicit revert: ${cleanOwnedPaths.join(', ')}`,
         });
       }
@@ -265,11 +319,17 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
     const retained = ownedWorkspaceChanges(repoRoot, discardPaths, discardSession.allowedPaths);
     if (discardSession.status !== 'rolled_back' || retained.length > 0) {
       return editResult(repoRoot, {
-        action: 'blocked', sessionId: discardSession.sessionId, issueId: issue.id, taskId: task.id, decision,
-        taskStatus: task.status, changedPaths: discardPaths,
-        reason: retained.length > 0
-          ? `Direct Edit discard retained owned changes: ${retained.join(', ')}`
-          : `Direct Edit discard did not close the session (current: ${discardSession.status}).`,
+        action: 'blocked',
+        sessionId: discardSession.sessionId,
+        issueId: issue.id,
+        taskId: task.id,
+        decision,
+        taskStatus: task.status,
+        changedPaths: discardPaths,
+        reason:
+          retained.length > 0
+            ? `Direct Edit discard retained owned changes: ${retained.join(', ')}`
+            : `Direct Edit discard did not close the session (current: ${discardSession.status}).`,
       });
     }
     const updated = updateTask(repoRoot, issue.id, task.id, {
@@ -291,7 +351,11 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
   const completionTarget = currentCompletionTarget(repoRoot);
   if (!completionTarget.onTargetBranch) {
     return editResult(repoRoot, {
-      action: 'blocked', sessionId: initialSession.sessionId, issueId: issue.id, taskId: task.id, decision,
+      action: 'blocked',
+      sessionId: initialSession.sessionId,
+      issueId: issue.id,
+      taskId: task.id,
+      decision,
       taskStatus: task.status,
       reason: `Direct Edit completion must run on integration target ${completionTarget.expectedBranch}; current branch is ${completionTarget.branch}.`,
     });
@@ -324,14 +388,16 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
         const failedVerification: TaskVerification = {
           reviewer,
           checkResults: standaloneCheckResults,
-          commandEvidence: [{
-            command: ['forge', 'controller', 'finish-edit', session.sessionId],
-            cwd: repoRoot,
-            ok: false,
-            reportedBy: reviewer,
-            executedAt: nowIso(),
-            source: 'controller',
-          }],
+          commandEvidence: [
+            {
+              command: ['forge', 'controller', 'finish-edit', session.sessionId],
+              cwd: repoRoot,
+              ok: false,
+              reportedBy: reviewer,
+              executedAt: nowIso(),
+              source: 'controller',
+            },
+          ],
           acceptanceResults: directEditAcceptanceResults(task, decision, reviewer),
           reviewedDiffHash: session.diffSha256,
           verifiedAt: nowIso(),
@@ -349,7 +415,9 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
         });
       }
     } else {
-      const missingPassedCheck = checkIds.some((checkId) => !session.checkResults.some((result) => result.checkId === checkId && result.ok));
+      const missingPassedCheck = checkIds.some(
+        (checkId) => !session.checkResults.some((result) => result.checkId === checkId && result.ok),
+      );
       if (session.status !== 'checked' || missingPassedCheck) {
         try {
           session = verifyEditSession(repoRoot, session.sessionId, {
@@ -373,14 +441,16 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
               ok: result.ok,
               summary: result.summary,
             })),
-            commandEvidence: [{
-              command: ['forge', 'controller', 'finish-edit', session.sessionId],
-              cwd: repoRoot,
-              ok: false,
-              reportedBy: reviewer,
-              executedAt: nowIso(),
-              source: 'controller',
-            }],
+            commandEvidence: [
+              {
+                command: ['forge', 'controller', 'finish-edit', session.sessionId],
+                cwd: repoRoot,
+                ok: false,
+                reportedBy: reviewer,
+                executedAt: nowIso(),
+                source: 'controller',
+              },
+            ],
             acceptanceResults: directEditAcceptanceResults(task, decision, reviewer),
             reviewedDiffHash: session.diffSha256,
             verifiedAt: nowIso(),
@@ -491,8 +561,14 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
   const after = currentCompletionTarget(repoRoot);
   if (!after.onTargetBranch) {
     return editResult(repoRoot, {
-      action: 'blocked', sessionId: session.sessionId, issueId: issue.id, taskId: task.id, decision,
-      taskStatus: task.status, changedPaths, commitSha,
+      action: 'blocked',
+      sessionId: session.sessionId,
+      issueId: issue.id,
+      taskId: task.id,
+      decision,
+      taskStatus: task.status,
+      changedPaths,
+      commitSha,
       reason: `Integration target changed during completion; expected ${after.expectedBranch}, current ${after.branch}.`,
     });
   }
@@ -502,25 +578,44 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
     const reason = `Target revision ${targetRevision} does not contain finalized Direct Edit content for: ${revisionMismatches.join(', ')}`;
     updateTask(repoRoot, issue.id, task.id, { status: 'integration_blocked', note: reason });
     return editResult(repoRoot, {
-      action: 'blocked', sessionId: session.sessionId, issueId: issue.id, taskId: task.id, decision,
-      taskStatus: 'integration_blocked', changedPaths, commitSha, reason,
+      action: 'blocked',
+      sessionId: session.sessionId,
+      issueId: issue.id,
+      taskId: task.id,
+      decision,
+      taskStatus: 'integration_blocked',
+      changedPaths,
+      commitSha,
+      reason,
     });
   }
   const integrationEvidence = {
-    kind: commitSha ? 'commit' as const : 'no_change' as const,
+    kind: commitSha ? ('commit' as const) : ('no_change' as const),
     targetBranch: after.branch,
     targetRevision,
     sourceRevision: targetRevision,
     baseRevision: session.baseRevision,
-    strategy: commitSha && !reusedHead ? 'edit_session_commit' as const : changedPaths.length === 0 ? 'no_change' as const : 'already_integrated' as const,
+    strategy:
+      commitSha && !reusedHead
+        ? ('edit_session_commit' as const)
+        : changedPaths.length === 0
+          ? ('no_change' as const)
+          : ('already_integrated' as const),
     editSessionId: session.sessionId,
     reachable: revisionReachable(repoRoot, targetRevision, after.branch),
     recordedAt: nowIso(),
   };
   const dirtyOwnedPaths = ownedWorkspaceChanges(repoRoot, changedPaths, session.allowedPaths);
-  const cleanupBlockers = dirtyOwnedPaths.length > 0
-    ? [blocker('dirty_owned_paths', `Direct Edit owned paths still have uncommitted changes: ${dirtyOwnedPaths.join(', ')}`, 'workspace')]
-    : [];
+  const cleanupBlockers =
+    dirtyOwnedPaths.length > 0
+      ? [
+          blocker(
+            'dirty_owned_paths',
+            `Direct Edit owned paths still have uncommitted changes: ${dirtyOwnedPaths.join(', ')}`,
+            'workspace',
+          ),
+        ]
+      : [];
   const completionReceipt = buildDirectEditCompletionReceipt({
     issueId: issue.id,
     taskId: task.id,
@@ -563,8 +658,15 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
     });
     if (!migrated.migrated || !migrated.completed) {
       return editResult(repoRoot, {
-        action: 'blocked', sessionId: session.sessionId, issueId: issue.id, taskId: task.id, decision,
-        taskStatus: task.status, changedPaths, completionReceipt, commitSha,
+        action: 'blocked',
+        sessionId: session.sessionId,
+        issueId: issue.id,
+        taskId: task.id,
+        decision,
+        taskStatus: task.status,
+        changedPaths,
+        completionReceipt,
+        commitSha,
         reason: `Migrated PlanStep completion was not recorded for ${issue.id}/${task.id}.`,
       });
     }
@@ -588,14 +690,16 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
       ok: result.ok,
       summary: result.summary,
     })),
-    commandEvidence: [{
-      command: ['forge', 'controller', 'finish-edit', session.sessionId],
-      cwd: repoRoot,
-      ok: true,
-      reportedBy: reviewer,
-      executedAt: nowIso(),
-      source: 'controller',
-    }],
+    commandEvidence: [
+      {
+        command: ['forge', 'controller', 'finish-edit', session.sessionId],
+        cwd: repoRoot,
+        ok: true,
+        reportedBy: reviewer,
+        executedAt: nowIso(),
+        source: 'controller',
+      },
+    ],
     acceptanceResults: directEditAcceptanceResults(task, decision, reviewer),
     reviewedDiffHash: session.diffSha256,
     integratedRevision: targetRevision,
@@ -631,9 +735,15 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
       reason: 'Direct Edit verification is incomplete.',
     });
   }
-  const accepted = (decision === 'approve_and_finish' || canAutoFinish(verifiedTask))
-    ? acceptVerifiedTask(repoRoot, issue.id, task.id, options.note ?? `Accepted direct edit receipt ${completionReceipt.receiptId}.`)
-    : verified;
+  const accepted =
+    decision === 'approve_and_finish' || canAutoFinish(verifiedTask)
+      ? acceptVerifiedTask(
+          repoRoot,
+          issue.id,
+          task.id,
+          options.note ?? `Accepted direct edit receipt ${completionReceipt.receiptId}.`,
+        )
+      : verified;
   const finalStatus = taskForRun(accepted, task.id).status;
   return editResult(repoRoot, {
     action: finalStatus === 'done' ? (changedPaths.length === 0 ? 'no_change' : 'finished') : 'needs_decision',
@@ -655,12 +765,22 @@ function revisionReachable(repoRoot: string, revision: string, branch: string): 
 function scopedWorkspaceChanges(repoRoot: string, allowedPaths: string[]): string[] {
   const status = gitText(repoRoot, ['status', '--porcelain', '--untracked-files=all']);
   if (!status.ok) return [];
-  const prefixes = allowedPaths.map((path) => path.replace(/\\/g, '/').split(/[?*{\[]/, 1)[0].replace(/\/+$/, ''));
-  return Array.from(new Set(status.stdout.split('\n').flatMap((line) => {
-    const path = line.length >= 4 ? line.slice(3).trim().replace(/^"|"$/g, '') : '';
-    if (!path || !prefixes.some((prefix) => prefix && (path === prefix || path.startsWith(`${prefix}/`)))) return [];
-    return [path];
-  })));
+  const prefixes = allowedPaths.map((path) =>
+    path
+      .replace(/\\/g, '/')
+      .split(/[?*{\[]/, 1)[0]
+      .replace(/\/+$/, ''),
+  );
+  return Array.from(
+    new Set(
+      status.stdout.split('\n').flatMap((line) => {
+        const path = line.length >= 4 ? line.slice(3).trim().replace(/^"|"$/g, '') : '';
+        if (!path || !prefixes.some((prefix) => prefix && (path === prefix || path.startsWith(`${prefix}/`))))
+          return [];
+        return [path];
+      }),
+    ),
+  );
 }
 
 function workspaceChangesForPaths(repoRoot: string, paths: readonly string[]): string[] {
@@ -668,16 +788,24 @@ function workspaceChangesForPaths(repoRoot: string, paths: readonly string[]): s
   if (selected.length === 0) return [];
   const status = gitText(repoRoot, ['status', '--porcelain', '--untracked-files=all', '--', ...selected]);
   if (!status.ok) return [];
-  return Array.from(new Set(status.stdout.split('\n').flatMap((line) => {
-    if (!line.trim()) return [];
-    const raw = line.length >= 4 ? line.slice(3).trim().replace(/^"|"$/g, '') : '';
-    if (!raw) return [];
-    const renamed = raw.includes(' -> ') ? raw.split(' -> ').at(-1)?.trim() : raw;
-    return renamed ? [renamed] : [];
-  })));
+  return Array.from(
+    new Set(
+      status.stdout.split('\n').flatMap((line) => {
+        if (!line.trim()) return [];
+        const raw = line.length >= 4 ? line.slice(3).trim().replace(/^"|"$/g, '') : '';
+        if (!raw) return [];
+        const renamed = raw.includes(' -> ') ? raw.split(' -> ').at(-1)?.trim() : raw;
+        return renamed ? [renamed] : [];
+      }),
+    ),
+  );
 }
 
-function ownedWorkspaceChanges(repoRoot: string, ownedPaths: readonly string[], fallbackAllowedPaths: readonly string[] = []): string[] {
+function ownedWorkspaceChanges(
+  repoRoot: string,
+  ownedPaths: readonly string[],
+  fallbackAllowedPaths: readonly string[] = [],
+): string[] {
   if (ownedPaths.length > 0) return workspaceChangesForPaths(repoRoot, ownedPaths);
   return scopedWorkspaceChanges(repoRoot, [...fallbackAllowedPaths]);
 }
@@ -783,26 +911,28 @@ function withLegacyCompletionWrite<T>(
   identity: string,
   operation: () => T,
 ): T {
-  if (!cutover.repoId) throw new Error('COMPLETION_REPOSITORY_IDENTITY_REQUIRED: cannot prove the shared repository lock key');
+  if (!cutover.repoId)
+    throw new Error('COMPLETION_REPOSITORY_IDENTITY_REQUIRED: cannot prove the shared repository lock key');
   const targetBranch = resolveCompletionTargetBranch(repoRoot);
   const resource = `integration-${createHash('sha256').update(`${repoRoot}\0${targetBranch}`).digest('hex').slice(0, 24)}`;
   return withControllerLock(
     cutover.controllerHome,
     { scope: 'global', resource },
     `completion:${identity}`,
-    () => withRepositoryMutationExclusion(
-      cutover.controllerHome,
-      cutover.repoId!,
-      `completion:${identity}`,
-      operation,
-      undefined,
-      cutover.checkoutId
-        ? [
-            { resourceKey: `git-index:${cutover.checkoutId}`, mode: 'write' as const },
-            { resourceKey: `git-refs:${cutover.repoId}`, mode: 'write' as const },
-          ]
-        : undefined,
-    ),
+    () =>
+      withRepositoryMutationExclusion(
+        cutover.controllerHome,
+        cutover.repoId!,
+        `completion:${identity}`,
+        operation,
+        undefined,
+        cutover.checkoutId
+          ? [
+              { resourceKey: `git-index:${cutover.checkoutId}`, mode: 'write' as const },
+              { resourceKey: `git-refs:${cutover.repoId}`, mode: 'write' as const },
+            ]
+          : undefined,
+      ),
     30 * 60_000,
   );
 }
@@ -810,7 +940,11 @@ function withLegacyCompletionWrite<T>(
 export function finishEditSession(repoRoot: string, options: FinishEditSessionOptions): FinishEditSessionResult {
   const cutover = legacyIssueCutoverState(repoRoot);
   if (cutover.retired) {
-    throw new Error('LEGACY_EDIT_SESSION_COMPLETION_RETIRED: Direct Edit Issue/Task completion aliases cannot mutate PlanStep state after SQLite cutover; use authoritative Work completion.');
+    throw new Error(
+      'LEGACY_EDIT_SESSION_COMPLETION_RETIRED: Direct Edit Issue/Task completion aliases cannot mutate PlanStep state after SQLite cutover; use authoritative Work completion.',
+    );
   }
-  return withLegacyCompletionWrite(repoRoot, cutover, options.sessionId, () => finishEditSessionUnlocked(repoRoot, options));
+  return withLegacyCompletionWrite(repoRoot, cutover, options.sessionId, () =>
+    finishEditSessionUnlocked(repoRoot, options),
+  );
 }
