@@ -3513,8 +3513,7 @@ struct SettingsPane: View {
                                             .font(.system(size:15,weight:.semibold))
                                         Text(profileReadiness(profiles[index]))
                                             .font(.system(size:11))
-                                            .foregroundStyle(profileReady(profiles[index]) ?
-                                                              Color.green : ForgePalette.secondary)
+                                            .foregroundStyle(profileReadinessColor(profiles[index]))
                                     }
                                     Spacer()
                                     Menu {
@@ -3779,6 +3778,14 @@ struct SettingsPane: View {
             return feedback.passed ? "已保存 · 本次连接正常" : "已保存 · 本次连接失败"
         }
         return "已保存 · 尚未验证"
+    }
+
+    private func profileReadinessColor(_ profile:ProviderProfileDraft) -> Color {
+        guard profileReady(profile) else { return .orange }
+        guard let feedback=connectionFeedback, feedback.profileId == profile.id else {
+            return ForgePalette.secondary
+        }
+        return feedback.passed ? .green : .orange
     }
 
     private func testConnection(_ profile:ProviderProfileDraft) {

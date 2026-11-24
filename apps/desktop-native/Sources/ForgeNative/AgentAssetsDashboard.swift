@@ -155,9 +155,14 @@ struct AgentAssetsDashboard: View {
 
         if items.isEmpty {
           let filtered = hasQuery || !selectedRepoId.isEmpty || !showLocalResources || !showRemoteImages
-          VStack(alignment: .leading, spacing: 8) {
-            ForgeInspectorEmptyState(
-              title: filtered ? "没有匹配的资源" : "暂无附件", symbol: "paperclip")
+          VStack(spacing: 10) {
+            Image(systemName: "paperclip")
+              .font(.system(size: 22, weight: .light))
+              .foregroundStyle(.tertiary)
+              .accessibilityHidden(true)
+            Text(filtered ? "没有匹配的资源" : "暂无附件")
+              .font(.system(size: 12.5, weight: .medium))
+              .foregroundStyle(ForgePalette.secondary)
             if filtered {
               Button("清除筛选") {
                 searchQuery = ""
@@ -169,11 +174,10 @@ struct AgentAssetsDashboard: View {
               .buttonStyle(.plain)
               .font(ForgeClientDesign.Shell.control)
               .foregroundStyle(ForgePalette.accent)
-              .padding(.horizontal, 14)
               .accessibilityIdentifier("agent.assets.reset-filters")
             }
           }
-          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         } else if compact, let chosen {
           resourceDetail(chosen, compact: true)
             .id(chosen.id)
