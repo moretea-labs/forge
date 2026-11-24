@@ -10,7 +10,6 @@ import { buildControllerTaskLedgerProjection } from '../../src/cli/controller/ta
 import { inspectProjectGovernance, reconcileProjectGovernance } from '../../src/cli/controller/governance';
 import { clearCurrentIssue, loadControllerProjectState, saveControllerProjectState } from '../../src/cli/controller/project-state';
 import { finishEditSession } from '../../src/cli/controller/completion-orchestrator';
-import { continueTaskAfterSuccessfulRun } from '../../src/cli/controller/execution-completion';
 
 const REPO_ID = 'repo_cutover_cli';
 const ISSUE_ID = 'ISS-20260802-7E1D69';
@@ -165,10 +164,6 @@ describe('legacy control-plane cutover', () => {
       expect(() => saveControllerProjectState(repoRoot, { issueCreationMode: 'open' })).toThrow('LEGACY_PROJECT_STATE_WRITES_RETIRED');
       expect(() => reconcileProjectGovernance(repoRoot)).toThrow('LEGACY_GOVERNANCE_RECONCILIATION_RETIRED');
       expect(() => finishEditSession(repoRoot, { sessionId: 'EDIT-MISSING' })).toThrow('LEGACY_EDIT_SESSION_COMPLETION_RETIRED');
-      expect(continueTaskAfterSuccessfulRun(repoRoot, { status: 'succeeded' } as never)).toMatchObject({
-        continued: false,
-        reason: expect.stringContaining('retired after SQLite cutover'),
-      });
       expect(readFileSync(issuePath, 'utf8')).toBe(before);
 
       // Once the repo is registered, the repo-local projection is not authority:

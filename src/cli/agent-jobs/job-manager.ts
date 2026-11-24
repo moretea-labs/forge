@@ -23,7 +23,6 @@ import { getIssue, inspectTaskReadiness, removeEphemeralIssue, updateTask } from
 import { readTaskRunEvidence } from "../controller/run-evidence";
 import { resolveEffectiveTaskState } from "../controller/task-status-resolver";
 import { tryAppendControllerWorklogEvent } from "../../runtime/evidence/controller-worklog";
-import { continueTaskAfterSuccessfulRun } from "../controller/execution-completion";
 import {
   ensureControllerEpoch,
   hasControllerOwnershipMetadata,
@@ -475,15 +474,6 @@ function activeRunIndexEntries(repoRoot: string): AgentRunIndexEntry[] {
   return active;
 }
 
-function cleanupEphemeralIssueAfterRun(repoRoot: string, issueId: string): void {
-  try {
-    const issue = getIssue(repoRoot, issueId);
-    if (issue.ephemeral) removeEphemeralIssue(repoRoot, issue.id);
-  } catch (_error) {
-    // Ephemeral cleanup is idempotent. Durable Run evidence is retained.
-  }
-}
-
 function reconcileLatestTerminalRun(repoRoot: string, meta: AgentJobMeta): void {
   if (!["succeeded", "failed", "cancelled", "unknown"].includes(meta.status)) return;
   try {
@@ -503,8 +493,6 @@ function reconcileLatestTerminalRun(repoRoot: string, meta: AgentJobMeta): void 
           note: `${meta.runId} succeeded and entered task-local continuation.`,
         });
       }
-      const continuation = continueTaskAfterSuccessfulRun(repoRoot, meta);
-      if (continuation.status === "done") cleanupEphemeralIssueAfterRun(repoRoot, issue.id);
       return;
     }
 
