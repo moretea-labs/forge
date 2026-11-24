@@ -519,7 +519,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'autofill_forge_vault_password',
       title: 'Fill exact authorized Forge-owned local vault password',
-      description: 'Use an existing Playwright browser session and canonical exact-origin/account rh_credential grant to unlock local Forge vault inside the trusted Computer process and fill one verified password field. No passwords or tokens may appear in action arguments, receipts or logs. Never submits login; native Apple Events is forbidden.',
+      description: 'Requires an independently unlocked, release-owned local vault service, an existing Playwright browser session and an exact-origin/account rh_credential grant. Website grants never unlock the local vault. Fill one verified password field. No passwords or tokens may appear in action arguments, receipts or logs. Never submits login; native Apple Events is forbidden.',
       readOnly: false, risk: 'remote_write', confirmation: 'authorization',
       defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,

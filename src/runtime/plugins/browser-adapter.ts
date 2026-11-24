@@ -15,7 +15,7 @@ import type {
 } from './types';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { assertCredentialUseAuthorized } from '../safe-tooling/managed-credential-authorization';
-import { fillForgeVaultPasswordInComputer } from '../safe-tooling/forge-local-vault-computer';
+import { assertForgeLocalVaultUnlocked, fillForgeVaultPasswordInComputer, ForgeLocalVaultBridgeError } from '../safe-tooling/forge-local-vault-computer';
 import { inspectSavedPasswordTarget } from './browser-password-target-policy';
 import { listCanonicalGrants } from '../../../packages/kernel/identity/api/index';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
@@ -5197,6 +5197,11 @@ async function executeBrowserPluginActionInternal(
         } catch {
           throw new AssistantPluginError('FORGE_VAULT_CREDENTIAL_NOT_AUTHORIZED',
             'No exact active canonical account grant exists for Forge vault fill.', { retryable: false });
+        }
+        try { assertForgeLocalVaultUnlocked(input.controllerHome); }
+        catch (error) {
+          throw new AssistantPluginError(error instanceof ForgeLocalVaultBridgeError ? error.code : 'FORGE_VAULT_LOCAL_UNLOCK_REQUIRED',
+            'A release-owned local vault service must already be unlocked on this Mac. A website grant cannot unlock it.', { retryable: false });
         }
         return await withPage(input.actionId, input.repoRoot, current, target, input.args,
           async (page, _diagnostics, connection) => {
