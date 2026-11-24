@@ -16,8 +16,8 @@ enum ForgePalette {
         : NSColor.labelColor
     })
   // Selection and hover are light floating washes, not opaque rows.
-  static let selection = Color(nsColor: .labelColor).opacity(0.085)
-  static let selectionStrong = Color(nsColor: .labelColor).opacity(0.12)
+  static let selection = Color(nsColor: .labelColor).opacity(0.036)
+  static let selectionStrong = Color(nsColor: .labelColor).opacity(0.060)
   // Semantic washes adapt to appearance instead of disappearing on light glass.
   private static func wash(dark: CGFloat, light: CGFloat) -> Color {
     Color(nsColor: NSColor(name: nil) { appearance in
@@ -39,18 +39,18 @@ enum ForgePalette {
   static let railTint = Color.clear
   static let listTint = Color.clear
   static let sidePanel = Color.clear
-  static let floatingTint = wash(dark: 0.035, light: 0.020)
-  static let floatingStroke = wash(dark: 0.045, light: 0.035)
+  static let floatingTint = wash(dark: 0.022, light: 0.012)
+  static let floatingStroke = wash(dark: 0.032, light: 0.024)
 }
 
 extension ForgeClientDesign {
   /// One optical size for chrome icons (rail / window toolbar / sidebar / composer).
   enum Icon {
-    static let point: CGFloat = 14
-    static let railPoint: CGFloat = 17
-    static let railGlyphHeight: CGFloat = 22
-    static let railLabel: CGFloat = 10
-    static let hit: CGFloat = 30
+    static let point: CGFloat = 13
+    static let railPoint: CGFloat = 14
+    static let railGlyphHeight: CGFloat = 18
+    static let railLabel: CGFloat = 9.5
+    static let hit: CGFloat = 28
     static let weight: Font.Weight = .regular
     static var font: Font { .system(size: point, weight: weight) }
     static var railFont: Font { .system(size: railPoint, weight: weight) }
@@ -264,39 +264,39 @@ extension ButtonStyle where Self == ForgeTextButtonStyle {
 /// Shared native form vocabulary: semantic system colors, no parallel theme engine.
 enum ForgeClientDesign {
   enum Spacing {
-    static let sheetPadding: CGFloat = 22
-    static let section: CGFloat = 18
-    static let row: CGFloat = 9
-    static let titleDetail: CGFloat = 4
+    static let sheetPadding: CGFloat = 20
+    static let section: CGFloat = 16
+    static let row: CGFloat = 8
+    static let titleDetail: CGFloat = 3
   }
   enum Typography {
-    static let sheetTitle: Font = .system(size: 17, weight: .semibold)
-    static let sectionTitle: Font = .system(size: 12, weight: .semibold)
-    static let body: Font = .system(size: 12)
-    static let control: Font = .system(size: 11)
-    static let supporting: Font = .system(size: 11)
-    static let identifier: Font = .system(size: 11, design: .monospaced)
+    static let sheetTitle: Font = .system(size: 16, weight: .semibold)
+    static let sectionTitle: Font = .system(size: 11.5, weight: .semibold)
+    static let body: Font = .system(size: 11.75)
+    static let control: Font = .system(size: 10.5)
+    static let supporting: Font = .system(size: 10.5)
+    static let identifier: Font = .system(size: 10.5, design: .monospaced)
   }
   enum Shell {
     /// Narrow left activity rail (会话 / 项目 / 看板), Cursor-like density.
-    static let iconRailWidth: CGFloat = 52
-    static let listMin: CGFloat = 200
-    static let listIdeal: CGFloat = 236
-    static let listMax: CGFloat = 280
+    static let iconRailWidth: CGFloat = 42
+    static let listMin: CGFloat = 188
+    static let listIdeal: CGFloat = 224
+    static let listMax: CGFloat = 268
     static let sidebarMin: CGFloat = iconRailWidth + listMin
     static let sidebarIdeal: CGFloat = iconRailWidth + listIdeal
     static let sidebarMax: CGFloat = iconRailWidth + listMax
     static let workSurfaceMin: CGFloat = 360
     /// Centered reading column shared by transcript and composer (Cursor/Claude style).
     static let readingColumn: CGFloat = 760
-    static let destinationRowHeight: CGFloat = 46
-    static let threadRowHeight: CGFloat = 32
+    static let destinationRowHeight: CGFloat = 36
+    static let threadRowHeight: CGFloat = 30
     static let threadActionWidth: CGFloat = 22
     static let threadSectionSpacing: CGFloat = 12
     static let threadSectionTitle: Font = .system(size: 10, weight: .medium)
-    static let threadTitlePoint: CGFloat = 12.5
-    static let sessionTitle: Font = .system(size: 13.5, weight: .semibold)
-    static let sidebarTitle: Font = .system(size: 11, weight: .medium)
+    static let threadTitlePoint: CGFloat = 12
+    static let sessionTitle: Font = .system(size: 13, weight: .semibold)
+    static let sidebarTitle: Font = .system(size: 10.5, weight: .medium)
     static let threadTitle: Font = .system(size: threadTitlePoint, weight: .regular)
     static let threadTitleSelected: Font = .system(size: threadTitlePoint, weight: .medium)
     static let body: Font = .system(size: 12.5)

@@ -41,11 +41,11 @@ struct ForgeWorkspaceView: View {
 
     var body: some View {
         GeometryReader { geometry in
-        HStack(spacing:8) {
+        HStack(spacing:6) {
             unifiedSidebar
                 .frame(width:ForgeClientDesign.Shell.sidebarWidth(windowWidth:geometry.size.width))
-                .padding(.leading,8)
-                .padding(.bottom,8)
+                .padding(.leading,6)
+                .padding(.bottom,6)
                 .background(Color.clear)
 
             Group {
@@ -134,9 +134,9 @@ struct ForgeWorkspaceView: View {
                 main
             }
             }
-            .padding(.trailing,8)
-            .padding(.bottom,8)
-            .forgePanelGlass(cornerRadius:20)
+            .padding(.trailing,6)
+            .padding(.bottom,6)
+            .forgePanelGlass(cornerRadius:18)
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         }
@@ -184,21 +184,6 @@ struct ForgeWorkspaceView: View {
             .accessibilityLabel("返回上一页")
             .accessibilityIdentifier("forge.toolbar.back")
         }
-        if model.zenMode || model.page != .agent {
-            Button { refreshCurrentPage() } label: {
-                if pageRefreshIsLoading {
-                    ProgressView().controlSize(.mini)
-                        .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
-                } else {
-                    ForgeGlyph(.refresh)
-                }
-            }
-            .forgeChromeSurface(cornerRadius:8)
-            .buttonStyle(.plain)
-            .disabled(pageRefreshIsDisabled)
-            .help(pageRefreshHelp)
-            .accessibilityIdentifier("app.refresh")
-        }
     }
 
     private var activeSidebarDestination: ForgeSidebarDestination {
@@ -234,16 +219,11 @@ struct ForgeWorkspaceView: View {
         return Button {
             openSidebarDestination(destination)
         } label: {
-            VStack(spacing:2) {
-                ForgeGlyph(destination.glyph, role:.rail, active:selected)
-                Text(destination.title)
-                    .font(ForgeClientDesign.Icon.railLabelFont)
-                    .lineLimit(1)
-            }
-            .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-            .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
-            .contentShape(RoundedRectangle(cornerRadius:10,style:.continuous))
-            .forgeChromeSurface(selected:selected,cornerRadius:10)
+            ForgeGlyph(destination.glyph, role:.rail, active:selected)
+                .frame(width:32,height:32)
+                .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+                .forgeChromeSurface(selected:selected,cornerRadius:8)
+                .frame(width:34,height:ForgeClientDesign.Shell.destinationRowHeight)
         }
         .buttonStyle(.plain)
         .help(destination.title)
@@ -289,19 +269,19 @@ struct ForgeWorkspaceView: View {
     }
 
     private var iconRail: some View {
-        VStack(spacing:4) {
+        VStack(spacing:3) {
             ForEach(ForgeSidebarDestination.primaryRail, id: \.self) { destination in
                 sidebarDestinationButton(destination)
             }
-            Color.clear.frame(height:6)
+            Color.clear.frame(height:4)
             ForEach(ForgeSidebarDestination.toolRail, id: \.self) { destination in
                 sidebarDestinationButton(destination)
             }
             Spacer(minLength:0)
             sidebarDestinationButton(.settings)
         }
-        .padding(.top,3)
-        .padding(.bottom,10)
+        .padding(.top,4)
+        .padding(.bottom,8)
         .frame(width:ForgeClientDesign.Shell.iconRailWidth)
         .frame(maxHeight:.infinity)
         .background(ForgePalette.railTint)
@@ -365,21 +345,23 @@ struct ForgeWorkspaceView: View {
             listColumn
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
-        .forgePanelGlass(cornerRadius:20, material:.sidebar)
+        .forgePanelGlass(cornerRadius:18, material:.underWindowBackground)
     }
 
     private var projectsListColumn: some View {
         VStack(alignment:.leading,spacing:0) {
             HStack(spacing:6) {
                 Text("项目")
-                    .font(.system(size:13,weight:.semibold))
+                    .font(.system(size:11.5,weight:.medium))
+                    .foregroundStyle(ForgePalette.secondary)
                 Spacer(minLength:0)
                 Button { Task { await model.refresh() } } label: {
                     if model.projectsLoading {
                         ProgressView().controlSize(.small)
                     } else {
                         Image(systemName:"arrow.clockwise")
-                            .font(.system(size:12,weight:.medium))
+                            .font(.system(size:11,weight:.regular))
+                            .foregroundStyle(ForgePalette.secondary)
                     }
                 }
                 .buttonStyle(.plain)
@@ -387,20 +369,20 @@ struct ForgeWorkspaceView: View {
                 .help("刷新项目列表")
                 .accessibilityLabel("刷新项目列表")
             }
-            .padding(.horizontal,14)
-            .frame(height:34)
-            .padding(.top,8).padding(.bottom,4)
+            .padding(.horizontal,12)
+            .frame(height:30)
+            .padding(.top,4).padding(.bottom,2)
 
             HStack(spacing:7) {
                 Image(systemName:"magnifyingglass")
                     .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                 TextField("搜索项目或路径",text:$projectSearch)
-                    .textFieldStyle(.plain).font(.system(size:12))
+                    .textFieldStyle(.plain).font(.system(size:11.5))
             }
-            .padding(.horizontal,9).frame(height:30)
-            .background(ForgePalette.inputFill,in:RoundedRectangle(cornerRadius:10,style:.continuous))
-            .padding(.horizontal,12)
-            .padding(.bottom,8)
+            .padding(.horizontal,9).frame(height:28)
+            .background(ForgePalette.inputFill,in:RoundedRectangle(cornerRadius:9,style:.continuous))
+            .padding(.horizontal,10)
+            .padding(.bottom,6)
 
             ScrollView {
                 LazyVStack(spacing:2) {
@@ -425,24 +407,25 @@ struct ForgeWorkspaceView: View {
                         } label: {
                             HStack(spacing:8) {
                                 Image(systemName:project.repoId == model.repoId ? "folder.fill" : "folder")
-                                    .frame(width:16)
-                                VStack(alignment:.leading,spacing:2) {
+                                    .font(.system(size:11.5,weight:.regular))
+                                    .foregroundStyle(ForgePalette.secondary)
+                                    .frame(width:15)
+                                VStack(alignment:.leading,spacing:1) {
                                     Text(project.label)
-                                        .font(.system(size:12,weight:.medium))
+                                        .font(.system(size:11.25,weight:project.repoId == model.repoId ? .medium : .regular))
                                         .lineLimit(1)
                                     Text(project.localRoot ?? project.defaultBranch ?? project.repoId)
-                                        .font(.system(size:10))
-                                        .foregroundStyle(ForgePalette.secondary)
+                                        .font(.system(size:9.25))
+                                        .foregroundStyle(ForgePalette.secondary.opacity(0.82))
                                         .lineLimit(1)
                                         .truncationMode(.middle)
                                 }
                                 Spacer(minLength:0)
                             }
-                            .padding(.horizontal,10)
-                            .frame(height:44)
-                            .background(project.repoId == model.repoId ? ForgePalette.selection : .clear,
-                                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                            .contentShape(Rectangle())
+                            .padding(.horizontal,9)
+                            .frame(height:40)
+                            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+                            .forgeChromeSurface(selected:project.repoId == model.repoId,cornerRadius:8)
                         }
                         .buttonStyle(.plain)
                         .disabled(model.busy || model.zenRefinementActive)
@@ -1536,39 +1519,6 @@ struct ForgeWorkspaceView: View {
             if ok {
                 projectPickerShown = false
                 projectSearch = ""
-            }
-        }
-    }
-
-    private var pageRefreshIsLoading: Bool {
-        model.settingsLoading || model.schedulesLoading || model.pluginsLoading
-    }
-
-    private var pageRefreshIsDisabled: Bool {
-        pageRefreshIsLoading || ((model.page == .schedule || model.page == .plugins) && model.repoId == nil)
-    }
-
-    private var pageRefreshHelp: String {
-        switch model.page {
-        case .settings: return "刷新设置与服务状态"
-        case .schedule: return "刷新计划任务"
-        case .plugins: return "刷新插件"
-        default: return "刷新真实 Forge 状态"
-        }
-    }
-
-    private var pageRefreshAccessibilityLabel: String {
-        pageRefreshIsLoading ? "页面操作进行中" : pageRefreshHelp
-    }
-
-    private func refreshCurrentPage() {
-        let page = model.page
-        Task {
-            switch page {
-            case .settings: await model.loadSettingsPage()
-            case .schedule: await model.loadSchedulePage()
-            case .plugins: await model.loadPluginsPage()
-            default: await model.refresh()
             }
         }
     }

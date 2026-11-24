@@ -182,9 +182,9 @@ struct ForgeGlyph: View {
 
   private var size: CGFloat {
     switch role {
-    case .chrome: return 18
-    case .rail: return 22
-    case .inline: return 16
+    case .chrome: return 16
+    case .rail: return 15
+    case .inline: return 15
     }
   }
 

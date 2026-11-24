@@ -660,7 +660,7 @@ struct ZenWorkspacePane: View {
             }
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
-        .background(Color(nsColor:.textBackgroundColor))
+        .background(Color.clear)
         .toolbar {
             ToolbarItemGroup(placement:.automatic) {
                 zenWindowToolbarActions
@@ -810,8 +810,8 @@ struct ZenWorkspacePane: View {
                     }
                     Spacer()
                 }
-                .font(.system(size:11)).foregroundStyle(.secondary)
-                .padding(.horizontal,24).padding(.bottom,13)
+                .font(.system(size:10.5)).foregroundStyle(.secondary)
+                .padding(.horizontal,20).padding(.bottom,10)
                 HStack(spacing:10) {
                     if boardMode == "forge" {
                         HStack(spacing:7) {
@@ -841,22 +841,33 @@ struct ZenWorkspacePane: View {
                                 .help("清除搜索")
                             }
                         }
-                        .font(.system(size:12))
-                        .padding(.horizontal,10).frame(height:30)
-                        .background(Color.primary.opacity(0.045),
-                                    in:RoundedRectangle(cornerRadius:8))
-                        .frame(maxWidth:320)
+                        .font(.system(size:11.5))
+                        .padding(.horizontal,9).frame(height:28)
+                        .background(ForgePalette.inputFill,
+                                    in:RoundedRectangle(cornerRadius:9,style:.continuous))
+                        .forgeFloatingGlass(cornerRadius:9)
+                        .frame(maxWidth:300)
                     }
                     Spacer()
                     if boardMode == "forge" {
-                        Picker("视图",selection:$boardPresentation) {
+                        HStack(spacing:2) {
                             ForEach(BoardPresentation.allCases,id:\.self) { presentation in
-                                Text(presentation.title).tag(presentation)
+                                let selected = boardPresentation == presentation
+                                Button {
+                                    boardPresentation = presentation
+                                } label: {
+                                    Text(presentation.title)
+                                        .font(.system(size:10.5,weight:selected ? .medium : .regular))
+                                        .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+                                        .padding(.horizontal,7)
+                                        .frame(height:26)
+                                        .contentShape(RoundedRectangle(cornerRadius:7,style:.continuous))
+                                        .forgeChromeSurface(selected:selected,cornerRadius:7)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .fixedSize()
+                        .accessibilityElement(children:.contain)
                         .accessibilityIdentifier("zen.board.presentation")
 
                         Menu {
@@ -872,11 +883,14 @@ struct ZenWorkspacePane: View {
                                 }
                             }
                         } label: {
-                            Label(requirementSortOrder.title,systemImage:"arrow.up.arrow.down")
-                                .font(.system(size:11))
+                            Image(systemName:"arrow.up.arrow.down")
+                                .font(.system(size:10.5,weight:.medium))
+                                .frame(width:26,height:26)
+                                .contentShape(RoundedRectangle(cornerRadius:7,style:.continuous))
+                                .forgeChromeSurface(cornerRadius:7)
                         }
                         .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                        .help("按默认顺序、优先级或名称排列任务")
+                        .help("排序：\(requirementSortOrder.title)")
                         .accessibilityLabel("排序：\(requirementSortOrder.title)")
                         .accessibilityIdentifier("zen.board.sort")
 
@@ -907,7 +921,7 @@ struct ZenWorkspacePane: View {
                     .menuStyle(.borderlessButton).menuIndicator(.hidden)
                     .frame(width:130)
                 }
-                .padding(.horizontal,24).padding(.bottom,10)
+                .padding(.horizontal,20).padding(.bottom,8)
                 if boardMode == "github",let problem=model.zenGitHubBoardError {
                     Text("GitHub Project 不可用；当前展示 Requirement。\(problem)")
                         .font(.system(size:10)).foregroundStyle(.secondary)
@@ -2600,13 +2614,14 @@ private struct ZenTreeCanvas: View {
                                     .frame(width:194,height:80,alignment:.topLeading)
                                     .padding(.horizontal,13)
                                     .padding(.vertical,12)
-                                    .background(Color(nsColor:.controlBackgroundColor),
+                                    .background(ForgePalette.raisedSurface,
                                                 in:RoundedRectangle(cornerRadius:12,style:.continuous))
                                     .overlay {
                                         RoundedRectangle(cornerRadius:12,style:.continuous)
                                             .strokeBorder(item.id == selectedId
-                                                          ? Color.accentColor.opacity(0.85) : .clear,
-                                                          lineWidth:1.5)
+                                                          ? ForgePalette.primaryHairlineFocused
+                                                          : ForgePalette.floatingStroke,
+                                                          lineWidth:item.id == selectedId ? 1 : 0.5)
                                     }
                                     .contentShape(RoundedRectangle(cornerRadius:12,style:.continuous))
                                 }
@@ -2677,7 +2692,7 @@ private struct ZenTreeCanvas: View {
             zoom=1
             hoveredNodeId=nil
         }
-        .background(Color(nsColor:.textBackgroundColor))
+        .background(Color.clear)
         .accessibilityIdentifier("zen.requirement.canvas")
     }
 }
