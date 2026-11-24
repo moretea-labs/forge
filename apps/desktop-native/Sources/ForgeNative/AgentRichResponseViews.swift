@@ -77,8 +77,9 @@ struct AgentAssistantMessageBody: View {
   }
   var onReplySelection: ((String) -> Void)? = nil
   @State private var taskSelections: [String: Bool] = [:]
+  @State private var blockCache = AgentMessageBlockCache()
 
-  private var blocks: [AgentMessageBlock] { AgentMessageBlock.parse(text) }
+  private var blocks: [AgentMessageBlock] { blockCache.blocks(for: text) }
 
   var body: some View {
     VStack(alignment: .leading, spacing: ForgeClientDesign.Transcript.blockSpacing) {

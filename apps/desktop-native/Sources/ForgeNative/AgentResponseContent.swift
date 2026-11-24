@@ -254,3 +254,25 @@ enum AgentMessageBlock: Equatable {
         """
     }
 }
+
+
+/// View-local memoization for one assistant message. SwiftUI may read the parsed
+/// blocks more than once in a single update (rendering and checklist selection).
+/// Keep one parse result for an exact text snapshot; streamed text invalidates it.
+final class AgentMessageBlockCache {
+    private let parser: (String) -> [AgentMessageBlock]
+    private var source: String?
+    private var cachedBlocks: [AgentMessageBlock] = []
+
+    init(parser: @escaping (String) -> [AgentMessageBlock] = AgentMessageBlock.parse) {
+        self.parser = parser
+    }
+
+    func blocks(for source: String) -> [AgentMessageBlock] {
+        guard self.source != source else { return cachedBlocks }
+        let parsed = parser(source)
+        self.source = source
+        cachedBlocks = parsed
+        return parsed
+    }
+}

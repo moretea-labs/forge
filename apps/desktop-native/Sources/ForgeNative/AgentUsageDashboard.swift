@@ -34,6 +34,7 @@ struct AgentUsageDashboard: View {
     }
 
     struct UsageSnapshot {
+        let providerIds: [String]
         let entries: [Entry]
         let unreportedEntries: [UnreportedEntry]
         let inputTotal: Int
@@ -112,7 +113,9 @@ struct AgentUsageDashboard: View {
         var outputTotal = 0
         var total = 0
         var partiallyReported = 0
-        for thread in threads where Self.matchesProjectFilter(thread, selectedProjectId: projectFilter) {
+        var providerIds = Set<String>()
+        for thread in threads {
+            let projectMatches = Self.matchesProjectFilter(thread, selectedProjectId: projectFilter)
             let semanticProjectId = Self.normalizedProjectId(thread.projectId)
             let projectGroupId: String
             let projectName: String
@@ -126,9 +129,13 @@ struct AgentUsageDashboard: View {
                 projectGroupId = "unassigned"
                 projectName = "未关联项目"
             }
-            for message in thread.messages where Self.isUsageEligibleAssistantMessage(message, since: cutoff) {
+            for message in thread.messages where message.role == "assistant" {
                 let provider = message.providerUsed ?? thread.provider ?? "未知"
-                guard providerId.isEmpty || provider == providerId else { continue }
+                providerIds.insert(provider)
+                guard projectMatches,
+                      message.createdAt >= cutoff,
+                      providerId.isEmpty || provider == providerId
+                else { continue }
                 guard let usage = message.usage else {
                     unreportedEntries.append(UnreportedEntry(
                         id: "\(thread.id):\(message.id)",
@@ -159,6 +166,7 @@ struct AgentUsageDashboard: View {
         entries.sort { $0.date > $1.date }
         unreportedEntries.sort { $0.date > $1.date }
         return UsageSnapshot(
+            providerIds: providerIds.sorted(),
             entries: entries, unreportedEntries: unreportedEntries,
             inputTotal: inputTotal, outputTotal: outputTotal,
             total: total, partiallyReported: partiallyReported
@@ -272,7 +280,7 @@ struct AgentUsageDashboard: View {
                                 Text("全部服务")
                             }
                         }
-                        ForEach(Self.availableProviderIds(from: model.threads), id: \.self) { provider in
+                        ForEach(usageSnapshot.providerIds, id: \.self) { provider in
                             Button {
                                 selectedProviderId = provider
                             } label: {
