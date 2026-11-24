@@ -4,21 +4,14 @@ import { createHash } from 'crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import {
-  beginEditSession,
-  applyEditOperations,
   createEditSavepoint,
-  EditSessionPatchError,
   finalizeEditSession,
   getEditSession,
   getEditSessionDiff,
   listEditSessions,
-  PREFERRED_EDIT_PATCH_BATCH_OPERATIONS,
   rollbackEditSession,
 } from '../../../src/runtime/editing/edit-session';
-import {
-  EDIT_OPERATION_INPUT_SCHEMA,
-  normalizeEditOperations,
-} from '../../../src/runtime/editing/edit-operation-contract';
+import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/runtime/editing/edit-operation-contract';
 import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/leases/store';
 import type { ResourceClaimSpec } from '../../../src/runtime/execution/jobs/types';
 import { listAgentJobs } from '../../../src/cli/agent-jobs/job-manager';
@@ -60,8 +53,10 @@ import { hashMcpInput, tryWriteMcpAuditEntry } from '../audit';
 import { resolveRepoPreferredControllerHome } from '../../../src/effects/controller-home';
 import { resolveRepositoryCheckStorage } from '../../../src/runtime/execution/process-runtime/check-storage';
 import { resolveRepositorySelection } from '../../../src/runtime/repositories/registry';
-import { ensureRepositoryRuntimeStorageBinding } from '../../../src/runtime/repositories/runtime-storage';
 import { resolveMcpPath } from '../../../src/runtime/safe-tooling/path-policy';
+import { applySessionlessMutationBatch } from '../../../src/runtime/repositories/safe-patch';
+import { extractPatchPaths } from '../../../src/runtime/execution/thin-harness/execution-router';
+import { leadingErrorCode } from '../../../src/runtime/shared/response-budget';
 import { currentGitBranch, isForgeAdopted } from '../repo';
 import { redactMcpText } from '../redaction';
 import type { ToolPolicy } from '../../../src/runtime/control-plane/tool-policy';
@@ -538,46 +533,28 @@ export function buildMcpToolDefinitions(
         annotations: write,
       },
       {
-        name: 'begin_edit_session',
-        description: 'Open a bounded direct-edit session tied to a purpose and optional Issue/Task.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            purpose: { type: 'string' },
-            issue_id: { type: 'string' },
-            task_id: { type: 'string' },
-            allowed_paths: { type: 'array', items: { type: 'string' } },
-            max_files: { type: 'number' },
-            max_changed_lines: { type: 'number' },
-            checks: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Named checks to run before finalization.',
-            },
-          },
-          required: ['purpose'],
-          additionalProperties: false,
-        },
-        annotations: write,
-      },
-      {
         name: 'apply_patch',
         description:
-          'Append one bounded patch batch to an active edit session. Prefer batches of 100 operations or fewer and pass expected_revision to avoid stale revisions.',
+          'Apply a sessionless mutation batch through the canonical Semantic Mutation Planner. Do not pass legacy session_id or expected_revision; omit them and use operations plus optional allowed_paths.',
         inputSchema: {
           type: 'object',
           properties: {
-            session_id: { type: 'string' },
+            session_id: {
+              type: 'string',
+              description: 'Retired legacy field. If supplied, the call is rejected without writing.',
+            },
             expected_revision: {
               type: 'number',
-              description: 'Optional current revision precondition for the edit session.',
+              description: 'Retired EditSession revision field. If supplied, the call is rejected without writing.',
             },
             operations: {
               type: 'array',
               items: EDIT_OPERATION_INPUT_SCHEMA,
             },
+            allowed_paths: { type: 'array', items: { type: 'string' } },
+            refresh_fingerprints: { type: 'boolean' },
           },
-          required: ['session_id', 'operations'],
+          required: ['operations'],
           additionalProperties: false,
         },
         annotations: {
@@ -1006,107 +983,42 @@ export async function callMcpTool(
         audit(ctx, name, 'ok', args, result.path);
         return textResult(result);
       }
-      case 'begin_edit_session': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'begin_edit_session requires the controller profile');
-        const purpose = String(args.purpose ?? '').trim();
-        const identity = editExecutionIdentity(ctx);
-        const repoId = identity.repoId;
-        const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
-        const allowedPaths = stringList(args.allowed_paths);
-        const checks = stringList(args.checks);
-        const editRepository = resolveRepositorySelection({
-          repoId,
-          checkoutId: identity.checkoutId,
-          controllerHome,
-        });
-        const editStorage = ensureRepositoryRuntimeStorageBinding(editRepository, 'edit-sessions', controllerHome);
-        if (editStorage.status === 'legacy-active' || editStorage.status === 'conflict') {
-          return errorResult('EDIT_SESSION_STORAGE_NOT_READY', editStorage.message ?? editStorage.status);
-        }
-        const session = withLegacyEditMutation(
-          ctx,
-          name,
-          () =>
-            beginEditSession(ctx.repoRoot, {
-              purpose,
-              issueId: typeof args.issue_id === 'string' ? args.issue_id : undefined,
-              taskId: typeof args.task_id === 'string' ? args.task_id : undefined,
-              allowedPaths,
-              maxFiles: typeof args.max_files === 'number' ? args.max_files : undefined,
-              maxChangedLines: typeof args.max_changed_lines === 'number' ? args.max_changed_lines : undefined,
-              checks,
-              binding: {
-                repoId,
-                checkoutId: identity.checkoutId,
-                principalId: identity.principalId,
-              },
-            }),
-          [],
-        );
-        audit(
-          ctx,
-          name,
-          'ok',
-          args,
-          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
-        );
-        return textResult(session);
-      }
       case 'apply_patch': {
         if (ctx.policy.profile !== 'controller')
           return errorResult('TOOL_DISABLED', 'apply_patch requires the controller profile');
-        let session;
+        if (String(args.session_id ?? '').trim() || args.expected_revision !== undefined) {
+          const message =
+            'Legacy EditSession inputs are retired. Omit session_id and expected_revision; apply_patch now uses the sessionless Semantic Mutation Planner.';
+          audit(ctx, name, 'blocked', args, undefined, message);
+          return errorResult('SAFE_PATCH_LEGACY_SESSION_RETIRED', message);
+        }
+        const identity = editExecutionIdentity(ctx);
+        const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
+        const repository = resolveRepositorySelection({
+          repoId: identity.repoId,
+          checkoutId: identity.checkoutId,
+          controllerHome,
+        });
         try {
-          const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ''));
-          const identity = editExecutionIdentity(ctx);
-          const operations = normalizeEditOperations(args.operations);
-          const claims = editSourceClaims(ctx, [
-            ...current.operations.map((entry) => entry.path),
-            ...operations.map((entry) => entry.path),
-          ]);
-          session = withLegacyEditMutation(
+          const applied = withLegacyEditMutation(
             ctx,
             name,
-            (leaseOwnerJobId) =>
-              applyEditOperations(ctx.repoRoot, ctx.policy, current.sessionId, operations, {
-                expectedRevision:
-                  typeof args.expected_revision === 'number' ? Math.trunc(args.expected_revision) : undefined,
-                maxBatchOperations: PREFERRED_EDIT_PATCH_BATCH_OPERATIONS,
-                // Reuse the canonical descendant/after-image/path/Lease proof.
-                allowSuccessorHeadAdoption: typeof args.expected_revision === 'number',
-                leaseOwnerJobId,
-                controllerHome: ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot),
-                binding: {
-                  repoId: identity.repoId,
-                  checkoutId: identity.checkoutId,
-                  principalId: identity.principalId,
-                },
+            () =>
+              applySessionlessMutationBatch(repository, {
+                operations: args.operations,
+                allowedPaths: stringList(args.allowed_paths),
+                refreshFingerprints: args.refresh_fingerprints === true,
               }),
-            claims,
+            editSourceClaims(ctx, extractPatchPaths(args.operations)),
           );
+          audit(ctx, name, applied.status === 'failed' ? 'failed' : 'ok', args);
+          return textResult(applied);
         } catch (error) {
-          if (error instanceof EditSessionPatchError) {
-            audit(
-              ctx,
-              name,
-              'failed',
-              args,
-              `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${error.details.sessionId}`,
-              error.message,
-            );
-            return errorResult(error.code, error.message, error.details);
-          }
-          throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          const code = leadingErrorCode(message, 'SAFE_PATCH_APPLY_FAILED');
+          audit(ctx, name, 'failed', args, undefined, message);
+          return errorResult(code, message);
         }
-        audit(
-          ctx,
-          name,
-          'ok',
-          args,
-          `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`,
-        );
-        return textResult(session);
       }
       case 'get_edit_session': {
         if (ctx.policy.profile !== 'controller')

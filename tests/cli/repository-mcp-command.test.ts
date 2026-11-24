@@ -1575,6 +1575,60 @@ describe('repository MCP command tools', () => {
     }
   });
 
+  test('legacy MCP apply_patch routes through the sessionless planner and retires EditSession creation', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'forge-legacy-mcp-sessionless-patch-'));
+    const controllerHome = join(workspace, 'controller-home');
+    const repoRoot = join(workspace, 'repo');
+    try {
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ['init', '-b', 'main']);
+      git(repoRoot, ['config', 'user.name', 'Forge Test']);
+      git(repoRoot, ['config', 'user.email', 'forge-test@example.com']);
+      writeFileSync(join(repoRoot, 'app.txt'), 'before\n');
+      git(repoRoot, ['add', 'app.txt']);
+      git(repoRoot, ['commit', '-m', 'init']);
+      const registered = registerRepository({ path: repoRoot, controllerHome });
+      const baseContext = createMcpToolContext({ repo: repoRoot, controllerHome, profile: 'controller' });
+      const publishedToolNames = controllerExposureSnapshot(baseContext).actualToolNames;
+      const context = {
+        ...baseContext,
+        repoRoot,
+        repoId: registered.repoId,
+        checkoutId: registered.activeCheckoutId,
+        runtimeControllerHome: controllerHome,
+        publishedToolNames,
+      };
+
+      expect(publishedToolNames).toContain('apply_patch');
+      expect(publishedToolNames).not.toContain('begin_edit_session');
+      const applied = await callMcpTool(context, 'apply_patch', {
+        operations: [
+          { type: 'replace', path: 'app.txt', replacements: [{ old_text: 'before', new_text: 'after' }] },
+          { type: 'create', path: 'new.txt', content: 'new\n' },
+        ],
+        allowed_paths: ['app.txt', 'new.txt'],
+      });
+      const result = applied.structuredContent as Record<string, unknown>;
+      expect(result).toMatchObject({ status: 'applied', sessionless: true, createdSession: false });
+      expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
+      expect(readFileSync(join(repoRoot, 'new.txt'), 'utf8')).toBe('new\n');
+      expect(existsSync(join(repoRoot, '.ai', 'harness', 'edit-sessions'))).toBe(false);
+
+      const rejected = await callMcpTool(context, 'apply_patch', {
+        session_id: 'legacy-session-1',
+        operations: [{ type: 'replace', path: 'app.txt', replacements: [{ old_text: 'after', new_text: 'clobbered' }] }],
+      });
+      expect(rejected.isError).toBe(true);
+      expect(rejected.structuredContent).toMatchObject({
+        error: { code: 'SAFE_PATCH_LEGACY_SESSION_RETIRED' },
+      });
+      expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test('Console safe patch fences exact paths only: unrelated Process writer proceeds, overlap is refused (#713)', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'forge-console-safe-patch-claims-'));
     const controllerHome = join(workspace, 'caller-home');
