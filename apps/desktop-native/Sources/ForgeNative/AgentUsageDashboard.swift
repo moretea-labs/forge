@@ -478,7 +478,10 @@ struct AgentUsageDashboard: View {
             Text(value).font(.system(size: 23, weight: .medium, design: .rounded))
                 .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
             if let caption {
-                Text(caption).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                Text(caption)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
