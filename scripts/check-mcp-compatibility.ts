@@ -34,7 +34,9 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // 2026-11-08: managed generic API credentials add one metadata-only rh_credential facade.
 // It owns only credential-use AuthorizationGrant lifecycle; macOS Keychain/provider stores remain secret authorities.
 // Preferred facade names stay stable; any further complete-registry drift fails closed.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'a49ea0cf84a8d20c';
+// 2026-11-24 #714: repository_safe_patch_plan is no longer a top-level MCP tool;
+// repository.direct_edit action=plan remains the canonical capability_execute route.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = '32a96ea4b9bf5298';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a

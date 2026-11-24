@@ -29,6 +29,7 @@ import {
 import { callRuntimeTool, runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { createMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { controllerExposureSnapshot } from '../../adapters/mcp/toolset';
+import { getCoreCapabilityExecutionSchema } from '../../src/runtime/control-plane/facade/capability-registry';
 import { getLocalBridgeJob } from '../../src/cli/local-bridge/job-store';
 import { readLocalBridgeJobOutputSnapshot } from '../../src/runtime/local-bridge/read-model';
 import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
@@ -445,8 +446,10 @@ describe('repository MCP command tools', () => {
     const rhContext = runtimeToolDefinitions.find((tool) => tool.name === 'rh_context');
     const rhWork = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
     const command = repositoryToolDefinitions.find((tool) => tool.name === 'execute_command');
-    const safePatchPlan = repositoryToolDefinitions.find((tool) => tool.name === 'repository_safe_patch_plan');
     const safePatchApply = repositoryToolDefinitions.find((tool) => tool.name === 'repository_safe_patch_apply');
+    const directEditCapability = getCoreCapabilityExecutionSchema('repository.direct_edit') as {
+      actions?: { plan?: { argumentsSchema?: { properties?: Record<string, unknown> } } };
+    };
     expect(rhContext?.description).toContain('model chooses');
     expect(rhContext?.description).not.toContain('fallback-only');
     expect(rhWork?.description).toContain('optional durable Requirement/Plan semantic context');
@@ -463,7 +466,11 @@ describe('repository MCP command tools', () => {
         | undefined;
       return operations?.items?.properties?.type?.enum;
     };
-    expect(operationTypes(safePatchPlan)).toEqual([
+    expect(repositoryToolDefinitions.some((tool) => tool.name === 'repository_safe_patch_plan')).toBe(false);
+    const planOperations = directEditCapability.actions?.plan?.argumentsSchema?.properties?.operations as
+      | { items?: { properties?: { type?: { enum?: string[] } } } }
+      | undefined;
+    expect(planOperations?.items?.properties?.type?.enum).toEqual([
       'create',
       'write',
       'replace',
@@ -473,7 +480,7 @@ describe('repository MCP command tools', () => {
       'append',
       'delete',
     ]);
-    expect(operationTypes(safePatchApply)).toEqual(operationTypes(safePatchPlan));
+    expect(operationTypes(safePatchApply)).toEqual(planOperations?.items?.properties?.type?.enum);
     for (const retired of [
       'repository_goal_list',
       'repository_goal_upsert',

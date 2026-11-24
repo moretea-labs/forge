@@ -165,12 +165,6 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     delete_branch: { type: 'boolean', description: 'Defaults to true.' },
     no_ff: { type: 'boolean', description: 'Use --no-ff instead of the default --ff-only.' },
   }, []),
-  definition('repository_safe_patch_plan', 'Plan a deterministic chunked repository patch with fresh file fingerprints before applying.', {
-    repo_id: repoId,
-    checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    operations: { type: 'array', items: EDIT_OPERATION_INPUT_SCHEMA, description: 'Typed edit operations. Use type=create for a new path; write/replace/insert/prepend/append/delete require an existing target and preserve strict preconditions.' },
-    chunk_size: { type: 'number', description: 'Maximum operations per deterministic chunk. Capped at 100.' },
-  }, ['operations'], true),
   definition('repository_safe_patch_apply', 'Apply one coherent deterministic edit batch and return bounded review evidence. Checks are opt-in: pass check_ids only when the batch is stable. Long checks return managed Process handles instead of blocking the MCP call; use validation_only with the returned session/request ids to join later without replaying the patch.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
