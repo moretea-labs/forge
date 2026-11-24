@@ -273,6 +273,63 @@ describe('Requirement assignment triage', () => {
 });
 
 describe('rh_work Requirement bootstrap', () => {
+  test('returns a lightweight Requirement and current Plan manifest in one read', async () => {
+    const repoRoot = tempRoot('forge-requirement-manifest-repo-');
+    const controllerHome = tempRoot('forge-requirement-manifest-home-');
+    initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Requirement manifest fixture' });
+    const ctx = mcpContext(controllerHome, repository);
+
+    createRequirement(
+      { controllerHome },
+      {
+        requirementId: 'REQ-MANIFEST',
+        repoId: repository.repoId,
+        title: 'Manifest requirement',
+        outcomeStatement: 'Expose only revision identity and current Plan heads.',
+      },
+    );
+    createPlanSemanticContext(
+      { controllerHome, repoId: repository.repoId },
+      {
+        planId: 'PLAN-MANIFEST',
+        repoId: repository.repoId,
+        requirementId: 'REQ-MANIFEST',
+        scopeKey: 'manifest',
+        sourceBasisRevision: 'manifest-source',
+        goal: 'Manifest plan',
+        items: [{ id: 'A', objective: 'Do not return this item in manifest.', dependencies: [] }],
+      },
+    );
+
+    const manifest = structured(
+      await callRuntimeTool(ctx, 'rh_work', {
+        operation: 'requirement_manifest',
+        requirement_id: 'REQ-MANIFEST',
+      }),
+    );
+
+    expect(manifest.status).toBe('ok');
+    expect(manifest.data.requirement).toMatchObject({
+      requirementId: 'REQ-MANIFEST',
+      revision: 1,
+      repoId: repository.repoId,
+    });
+    expect(manifest.data.plans).toEqual([
+      expect.objectContaining({
+        planId: 'PLAN-MANIFEST',
+        requirementId: 'REQ-MANIFEST',
+        revision: 1,
+      }),
+    ]);
+    expect(JSON.stringify(manifest.data)).not.toContain('Do not return this item in manifest.');
+    expect(manifest.data.detailOperations).toEqual({
+      requirement: 'requirement_get',
+      plan: 'plan_get',
+    });
+  });
+
   test('lists canonical Requirements without requiring Work or Plan authority', async () => {
     const repoRoot = tempRoot('forge-requirement-list-repo-');
     const controllerHome = tempRoot('forge-requirement-list-home-');

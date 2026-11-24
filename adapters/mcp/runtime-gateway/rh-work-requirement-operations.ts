@@ -39,6 +39,7 @@ import { listAutopilotRunSummaries, summarizeAutopilotRun } from '../../../src/r
 const RH_WORK_REQUIREMENT_OPERATIONS = new Set([
   'requirement_create',
   'requirement_list',
+  'requirement_manifest',
   'requirement_get',
   'requirement_revise',
   'requirement_promote_candidate',
@@ -313,6 +314,77 @@ export async function callRhWorkRequirementOperation(
           authority: 'semantic_context_only',
           progressAuthority: 'github_issue_project',
           detailOperation: 'requirement_get',
+        },
+      }) as unknown as Record<string, unknown>,
+    );
+  }
+
+  if (operation === 'requirement_manifest') {
+    const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
+    const requestedProjectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
+    const projectId = projectIdForRepository(ctx, repository);
+    if (repository && requestedProjectId && requestedProjectId !== projectId)
+      return result(
+        buildFacadeResult({
+          status: 'blocked',
+          summary: `REQUIREMENT_PROJECT_SCOPE_CONFLICT:${requestedProjectId}`,
+          data: { requirementId, requestedProjectId, repositoryId: repository.repoId, selectedProjectId: projectId },
+        }) as unknown as Record<string, unknown>,
+        true,
+      );
+    const record = requirementInSelectedScope(ctx, repository, requirementId, requestedProjectId);
+    if (!record)
+      return result(
+        buildFacadeResult({
+          status: 'not_found',
+          summary: `Requirement ${requirementId || '(missing)'} not found in the selected ${requestedProjectId ? 'Project' : repository ? 'repository' : 'scope'}.`,
+          data: {
+            requirementId,
+            ...(requestedProjectId ? { projectId: requestedProjectId } : {}),
+            ...(repository?.repoId ? { repoId: repository.repoId } : {}),
+          },
+        }) as unknown as Record<string, unknown>,
+        true,
+      );
+
+    const semantic = requirementSemanticView(record.value);
+    const plans = readPlanContractStore({
+      controllerHome: ctx.controllerHome,
+      ...(semantic.repoId ? { repoId: semantic.repoId } : { scopeKey: SEMANTIC_SCOPE_KEY }),
+    }).contracts
+      .filter((plan) => plan.requirementId === semantic.requirementId && isCurrentPlanContract(plan))
+      .map((plan) => {
+        const view = planSemanticView(plan);
+        return {
+          planId: view.planId,
+          requirementId: semantic.requirementId,
+          revision: view.revision,
+          ...(view.parentPlanId ? { parentPlanId: view.parentPlanId } : {}),
+          ...(view.supersededBy ? { supersededBy: view.supersededBy } : {}),
+          updatedAt: view.updatedAt,
+        };
+      })
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.planId.localeCompare(right.planId));
+
+    return result(
+      buildFacadeResult({
+        summary: `Requirement ${semantic.requirementId} manifest retrieved at semantic revision ${semantic.revision} with ${plans.length} current Plan(s).`,
+        data: {
+          requirement: {
+            requirementId: semantic.requirementId,
+            revision: semantic.revision,
+            ...(semantic.repoId ? { repoId: semantic.repoId } : {}),
+            ...(semantic.projectId || projectId || requestedProjectId
+              ? { projectId: semantic.projectId ?? projectId ?? requestedProjectId }
+              : {}),
+          },
+          plans,
+          bounded: true,
+          authority: 'semantic_context_only',
+          detailOperations: {
+            requirement: 'requirement_get',
+            plan: 'plan_get',
+          },
         },
       }) as unknown as Record<string, unknown>,
     );

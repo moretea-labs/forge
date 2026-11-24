@@ -16,6 +16,7 @@ export const RH_WORK_OPERATIONS = [
   'project_attach_requirement',
   'requirement_create',
   'requirement_list',
+  'requirement_manifest',
   'requirement_get',
   'requirement_revise',
   'requirement_promote_candidate',
