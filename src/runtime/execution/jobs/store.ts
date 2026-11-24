@@ -687,7 +687,7 @@ export async function cancelExecutionJob(
   return cancelled;
 }
 
-export interface RetiredExecutionJobCleanupReport {
+interface RetiredExecutionJobCleanupReport {
   policyVersion: 'retired-execution-job-retention-v1';
   inspected: number;
   terminal: number;

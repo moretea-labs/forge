@@ -1,7 +1,7 @@
-export type ExecutionJobPriority = 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
+type ExecutionJobPriority = 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
 import type { ManagedResource } from '../../resources';
 
-export type ExecutionJobType =
+type ExecutionJobType =
   | 'mcp-tool'
   | 'plugin-action'
   | 'dispatch-task'
@@ -49,7 +49,7 @@ export interface ExecutionJobOrigin {
   causationId?: string;
 }
 
-export interface ExecutionJobPayload {
+interface ExecutionJobPayload {
   operation: string;
   arguments?: Record<string, unknown>;
   target?: 'repository-tool' | 'mcp-tool' | 'runtime' | 'workspace-agent';
@@ -59,14 +59,14 @@ export interface ExecutionJobPayload {
   [key: string]: unknown;
 }
 
-export interface ExecutionJobLeaseRef {
+interface ExecutionJobLeaseRef {
   leaseId: string;
   resourceKey: string;
   fencingToken: number;
   expiresAt: string;
 }
 
-export interface ExecutionJobTimings {
+interface ExecutionJobTimings {
   durablePersistedAt?: string;
   schedulerNotifiedAt?: string;
   schedulerObservedAt?: string;
@@ -115,9 +115,9 @@ export interface ExecutionWorkerLifecycle {
   startupState: 'spawned' | 'registered' | 'exited' | 'spawn_failed';
 }
 
-export type ExecutionOperationMode = 'readonly' | 'mutating' | 'remote_write' | 'destructive';
+type ExecutionOperationMode = 'readonly' | 'mutating' | 'remote_write' | 'destructive';
 
-export interface ExecutionOperationMetadata {
+interface ExecutionOperationMetadata {
   mode: ExecutionOperationMode;
   idempotent: boolean;
   replayable: boolean;
