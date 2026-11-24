@@ -491,12 +491,6 @@ export function buildMcpToolDefinitions(
         annotations: readOnly,
       },
       {
-        name: 'project_snapshot',
-        description: 'Return Git state, controller issue board, active task runs, and workflow markers.',
-        inputSchema: EMPTY_SCHEMA,
-        annotations: readOnly,
-      },
-      {
         name: 'list_checks',
         description: 'List focused repository checks from safe package scripts and .forge/checks.json.',
         inputSchema: EMPTY_SCHEMA,
@@ -969,67 +963,6 @@ export async function callMcpTool(
                 : connectorFreshness.status === 'local_mcp_missing_facade'
                   ? `Local MCP tool surface is missing facade tools: ${connectorFreshness.missingLocalTools.join(', ')}. Restart controller/MCP.`
                   : `Connector clients must match ${FORGE_TOOL_SURFACE} version ${FORGE_VERSION} / schema ${FORGE_MCP_SCHEMA_VERSION}. Prefer rh_status/rh_inbox/rh_context/rh_work. Pass connector_tool_names to detect a stale ChatGPT tool snapshot precisely.`,
-        };
-        audit(ctx, name, 'ok', args);
-        return textResult(payload);
-      }
-      case 'project_snapshot': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'project_snapshot requires the controller profile');
-        const markerPaths = [
-          '.ai/harness/active-plan',
-          '.ai/harness/active-sprint',
-          '.ai/harness/active-worktree',
-          'tasks/current.md',
-        ];
-        const markers = markerPaths.map((path) => {
-          const absolute = join(ctx.repoRoot, path);
-          if (!existsSync(absolute)) return { path, exists: false };
-          const raw = readFileSync(absolute, 'utf-8');
-          return {
-            path,
-            exists: true,
-            bytes: Buffer.byteLength(raw),
-            lines: raw.split(/\r?\n/).length,
-            sha256: createHash('sha256').update(raw).digest('hex').slice(0, 16),
-            preview: redactMcpText(raw).text.slice(0, 400),
-          };
-        });
-        const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
-        const requirementBoard = buildRequirementBoard({ controllerHome, repoId: ctx.repoId });
-        const executionDiagnostics = buildExecutionDiagnostics({
-          controllerHome,
-          repoId: ctx.repoId,
-          detailLevel: 'detail',
-        });
-        const snapshotRuns = listAgentJobs(ctx.repoRoot, 11);
-        const runs = snapshotRuns.slice(0, 10).map((run) => ({
-          runId: run.runId,
-          issueId: run.issueId,
-          taskId: run.taskId,
-          agent: run.agent,
-          provider: run.provider,
-          executionMode: run.executionMode,
-          status: run.status,
-          progress: run.progress,
-          createdAt: run.createdAt,
-          finishedAt: run.finishedAt,
-          error: run.error?.slice(0, 300),
-        }));
-        const payload = {
-          git: gitSnapshot(ctx.repoRoot),
-          requirementBoard,
-          executionDiagnostics,
-          legacyCompatibility: {
-            currentIssue: 'deprecated_frozen',
-            issueTaskBoard: 'deprecated_frozen',
-            authority: 'controller-home-sqlite',
-          },
-          runs,
-          markers,
-          truncated: {
-            runs: snapshotRuns.length > 10,
-          },
         };
         audit(ctx, name, 'ok', args);
         return textResult(payload);
