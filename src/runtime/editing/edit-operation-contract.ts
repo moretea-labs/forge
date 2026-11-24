@@ -35,6 +35,11 @@ export const EDIT_OPERATION_INPUT_SCHEMA = {
     type: { type: 'string', enum: [...EDIT_OPERATION_TYPES] },
     path: { type: 'string' },
     content: { type: 'string' },
+    semantic_group: {
+      type: 'string',
+      description:
+        'Optional semantic atomicity key. Operations sharing a non-empty key must succeed together; omitted operations are independent groups.',
+    },
     expected_sha256: {
       type: 'string',
       description:

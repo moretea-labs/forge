@@ -32,7 +32,7 @@ import { repositoryGitRemoveWorktree } from '../../repositories/structured-workt
 import { buildControllerWorkbench } from '../../repositories/workbench';
 import {
   applySafePatch,
-  applySessionlessSafePatch,
+  applySessionlessMutationBatch,
   buildSafePatchPlan,
   isSessionlessTextEditBatch,
 } from '../../repositories/safe-patch';
@@ -838,7 +838,7 @@ export async function callRepositoryTool(
             repository.repoId,
             'mcp:repository_safe_patch_atomic',
             () =>
-              applySessionlessSafePatch(repository, {
+              applySessionlessMutationBatch(repository, {
                 operations: args.operations,
                 allowedPaths: args.allowed_paths,
                 refreshFingerprints: args.refresh_fingerprints,
@@ -853,7 +853,9 @@ export async function callRepositoryTool(
             summary:
               atomic.status === 'applied'
                 ? `原子补丁已应用：${atomic.changedFiles.join(', ')}（无持久 EditSession）。`
-                : `原子补丁未应用：${firstFailure?.message ?? '请刷新源码后重试'}`,
+                : atomic.status === 'partial'
+                  ? `原子补丁已局部应用：${atomic.changedFiles.join(', ')}；冲突语义组未落地：${firstFailure?.message ?? '需要局部合并'}`
+                  : `原子补丁未应用：${firstFailure?.message ?? '请刷新源码后重试'}`,
             changedFiles: atomic.changedFiles,
             errorClass:
               atomic.status === 'applied'
@@ -873,14 +875,15 @@ export async function callRepositoryTool(
             statusLabel: digest.statusLabel,
             summary: digest.summary,
             digest,
-            reviewEvidence: atomic.receipt
-              ? {
-                  source: 'atomic_patch',
-                  ...atomic.receipt,
-                  semanticReviewAuthority: 'chatgpt',
-                  next: 'Use repository_git_diff for the exact reviewable diff; no EditSession was created.',
-                }
-              : undefined,
+            reviewEvidence:
+              atomic.receipts?.length || atomic.receipt
+                ? {
+                    source: 'atomic_patch',
+                    receipts: atomic.receipts ?? (atomic.receipt ? [atomic.receipt] : []),
+                    semanticReviewAuthority: 'chatgpt',
+                    next: 'Use repository.git diff_paths for the exact reviewable diff; no EditSession was created.',
+                  }
+                : undefined,
             suggestedNextActions: digest.suggestedNextActions,
           };
           return atomic.status === 'applied' ? result(payload) : { ...result(payload), isError: true };

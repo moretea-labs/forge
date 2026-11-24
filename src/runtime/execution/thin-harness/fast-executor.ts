@@ -1,6 +1,10 @@
 import { existsSync, readFileSync, statSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
-import { applySafePatch, applySessionlessSafePatch, isSessionlessTextEditBatch } from '../../repositories/safe-patch';
+import {
+  applySafePatch,
+  applySessionlessMutationBatch,
+  isSessionlessTextEditBatch,
+} from '../../repositories/safe-patch';
 import {
   executeRepositoryCommandAsync,
   previewRepositoryCommandExecutionAsync,
@@ -769,7 +773,7 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
         if (useSessionless) {
           if (explicitLegacyFlow) throw new Error('SESSIONLESS_SAFE_PATCH_LEGACY_SESSION_OR_VALIDATION_NOT_SUPPORTED');
           const atomic = await trace.measure('executionMs', async () =>
-            applySessionlessSafePatch(ctx.repository, {
+            applySessionlessMutationBatch(ctx.repository, {
               operations: request.input.operations,
               allowedPaths: allowed,
             }),

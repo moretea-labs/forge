@@ -44,7 +44,7 @@ import { resolveHandoffItem } from '../../runtime/control-plane/facade/handoff-i
 import { buildRuntimeMaintenanceStatus } from '../../runtime/recovery';
 import {
   applySafePatch,
-  applySessionlessSafePatch,
+  applySessionlessMutationBatch,
   isSessionlessTextEditBatch,
 } from '../../runtime/repositories/safe-patch';
 import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
@@ -1219,7 +1219,7 @@ export function applyConsoleSafePatch(
     'console:safe_patch_apply',
     (leaseOwnerJobId) =>
       useSessionless
-        ? applySessionlessSafePatch(ctx.repository, {
+        ? applySessionlessMutationBatch(ctx.repository, {
             operations: input.operations,
             allowedPaths: input.allowedPaths,
           })

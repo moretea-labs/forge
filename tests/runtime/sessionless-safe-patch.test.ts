@@ -82,11 +82,13 @@ test('sessionless Safe Patch applies atomic CAS without creating edit-session or
     createdSession: false,
     reviewEvidence: {
       source: 'atomic_patch',
-      beforeSha256: hash(fx.initial),
+      receipts: [{ beforeSha256: hash(fx.initial), path: 'source.ts' }],
     },
   });
   expect(next.payload.session).toBeUndefined();
-  expect(next.payload.reviewEvidence.afterSha256).toBe(hash('export const n = 2;\nexport const label = 1;\n'));
+  expect(next.payload.reviewEvidence.receipts[0]?.afterSha256).toBe(
+    hash('export const n = 2;\nexport const label = 1;\n'),
+  );
   expect(fx.sessions()).toHaveLength(count);
   expect(existsSync(join(fx.repoRoot, '.ai/harness/backups/fs-transaction'))).toBe(false);
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toContain('n = 2');
@@ -337,7 +339,7 @@ test('single-file create/delete defaults to sessionless strict atomic mutations 
   expect(fx.sessions()).toHaveLength(0);
 });
 
-test('sessionless Safe Patch refuses symlink targets and multi-file batches without source mutation', async () => {
+test('sessionless Safe Patch refuses symlink targets without source mutation', async () => {
   const fx = fixture();
   symlinkSync('source.ts', join(fx.repoRoot, 'alias.ts'));
   const linked = await apply(fx, {
@@ -349,16 +351,164 @@ test('sessionless Safe Patch refuses symlink targets and multi-file batches with
   expect(linked.isError).toBe(true);
   expect(linked.payload.status).toBe('failed');
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
-  const unsupported = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('mixed independent replace/create/delete mutations route sessionlessly before execution (#716)', async () => {
+  const fx = fixture();
+  const createdPath = 'created-mixed.ts';
+  const createdContent = 'export const createdMixed = true;\n';
+  const deletedPath = 'deleted-mixed.ts';
+  const deletedContent = 'export const deletedMixed = true;\n';
+  writeFileSync(join(fx.repoRoot, deletedPath), deletedContent);
+
+  const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
     repo_id: fx.repository.repoId,
-    sessionless: true,
     operations: [
       { type: 'replace', path: 'source.ts', replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }] },
-      { type: 'replace', path: 'source.ts', replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }] },
+      { type: 'create', path: createdPath, content: createdContent },
+      { type: 'delete', path: deletedPath, expected_sha256: hash(deletedContent) },
     ],
   });
-  expect(unsupported?.isError).toBe(true);
+  expect(response?.isError).not.toBe(true);
+  expect(response?.structuredContent).toMatchObject({
+    status: 'applied',
+    sessionless: true,
+    createdSession: false,
+    changedFiles: ['source.ts', createdPath, deletedPath],
+    groups: [
+      { groupId: 'operation:1', status: 'applied', operationIndexes: [1] },
+      { groupId: 'operation:2', status: 'applied', operationIndexes: [2] },
+      { groupId: 'operation:3', status: 'applied', operationIndexes: [3] },
+    ],
+  });
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toContain('n = 2');
+  expect(readFileSync(join(fx.repoRoot, createdPath), 'utf8')).toBe(createdContent);
+  expect(existsSync(join(fx.repoRoot, deletedPath))).toBe(false);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('independent semantic groups continue after one local conflict (#716)', async () => {
+  const fx = fixture();
+  const createdPath = 'independent-after-conflict.ts';
+  const createdContent = 'export const independent = true;\n';
+  const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        replacements: [{ old_text: 'missing target', new_text: 'never written' }],
+      },
+      { type: 'create', path: createdPath, content: createdContent },
+    ],
+  });
+  expect(response?.isError).toBe(true);
+  expect(response?.structuredContent).toMatchObject({
+    status: 'partial',
+    sessionless: true,
+    changedFiles: [createdPath],
+    failures: [{ operationIndex: 1, code: 'REPLACEMENT_TEXT_NOT_FOUND' }],
+    groups: [
+      { groupId: 'operation:1', status: 'failed', changedFiles: [] },
+      { groupId: 'operation:2', status: 'applied', changedFiles: [createdPath] },
+    ],
+  });
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
+  expect(readFileSync(join(fx.repoRoot, createdPath), 'utf8')).toBe(createdContent);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('same-file explicit semantic group lands dependent hunks in one CAS (#716)', async () => {
+  const fx = fixture();
+  const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        semantic_group: 'source-contract',
+        replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
+      },
+      {
+        type: 'replace',
+        path: 'source.ts',
+        semantic_group: 'source-contract',
+        replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
+      },
+    ],
+  });
+  expect(response?.isError).not.toBe(true);
+  expect(response?.structuredContent).toMatchObject({
+    status: 'applied',
+    sessionless: true,
+    changedFiles: ['source.ts'],
+    appliedChunks: [{ index: 1, operationCount: 2, paths: ['source.ts'] }],
+    groups: [
+      {
+        groupId: 'source-contract',
+        status: 'applied',
+        operationIndexes: [1, 2],
+        changedFiles: ['source.ts'],
+      },
+    ],
+  });
+  const source = readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8');
+  expect(source).toContain('n = 2');
+  expect(source).toContain('label = 2');
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('unsupported cross-file semantic group is rejected before mutation while independent group continues (#716)', async () => {
+  const fx = fixture();
+  const groupedCreate = 'grouped-create.ts';
+  const independentCreate = 'independent-create.ts';
+  const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        semantic_group: 'cross-file-contract',
+        replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
+      },
+      {
+        type: 'create',
+        path: groupedCreate,
+        semantic_group: 'cross-file-contract',
+        content: 'export const grouped = true;\n',
+      },
+      {
+        type: 'create',
+        path: independentCreate,
+        content: 'export const independent = true;\n',
+      },
+    ],
+  });
+  expect(response?.isError).toBe(true);
+  expect(response?.structuredContent).toMatchObject({
+    status: 'partial',
+    sessionless: true,
+    changedFiles: [independentCreate],
+    failures: [{ code: 'SEMANTIC_GROUP_UNSUPPORTED' }],
+    groups: [
+      {
+        groupId: 'cross-file-contract',
+        status: 'failed',
+        operationIndexes: [1, 2],
+        changedFiles: [],
+      },
+      {
+        groupId: 'operation:3',
+        status: 'applied',
+        operationIndexes: [3],
+        changedFiles: [independentCreate],
+      },
+    ],
+  });
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
+  expect(existsSync(join(fx.repoRoot, groupedCreate))).toBe(false);
+  expect(readFileSync(join(fx.repoRoot, independentCreate), 'utf8')).toContain('independent = true');
   expect(fx.sessions()).toHaveLength(0);
 });
 
@@ -381,7 +531,10 @@ test('canonical MCP Safe Patch defaults ordinary single-file edits to sessionles
     status: 'applied',
     sessionless: true,
     createdSession: false,
-    reviewEvidence: { source: 'atomic_patch', beforeSha256: hash(fx.initial) },
+    reviewEvidence: {
+      source: 'atomic_patch',
+      receipts: [{ beforeSha256: hash(fx.initial), path: 'source.ts' }],
+    },
   });
   expect(payload.session).toBeUndefined();
   expect(fx.sessions()).toHaveLength(oldSessionCount);
@@ -486,6 +639,60 @@ test('Local Bridge Console defaults single-file edits to CAS; explicit legacy re
   });
   expect((legacy as any).session?.sessionId).toMatch(/^EDIT-/);
   expect(fx.sessions()).toHaveLength(1);
+});
+
+test('Local Bridge Console routes multi-mutation batches through the shared sessionless planner (#716)', () => {
+  const fx = fixture();
+  const ctx = { repository: fx.repository, controllerHome: fx.controllerHome };
+  const createdPath = 'console-created.ts';
+  const atomic = applyConsoleSafePatch(ctx, {
+    operations: [
+      { type: 'replace', path: 'source.ts', replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }] },
+      { type: 'create', path: createdPath, content: 'export const consoleCreated = true;\n' },
+    ],
+  });
+  expect(atomic).toMatchObject({
+    status: 'applied',
+    sessionless: true,
+    createdSession: false,
+    changedFiles: ['source.ts', createdPath],
+    groups: [
+      { groupId: 'operation:1', status: 'applied' },
+      { groupId: 'operation:2', status: 'applied' },
+    ],
+  });
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toContain('n = 2');
+  expect(readFileSync(join(fx.repoRoot, createdPath), 'utf8')).toContain('consoleCreated = true');
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('Fast Executor routes multi-mutation batches through the shared sessionless planner (#716)', async () => {
+  const fx = fixture();
+  const ctx = { controllerHome: fx.controllerHome, repository: fx.repository };
+  const createdPath = 'fast-created.ts';
+  const result = await executeFast(ctx, {
+    operation: 'repository_safe_patch_apply',
+    requestId: 'fast-sessionless-multi',
+    input: {
+      operations: [
+        { type: 'replace', path: 'source.ts', replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }] },
+        { type: 'create', path: createdPath, content: 'export const fastCreated = true;\n' },
+      ],
+    },
+  });
+  expect(result.ok).toBe(true);
+  expect((result.result as any).applied).toMatchObject({
+    status: 'applied',
+    sessionless: true,
+    createdSession: false,
+    changedFiles: ['source.ts', createdPath],
+    groups: [
+      { groupId: 'operation:1', status: 'applied' },
+      { groupId: 'operation:2', status: 'applied' },
+    ],
+  });
+  expect(readFileSync(join(fx.repoRoot, createdPath), 'utf8')).toContain('fastCreated = true');
+  expect(fx.sessions()).toHaveLength(0);
 });
 
 test('Fast Executor uses CAS without EditSession or Workspace Savepoint and returns stale evidence (#713)', async () => {
