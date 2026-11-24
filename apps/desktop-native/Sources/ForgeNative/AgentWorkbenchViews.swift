@@ -160,8 +160,10 @@ struct AgentPane: View {
                     .foregroundStyle(ForgePalette.secondary.opacity(0.86))
                     .lineLimit(1)
             }
+            .padding(.horizontal,6)
+            .frame(height:24)
             .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
-            .forgeHoverFill(cornerRadius:8)
+            .forgeChromeSurface(cornerRadius:8)
         }
         .buttonStyle(.plain)
         .help("\(agentScopeLabel.isEmpty ? model.agentWorkspaceStatusDetail : agentScopeLabel)\n\(model.agentWorkspaceStatusDetail)\n点击刷新")
@@ -195,8 +197,8 @@ struct AgentPane: View {
                     }
                     .foregroundStyle(ForgePalette.secondary)
                     .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
-                    .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
-                    .forgeHoverFill(cornerRadius:8)
+                    .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
+                    .forgeChromeSurface(cornerRadius:9)
                 }
                 .buttonStyle(.plain)
                 .help(workSurfaceMaximized ? "退出扩展视图" : "扩展右侧分栏")
@@ -210,8 +212,8 @@ struct AgentPane: View {
                     }
                     .foregroundStyle(ForgePalette.secondary)
                     .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
-                    .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
-                    .forgeHoverFill(cornerRadius:8)
+                    .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
+                    .forgeChromeSurface(cornerRadius:9)
                 }
                 .buttonStyle(.plain)
                 .help("关闭右侧分栏")
@@ -249,10 +251,8 @@ struct AgentPane: View {
             }
             .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
             .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
-            .background(selected ? ForgePalette.selection : .clear,
-                        in:RoundedRectangle(cornerRadius:10,style:.continuous))
             .contentShape(RoundedRectangle(cornerRadius:10,style:.continuous))
-            .forgeHoverFill(cornerRadius:10)
+            .forgeChromeSurface(selected:selected,cornerRadius:10)
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -289,7 +289,8 @@ struct AgentPane: View {
                         .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
                 }
             }
-            .contentShape(Rectangle())
+            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+            .forgeChromeSurface(selected:active,cornerRadius:8)
         }
         .buttonStyle(.plain)
         .disabled(model.checkoutId == nil)

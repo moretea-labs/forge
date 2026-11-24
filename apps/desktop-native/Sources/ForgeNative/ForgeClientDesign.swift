@@ -71,7 +71,7 @@ extension Image {
   }
 }
 
-/// Quiet hover feedback for plain list/starter buttons (not toolbar/rail chrome).
+/// Quiet hover feedback for plain list/starter buttons.
 struct ForgeHoverFill: ViewModifier {
   var cornerRadius: CGFloat = 7
   @State private var hovering = false
@@ -84,9 +84,31 @@ struct ForgeHoverFill: ViewModifier {
   }
 }
 
+/// Shared toolbar/rail interaction surface. Selected chrome stays deliberately
+/// close to hover so navigation never turns into a stack of opaque buttons.
+struct ForgeChromeSurface: ViewModifier {
+  let selected: Bool
+  var cornerRadius: CGFloat = 9
+  @State private var hovering = false
+
+  func body(content: Content) -> some View {
+    content
+      .background(selected
+                  ? ForgePalette.selection
+                  : (hovering ? ForgePalette.softFill : .clear),
+                  in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+      .onHover { hovering = $0 }
+      .animation(.easeOut(duration: 0.12), value: hovering)
+  }
+}
+
 extension View {
   func forgeHoverFill(cornerRadius: CGFloat = 8) -> some View {
     modifier(ForgeHoverFill(cornerRadius: cornerRadius))
+  }
+
+  func forgeChromeSurface(selected: Bool = false, cornerRadius: CGFloat = 9) -> some View {
+    modifier(ForgeChromeSurface(selected: selected, cornerRadius: cornerRadius))
   }
 
   /// Shared behind-window material for the whole application shell.

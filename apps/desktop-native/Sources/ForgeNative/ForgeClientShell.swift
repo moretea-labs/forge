@@ -173,6 +173,8 @@ struct ForgeWorkspaceView: View {
         if model.canNavigateBack {
             Button { model.goBack() } label: {
                 Image(systemName:"chevron.left")
+                    .forgeChromeIcon()
+                    .forgeChromeSurface(cornerRadius:8)
             }
             .buttonStyle(.plain)
             .disabled(model.busy)
@@ -184,10 +186,12 @@ struct ForgeWorkspaceView: View {
             Button { refreshCurrentPage() } label: {
                 if pageRefreshIsLoading {
                     ProgressView().controlSize(.mini)
+                        .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
                 } else {
-                    Image(systemName:"arrow.clockwise")
+                    Image(systemName:"arrow.clockwise").forgeChromeIcon()
                 }
             }
+            .forgeChromeSurface(cornerRadius:8)
             .buttonStyle(.plain)
             .disabled(pageRefreshIsDisabled)
             .help(pageRefreshHelp)
@@ -238,10 +242,8 @@ struct ForgeWorkspaceView: View {
             }
             .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
             .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
-            .background(selected ? ForgePalette.selectionStrong : .clear,
-                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
-            .contentShape(RoundedRectangle(cornerRadius:11,style:.continuous))
-            .forgeHoverFill(cornerRadius:11)
+            .contentShape(RoundedRectangle(cornerRadius:10,style:.continuous))
+            .forgeChromeSurface(selected:selected,cornerRadius:10)
         }
         .buttonStyle(.plain)
         .help(destination.title)
@@ -262,9 +264,8 @@ struct ForgeWorkspaceView: View {
             .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
             .padding(.horizontal,11)
             .frame(height:32)
-            .background(selected ? ForgePalette.selection : .clear,
-                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
-            .contentShape(Rectangle())
+            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+            .forgeChromeSurface(selected:selected,cornerRadius:8)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("forge.sidebar.\(page.rawValue)")
