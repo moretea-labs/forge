@@ -401,56 +401,6 @@ export function buildJobOperationDigest(job: ExecutionJob, options: {
   };
 }
 
-export function buildAcceptedQueuedDigest(input: {
-  jobId: string;
-  requestId?: string;
-  operation?: string;
-  status?: string;
-  deduplicated?: boolean;
-}): OperationDigest {
-  return {
-    schemaVersion: 1,
-    operationId: input.jobId,
-    operationType: input.operation,
-    phase: 'queued',
-    status: input.status ?? 'queued',
-    statusLabel: '已排队',
-    summary: input.deduplicated
-      ? `已复用进行中的任务 ${input.jobId}（${input.operation ?? 'operation'}）。可用 wait 等待结果。`
-      : `已接受任务 ${input.jobId}（${input.operation ?? 'operation'}），正在排队。可用 wait 等待结果。`,
-    terminal: false,
-    accepted: true,
-    requestAccepted: true,
-    resultAccepted: null,
-    operation: input.operation,
-    jobId: input.jobId,
-    requestId: input.requestId,
-    suggestedNextActions: [
-      {
-        label: '查看任务运行状态',
-        tool: 'rh_status',
-        operation: 'get',
-        risk: 'readonly',
-        confidence: 'high',
-        reason: '长时间执行由 Process/Runtime 自己持有；状态读取不推进 Work lifecycle。',
-      },
-      ...defaultNextActions('queued', input.jobId),
-    ],
-    nextActions: [
-      {
-        label: '查看任务运行状态',
-        tool: 'rh_status',
-        operation: 'get',
-        risk: 'readonly',
-        confidence: 'high',
-        reason: '长时间执行由 Process/Runtime 自己持有；状态读取不推进 Work lifecycle。',
-      },
-      ...defaultNextActions('queued', input.jobId),
-    ],
-    rawAvailable: false,
-  };
-}
-
 export function buildSyncOperationDigest(input: {
   ok: boolean;
   operation: string;
