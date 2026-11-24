@@ -928,7 +928,17 @@ export async function callRuntimeObservationAdapter(
             (checkout) => checkout.checkoutId === repository.activeCheckoutId,
           );
           const gitStartedAt = performance.now();
-          const liveGit = gitSnapshot(repository.canonicalRoot);
+          const liveGit = variant === 'summary'
+            ? {
+                branch: gitIdentity.branch,
+                head: gitIdentity.head,
+                status: gitIdentity.dirty
+                  ? 'Working tree has changes; request repository_git_status for bounded detail.'
+                  : 'Working tree clean.',
+                diffStat: '',
+                dirty: gitIdentity.dirty,
+              }
+            : gitSnapshot(repository.canonicalRoot);
           markPhase('build.git', gitStartedAt);
           const currentIssueRecord = board?.currentIssueId
             ? board.issues.find((issue) => issue.id === board.currentIssueId)
