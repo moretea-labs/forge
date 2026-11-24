@@ -2905,36 +2905,42 @@ struct ZenProjectDirectorySheet: View {
             if geometry.size.width >= 920 {
                 HStack(spacing:0) {
                     projectDirectory
-                        .frame(width:min(370,max(320,geometry.size.width * 0.32)))
+                        .frame(width:min(400,max(340,geometry.size.width * 0.34)))
                         .frame(maxHeight:.infinity)
                         .background(.regularMaterial)
                         .accessibilityIdentifier("zen.projects.navigator")
-                    projectDetailOrEmpty
+                    projectDetailOrEmpty(showsBackButton:false)
                         .frame(maxWidth:.infinity,maxHeight:.infinity)
                         .accessibilityIdentifier("zen.projects.preview")
                 }
                 .accessibilityIdentifier("zen.projects.split")
             } else {
                 if detailProjectId != nil {
-                    projectDetailOrEmpty
+                    projectDetailOrEmpty(showsBackButton:true)
                 } else {
                     projectDirectory
                 }
             }
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
-        .task { await model.refreshSemanticProjects() }
+        .task {
+            await model.refreshSemanticProjects()
+            if detailProjectId == nil, let selectedProjectId=model.selectedProjectId {
+                detailProjectId=selectedProjectId
+            }
+        }
         .accessibilityIdentifier("zen.projects.directory")
     }
 
     @ViewBuilder
-    private var projectDetailOrEmpty: some View {
+    private func projectDetailOrEmpty(showsBackButton:Bool) -> some View {
         if let detailProjectId {
             ZenProjectDetailPane(
                 model:model,projectId:detailProjectId,
                 restoreRepositoryId:restoreRepositoryId,
                 restoreRequirementId:restoreRequirementId,
-                onOpenTasks:onOpenTasks,onOpenRequirement:onOpenRequirement
+                onOpenTasks:onOpenTasks,onOpenRequirement:onOpenRequirement,
+                showsBackButton:showsBackButton
             ) {
                 self.detailProjectId=nil
                 self.restoreRepositoryId=nil
@@ -3085,6 +3091,9 @@ struct ZenProjectDirectorySheet: View {
                             model.projects.first(where:{$0.repoId == repositoryId})?.label
                         }
                         : nil
+                    let selectedPlacementShort=selectedPlacement.flatMap { label in
+                        label.split(separator:"/").last.map(String.init)
+                    } ?? selectedPlacement
                     HStack(spacing:10) {
                         Image(systemName:project.status == "archived" ? "archivebox" :
                               isSelected ? "checkmark.circle.fill" : "folder")
@@ -3103,11 +3112,12 @@ struct ZenProjectDirectorySheet: View {
                             .accessibilityLabel(isSelected ? "\(project.displayName)，当前项目" : project.displayName)
                             .accessibilityValue(isSelected ? selectedPlacement ?? "项目级" : "")
                             if isSelected {
-                                Text("当前 · \(selectedPlacement ?? "项目级")")
+                                Text("当前 · \(selectedPlacementShort ?? "项目级")")
                                     .font(.system(size:11))
                                     .foregroundStyle(Color.accentColor)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
+                                    .help(selectedPlacement ?? "项目级")
                             }
                             HStack(spacing:8) {
                                 if project.status == "archived" {
@@ -3120,8 +3130,10 @@ struct ZenProjectDirectorySheet: View {
                                      "\(project.repositoryIds.count) 个仓库")
                             }
                             .font(.system(size:11)).foregroundStyle(.secondary)
+                            .lineLimit(1)
                         }
-                        Spacer(minLength:0)
+                        .frame(maxWidth:.infinity,alignment:.leading)
+                        .layoutPriority(1)
                         Button {
                             detailProjectId=project.projectId
                             restoreRepositoryId=nil
@@ -3289,6 +3301,7 @@ struct ZenProjectDetailPane: View {
     let restoreRequirementId: String?
     let onOpenTasks: (String,String?) -> Void
     let onOpenRequirement: (String,String?,String) async -> String?
+    let showsBackButton: Bool
     let onBack: () -> Void
     @State private var detail: ForgeSemanticProjectDetail?
     @State private var loading = false
@@ -3303,13 +3316,15 @@ struct ZenProjectDetailPane: View {
         ScrollViewReader { proxy in
         VStack(alignment:.leading,spacing:12) {
             HStack {
-                Button(action:onBack) {
-                    ForgeGlyph(.back)
-                        .forgeChromeSurface(cornerRadius:8)
-                }
-                .accessibilityLabel("返回项目")
+                if showsBackButton {
+                    Button(action:onBack) {
+                        ForgeGlyph(.back)
+                            .forgeChromeSurface(cornerRadius:8)
+                    }
+                    .accessibilityLabel("返回项目")
                     .buttonStyle(.plain)
                     .disabled(openingRequirementId != nil)
+                }
                 Spacer()
                 Button {
                     Task {
@@ -3422,22 +3437,39 @@ struct ZenProjectDetailPane: View {
                             } label: {
                                 VStack(alignment:.leading,spacing:4) {
                                 HStack {
-                                    Text(task.title).font(.system(size:12,weight:.medium)).lineLimit(2)
-                                    Spacer()
-                                    Text(ZenWorkspacePane.taskStatusLabel(task.status) ?? task.status).font(.system(size:10)).foregroundStyle(.secondary)
+                                    Text(task.title).font(.system(size:12.5,weight:.medium)).lineLimit(2)
+                                    Spacer(minLength:8)
+                                    Text(ZenWorkspacePane.taskStatusLabel(task.status) ?? task.status)
+                                        .font(.system(size:10.5))
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize()
                                 }
                                 HStack(spacing:7) {
-                                    Text(task.requirementId).font(.system(size:9,design:.monospaced))
-                                    if let repoId=task.repoId { Text(model.projects.first(where:{$0.repoId == repoId})?.label ?? repoId) }
+                                    Text(task.requirementId)
+                                        .font(.system(size:9,design:.monospaced))
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    if let repoId=task.repoId {
+                                        let repositoryLabel=model.projects.first(where:{$0.repoId == repoId})?.label ?? repoId
+                                        Text(repositoryLabel.split(separator:"/").last.map(String.init) ?? repositoryLabel)
+                                    }
                                     if let priority=task.priority { Text(taskPriorityLabel(priority)) }
                                     if let assignee=task.assignee,!assignee.isEmpty { Text(assignee) }
                                 }
-                                .font(.system(size:9)).foregroundStyle(.secondary)
+                                .font(.system(size:9))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                                 if !task.progressSummary.isEmpty {
                                     Text(task.progressSummary).font(.system(size:10)).foregroundStyle(.secondary).lineLimit(2)
                                 }
-                                Text("依赖 \(task.dependencyCount) · 计划 \(task.linkedPlanCount)")
-                                    .font(.system(size:9)).foregroundStyle(.tertiary)
+                                if task.dependencyCount > 0 || task.linkedPlanCount > 0 {
+                                    HStack(spacing:7) {
+                                        if task.dependencyCount > 0 { Text("依赖 \(task.dependencyCount)") }
+                                        if task.linkedPlanCount > 0 { Text("计划 \(task.linkedPlanCount)") }
+                                    }
+                                    .font(.system(size:9))
+                                    .foregroundStyle(.tertiary)
+                                }
                             }
                             .padding(.trailing,14)
                             }
