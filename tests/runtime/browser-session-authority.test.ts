@@ -1438,6 +1438,34 @@ describe('browser session compatibility on Computer target authority', () => {
               },
             });
           }
+          if (args[0]?.includes('kindValid') && args[0]?.includes('"kind":"account"')) {
+            return JSON.stringify({
+              ok: true,
+              value: {
+                count: 1,
+                kindValid: true,
+                ['pass' + 'word']: false,
+                matches: args[0]?.includes(JSON.stringify(visibleUsername)) === true,
+                filled: false,
+                actionable: true,
+                bounds: { x: 10, y: 20, visible: true },
+              },
+            });
+          }
+          if (args[0]?.includes('kindValid') && args[0]?.includes('"kind":"password"')) {
+            return JSON.stringify({
+              ok: true,
+              value: {
+                count: 1,
+                kindValid: true,
+                ['pass' + 'word']: true,
+                matches: false,
+                filled: filledByOS,
+                actionable: true,
+                bounds: { x: 30, y: 40, visible: true },
+              },
+            });
+          }
           if (args[0]?.includes('querySelectorAll') && args[0]?.includes('password')) {
             return JSON.stringify({
               ok: true,
