@@ -295,6 +295,69 @@ describe('repository.direct_edit capability', () => {
     expect(payload.reviewEvidence?.patchPreview).toContain('export const n = 2;');
     expect(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'), 'utf-8')).toBe('export const n = 2;\n');
   });
+
+  test('runs and joins requested revision-bound validation through the canonical capability route', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const ctx = { ...fx.ctx, principalId: 'direct-edit-validation-principal' };
+    const validationRequestId = 'direct-edit-capability-validation';
+
+    const edited = await callCoreCapabilityAdapter(ctx, 'capability_execute', {
+      repo_id: fx.repository.repoId,
+      capability_id: 'repository.direct_edit',
+      action: 'apply',
+      request_id: 'direct-edit-capability-apply',
+      arguments: {
+        purpose: 'Prove canonical direct-edit validation parity.',
+        operations: [
+          {
+            type: 'replace',
+            path: 'src/lib.ts',
+            replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 3;' }],
+          },
+        ],
+        check_ids: ['type-focused'],
+        validation_request_id: validationRequestId,
+      },
+    });
+
+    if (edited?.isError) throw new Error(JSON.stringify(edited.structuredContent ?? edited));
+    const payload = edited?.structuredContent as Record<string, any>;
+    expect(payload.status).toBe('applied');
+    expect(payload.reviewEvidence).toMatchObject({ source: 'edit_session' });
+    expect(payload.validationStarted).toBe(true);
+    expect(payload.validationRequestId).toBe(validationRequestId);
+    const validation = payload.validation as { processes: Array<{ processId: string }> };
+    expect(validation.processes.length).toBeGreaterThan(0);
+    for (const process of validation.processes) {
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, process.processId, { timeoutMs: 10_000 });
+    }
+
+    const sessionId = String(payload.session.sessionId);
+    const joined = await callCoreCapabilityAdapter(ctx, 'capability_execute', {
+      repo_id: fx.repository.repoId,
+      capability_id: 'repository.direct_edit',
+      action: 'apply',
+      request_id: 'direct-edit-capability-validation-join',
+      arguments: {
+        session_id: sessionId,
+        validation_only: true,
+        check_ids: ['type-focused'],
+        validation_request_id: validationRequestId,
+      },
+    });
+    if (joined?.isError) throw new Error(JSON.stringify(joined.structuredContent ?? joined));
+    const joinedPayload = joined?.structuredContent as Record<string, any>;
+    expect(joinedPayload).toMatchObject({
+      validationOnly: true,
+      sessionId,
+      completed: true,
+      ok: true,
+      acceptanceReady: true,
+    });
+    expect(joinedPayload.validation.validationRequestId).toBe(validationRequestId);
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId)).toHaveLength(0);
+  });
 });
 
 test('repository.direct_edit defaults to sessionless CAS without a durable EditSession (#713)', async () => {

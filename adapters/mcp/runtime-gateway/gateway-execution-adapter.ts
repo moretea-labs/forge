@@ -54,6 +54,110 @@ async function runEditSessionValidationViaProcessRuntime(
   return result(validation as unknown as Record<string, unknown>, validation.accepted === false);
 }
 
+export function requestsRepositorySafePatchValidation(args: Record<string, unknown>): boolean {
+  return args.validation_only === true || (Array.isArray(args.check_ids) && args.check_ids.length > 0);
+}
+
+export async function executeRepositorySafePatchComposite(
+  ctx: MultiRepositoryMcpToolContext,
+  args: Record<string, unknown>,
+): Promise<CallToolResult> {
+  const repository = resolveRepositorySelection({
+    repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
+    checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+    explicitPath: ctx.explicitRepository?.canonicalRoot,
+    controllerHome: ctx.controllerHome,
+    allowSoleRepository: true,
+  });
+  if (!repository) {
+    return result(
+      {
+        accepted: false,
+        mode: 'reject',
+        path: 'reject',
+        message: 'repository_safe_patch_apply requires a resolvable repository',
+      },
+      true,
+    );
+  }
+
+  if (args.validation_only === true) {
+    const editSessionId = String(args.session_id ?? '').trim();
+    if (!editSessionId) {
+      return result(
+        { accepted: false, mode: 'reject', path: 'reject', message: 'validation_only requires session_id' },
+        true,
+      );
+    }
+    const validation = await runEditSessionValidationViaProcessRuntime(ctx, repository, editSessionId, args);
+    const validationPayload = (validation.structuredContent ?? {}) as Record<string, unknown>;
+    return result(
+      {
+        operation: 'repository_safe_patch_apply',
+        validationOnly: true,
+        sessionId: editSessionId,
+        validation: validationPayload,
+        validationRequestId: validationPayload.validationRequestId,
+        completed: validationPayload.completed === true,
+        ok: validationPayload.ok,
+        acceptanceReady: validationPayload.completed === true && validationPayload.ok === true,
+        next:
+          validationPayload.completed === true
+            ? validationPayload.ok === true
+              ? 'Validation passed for the exact edit revision; delivery may proceed if policy and semantic review are satisfied.'
+              : 'Validation completed with failures; return the failure evidence to ChatGPT for repair reasoning.'
+            : validationPayload.next,
+      },
+      validation.isError === true,
+    );
+  }
+
+  const applied = await callRepositoryTool(ctx.controllerHome, 'repository_safe_patch_apply', args, ctx);
+  if (!applied || applied.isError === true) {
+    return (
+      applied ??
+      result(
+        {
+          accepted: false,
+          mode: 'reject',
+          path: 'reject',
+          message: 'repository_safe_patch_apply route is unavailable',
+        },
+        true,
+      )
+    );
+  }
+  const patchPayload = (applied.structuredContent ?? {}) as Record<string, unknown>;
+  if (patchPayload.status !== 'applied') return applied;
+  const session =
+    patchPayload.session && typeof patchPayload.session === 'object'
+      ? (patchPayload.session as Record<string, unknown>)
+      : undefined;
+  const editSessionId = typeof session?.sessionId === 'string' ? session.sessionId : '';
+  if (!editSessionId) return applied;
+  const validation = await runEditSessionValidationViaProcessRuntime(ctx, repository, editSessionId, args);
+  const validationPayload = (validation.structuredContent ?? {}) as Record<string, unknown>;
+  const validationCompleted = validationPayload.completed === true;
+  const validationPassed = validationCompleted && validationPayload.ok === true;
+  return result(
+    {
+      ...patchPayload,
+      validation: validationPayload,
+      validationStarted: true,
+      validationCompleted,
+      validationPassed,
+      acceptanceReady: validationPassed,
+      validationRequestId: validationPayload.validationRequestId,
+      next: validationCompleted
+        ? validationPassed
+          ? 'Patch review evidence and requested validation are complete; proceed to delivery only after ChatGPT semantic review is satisfied.'
+          : 'Patch applied but validation failed; return the failure evidence to ChatGPT before any delivery.'
+        : validationPayload.next,
+    },
+    validation.isError === true,
+  );
+}
+
 export async function executeGatewayRoutedOperation(
   ctx: MultiRepositoryMcpToolContext,
   name: string,
@@ -143,96 +247,15 @@ export async function executeGatewayRoutedOperation(
     return runEditSessionValidationViaProcessRuntime(ctx, repository, editSessionId, args);
   }
 
-  // Stable Direct Edit composite: checks are opt-in. Without check_ids this
-  // tool remains the ordinary synchronous patch path. With check_ids, the same
-  // call applies one coherent edit batch, returns its review evidence, and
-  // starts revision-bound validation without waiting on long checks.
+  // Stable Direct Edit composite: checks are opt-in. The same helper is also
+  // used by repository.direct_edit through capability_execute so the canonical
+  // capability and the compatibility top-level tool cannot drift.
   if (
     name === 'repository_safe_patch_apply' &&
     classification.path === 'direct' &&
-    (args.validation_only === true || (Array.isArray(args.check_ids) && args.check_ids.length > 0))
+    requestsRepositorySafePatchValidation(args)
   ) {
-    const repository = resolveRepositorySelection({
-      repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
-      checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
-      explicitPath: ctx.explicitRepository?.canonicalRoot,
-      controllerHome: ctx.controllerHome,
-      allowSoleRepository: true,
-    });
-    if (!repository) {
-      return result(
-        {
-          accepted: false,
-          mode: 'reject',
-          path: 'reject',
-          message: 'repository_safe_patch_apply requires a resolvable repository',
-        },
-        true,
-      );
-    }
-
-    if (args.validation_only === true) {
-      const editSessionId = String(args.session_id ?? '').trim();
-      if (!editSessionId) {
-        return result(
-          { accepted: false, mode: 'reject', path: 'reject', message: 'validation_only requires session_id' },
-          true,
-        );
-      }
-      const validation = await runEditSessionValidationViaProcessRuntime(ctx, repository, editSessionId, args);
-      const validationPayload = (validation.structuredContent ?? {}) as Record<string, unknown>;
-      return result(
-        {
-          operation: 'repository_safe_patch_apply',
-          validationOnly: true,
-          sessionId: editSessionId,
-          validation: validationPayload,
-          validationRequestId: validationPayload.validationRequestId,
-          completed: validationPayload.completed === true,
-          ok: validationPayload.ok,
-          acceptanceReady: validationPayload.completed === true && validationPayload.ok === true,
-          next:
-            validationPayload.completed === true
-              ? validationPayload.ok === true
-                ? 'Validation passed for the exact edit revision; delivery may proceed if policy and semantic review are satisfied.'
-                : 'Validation completed with failures; return the failure evidence to ChatGPT for repair reasoning.'
-              : validationPayload.next,
-        },
-        validation.isError === true,
-      );
-    }
-
-    const applied = await callRepositoryTool(ctx.controllerHome, name, args, ctx);
-    if (!applied || applied.isError === true) return applied;
-    const patchPayload = (applied.structuredContent ?? {}) as Record<string, unknown>;
-    if (patchPayload.status !== 'applied') return applied;
-    const session =
-      patchPayload.session && typeof patchPayload.session === 'object'
-        ? (patchPayload.session as Record<string, unknown>)
-        : undefined;
-    const editSessionId = typeof session?.sessionId === 'string' ? session.sessionId : '';
-    if (!editSessionId) return applied;
-    const validation = await runEditSessionValidationViaProcessRuntime(ctx, repository, editSessionId, args);
-    const validationPayload = (validation.structuredContent ?? {}) as Record<string, unknown>;
-    const validationCompleted = validationPayload.completed === true;
-    const validationPassed = validationCompleted && validationPayload.ok === true;
-    return result(
-      {
-        ...patchPayload,
-        validation: validationPayload,
-        validationStarted: true,
-        validationCompleted,
-        validationPassed,
-        acceptanceReady: validationPassed,
-        validationRequestId: validationPayload.validationRequestId,
-        next: validationCompleted
-          ? validationPassed
-            ? 'Patch review evidence and requested validation are complete; proceed to delivery only after ChatGPT semantic review is satisfied.'
-            : 'Patch applied but validation failed; return the failure evidence to ChatGPT before any delivery.'
-          : validationPayload.next,
-      },
-      validation.isError === true,
-    );
+    return executeRepositorySafePatchComposite(ctx, args);
   }
 
   // run_check Process Runtime facade — execute here so legacy LocalBridgeJob path is skipped.

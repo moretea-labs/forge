@@ -8,6 +8,10 @@ import {
   stageSelectedPaths,
 } from '../../../src/runtime/repositories/selected-path-actions';
 import { result } from './result-adapter';
+import {
+  executeRepositorySafePatchComposite,
+  requestsRepositorySafePatchValidation,
+} from './gateway-execution-adapter';
 import { selected } from './shared-adapter';
 import {
   configureInitialControllerConnection,
@@ -141,19 +145,24 @@ export async function callCoreCapabilityAdapter(
           true,
         );
       }
-      // The canonical repository dispatcher owns the sessionless default,
-      // including legacy session/validation exclusion. No duplicate decision
-      // or additional edit engine belongs in this transport adapter (#713).
+      // The canonical repository dispatcher owns the sessionless edit engine.
+      // Process validation is transport orchestration, so reuse the same composite
+      // as the compatibility top-level tool instead of silently dropping check_ids.
+      const forwardedArgs = {
+        ...input,
+        ...(typeof args.repo_id === 'string' && args.repo_id.trim() ? { repo_id: args.repo_id.trim() } : {}),
+        ...(typeof args.checkout_id === 'string' && args.checkout_id.trim()
+          ? { checkout_id: args.checkout_id.trim() }
+          : {}),
+        ...(typeof args.request_id === 'string' && args.request_id.trim() ? { request_id: args.request_id.trim() } : {}),
+      };
+      if (action === 'apply' && requestsRepositorySafePatchValidation(forwardedArgs)) {
+        return executeRepositorySafePatchComposite(ctx, forwardedArgs);
+      }
       const forwarded = await callRepositoryTool(
         ctx.controllerHome,
         toolName,
-        {
-          ...input,
-          ...(typeof args.repo_id === 'string' && args.repo_id.trim() ? { repo_id: args.repo_id.trim() } : {}),
-          ...(typeof args.checkout_id === 'string' && args.checkout_id.trim()
-            ? { checkout_id: args.checkout_id.trim() }
-            : {}),
-        },
+        forwardedArgs,
         {
           sessionId: ctx.sessionId,
           principalId: ctx.principalId,
