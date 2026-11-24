@@ -205,6 +205,34 @@ final class AgentResponseRenderingTests: XCTestCase {
         XCTAssertEqual(splitCount, 1)
 
         XCTAssertEqual(cache.lines(for: "one\ntwo\nthree"), ["one", "two", "three"])
-        XCTAssertEqual(splitCount, 2)
+        XCTAssertEqual(splitCount, 1)
+    }
+
+    func testCodeBlockLineCacheSplitsOnlyNewCompletedRowsDuringStreaming() {
+        var splitInputs: [String] = []
+        let cache = AgentCodeBlockLineCache { source in
+            splitInputs.append(source)
+            return source.components(separatedBy: "\n")
+        }
+
+        let first = cache.lines(for: "one\ntwo")
+        let second = cache.lines(for: "one\ntwo\nthree")
+        let third = cache.lines(for: "one\ntwo\nthree\nfour")
+        let trailingEmpty = cache.lines(for: "one\ntwo\nthree\nfour\n")
+
+        XCTAssertEqual(first, ["one", "two"])
+        XCTAssertEqual(second, ["one", "two", "three"])
+        XCTAssertEqual(third, ["one", "two", "three", "four"])
+        XCTAssertEqual(trailingEmpty, ["one", "two", "three", "four", ""])
+        XCTAssertEqual(splitInputs, ["one", "two", "three", "four"])
+    }
+
+    func testCodeBlockLineCacheRebuildsWhenEarlierCodeChanges() {
+        let cache = AgentCodeBlockLineCache()
+        _ = cache.lines(for: "one\ntwo\nthree")
+
+        let rebuilt = cache.lines(for: "zero\ntwo\nthree")
+
+        XCTAssertEqual(rebuilt, ["zero", "two", "three"])
     }
 }

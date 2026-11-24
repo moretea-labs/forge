@@ -407,11 +407,13 @@ final class AgentInlineMarkdownCache {
     }
 }
 
-/// Code rows are immutable for completed transcript messages. Cache the split
-/// so unrelated SwiftUI invalidations do not repeatedly allocate line arrays.
+/// Incrementally splits streaming code. Completed rows are retained and only
+/// the unfinished final line is extended until another newline arrives.
 final class AgentCodeBlockLineCache {
     private let splitter: (String) -> [String]
     private var source: String?
+    private var stableLines: [String] = []
+    private var pendingLine = ""
     private var cachedLines: [String] = []
 
     init(splitter: @escaping (String) -> [String] = { $0.components(separatedBy: "\n") }) {
@@ -420,9 +422,37 @@ final class AgentCodeBlockLineCache {
 
     func lines(for source: String) -> [String] {
         guard self.source != source else { return cachedLines }
-        let parsed = splitter(source)
+
+        if let previousSource = self.source, source.hasPrefix(previousSource) {
+            append(source, after: previousSource)
+        } else {
+            rebuild(source)
+        }
+
         self.source = source
-        cachedLines = parsed
-        return parsed
+        return cachedLines
+    }
+
+    private func rebuild(_ source: String) {
+        stableLines = []
+        pendingLine = source
+        if let lastNewline = source.lastIndex(of: "\n") {
+            stableLines = splitter(String(source[..<lastNewline]))
+            pendingLine = String(source[source.index(after: lastNewline)...])
+        }
+        cachedLines = stableLines + [pendingLine]
+    }
+
+    private func append(_ source: String, after previousSource: String) {
+        let appended = String(source.dropFirst(previousSource.count))
+        let pending = pendingLine + appended
+        if let lastNewline = pending.lastIndex(of: "\n") {
+            let completedLines = String(pending[..<lastNewline])
+            stableLines.append(contentsOf: splitter(completedLines))
+            pendingLine = String(pending[pending.index(after: lastNewline)...])
+        } else {
+            pendingLine = pending
+        }
+        cachedLines = stableLines + [pendingLine]
     }
 }
