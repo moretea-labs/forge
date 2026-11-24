@@ -392,7 +392,6 @@ export function buildJobOperationDigest(job: ExecutionJob, options: {
     resultRef,
     logRefs,
     changedFiles: extractChangedFiles(job),
-    evidenceRefs: job.evidenceIds.slice(-5).map((id) => ({ title: 'evidence', summary: id })),
     errorClass,
     errorMessage,
     suggestedNextActions: defaultNextActions(phase, job.jobId, errorClass),

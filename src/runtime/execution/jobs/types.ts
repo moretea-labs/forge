@@ -185,7 +185,6 @@ export interface ExecutionJob {
   result?: Record<string, unknown>;
   outcome?: ExecutionJobOutcome;
   error?: { code: string; message: string; retryable: boolean; details?: Record<string, unknown> };
-  evidenceIds: string[];
 }
 
 export interface ExecutionJobEvent {

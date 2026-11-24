@@ -80,7 +80,6 @@ function recoverDelegatedChildIfPresent(message: string): boolean {
     markOperationCompleted(controllerHome, current, process.pid, {
       outcome: 'succeeded',
       result,
-      evidenceIds: receipt?.evidenceIds ?? current.evidenceIds,
       childReference,
     });
     transitionExecutionJobFromWorker(

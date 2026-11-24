@@ -8,6 +8,7 @@ import { ACTIVE_JOB_STATUSES, type ExecutionJob } from '../../src/runtime/execut
 import type { AgentJobMetaReadShape } from '../../src/runtime/agent-jobs/read-model';
 import type { LocalBridgeJob } from '../../src/runtime/local-bridge/types';
 import { summarizeExecutionJobForMcp } from '../../src/runtime/safe-tooling/job-summary';
+import { recoverCompletedReceipt } from '../../src/runtime/execution/jobs/receipt-recovery';
 import { acquireExecutionLeases, listActiveLeases } from '../../src/runtime/resources/leases/store';
 
 const roots: string[] = [];
@@ -44,7 +45,6 @@ function executionJob(jobId: string, status: ExecutionJob['status'], patch: Part
     queuedAt: timestamp,
     attempt: status === 'running' ? 1 : 0,
     maxAttempts: 1,
-    evidenceIds: [],
     ...patch,
   };
 }
@@ -141,6 +141,47 @@ describe('ExecutionJob reconciliation isolation', () => {
     const after = JSON.parse(readFileSync(join(controllerHome, 'indexes', 'execution-jobs', 'active.json'), 'utf8'));
     expect(after.jobs).toEqual([]);
   });
+});
+
+describe('ExecutionJob native receipt recovery', () => {
+  for (const outcome of ['succeeded', 'failed'] as const) {
+    test(`recovers ${outcome} from native receipt without copying retired EVD metadata`, () => {
+      const controllerHome = tempControllerHome();
+      const job = executionJob(`recover-${outcome}`, 'running', { workerPid: 12345 });
+      persistFixtureJobs(controllerHome, [job]);
+      const receipts = join(executionJobRoot(controllerHome, job.repoId), 'receipts');
+      mkdirSync(receipts, { recursive: true });
+      const receipt = {
+        schemaVersion: 1,
+        jobId: job.jobId,
+        repoId: job.repoId,
+        attempt: job.attempt,
+        workerPid: job.workerPid,
+        state: 'completed',
+        startedAt: job.createdAt,
+        completedAt: new Date().toISOString(),
+        outcome,
+        ...(outcome === 'succeeded'
+          ? { result: { output: 'native-result' } }
+          : { error: { code: 'TEST_FAILURE', message: 'native-error', retryable: false } }),
+        evidenceIds: ['EVD-historical-only'],
+      };
+      const receiptPath = join(receipts, `${job.jobId}.json`);
+      writeFileSync(receiptPath, JSON.stringify({ ...receipt, attempt: job.attempt + 1 }));
+      expect(recoverCompletedReceipt(controllerHome, job)).toBeUndefined();
+      expect(getExecutionJob(controllerHome, job.repoId, job.jobId).status).toBe('running');
+      writeFileSync(receiptPath, JSON.stringify(receipt));
+      const recovered = recoverCompletedReceipt(controllerHome, job);
+      expect(recovered?.recoveredAs).toBe('completed');
+      expect(recovered?.job.status).toBe(outcome);
+      expect(recovered?.job.result).toEqual(outcome === 'succeeded' ? { output: 'native-result' } : undefined);
+      expect(recovered?.job.error?.code).toBe(outcome === 'failed' ? 'TEST_FAILURE' : undefined);
+      const stored = getExecutionJob(controllerHome, job.repoId, job.jobId);
+      expect(JSON.stringify(stored)).not.toContain('EVD-historical-only');
+      expect(JSON.stringify(summarizeExecutionJobForMcp(stored, undefined))).not.toContain('EVD-historical-only');
+      expect(recoverCompletedReceipt(controllerHome, stored)).toBeUndefined();
+    });
+  }
 });
 
 describe('ExecutionJob delegated summary snapshots', () => {

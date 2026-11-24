@@ -48,7 +48,6 @@ export function recoverCompletedReceipt(
     const recovered = transitionExecutionJob(controllerHome, job.repoId, job.jobId, 'succeeded', {
       result,
       error: undefined,
-      evidenceIds: receipt.evidenceIds ?? job.evidenceIds,
       workerPid: undefined,
       leaseRefs: [],
     }, { recoveredFromReceipt: true, receiptAttempt: receipt.attempt, recoveredAs: 'delegated' });
@@ -68,7 +67,6 @@ export function recoverCompletedReceipt(
   const recovered = transitionExecutionJob(controllerHome, job.repoId, job.jobId, receipt.outcome, {
     result: receipt.result,
     error: receipt.error,
-    evidenceIds: receipt.evidenceIds ?? job.evidenceIds,
     workerPid: undefined,
     leaseRefs: [],
   }, { recoveredFromReceipt: true, receiptAttempt: receipt.attempt });

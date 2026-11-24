@@ -1244,7 +1244,6 @@ fi
       queuedAt: old,
       attempt: 1,
       maxAttempts: 1,
-      evidenceIds: [],
     };
     writeFileSync(
       join(root, 'records', `${terminalId}.json`),

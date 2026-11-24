@@ -36,7 +36,6 @@ export interface OperationReceipt {
   outcome?: 'succeeded' | 'failed' | 'delegated';
   result?: Record<string, unknown>;
   error?: ExecutionJob['error'];
-  evidenceIds?: string[];
   /** Durable child Agent Run / Local Job pointer for parent delegation Jobs. */
   childReference?: ExecutionChildReference;
 }
@@ -172,7 +171,7 @@ export function markOperationCompleted(
   controllerHome: string,
   job: ExecutionJob,
   workerPid: number,
-  terminal: Pick<OperationReceipt, 'outcome' | 'result' | 'error' | 'evidenceIds' | 'childReference'>,
+  terminal: Pick<OperationReceipt, 'outcome' | 'result' | 'error' | 'childReference'>,
 ): OperationReceipt {
   const ownedJob = assertOperationReceiptOwnership(controllerHome, job, workerPid);
   const current = readOperationReceipt(controllerHome, job.repoId, job.jobId);
@@ -189,7 +188,6 @@ export function markOperationCompleted(
     outcome: terminal.outcome,
     result: terminal.result,
     error: terminal.error,
-    evidenceIds: terminal.evidenceIds,
     ...(childReference ? { childReference } : {}),
   };
   writeJsonAtomic(receiptPath(controllerHome, ownedJob.repoId, ownedJob.jobId), receipt);

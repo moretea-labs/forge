@@ -269,7 +269,6 @@ describe('runtime observability', () => {
         queuedAt: timestamp,
         attempt: 1,
         maxAttempts: 1,
-        evidenceIds: [],
         error: {
           code: 'LEGACY_ATTENTION',
           message: 'legacy terminal record intentionally omits finishedAt',
