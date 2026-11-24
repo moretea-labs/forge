@@ -108,6 +108,7 @@ final class ForgeClientLayoutTests: XCTestCase {
 
     var raisedMenuPickerFiles: [String] = []
     var nonSegmentedPickerFiles: [String] = []
+    var raisedTextFieldFiles: [String] = []
 
     for url in sourceURLs {
       let source = try String(contentsOf: url, encoding: .utf8)
@@ -117,6 +118,9 @@ final class ForgeClientLayoutTests: XCTestCase {
       )
       if source.contains(".pickerStyle(.menu)") {
         raisedMenuPickerFiles.append(relativePath)
+      }
+      if source.contains(".textFieldStyle(.roundedBorder)") {
+        raisedTextFieldFiles.append(relativePath)
       }
 
       let pickerSegments = source.components(separatedBy: "Picker(").dropFirst()
@@ -136,6 +140,10 @@ final class ForgeClientLayoutTests: XCTestCase {
     XCTAssertTrue(
       nonSegmentedPickerFiles.isEmpty,
       "Picker is reserved for segmented controls; dropdowns must use Menu + ForgeMenuTriggerLabel: \(nonSegmentedPickerFiles)"
+    )
+    XCTAssertTrue(
+      raisedTextFieldFiles.isEmpty,
+      "Text fields must use forgeInputSurface or another flat shared surface, not .roundedBorder: \(raisedTextFieldFiles)"
     )
   }
 }

@@ -125,6 +125,23 @@ extension View {
     modifier(ForgeChromeSurface(selected: selected, cornerRadius: cornerRadius))
   }
 
+  /// One quiet text-entry surface across forms: no AppKit-style raised bezel.
+  /// Vertical padding lets multi-line fields grow naturally while single-line fields stay compact.
+  func forgeInputSurface(cornerRadius: CGFloat = 8) -> some View {
+    self
+      .textFieldStyle(.plain)
+      .padding(.horizontal, 8)
+      .padding(.vertical, 5)
+      .background(
+        ForgePalette.inputFill,
+        in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+      )
+      .overlay {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+          .strokeBorder(ForgePalette.floatingStroke, lineWidth: 0.5)
+      }
+  }
+
   /// Shared behind-window material for the whole application shell.
   func forgeWindowMaterial() -> some View {
     background {

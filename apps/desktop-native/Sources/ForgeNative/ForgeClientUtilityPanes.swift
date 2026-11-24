@@ -1271,7 +1271,7 @@ struct RecordsPane: View {
                 VStack(alignment:.leading,spacing:6) {
                     Text("标题").font(.system(size:11,weight:.medium))
                     TextField("例如：实现无人值守规划",text:$draftTitle)
-                        .textFieldStyle(.roundedBorder)
+                        .forgeInputSurface(cornerRadius:8)
                 }
             }
 
@@ -1591,11 +1591,12 @@ struct RecordsPane: View {
                 GridRow {
                     Text("模型")
                     TextField("deepseek-chat",text:$autopilotModel)
-                        .textFieldStyle(.roundedBorder).disabled(budgetRenewal)
+                        .forgeInputSurface(cornerRadius:8)
+                        .disabled(budgetRenewal)
                 }
-                GridRow { Text("Token 上限"); TextField("50000",text:$autopilotTokenBudget).textFieldStyle(.roundedBorder) }
-                GridRow { Text("最大轮次"); TextField("12",text:$autopilotTurnBudget).textFieldStyle(.roundedBorder) }
-                GridRow { Text("最大工具调用"); TextField("32",text:$autopilotToolBudget).textFieldStyle(.roundedBorder) }
+                GridRow { Text("Token 上限"); TextField("50000",text:$autopilotTokenBudget).forgeInputSurface(cornerRadius:8) }
+                GridRow { Text("最大轮次"); TextField("12",text:$autopilotTurnBudget).forgeInputSurface(cornerRadius:8) }
+                GridRow { Text("最大工具调用"); TextField("32",text:$autopilotToolBudget).forgeInputSurface(cornerRadius:8) }
             }
             .font(.system(size:11))
 

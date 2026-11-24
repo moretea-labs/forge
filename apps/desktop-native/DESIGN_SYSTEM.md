@@ -11,6 +11,7 @@ Forge is content-first, compact, native, translucent, and quiet. The target is C
 - Selection is a faint wash, never a dark tile or colored button.
 - Secondary actions are icon-first when the symbol is conventional.
 - Dropdown triggers are flat: no bezel, persistent fill, raised popup button, or nested glass capsule. Use ForgeMenuTriggerLabel or an equivalent hover-only trigger; the popup menu itself remains native macOS.
+- Text entry uses `forgeInputSurface`: plain text field, subtle semantic fill, 0.5pt hairline, no AppKit-style `.roundedBorder` bezel.
 - Do not duplicate an Inspector/open-panel action in adjacent toolbars or Composer.
 
 ## Glass and color

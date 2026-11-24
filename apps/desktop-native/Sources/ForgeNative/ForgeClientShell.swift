@@ -721,8 +721,8 @@ struct ForgeWorkspaceView: View {
                 TextField(inboxDecisionPlaceholder(item.actionRequired),
                           text:$inboxDecision,axis:.vertical)
                     .lineLimit(2...4)
-                    .textFieldStyle(.roundedBorder)
                     .font(.system(size:11))
+                    .forgeInputSurface(cornerRadius:8)
                     .accessibilityIdentifier("inbox.\(item.requestId).decision")
                 Text("此处只记录回复，不会代你完成登录、授权或其他操作。")
                     .font(.system(size:10)).foregroundStyle(.tertiary)
@@ -1025,8 +1025,8 @@ struct ForgeWorkspaceView: View {
                     .font(.system(size:13,weight:.semibold))
             }
             TextField("会话名称",text:$renameThreadTitle)
-                .textFieldStyle(.roundedBorder)
                 .font(.system(size:12))
+                .forgeInputSurface(cornerRadius:8)
                 .onSubmit {
                     guard !renameThreadTitle.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { return }
                     model.renameThread(thread.id,to:renameThreadTitle)
