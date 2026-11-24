@@ -4,7 +4,12 @@ import { join } from 'path';
 import { controllerSystemRoot, repositoryControllerRoot } from '../../effects/controller-home';
 import type { ExecutionJob } from '../execution/jobs/types';
 import { readJsonFile, removeFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
-import { deleteOutputHandleIndexEntry, recordOutputHandleIndexEntry, readOutputHandleIndexEntry, type OutputHandleStorage } from './output-handle-index';
+import {
+  deleteOutputHandleIndexEntry,
+  recordOutputHandleIndexEntry,
+  readOutputHandleIndexEntry,
+  type OutputHandleStorage,
+} from './output-handle-index';
 
 export interface ExecutionArtifactRecord {
   schemaVersion: 1;
@@ -46,15 +51,19 @@ function metadataPath(controllerHome: string, storage: OutputHandleStorage, arti
 }
 
 function artifactFingerprint(record: ExecutionArtifactRecord, value: unknown): string {
-  return createHash('sha256').update(JSON.stringify({
-    artifactId: record.artifactId,
-    jobId: record.jobId,
-    principalId: record.principalId ?? null,
-    kind: record.kind,
-    mediaType: record.mediaType,
-    createdAt: record.createdAt,
-    value,
-  })).digest('hex');
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        artifactId: record.artifactId,
+        jobId: record.jobId,
+        principalId: record.principalId ?? null,
+        kind: record.kind,
+        mediaType: record.mediaType,
+        createdAt: record.createdAt,
+        value,
+      }),
+    )
+    .digest('hex');
 }
 
 function registerArtifact(
@@ -121,7 +130,9 @@ function resolveArtifact(
 
   const storage: OutputHandleStorage = { scope: 'instance' };
   if (!existsSync(metadataPath(controllerHome, storage, artifactId))) {
-    throw new Error(`ARTIFACT_LOCATOR_NOT_FOUND: ${artifactId}; supply repo_id only once when adopting a historical repository artifact`);
+    throw new Error(
+      `ARTIFACT_LOCATOR_NOT_FOUND: ${artifactId}; supply repo_id only once when adopting a historical repository artifact`,
+    );
   }
   const loaded = loadArtifactAt(controllerHome, artifactId, storage);
   registerArtifact(controllerHome, loaded.artifact, loaded.content, storage);
@@ -188,7 +199,12 @@ export function cleanupExecutionArtifactsForJob(
   options: { maxScan?: number } = {},
 ): ExecutionArtifactJobCleanupReport {
   const report: ExecutionArtifactJobCleanupReport = {
-    policyVersion: 'execution-artifact-job-cleanup-v1', inspected: 0, matched: 0, removed: 0, scanTruncated: false, blockers: [],
+    policyVersion: 'execution-artifact-job-cleanup-v1',
+    inspected: 0,
+    matched: 0,
+    removed: 0,
+    scanTruncated: false,
+    blockers: [],
   };
   const storage: OutputHandleStorage = { scope: 'instance' };
   const root = canonicalArtifactRoot(controllerHome);
@@ -201,11 +217,16 @@ export function cleanupExecutionArtifactsForJob(
       const entry = directory.readSync();
       if (!entry) break;
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-      if (report.inspected >= maxScan) { report.scanTruncated = true; break; }
+      if (report.inspected >= maxScan) {
+        report.scanTruncated = true;
+        break;
+      }
       report.inspected += 1;
       const recordPath = join(recordsRoot, entry.name);
       let record: ExecutionArtifactRecord;
-      try { record = readJsonFile<ExecutionArtifactRecord>(recordPath); } catch {
+      try {
+        record = readJsonFile<ExecutionArtifactRecord>(recordPath);
+      } catch {
         report.blockers.push(`invalid_metadata:${entry.name}`);
         continue;
       }
@@ -258,9 +279,17 @@ export function readExecutionArtifact(
   const length = Math.min(byteLength, bounded);
   const buffer = Buffer.alloc(length);
   const descriptor = openSync(resolved.dataPath, 'r');
-  try { readSync(descriptor, buffer, 0, length, 0); } finally { closeSync(descriptor); }
+  try {
+    readSync(descriptor, buffer, 0, length, 0);
+  } finally {
+    closeSync(descriptor);
+  }
   if (byteLength <= bounded) {
-    return { artifact: { ...resolved.artifact, byteLength }, content: JSON.parse(buffer.toString('utf8')), truncated: false };
+    return {
+      artifact: { ...resolved.artifact, byteLength },
+      content: JSON.parse(buffer.toString('utf8')),
+      truncated: false,
+    };
   }
   return {
     artifact: { ...resolved.artifact, byteLength },
@@ -281,10 +310,12 @@ export function boundExecutionResult(
 ): { result: Record<string, unknown>; artifact?: ExecutionArtifactRecord } {
   const DEFAULT_INLINE_SUCCESS = 16 * 1024;
   const DEFAULT_INLINE_ERROR = 32 * 1024;
-  const configured = typeof job.payload.maxOutputBytes === 'number' ? job.payload.maxOutputBytes : DEFAULT_INLINE_SUCCESS;
-  const maxBytes = kind === 'job-error'
-    ? Math.max(DEFAULT_INLINE_ERROR, Math.min(configured, 512 * 1024))
-    : Math.max(DEFAULT_INLINE_SUCCESS, Math.min(configured, 512 * 1024));
+  const configured =
+    typeof job.payload.maxOutputBytes === 'number' ? job.payload.maxOutputBytes : DEFAULT_INLINE_SUCCESS;
+  const maxBytes =
+    kind === 'job-error'
+      ? Math.max(DEFAULT_INLINE_ERROR, Math.min(configured, 512 * 1024))
+      : Math.max(DEFAULT_INLINE_SUCCESS, Math.min(configured, 512 * 1024));
   const serialized = JSON.stringify(result);
   const bytes = Buffer.byteLength(serialized);
 
@@ -298,9 +329,12 @@ export function boundExecutionResult(
         referenceType: 'artifact',
         artifactId: artifact.artifactId,
         artifactKind: artifact.kind,
-        message: typeof result.message === 'string'
-          ? String(result.message).slice(0, 800)
-          : (typeof result.error === 'string' ? String(result.error).slice(0, 800) : 'Job failed; full details externalized.'),
+        message:
+          typeof result.message === 'string'
+            ? String(result.message).slice(0, 800)
+            : typeof result.error === 'string'
+              ? String(result.error).slice(0, 800)
+              : 'Job failed; full details externalized.',
         detailPointer: {
           tool: 'get_artifact',
           artifactId: artifact.artifactId,

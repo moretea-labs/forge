@@ -44,7 +44,6 @@ export interface SafePluginSummary {
   };
 }
 
-
 export interface SafeJobResultSummary {
   jobId: string;
   repoId: string;
@@ -54,7 +53,13 @@ export interface SafeJobResultSummary {
   plugin?: { pluginId?: string; actionId?: string };
   safeError?: {
     code?: string;
-    class: 'dependency_missing' | 'policy_denied' | 'authorization_required' | 'platform_blocked' | 'runtime_error' | 'unknown';
+    class:
+      | 'dependency_missing'
+      | 'policy_denied'
+      | 'authorization_required'
+      | 'platform_blocked'
+      | 'runtime_error'
+      | 'unknown';
     retryable?: boolean;
     message: string;
     suggestedFixes: string[];

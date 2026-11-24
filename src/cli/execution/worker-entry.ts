@@ -1,6 +1,10 @@
 #!/usr/bin/env bun
 import { ensureControllerHome } from '../../effects/controller-home';
-import { getExecutionJob, heartbeatExecutionJob, transitionExecutionJobFromWorker } from '../../runtime/execution/jobs/store';
+import {
+  getExecutionJob,
+  heartbeatExecutionJob,
+  transitionExecutionJobFromWorker,
+} from '../../runtime/execution/jobs/store';
 import { assertFencingToken, releaseExecutionLeases, renewExecutionLeases } from '../../runtime/resources/leases/store';
 import { boundExecutionResult } from '../../runtime/evidence/artifact-store';
 import { executeExecutionJob } from '../../runtime/execution/workers/executor';
@@ -14,7 +18,12 @@ import {
   isAgentDelegationOperation,
   mergeChildReferences,
 } from '../../runtime/execution/jobs/child-reference';
-import { markOperationCompleted, markOperationStarted, operationReceiptMatchesJobOwnership, readOperationReceipt } from '../../runtime/execution/jobs/receipt-store';
+import {
+  markOperationCompleted,
+  markOperationStarted,
+  operationReceiptMatchesJobOwnership,
+  readOperationReceipt,
+} from '../../runtime/execution/jobs/receipt-store';
 import { markScheduledExecutionRunning } from '../../../packages/kernel/scheduler/api/index';
 import { invalidateExecutionWorker } from '../../runtime/execution/workers/ownership';
 import { markRepositoryProjectionDirty } from '../../runtime/projections/invalidation';
@@ -59,17 +68,15 @@ function recoverDelegatedChildIfPresent(message: string): boolean {
     const current = getExecutionJob(controllerHome, repoId, jobId);
     if (current.status !== 'running' || current.workerPid !== process.pid) return false;
     const candidateReceipt = readOperationReceipt(controllerHome, repoId, jobId);
-    const receipt = candidateReceipt && operationReceiptMatchesJobOwnership(candidateReceipt, current) ? candidateReceipt : undefined;
-    const childReference = mergeChildReferences(
-      childReferenceFromReceipt(receipt),
-      childReferenceFromJob(current),
-    );
-    const agentDelegation = isAgentDelegationOperation(current.payload.operation)
-      || current.type === 'agent-run'
-      || current.type === 'dispatch-task';
+    const receipt =
+      candidateReceipt && operationReceiptMatchesJobOwnership(candidateReceipt, current) ? candidateReceipt : undefined;
+    const childReference = mergeChildReferences(childReferenceFromReceipt(receipt), childReferenceFromJob(current));
+    const agentDelegation =
+      isAgentDelegationOperation(current.payload.operation) ||
+      current.type === 'agent-run' ||
+      current.type === 'dispatch-task';
     if (!agentDelegation || !hasDurableChildReference(childReference) || !childReference) return false;
-    const result = receipt?.result
-      ?? buildDelegatedExecutionResult({ childReference });
+    const result = receipt?.result ?? buildDelegatedExecutionResult({ childReference });
     markOperationCompleted(controllerHome, current, process.pid, {
       outcome: 'succeeded',
       result,
@@ -124,8 +131,11 @@ function exitForOwnershipLoss(message: string): never {
     } catch {
       // Ownership already moved or the Job is terminal.
     }
-    try { releaseExecutionLeases(controllerHome, repoId, jobId, claimedLeaseRefs); }
-    catch { /* the lease expired or ownership moved */ }
+    try {
+      releaseExecutionLeases(controllerHome, repoId, jobId, claimedLeaseRefs);
+    } catch {
+      /* the lease expired or ownership moved */
+    }
     refreshRepositoryProjection();
   }
   console.error(message);
@@ -179,21 +189,29 @@ async function main(): Promise<void> {
   if (completionInvalidation) exitForOwnershipLoss(completionInvalidation.message);
   for (const ref of claimedLeaseRefs) assertFencingToken(controllerHome, repoId, ref.leaseId, ref.fencingToken);
   if (execution.awaitingApproval) {
-    transitionExecutionJobFromWorker(controllerHome, repoId, jobId, owner, 'waiting_for_approval', {
-      result: {
-        ...(execution.result ?? {}),
-        approvalRequestId: execution.awaitingApproval.approvalRequestId,
-        authorization: execution.awaitingApproval.authorization,
-        consequences: execution.awaitingApproval.consequences,
-        continuation: execution.awaitingApproval.continuation,
+    transitionExecutionJobFromWorker(
+      controllerHome,
+      repoId,
+      jobId,
+      owner,
+      'waiting_for_approval',
+      {
+        result: {
+          ...(execution.result ?? {}),
+          approvalRequestId: execution.awaitingApproval.approvalRequestId,
+          authorization: execution.awaitingApproval.authorization,
+          consequences: execution.awaitingApproval.consequences,
+          continuation: execution.awaitingApproval.continuation,
+        },
+        outcome: execution.outcome,
+        error: undefined,
+        leaseRefs: [],
       },
-      outcome: execution.outcome,
-      error: undefined,
-      leaseRefs: [],
-    }, {
-      approvalRequestId: execution.awaitingApproval.approvalRequestId,
-      humanSummary: execution.awaitingApproval.humanSummary,
-    });
+      {
+        approvalRequestId: execution.awaitingApproval.approvalRequestId,
+        humanSummary: execution.awaitingApproval.humanSummary,
+      },
+    );
     return;
   }
   const bounded = execution.ok
@@ -203,7 +221,8 @@ async function main(): Promise<void> {
       : undefined;
   const terminalError = execution.error ? { ...execution.error, details: bounded?.result } : undefined;
   const candidateReceipt = readOperationReceipt(controllerHome, repoId, jobId);
-  const trustedReceipt = candidateReceipt && operationReceiptMatchesJobOwnership(candidateReceipt, current) ? candidateReceipt : undefined;
+  const trustedReceipt =
+    candidateReceipt && operationReceiptMatchesJobOwnership(candidateReceipt, current) ? candidateReceipt : undefined;
   const childReference = mergeChildReferences(
     childReferenceFromJob({ ...current, result: execution.ok ? bounded?.result : current.result }),
     childReferenceFromReceipt(trustedReceipt),
@@ -222,11 +241,23 @@ async function main(): Promise<void> {
       leaseRefs: [],
     });
   } else {
-    transitionExecutionJobFromWorker(controllerHome, repoId, jobId, owner, 'failed', {
-      error: terminalError,
-      outcome: execution.outcome ?? (terminalError ? { infrastructureError: { code: terminalError.code, message: terminalError.message } } : undefined),
-      leaseRefs: [],
-    }, { error: execution.error });
+    transitionExecutionJobFromWorker(
+      controllerHome,
+      repoId,
+      jobId,
+      owner,
+      'failed',
+      {
+        error: terminalError,
+        outcome:
+          execution.outcome ??
+          (terminalError
+            ? { infrastructureError: { code: terminalError.code, message: terminalError.message } }
+            : undefined),
+        leaseRefs: [],
+      },
+      { error: execution.error },
+    );
   }
 }
 
@@ -257,13 +288,18 @@ main()
           );
         }
       }
-    } catch { /* a replacement Worker owns the Job; stale Worker must not write */ }
+    } catch {
+      /* a replacement Worker owns the Job; stale Worker must not write */
+    }
     console.error(message);
     process.exitCode = 1;
   })
   .finally(() => {
     if (heartbeat) clearInterval(heartbeat);
-    try { releaseExecutionLeases(controllerHome, repoId, jobId, claimedLeaseRefs); }
-    catch { /* the lease expired or ownership moved */ }
+    try {
+      releaseExecutionLeases(controllerHome, repoId, jobId, claimedLeaseRefs);
+    } catch {
+      /* the lease expired or ownership moved */
+    }
     refreshRepositoryProjection();
   });

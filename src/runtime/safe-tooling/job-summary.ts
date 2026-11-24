@@ -9,19 +9,16 @@ import {
   isAgentDelegationOperation,
 } from '../execution/jobs/child-reference';
 import type { SafeJobResultSummary } from './types';
-import {
-  artifactRef,
-  boundText,
-  compactErrorMessage,
-  RESPONSE_BUDGET,
-} from '../shared/response-budget';
+import { artifactRef, boundText, compactErrorMessage, RESPONSE_BUDGET } from '../shared/response-budget';
 
 type SafeErrorClass = NonNullable<SafeJobResultSummary['safeError']>['class'];
 type SafeArtifactRef = NonNullable<SafeJobResultSummary['artifactRefs']>[number];
 
 function scrubPathText(text: string, replacements: string[] = []): string {
   let output = text;
-  for (const replacement of [...new Set(replacements.filter((entry) => entry.startsWith('/')))].sort((left, right) => right.length - left.length)) {
+  for (const replacement of [...new Set(replacements.filter((entry) => entry.startsWith('/')))].sort(
+    (left, right) => right.length - left.length,
+  )) {
     output = output.split(replacement).join('<repo>');
   }
   return output
@@ -32,15 +29,26 @@ function scrubPathText(text: string, replacements: string[] = []): string {
 }
 
 function sanitizeMessage(message: string, replacements: string[] = []): string {
-  return compactErrorMessage(redactMcpText(scrubPathText(message, replacements)).text, RESPONSE_BUDGET.errorMessageChars);
+  return compactErrorMessage(
+    redactMcpText(scrubPathText(message, replacements)).text,
+    RESPONSE_BUDGET.errorMessageChars,
+  );
 }
 
 function classifyError(message: string): SafeErrorClass {
   const lowered = message.toLowerCase();
-  if (lowered.includes('playwright') && (lowered.includes('executable doesn\'t exist') || lowered.includes('install'))) return 'dependency_missing';
-  if (lowered.includes('policy') || lowered.includes('not allowed') || lowered.includes('denied')) return 'policy_denied';
+  if (lowered.includes('playwright') && (lowered.includes("executable doesn't exist") || lowered.includes('install')))
+    return 'dependency_missing';
+  if (lowered.includes('policy') || lowered.includes('not allowed') || lowered.includes('denied'))
+    return 'policy_denied';
   if (lowered.includes('confirmation') || lowered.includes('authorization')) return 'authorization_required';
-  if (lowered.includes('blocked by openai') || lowered.includes('safety checks') || lowered.includes('平台') || lowered.includes('拦截')) return 'platform_blocked';
+  if (
+    lowered.includes('blocked by openai') ||
+    lowered.includes('safety checks') ||
+    lowered.includes('平台') ||
+    lowered.includes('拦截')
+  )
+    return 'platform_blocked';
   if (lowered.includes('runtime') || lowered.includes('daemon') || lowered.includes('worker')) return 'runtime_error';
   return 'unknown';
 }
@@ -52,10 +60,14 @@ function safeString(value: unknown, maxChars: number): string | undefined {
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
-function jsonPreview(value: unknown, maxChars = 800, replacements: string[] = []): { preview: string; truncated: boolean; byteLength: number } | undefined {
+function jsonPreview(
+  value: unknown,
+  maxChars = 800,
+  replacements: string[] = [],
+): { preview: string; truncated: boolean; byteLength: number } | undefined {
   let serialized: string;
   try {
     serialized = JSON.stringify(value);
@@ -102,39 +114,71 @@ function safeTextPreview(value: unknown): Record<string, unknown> | undefined {
   if (!text) return undefined;
   const preview = safeString(text.text, 4000);
   if (preview === undefined) return undefined;
-  return { text: preview, truncated: text.truncated === true, charCount: typeof text.charCount === 'number' ? text.charCount : preview.length };
+  return {
+    text: preview,
+    truncated: text.truncated === true,
+    charCount: typeof text.charCount === 'number' ? text.charCount : preview.length,
+  };
 }
 
 function safeSessionPreview(value: unknown): Record<string, unknown> | undefined {
   const session = objectValue(value);
   if (!session) return undefined;
-  return { sessionId: safeString(session.sessionId, 120), url: safeString(session.url, 500), title: safeString(session.title, 300) };
+  return {
+    sessionId: safeString(session.sessionId, 120),
+    url: safeString(session.url, 500),
+    title: safeString(session.title, 300),
+  };
 }
 
 function safeScreenshotPreview(value: unknown): Record<string, unknown> | undefined {
   const screenshot = objectValue(value);
   if (!screenshot) return undefined;
-  return { url: safeString(screenshot.url, 500), title: safeString(screenshot.title, 300), relativePath: safeString(screenshot.relativePath, 500), bytes: typeof screenshot.bytes === 'number' ? screenshot.bytes : undefined };
+  return {
+    url: safeString(screenshot.url, 500),
+    title: safeString(screenshot.title, 300),
+    relativePath: safeString(screenshot.relativePath, 500),
+    bytes: typeof screenshot.bytes === 'number' ? screenshot.bytes : undefined,
+  };
 }
 
 function safeBrowserResultPreview(actionId: string | undefined, result: unknown): Record<string, unknown> | undefined {
   const outer = objectValue(result);
   const payload = objectValue(outer?.result) ?? outer;
   if (!payload) return undefined;
-  const session = safeSessionPreview(payload.session) ?? { sessionId: safeString(payload.sessionId, 120), url: safeString(payload.url, 500), title: safeString(payload.title, 300) };
-  const preview: Record<string, unknown> = { provider: payload.provider === 'playwright' ? 'playwright' : undefined, actionId, session, url: safeString(payload.url, 500), title: safeString(payload.title, 300), text: safeTextPreview(payload.text), screenshot: safeScreenshotPreview(payload.screenshot) };
+  const session = safeSessionPreview(payload.session) ?? {
+    sessionId: safeString(payload.sessionId, 120),
+    url: safeString(payload.url, 500),
+    title: safeString(payload.title, 300),
+  };
+  const preview: Record<string, unknown> = {
+    provider: payload.provider === 'playwright' ? 'playwright' : undefined,
+    actionId,
+    session,
+    url: safeString(payload.url, 500),
+    title: safeString(payload.title, 300),
+    text: safeTextPreview(payload.text),
+    screenshot: safeScreenshotPreview(payload.screenshot),
+  };
   return Object.fromEntries(Object.entries(preview).filter(([, value]) => value !== undefined));
 }
 
 function suggestedFixesFor(message: string, errorClass: SafeErrorClass): string[] {
   const lowered = message.toLowerCase();
   if (errorClass === 'dependency_missing' && lowered.includes('playwright')) {
-    return ['Run npx playwright install chromium in the repository.', 'Restart the controller after installing the browser binary.'];
+    return [
+      'Run npx playwright install chromium in the repository.',
+      'Restart the controller after installing the browser binary.',
+    ];
   }
-  if (errorClass === 'policy_denied') return ['Use a narrower safe-summary tool or request an explicit grant before retrying.'];
-  if (errorClass === 'authorization_required') return ['Open Approval Inbox and approve the specific action with the required confirmation level.'];
-  if (errorClass === 'platform_blocked') return ['Do not retry the same opaque call. Use parameterized safe tools or patch handoff.'];
-  if (errorClass === 'runtime_error') return ['Run capability recovery probe and apply the suggested local recovery action.'];
+  if (errorClass === 'policy_denied')
+    return ['Use a narrower safe-summary tool or request an explicit grant before retrying.'];
+  if (errorClass === 'authorization_required')
+    return ['Open Approval Inbox and approve the specific action with the required confirmation level.'];
+  if (errorClass === 'platform_blocked')
+    return ['Do not retry the same opaque call. Use parameterized safe tools or patch handoff.'];
+  if (errorClass === 'runtime_error')
+    return ['Run capability recovery probe and apply the suggested local recovery action.'];
   return ['Open the bounded job details only if the safe summary is insufficient.'];
 }
 
@@ -147,7 +191,9 @@ function enrichDelegatedDigest(
   if (!repoRoot) return digest;
   const childReference = digest.childReference ?? childReferenceFromJob(job);
   if (!hasDurableChildReference(childReference) || !childReference) return digest;
-  if (!(isAgentDelegationOperation(job.payload.operation) || job.type === 'agent-run' || job.type === 'dispatch-task')) {
+  if (
+    !(isAgentDelegationOperation(job.payload.operation) || job.type === 'agent-run' || job.type === 'dispatch-task')
+  ) {
     return digest;
   }
   try {
@@ -187,19 +233,22 @@ function enrichDelegatedDigest(
 }
 
 export function summarizeExecutionJobForMcp(job: ExecutionJob, repoRoot: string | undefined): Record<string, unknown> {
-  const payloadArguments = job.payload.arguments && typeof job.payload.arguments === 'object'
-    ? Object.keys(job.payload.arguments as Record<string, unknown>).slice(0, 12)
-    : undefined;
+  const payloadArguments =
+    job.payload.arguments && typeof job.payload.arguments === 'object'
+      ? Object.keys(job.payload.arguments as Record<string, unknown>).slice(0, 12)
+      : undefined;
   const replacements = repoRoot ? [repoRoot] : [];
   const resultPreview = job.result !== undefined ? jsonPreview(job.result, 240, replacements) : undefined;
   const artifactRefsRaw = collectArtifactRefs(job.result, job.error?.details);
-  const artifactRefs = artifactRefsRaw.map((entry) => artifactRef({
-    artifactId: entry.artifactId,
-    artifactKind: entry.artifactKind,
-    byteLength: entry.byteLength,
-    repoId: job.repoId,
-    jobId: job.jobId,
-  }));
+  const artifactRefs = artifactRefsRaw.map((entry) =>
+    artifactRef({
+      artifactId: entry.artifactId,
+      artifactKind: entry.artifactKind,
+      byteLength: entry.byteLength,
+      repoId: job.repoId,
+      jobId: job.jobId,
+    }),
+  );
   const errorDetailsAvailable = job.error?.details !== undefined;
   const rawDigest = enrichDelegatedDigest(job, buildJobOperationDigest(job), repoRoot);
   // Compact digest: drop nested suggested actions duplication; top-level keeps them once.
@@ -214,17 +263,15 @@ export function summarizeExecutionJobForMcp(job: ExecutionJob, repoRoot: string 
     jobId: rawDigest.jobId,
     requestId: rawDigest.requestId,
     errorClass: rawDigest.errorClass,
-    errorMessage: rawDigest.errorMessage
-      ? sanitizeMessage(rawDigest.errorMessage, replacements)
-      : undefined,
+    errorMessage: rawDigest.errorMessage ? sanitizeMessage(rawDigest.errorMessage, replacements) : undefined,
     rawAvailable: false,
     ...(rawDigest.childReference ? { childReference: rawDigest.childReference } : {}),
     ...(rawDigest.childRunStatus ? { childRunStatus: rawDigest.childRunStatus } : {}),
     ...(rawDigest.childLocalJobStatus ? { childLocalJobStatus: rawDigest.childLocalJobStatus } : {}),
     ...(rawDigest.delegationAccepted ? { delegationAccepted: true } : {}),
   };
-  const errorMessage = digest.errorMessage
-    ?? (job.error?.message ? sanitizeMessage(job.error.message, replacements) : undefined);
+  const errorMessage =
+    digest.errorMessage ?? (job.error?.message ? sanitizeMessage(job.error.message, replacements) : undefined);
   return {
     jobId: job.jobId,
     repoId: job.repoId,
@@ -267,52 +314,55 @@ export function summarizeExecutionJobForMcp(job: ExecutionJob, repoRoot: string 
       includeEvents: `Call get_job with job_id=${job.jobId} and include_events=true for bounded event previews.`,
       ...(artifactRefs.length
         ? {
-          artifacts: artifactRefs,
-        }
+            artifacts: artifactRefs,
+          }
         : {}),
-        rawJobStateReturned: false,
+      rawJobStateReturned: false,
     },
-    outcome: job.outcome?.infrastructureError ? {
-      infrastructureError: {
-        code: job.outcome.infrastructureError.code,
-        message: sanitizeMessage(job.outcome.infrastructureError.message, replacements),
-      },
-    } : undefined,
+    outcome: job.outcome?.infrastructureError
+      ? {
+          infrastructureError: {
+            code: job.outcome.infrastructureError.code,
+            message: sanitizeMessage(job.outcome.infrastructureError.message, replacements),
+          },
+        }
+      : undefined,
     result: resultPreview
       ? {
-        preview: resultPreview.preview,
-        truncated: resultPreview.truncated,
-        byteLength: resultPreview.byteLength,
-        next: artifactRefs.length
-          ? 'Call get_artifact with a listed artifactId (ART-...) for bounded content.'
-          : 'Result is returned only as a bounded preview in job summaries.',
-      }
+          preview: resultPreview.preview,
+          truncated: resultPreview.truncated,
+          byteLength: resultPreview.byteLength,
+          next: artifactRefs.length
+            ? 'Call get_artifact with a listed artifactId (ART-...) for bounded content.'
+            : 'Result is returned only as a bounded preview in job summaries.',
+        }
       : undefined,
-    error: job.error || errorMessage
-      ? {
-        code: job.error?.code || digest.errorClass || 'UNKNOWN_FAILURE',
-        message: errorMessage || '任务失败，但未提供详细错误信息。',
-        class: digest.errorClass || classifyError(job.error?.message || errorMessage || ''),
-        retryable: job.error?.retryable ?? false,
-        detailsAvailable: errorDetailsAvailable,
-        detailsSuppressed: errorDetailsAvailable && artifactRefs.length === 0,
-        ...(artifactRefs.length ? { artifactRefs } : {}),
-      }
-      : undefined,
+    error:
+      job.error || errorMessage
+        ? {
+            code: job.error?.code || digest.errorClass || 'UNKNOWN_FAILURE',
+            message: errorMessage || '任务失败，但未提供详细错误信息。',
+            class: digest.errorClass || classifyError(job.error?.message || errorMessage || ''),
+            retryable: job.error?.retryable ?? false,
+            detailsAvailable: errorDetailsAvailable,
+            detailsSuppressed: errorDetailsAvailable && artifactRefs.length === 0,
+            ...(artifactRefs.length ? { artifactRefs } : {}),
+          }
+        : undefined,
   };
 }
 
 export function summarizeJobResultForLowInterception(job: ExecutionJob): SafeJobResultSummary {
-  const message = job.error?.message ?? (job.outcome && typeof job.outcome === 'object' ? JSON.stringify(job.outcome) : '');
+  const message =
+    job.error?.message ?? (job.outcome && typeof job.outcome === 'object' ? JSON.stringify(job.outcome) : '');
   const errorClass = message ? classifyError(message) : undefined;
-  const payloadArguments = job.payload.arguments && typeof job.payload.arguments === 'object'
-    ? job.payload.arguments as Record<string, unknown>
-    : {};
+  const payloadArguments =
+    job.payload.arguments && typeof job.payload.arguments === 'object'
+      ? (job.payload.arguments as Record<string, unknown>)
+      : {};
   const pluginId = typeof payloadArguments.pluginId === 'string' ? payloadArguments.pluginId : undefined;
   const actionId = typeof payloadArguments.actionId === 'string' ? payloadArguments.actionId : undefined;
-  const resultPreview = pluginId === 'browser'
-    ? safeBrowserResultPreview(actionId, job.result)
-    : undefined;
+  const resultPreview = pluginId === 'browser' ? safeBrowserResultPreview(actionId, job.result) : undefined;
   const artifactRefs = collectArtifactRefs(job.result, job.error?.details);
   return {
     jobId: job.jobId,
@@ -321,16 +371,21 @@ export function summarizeJobResultForLowInterception(job: ExecutionJob): SafeJob
     type: job.type,
     operation: job.payload.operation,
     ...(pluginId || actionId ? { plugin: { pluginId, actionId } } : {}),
-    safeError: message && errorClass ? {
-      code: job.error?.code,
-      class: errorClass,
-      retryable: job.error?.retryable,
-      message: sanitizeMessage(message),
-      suggestedFixes: suggestedFixesFor(message, errorClass),
-    } : undefined,
+    safeError:
+      message && errorClass
+        ? {
+            code: job.error?.code,
+            class: errorClass,
+            retryable: job.error?.retryable,
+            message: sanitizeMessage(message),
+            suggestedFixes: suggestedFixesFor(message, errorClass),
+          }
+        : undefined,
     resultAvailable: job.result !== undefined,
     ...(resultPreview ? { resultPreview } : {}),
-    ...(artifactRefs.length ? { artifactRefs, detailPointers: { artifacts: artifactRefs, rawJobStateReturned: false } } : {}),
+    ...(artifactRefs.length
+      ? { artifactRefs, detailPointers: { artifacts: artifactRefs, rawJobStateReturned: false } }
+      : {}),
     redaction: {
       rawStdoutReturned: false,
       rawStderrReturned: false,

@@ -61,7 +61,8 @@ export function leadingErrorCode(message: string, fallback: string): string {
 }
 
 /** Prevent recursive JSON dumps inside error.message. */
-export function compactErrorMessage(error: unknown, maxChars = RESPONSE_BUDGET.errorMessageChars): string {  if (error instanceof Error) {
+export function compactErrorMessage(error: unknown, maxChars = RESPONSE_BUDGET.errorMessageChars): string {
+  if (error instanceof Error) {
     const message = error.message?.trim() || error.name || 'Error';
     if (looksLikeSerializedJson(message)) {
       return boundText(summarizeSerializedJson(message), maxChars);
@@ -95,16 +96,22 @@ function summarizeSerializedJson(value: string): string {
     const parsed = JSON.parse(value) as unknown;
     if (!parsed || typeof parsed !== 'object') return boundText(value, 200);
     const record = parsed as Record<string, unknown>;
-    const code = typeof record.code === 'string'
-      ? record.code
-      : (record.error && typeof record.error === 'object' && typeof (record.error as { code?: unknown }).code === 'string'
-        ? String((record.error as { code: string }).code)
-        : undefined);
-    const message = typeof record.message === 'string'
-      ? record.message
-      : (record.error && typeof record.error === 'object' && typeof (record.error as { message?: unknown }).message === 'string'
-        ? String((record.error as { message: string }).message)
-        : undefined);
+    const code =
+      typeof record.code === 'string'
+        ? record.code
+        : record.error &&
+            typeof record.error === 'object' &&
+            typeof (record.error as { code?: unknown }).code === 'string'
+          ? String((record.error as { code: string }).code)
+          : undefined;
+    const message =
+      typeof record.message === 'string'
+        ? record.message
+        : record.error &&
+            typeof record.error === 'object' &&
+            typeof (record.error as { message?: unknown }).message === 'string'
+          ? String((record.error as { message: string }).message)
+          : undefined;
     const jobId = typeof record.jobId === 'string' ? record.jobId : undefined;
     const parts = [
       code ? `code=${code}` : undefined,
@@ -164,9 +171,7 @@ export function compactCommandOutput(
     if (bound.truncated) out.stdoutTruncated = true;
   }
   if (typeof stderr === 'string' && stderr.length > 0) {
-    const failureBudget = options.ok === false
-      ? Math.max(maxInline, RESPONSE_BUDGET.failureBytes / 2)
-      : maxInline;
+    const failureBudget = options.ok === false ? Math.max(maxInline, RESPONSE_BUDGET.failureBytes / 2) : maxInline;
     const bound = boundUtf8(stderr, failureBudget);
     out.stderr = bound.text;
     out.stderrBytes = bound.byteLength;
