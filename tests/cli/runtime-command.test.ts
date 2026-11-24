@@ -298,6 +298,10 @@ describe('runtime command surface', () => {
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
     expect(runtimeTools).not.toContain('cli/mcp/keepalive');
     expect(runtimeObservation).not.toContain('cli/local-bridge/job-store');
+    expect(runtimeObservation).toContain("includeRecentEvents: variant !== 'summary'");
+    const taskLedgerSource = readFileSync(join(ROOT, 'src/cli/controller/task-ledger.ts'), 'utf8');
+    expect(taskLedgerSource).toContain('options.includeRecentEvents === false');
+    expect(taskLedgerSource).toContain('cutover.repoId ? { controllerHome: cutover.controllerHome, repoId: cutover.repoId } : undefined');
     const readinessStart = runtimeObservation.indexOf("case 'controller_ready':");
     const readinessEnd = runtimeObservation.indexOf("case 'repository_runtime_snapshot':", readinessStart);
     const readinessBlock = runtimeObservation.slice(readinessStart, readinessEnd);

@@ -905,7 +905,12 @@ export async function callRuntimeObservationAdapter(
           const board = legacyIssuesRetired ? undefined : projectBoard(repository.canonicalRoot);
           markPhase('build.task_board', taskBoardStartedAt);
           const taskLedgerStartedAt = performance.now();
-          const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot, board);
+          const taskLedger = buildControllerTaskLedgerProjection(
+            repository.canonicalRoot,
+            board,
+            undefined,
+            { includeRecentEvents: variant !== 'summary' },
+          );
           markPhase('build.task_ledger', taskLedgerStartedAt);
           markPhase('build.task_state', taskStateStartedAt);
           const readinessStartedAt = performance.now();
