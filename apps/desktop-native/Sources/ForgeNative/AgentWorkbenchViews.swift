@@ -265,8 +265,7 @@ struct AgentPane: View {
                     selected: selectedWorkSurface, available: availableWorkSurfaces))
             }
         } label: {
-            Image(systemName:"sidebar.right")
-                .forgeChromeIcon(active:workSurfaceVisible)
+            ForgeGlyph(.inspector, active:workSurfaceVisible)
                 .forgeChromeSurface(selected:workSurfaceVisible,cornerRadius:8)
         }
         .buttonStyle(.plain)
@@ -300,10 +299,7 @@ struct AgentPane: View {
                     workSurfaceMaximized.toggle()
                 }
             } label: {
-                Image(systemName:workSurfaceMaximized
-                      ? "arrow.down.right.and.arrow.up.left"
-                      : "arrow.up.left.and.arrow.down.right")
-                    .forgeChromeIcon()
+                ForgeGlyph(workSurfaceMaximized ? .restore : .expand)
                     .forgeChromeSurface(cornerRadius:8)
             }
             .buttonStyle(.plain)
@@ -311,8 +307,7 @@ struct AgentPane: View {
             .accessibilityLabel(workSurfaceMaximized ? "还原工作面板" : "扩展工作面板")
             .accessibilityIdentifier("agent.work-surface.maximize")
             Button { closeWorkSurface() } label: {
-                Image(systemName:"xmark")
-                    .forgeChromeIcon()
+                ForgeGlyph(.close)
                     .forgeChromeSurface(cornerRadius:8)
             }
             .buttonStyle(.plain)
@@ -574,8 +569,7 @@ struct AgentPane: View {
                                             Button {
                                                 copyAgentText(message.text)
                                             } label: {
-                                                Image(systemName:"doc.on.doc")
-                                                    .forgeChromeIcon()
+                                                ForgeGlyph(.copy)
                                             }
                                             .buttonStyle(.plain)
                                             .help("复制完整回复")
@@ -895,8 +889,8 @@ struct AgentPane: View {
                     Button {
                         openWorkSurface(.capabilities)
                     } label: {
-                        Image(systemName:"sparkles.rectangle.stack")
-                            .forgeChromeIcon(active:workSurfaceVisible && selectedWorkSurface == .capabilities)
+                        ForgeGlyph(.capabilities, active:workSurfaceVisible && selectedWorkSurface == .capabilities)
+                            .forgeChromeSurface(selected:workSurfaceVisible && selectedWorkSurface == .capabilities,cornerRadius:8)
                     }
                     .buttonStyle(.plain)
                     .help("Agent 能力与扩展")
@@ -918,6 +912,7 @@ struct AgentPane: View {
                         }
                         .disabled(!model.selectedProviderSupportsImages)
                     } label: {
+                        // Native Menu requires an image-backed label on macOS.
                         Image(systemName:"paperclip").forgeChromeIcon()
                     }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden)
@@ -996,7 +991,8 @@ struct AgentPane: View {
                             voiceBaseDraft = model.draft
                             Task { await voiceDictation.start() }
                         } label: {
-                            Image(systemName:"mic").forgeChromeIcon()
+                            ForgeGlyph(.microphone)
+                                .forgeChromeSurface(cornerRadius:8)
                         }
                         .buttonStyle(.plain)
                         .disabled(model.busy || model.zenRefinementActive)
@@ -1007,7 +1003,8 @@ struct AgentPane: View {
 
                     if model.busy || model.zenRefinementActive {
                         Button { Task { await model.cancel() } } label: {
-                            Image(systemName:"stop.fill").forgeChromeIcon()
+                            ForgeGlyph(.stop, active:true)
+                                .forgeChromeSurface(cornerRadius:8)
                         }
                         .buttonStyle(.plain)
                         .keyboardShortcut(.escape,modifiers:[])
@@ -1026,8 +1023,9 @@ struct AgentPane: View {
                             guard !voiceDictation.blocksSend else { return }
                             Task { await model.send() }
                         } label: {
-                            Image(systemName:"arrow.up")
-                                .font(.system(size:11.5,weight:.semibold))
+                            ForgeGlyphShape(kind:.send)
+                                .stroke(style:StrokeStyle(lineWidth:1.5,lineCap:.round,lineJoin:.round))
+                                .frame(width:15,height:15)
                                 .foregroundStyle(sendDisabled
                                                  ? ForgePalette.secondary.opacity(0.50)
                                                  : Color.black.opacity(0.88))

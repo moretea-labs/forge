@@ -16,8 +16,8 @@ enum ForgePalette {
         : NSColor.labelColor
     })
   // Selection and hover are light floating washes, not opaque rows.
-  static let selection = Color.white.opacity(0.045)
-  static let selectionStrong = Color.white.opacity(0.072)
+  static let selection = Color(nsColor: .labelColor).opacity(0.085)
+  static let selectionStrong = Color(nsColor: .labelColor).opacity(0.12)
   static let userBubble = Color.white.opacity(0.032)
   static let raisedSurface = Color.white.opacity(0.040)
   static let softFill = Color.white.opacity(0.022)
@@ -39,11 +39,12 @@ enum ForgePalette {
 extension ForgeClientDesign {
   /// One optical size for chrome icons (rail / window toolbar / sidebar / composer).
   enum Icon {
-    static let point: CGFloat = 13
-    static let railPoint: CGFloat = 15
-    static let railLabel: CGFloat = 9
-    static let hit: CGFloat = 28
-    static let weight: Font.Weight = .medium
+    static let point: CGFloat = 14
+    static let railPoint: CGFloat = 17
+    static let railGlyphHeight: CGFloat = 22
+    static let railLabel: CGFloat = 10
+    static let hit: CGFloat = 30
+    static let weight: Font.Weight = .regular
     static var font: Font { .system(size: point, weight: weight) }
     static var railFont: Font { .system(size: railPoint, weight: weight) }
     static var railLabelFont: Font { .system(size: railLabel, weight: .regular) }
@@ -55,7 +56,7 @@ extension Image {
   func forgeChromeIcon(active: Bool = false) -> some View {
     self
       .font(ForgeClientDesign.Icon.font)
-      .symbolRenderingMode(.hierarchical)
+      .symbolRenderingMode(.monochrome)
       .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
       .frame(width: ForgeClientDesign.Icon.hit, height: ForgeClientDesign.Icon.hit)
       .contentShape(Rectangle())
@@ -63,29 +64,26 @@ extension Image {
 
   func forgeRailIcon(active: Bool) -> some View {
     self
-      .font(
-        .system(
-          size: ForgeClientDesign.Icon.railPoint,
-          weight: active ? .semibold : ForgeClientDesign.Icon.weight)
-      )
-      .symbolRenderingMode(.hierarchical)
+      .font(ForgeClientDesign.Icon.railFont)
+      .symbolRenderingMode(.monochrome)
       .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
-      .frame(height: 18)
+      .frame(width: 24, height: ForgeClientDesign.Icon.railGlyphHeight)
   }
 }
 
 /// Quiet hover feedback for plain list/starter buttons.
 struct ForgeHoverFill: ViewModifier {
   var cornerRadius: CGFloat = 7
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var hovering = false
   func body(content: Content) -> some View {
     content
       .background(
-        hovering ? ForgePalette.softFill : .clear,
+        hovering ? ForgePalette.selection.opacity(0.65) : .clear,
         in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
       )
       .onHover { hovering = $0 }
-      .animation(.easeOut(duration: 0.12), value: hovering)
+      .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
   }
 }
 
@@ -94,6 +92,7 @@ struct ForgeHoverFill: ViewModifier {
 struct ForgeChromeSurface: ViewModifier {
   let selected: Bool
   var cornerRadius: CGFloat = 9
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var hovering = false
 
   func body(content: Content) -> some View {
@@ -101,11 +100,11 @@ struct ForgeChromeSurface: ViewModifier {
       .background(
         selected
           ? ForgePalette.selection
-          : (hovering ? ForgePalette.softFill : .clear),
+          : (hovering ? ForgePalette.selection.opacity(0.65) : .clear),
         in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
       )
       .onHover { hovering = $0 }
-      .animation(.easeOut(duration: 0.12), value: hovering)
+      .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
   }
 }
 
@@ -283,7 +282,7 @@ enum ForgeClientDesign {
     static let workSurfaceMin: CGFloat = 360
     /// Centered reading column shared by transcript and composer (Cursor/Claude style).
     static let readingColumn: CGFloat = 760
-    static let destinationRowHeight: CGFloat = 42
+    static let destinationRowHeight: CGFloat = 46
     static let threadRowHeight: CGFloat = 30
     static let sessionTitle: Font = .system(size: 13.5, weight: .semibold)
     static let sidebarTitle: Font = .system(size: 11, weight: .medium)

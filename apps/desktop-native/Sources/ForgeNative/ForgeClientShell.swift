@@ -175,8 +175,7 @@ struct ForgeWorkspaceView: View {
     private var unifiedWindowToolbarActions: some View {
         if model.canNavigateBack {
             Button { model.goBack() } label: {
-                Image(systemName:"chevron.left")
-                    .forgeChromeIcon()
+                ForgeGlyph(.back)
                     .forgeChromeSurface(cornerRadius:8)
             }
             .buttonStyle(.plain)
@@ -191,7 +190,7 @@ struct ForgeWorkspaceView: View {
                     ProgressView().controlSize(.mini)
                         .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
                 } else {
-                    Image(systemName:"arrow.clockwise").forgeChromeIcon()
+                    ForgeGlyph(.refresh)
                 }
             }
             .forgeChromeSurface(cornerRadius:8)
@@ -235,12 +234,10 @@ struct ForgeWorkspaceView: View {
         return Button {
             openSidebarDestination(destination)
         } label: {
-            VStack(spacing:3) {
-                Image(systemName:destination.symbol)
-                    .forgeRailIcon(active:selected)
+            VStack(spacing:2) {
+                ForgeGlyph(destination.glyph, role:.rail, active:selected)
                 Text(destination.title)
-                    .font(.system(size:ForgeClientDesign.Icon.railLabel,
-                                  weight:selected ? .semibold : .regular))
+                    .font(ForgeClientDesign.Icon.railLabelFont)
                     .lineLimit(1)
             }
             .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
@@ -473,7 +470,8 @@ struct ForgeWorkspaceView: View {
                     model.show(.agent)
                     model.newThread()
                 } label: {
-                    Image(systemName:"square.and.pencil").forgeChromeIcon()
+                    ForgeGlyph(.compose)
+                        .forgeChromeSurface(cornerRadius:8)
                 }
                 .buttonStyle(.plain)
                 .disabled(model.busy || model.zenRefinementActive)
@@ -482,7 +480,8 @@ struct ForgeWorkspaceView: View {
                 .accessibilityIdentifier("sidebar.thread.new")
 
                 Button { model.toggleConversationSearch() } label: {
-                    Image(systemName:model.showSearch ? "xmark" : "magnifyingglass").forgeChromeIcon()
+                    ForgeGlyph(model.showSearch ? .close : .search, active:model.showSearch)
+                        .forgeChromeSurface(selected:model.showSearch,cornerRadius:8)
                 }
                 .buttonStyle(.plain)
                 .help(model.showSearch ? "关闭会话搜索 (Esc)" : "搜索全部会话 (⌘K)")
@@ -494,7 +493,7 @@ struct ForgeWorkspaceView: View {
                     if inboxShown { Task { await model.loadUserRequests() } }
                 } label: {
                     ZStack(alignment:.topTrailing) {
-                        Image(systemName:"tray").forgeChromeIcon()
+                        ForgeGlyph(.inbox, active:inboxShown)
                         if !model.relevantUserRequests.isEmpty {
                             let visibleCount = model.relevantUserRequests.count
                             let exactCount = model.userRequestsTotalCount
@@ -508,6 +507,7 @@ struct ForgeWorkspaceView: View {
                         }
                     }
                     .contentShape(Rectangle())
+                    .forgeChromeSurface(selected:inboxShown,cornerRadius:8)
                 }
                 .buttonStyle(.plain)
                 .help("待处理请求")

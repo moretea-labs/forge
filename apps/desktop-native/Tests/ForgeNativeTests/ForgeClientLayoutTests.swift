@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 @testable import ForgeNative
@@ -25,6 +26,30 @@ final class ForgeClientLayoutTests: XCTestCase {
     let before = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1259)
     let after = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1260)
     XCTAssertEqual(after - before, 0.21, accuracy: 0.001)
+  }
+
+  func testChromeIconMetricsAndNavigationSymbolsAreConsistent() {
+    XCTAssertEqual(ForgeClientDesign.Icon.point, 14)
+    XCTAssertEqual(ForgeClientDesign.Icon.hit, 30)
+    XCTAssertEqual(ForgeClientDesign.Icon.railPoint, 17)
+    XCTAssertEqual(ForgeClientDesign.Icon.railLabel, 10)
+    XCTAssertEqual(ForgeClientDesign.Shell.destinationRowHeight, 46)
+    let glyphs = ForgeSidebarDestination.allCases.map(\.glyph)
+    XCTAssertEqual(Set(glyphs).count, glyphs.count)
+    XCTAssertEqual(glyphs, [.chat, .folder, .board, .tasks, .library, .analytics, .settings])
+  }
+
+  func testEveryCustomGlyphFitsTheSharedOutlineGrid() {
+    for glyph in ForgeGlyphKind.allCases {
+      for size: CGFloat in [16, 18, 22, 24] {
+        let rect = CGRect(x: 0, y: 0, width: size, height: size)
+        let path = ForgeGlyphShape(kind: glyph).path(in: rect)
+        XCTAssertFalse(path.isEmpty, glyph.rawValue)
+        XCTAssertTrue(rect.contains(path.boundingRect), glyph.rawValue)
+        XCTAssertGreaterThan(path.boundingRect.width, size * 0.2, glyph.rawValue)
+        XCTAssertGreaterThan(path.boundingRect.height, size * 0.2, glyph.rawValue)
+      }
+    }
   }
 
   func testHeaderAndReadingGutterHaveSharedMetrics() {

@@ -53,15 +53,15 @@ enum ForgeSidebarDestination: String, CaseIterable {
     }
   }
 
-  var symbol: String {
+  var glyph: ForgeGlyphKind {
     switch self {
-    case .agent: return "bubble.left.and.bubble.right"
-    case .projects: return "folder"
-    case .workbench: return "rectangle.split.3x1"
-    case .automations: return "clock.arrow.circlepath"
-    case .resources: return "photo.on.rectangle"
-    case .analytics: return "chart.bar"
-    case .settings: return "gearshape"
+    case .agent: return .chat
+    case .projects: return .folder
+    case .workbench: return .board
+    case .automations: return .tasks
+    case .resources: return .library
+    case .analytics: return .analytics
+    case .settings: return .settings
     }
   }
 
