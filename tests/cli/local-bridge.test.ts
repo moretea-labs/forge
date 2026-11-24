@@ -33,7 +33,8 @@ import {
   runControllerCheckAsync,
 } from '../../src/runtime/execution/process-runtime/check-runner';
 import { FORGE_TOOL_SURFACE } from '../../src/runtime/shared/runtime-config';
-import { createIssue, getIssue, updateTask } from '../../src/cli/controller/issue-store';
+import { getIssue, updateTask } from '../../src/cli/controller/issue-store';
+import { writeLegacyIssueFixture } from '../helpers/legacy-issue-fixture';
 import {
   readWorkflowRun,
   workflowInputDigest,
@@ -700,7 +701,7 @@ describe('Local Execution Bridge', () => {
 
   test('startup reconciliation detects Worker PID reuse without killing the unrelated process', async () => {
     const root = repo();
-    const issue = createIssue(root, {
+    const issue = writeLegacyIssueFixture(root, {
       title: 'Orphaned worker',
       tasks: [
         {
@@ -789,7 +790,7 @@ describe('Local Execution Bridge', () => {
 
   test('startup reconciliation fail-closes a running Run that lost ownership metadata', async () => {
     const root = repo();
-    const issue = createIssue(root, {
+    const issue = writeLegacyIssueFixture(root, {
       title: 'Missing run ownership',
       tasks: [
         {
@@ -875,7 +876,7 @@ describe('Local Execution Bridge', () => {
 
   test('serves V5 governance and read paths while retiring legacy Issue mutations', async () => {
     const root = repo();
-    const issue = createIssue(root, {
+    const issue = writeLegacyIssueFixture(root, {
       title: 'V5 API surface',
       summary: 'Expose progress and evidence.',
       goals: ['Inspect one Task.'],

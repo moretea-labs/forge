@@ -10,7 +10,8 @@ import {
   prepareRequirementPortfolioMigration,
 } from '../../src/cli/controller/requirement-portfolio-migration';
 import { createRequirement, listRequirements } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { createIssue, projectBoard, updateIssue } from '../../src/cli/controller/issue-store';
+import { projectBoard, updateIssue } from '../../src/cli/controller/issue-store';
+import { writeLegacyIssueFixture } from '../helpers/legacy-issue-fixture';
 import { clearCurrentIssue, saveControllerProjectState } from '../../src/cli/controller/project-state';
 import { migratedTaskCompletionState, recordMigratedTaskCompletion } from '../../src/cli/controller/legacy-issue-cutover';
 import { exportRequirementPortfolio } from '../../src/cli/controller/requirement-portfolio-export';
@@ -188,7 +189,7 @@ describe('Requirement portfolio migration', () => {
       process.env.FORGE_CONTROLLER_HOME = controllerHome;
       mkdirSync(join(repoRoot, '.ai', 'harness'), { recursive: true });
       writeFileSync(join(repoRoot, '.ai', 'harness', 'repository.json'), `${JSON.stringify({ schemaVersion: 1, repoId: REPO_ID }, null, 2)}\n`, 'utf8');
-      const legacyIssue = createIssue(repoRoot, {
+      const legacyIssue = writeLegacyIssueFixture(repoRoot, {
         title: 'Legacy writable fixture',
         kind: 'feature',
         summary: 'This file becomes frozen history after cutover.',
@@ -200,7 +201,6 @@ describe('Requirement portfolio migration', () => {
 
       applyRequirementPortfolioMigration(input(controllerHome));
       expect(() => updateIssue(repoRoot, legacyIssue.id, { summary: 'Refused mutation.' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
-      expect(() => createIssue(repoRoot, { title: 'Refused new durable Issue', kind: 'bug' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
       expect(() => projectBoard(repoRoot)).toThrow('LEGACY_PROJECT_BOARD_RETIRED');
       expect(() => saveControllerProjectState(repoRoot, { currentIssueId: legacyIssue.id })).toThrow('LEGACY_CURRENT_ISSUE_RETIRED');
       expect(clearCurrentIssue(repoRoot).currentIssueId).toBeUndefined();

@@ -1050,10 +1050,7 @@ describe('final SQLite control-plane cutover', () => {
     ]) {
       expect(issueStore).not.toContain(`export function ${retired}`);
     }
-    const createStart = issueStore.indexOf('export function createIssue');
-    expect(issueStore.slice(createStart, createStart + 900)).toContain(
-      'if (!input.ephemeral) assertLegacyIssueWritesAllowed(repoRoot)',
-    );
+    expect(issueStore).not.toContain('export function createIssue');
 
     const exportSource = readFileSync(
       join(process.cwd(), 'src/cli/controller/requirement-portfolio-export.ts'),

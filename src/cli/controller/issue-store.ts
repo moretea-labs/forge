@@ -1,4 +1,3 @@
-import { randomBytes } from 'crypto';
 import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join, sep } from 'path';
@@ -7,18 +6,16 @@ import type {
   ControllerIssue,
   ControllerTask,
   GitHubIssueLink,
-  IssueKind,
   IssueReadiness,
   IssueReadinessFinding,
   IssueStatus,
-  TaskDraft,
   TaskStatus,
   TaskVerification,
   TaskReadiness,
 } from './types';
 import type { ControllerAgent } from '../../runtime/agents/types';
 import { clearCurrentIssue, loadControllerProjectState, saveControllerProjectState } from './project-state';
-import { readActiveRunEvidence, readIssueRunEvidence, readTaskRunEvidence } from './run-evidence';
+import { readIssueRunEvidence, readTaskRunEvidence } from './run-evidence';
 import {
   resolveEffectiveTaskState,
   resolveIssueLifecycleStatus,
@@ -28,7 +25,6 @@ import {
 import { tryAppendControllerWorklogEvent } from '../../runtime/evidence/controller-worklog';
 import {
   completionEvidenceComplete,
-  executionScopesConflict,
   taskExecutionPolicy,
   verificationEvidencePassed,
 } from './execution-policy';
@@ -61,14 +57,6 @@ function slugify(value: string): string {
       .replace(/^-+|-+$/g, '')
       .slice(0, 64) || 'issue'
   );
-}
-
-function dateStamp(date = new Date()): string {
-  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
-}
-
-function issueId(): string {
-  return `ISS-${dateStamp()}-${randomBytes(3).toString('hex').toUpperCase()}`;
 }
 
 function normalizeStrings(value: unknown): string[] {
@@ -369,26 +357,6 @@ function effectiveTaskState(repoRoot: string, issue: ControllerIssue, task: Cont
   return resolveEffectiveTaskState({ issue, task, runs: readTaskRunEvidence(repoRoot, task) });
 }
 
-function taskFromDraft(id: string, draft: TaskDraft, now: string): ControllerTask {
-  return {
-    id,
-    title: String(draft.title ?? '').trim() || id,
-    objective: String(draft.objective ?? '').trim() || 'Complete the scoped task.',
-    status: (draft.dependsOn?.length ?? 0) > 0 ? 'planned' : 'ready',
-    dependsOn: normalizeStrings(draft.dependsOn),
-    allowedPaths: normalizeStrings(draft.allowedPaths),
-    forbiddenPaths: normalizeStrings(draft.forbiddenPaths),
-    checks: normalizeStrings(draft.checks),
-    acceptanceCriteria: normalizeStrings(draft.acceptanceCriteria),
-    risk: draft.risk ?? 'medium',
-    recommendedAgent: draft.recommendedAgent,
-    notes: [],
-    runIds: [],
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
 function validateTaskGraph(tasks: ControllerTask[]): void {
   const ids = new Set(tasks.map((task) => task.id));
   for (const task of tasks) {
@@ -411,17 +379,10 @@ function validateTaskGraph(tasks: ControllerTask[]): void {
   for (const task of tasks) visit(task.id);
 }
 
-function buildTasks(drafts: TaskDraft[], now = new Date().toISOString()): ControllerTask[] {
-  const tasks = drafts.map((draft, index) => taskFromDraft(`T${index + 1}`, draft, now));
-  validateTaskGraph(tasks);
-  return tasks;
-}
-
 type TaskReadinessOptions = {
   approveRisk?: boolean;
   approveDestructive?: boolean;
   retryFromRunId?: string;
-  activeRuns?: ReturnType<typeof readActiveRunEvidence>;
 };
 
 function buildTaskReadiness(
@@ -450,25 +411,6 @@ function buildTaskReadiness(
     add('MULTIPLE_ACTIVE_RUNS', 'blocker', `Task has multiple active Runs: ${state.activeRunIds.join(', ')}.`);
   else if (state.activeRunIds.length > 0)
     add('ACTIVE_RUN_CONFLICT', 'blocker', `Task already has active Run evidence: ${state.activeRunIds.join(', ')}.`);
-
-  if (policy.executionClass !== 'read_only' && task.allowedPaths.length > 0) {
-    for (const run of options.activeRuns ?? readActiveRunEvidence(repoRoot)) {
-      if (run.issueId === issue.id && run.taskId === task.id) continue;
-      if (!run.executionClass || !run.allowedPaths) continue;
-      if (
-        !executionScopesConflict(
-          { executionClass: policy.executionClass, allowedPaths: task.allowedPaths },
-          { executionClass: run.executionClass, allowedPaths: run.allowedPaths },
-        )
-      )
-        continue;
-      add(
-        'ACTIVE_SCOPE_CONFLICT',
-        'blocker',
-        `Declared write scope overlaps active Run ${run.runId} (${run.issueId}/${run.taskId}).`,
-      );
-    }
-  }
 
   const retryAuthorized =
     state.requiresExplicitRetry && state.retryable && options.retryFromRunId === state.latestRunId;
@@ -555,7 +497,6 @@ function refreshReadiness(repoRoot: string, issue: ControllerIssue): void {
   if (issue.archivedAt || issue.status === 'cancelled') return;
 
   const states = resolveIssueTaskStates(issue, readIssueRunEvidence(repoRoot, issue));
-  const activeRuns = readActiveRunEvidence(repoRoot);
   for (const task of issue.tasks) {
     const state = states.get(task.id)!;
     if (state.terminal || state.inactive || state.requiresExplicitRetry || state.activeRunIds.length > 0) continue;
@@ -564,7 +505,6 @@ function refreshReadiness(repoRoot: string, issue: ControllerIssue): void {
       // Readiness status reflects executable work, while high-risk confirmation is supplied at dispatch time.
       approveRisk: true,
       approveDestructive: false,
-      activeRuns,
     });
     const transitionalBlockerCodes = new Set(['TASK_NOT_DISPATCHABLE']);
     const nonApprovalBlockers = readiness.blockers.filter(
@@ -612,98 +552,11 @@ function refreshReadiness(repoRoot: string, issue: ControllerIssue): void {
         buildTaskReadiness(repoRoot, issue, task, refreshedStates, {
           approveRisk: true,
           approveDestructive: true,
-          activeRuns,
         }).ready,
     );
     issue.status = executable || active.length > 0 ? 'planned' : 'launch_blocked';
   }
 }
-export function createIssue(
-  repoRoot: string,
-  input: {
-    title: string;
-    kind?: IssueKind;
-    summary?: string;
-    goals?: string[];
-    nonGoals?: string[];
-    acceptanceCriteria?: string[];
-    relatedArtifacts?: string[];
-    tasks?: TaskDraft[];
-    allowWhileFocused?: boolean;
-    allowDuplicate?: boolean;
-    allowWhenPaused?: boolean;
-    ephemeral?: boolean;
-    ephemeralOwnerJobId?: string;
-  },
-): ControllerIssue {
-  if (!input.ephemeral) assertLegacyIssueWritesAllowed(repoRoot);
-  const title = input.title.trim();
-  if (!title) throw new Error('issue title is required');
-  const projectState = loadControllerProjectState(repoRoot);
-  const existingIssues = listIssues(repoRoot);
-  const normalizedTitle = title.toLowerCase().replace(/[^a-z0-9\u3400-\u9fff]+/g, '');
-  const duplicate = existingIssues.find(
-    (entry) =>
-      !entry.archivedAt &&
-      !['done', 'cancelled'].includes(entry.status) &&
-      entry.title.toLowerCase().replace(/[^a-z0-9\u3400-\u9fff]+/g, '') === normalizedTitle,
-  );
-  // Duplicate and focus signals are governance hints, not execution gates.
-  const duplicateHint = !input.ephemeral && duplicate && !input.allowDuplicate ? duplicate.id : undefined;
-  if (!input.ephemeral && projectState.issueCreationMode === 'paused' && !input.allowWhenPaused) {
-    throw new Error('Issue creation is paused; resume the creation policy or explicitly override it');
-  }
-  const activeExisting = existingIssues.filter(
-    (entry) => !entry.archivedAt && !['done', 'cancelled'].includes(entry.status),
-  );
-  const focused = projectState.currentIssueId
-    ? activeExisting.find((entry) => entry.id === projectState.currentIssueId)
-    : undefined;
-  // focus_only is retained as a UI preference only. Multiple active Issues do not block creation or execution.
-  const now = new Date().toISOString();
-  const issue: ControllerIssue = {
-    schemaVersion: 5,
-    id: issueId(),
-    title,
-    slug: slugify(title),
-    kind: input.kind ?? 'feature',
-    status: input.tasks?.length ? 'planned' : 'analysis',
-    summary: input.summary?.trim() ?? '',
-    goals: normalizeStrings(input.goals),
-    nonGoals: normalizeStrings(input.nonGoals),
-    acceptanceCriteria: normalizeStrings(input.acceptanceCriteria),
-    relatedArtifacts: normalizeStrings(input.relatedArtifacts),
-    tasks: buildTasks(input.tasks ?? [], now),
-    ...(input.ephemeral
-      ? { ephemeral: true, ephemeralOwnerJobId: input.ephemeralOwnerJobId?.trim() || undefined }
-      : {}),
-    createdAt: now,
-    updatedAt: now,
-  };
-  refreshReadiness(repoRoot, issue);
-  const written = writeIssue(repoRoot, issue);
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: 'issue',
-    action: 'issue_created',
-    summary: `Created ${issue.id}: ${issue.title}`,
-    issueId: issue.id,
-    statusTo: issue.status,
-    details: {
-      kind: issue.kind,
-      taskCount: issue.tasks.length,
-      creationPolicy: projectState.issueCreationMode,
-      policyOverride: Boolean(input.allowWhileFocused || input.allowWhenPaused || input.allowDuplicate),
-      ephemeral: Boolean(input.ephemeral),
-      duplicateHint,
-      focusIsInformational: true,
-    },
-  });
-  if (!input.ephemeral && !focused && activeExisting.length === 0 && !['done', 'cancelled'].includes(issue.status)) {
-    saveControllerProjectState(repoRoot, { currentIssueId: issue.id }, 'issue-creation-policy');
-  }
-  return written;
-}
-
 export function updateIssue(
   repoRoot: string,
   id: string,
@@ -891,13 +744,12 @@ export function inspectIssueReadiness(repoRoot: string, issueIdValue: string): I
     );
   }
 
-  const activeRuns = readActiveRunEvidence(repoRoot);
   const taskReadiness = issue.tasks
     .filter((task) => {
       const state = states.get(task.id)!;
       return !state.terminal && !state.inactive;
     })
-    .map((task) => buildTaskReadiness(repoRoot, issue, task, states, { activeRuns }));
+    .map((task) => buildTaskReadiness(repoRoot, issue, task, states));
   const readyTasks = taskReadiness.filter((entry) => entry.ready);
   const queueableTasks = taskReadiness.filter((entry) => entry.queueable);
   const agents: Record<ControllerAgent, number> = { codex: 0, claude: 0, 'github-copilot': 0 };
@@ -929,7 +781,6 @@ export function inspectIssueReadiness(repoRoot: string, issueIdValue: string): I
     approvalPendingTaskIds: queueableTasks.filter((entry) => !entry.approvalSatisfied).map((entry) => entry.taskId),
     blockedTaskIds: taskReadiness.filter((entry) => !entry.queueable).map((entry) => entry.taskId),
     taskReadiness,
-    suggestedMaxParallel: Math.max(1, Math.min(3, queueableTasks.length || 1)),
     agents,
   };
 }
@@ -1108,7 +959,6 @@ export function projectBoard(repoRoot: string): {
   const statesByIssue = new Map<string, Map<string, ReturnType<typeof resolveEffectiveTaskState>>>();
   const runsByIssue = new Map<string, Map<string, ReturnType<typeof readTaskRunEvidence>>>();
   const readinessByTask = new Map<string, TaskReadiness>();
-  const activeRuns = readActiveRunEvidence(repoRoot);
   for (const issue of issues) {
     const runEvidence = readIssueRunEvidence(repoRoot, issue);
     const states = resolveIssueTaskStates(issue, runEvidence);
@@ -1119,7 +969,7 @@ export function projectBoard(repoRoot: string): {
       const state = states.get(task.id)!;
       targetCounts[state.effectiveStatus] = (targetCounts[state.effectiveStatus] ?? 0) + 1;
       declaredCounts[state.declaredStatus] = (declaredCounts[state.declaredStatus] ?? 0) + 1;
-      const readiness = buildTaskReadiness(repoRoot, issue, task, states, { activeRuns });
+      const readiness = buildTaskReadiness(repoRoot, issue, task, states);
       readinessByTask.set(`${issue.id}/${task.id}`, readiness);
       const boardTask = {
         issueId: issue.id,

@@ -4,7 +4,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { delimiter, join } from 'path';
-import { createIssue, getIssue } from '../../src/cli/controller/issue-store';
+import { getIssue } from '../../src/cli/controller/issue-store';
+import { writeLegacyIssueFixture } from '../helpers/legacy-issue-fixture';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { loadGitHubPluginConfig, saveGitHubPluginConfig } from '../../src/runtime/plugins/github-config';
 
@@ -109,7 +110,7 @@ exit 2
         projectNumber: 42,
         includeTasks: true,
       });
-      const issue = createIssue(canonicalRoot, {
+      const issue = writeLegacyIssueFixture(canonicalRoot, {
         title: 'Retry-safe GitHub publication',
         kind: 'feature',
         tasks: [{ title: 'Child task', objective: 'Verify the child Issue link survives Project sync failure.' }],
