@@ -9,7 +9,7 @@ import { getIssueReadView, createIssue, updateTask } from '../../src/cli/control
 import { buildControllerTaskLedgerProjection } from '../../src/cli/controller/task-ledger';
 import { inspectProjectGovernance, reconcileProjectGovernance } from '../../src/cli/controller/governance';
 import { clearCurrentIssue, loadControllerProjectState, saveControllerProjectState } from '../../src/cli/controller/project-state';
-import { finishEditSession, finishTaskRun } from '../../src/cli/controller/completion-orchestrator';
+import { finishEditSession } from '../../src/cli/controller/completion-orchestrator';
 import { continueTaskAfterSuccessfulRun } from '../../src/cli/controller/execution-completion';
 
 const REPO_ID = 'repo_cutover_cli';
@@ -164,7 +164,6 @@ describe('legacy control-plane cutover', () => {
       expect(() => saveControllerProjectState(repoRoot, { currentIssueId: ISSUE_ID })).toThrow('LEGACY_CURRENT_ISSUE_RETIRED');
       expect(() => saveControllerProjectState(repoRoot, { issueCreationMode: 'open' })).toThrow('LEGACY_PROJECT_STATE_WRITES_RETIRED');
       expect(() => reconcileProjectGovernance(repoRoot)).toThrow('LEGACY_GOVERNANCE_RECONCILIATION_RETIRED');
-      expect(() => finishTaskRun(repoRoot, { runId: 'RUN-MISSING' })).toThrow('LEGACY_TASK_RUN_COMPLETION_RETIRED');
       expect(() => finishEditSession(repoRoot, { sessionId: 'EDIT-MISSING' })).toThrow('LEGACY_EDIT_SESSION_COMPLETION_RETIRED');
       expect(continueTaskAfterSuccessfulRun(repoRoot, { status: 'succeeded' } as never)).toMatchObject({
         continued: false,
