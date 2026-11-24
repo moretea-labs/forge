@@ -284,8 +284,8 @@ struct AgentPane: View {
                         .lineLimit(1)
                         .padding(.horizontal,6)
                         .frame(height:26)
-                        .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
-                        .forgeChromeSurface(selected:selected,cornerRadius:8)
+                        .contentShape(RoundedRectangle(cornerRadius:7,style:.continuous))
+                        .forgeHoverFill(cornerRadius:7)
                 }
                 .buttonStyle(.plain)
                 .disabled(!availableWorkSurfaces.contains(surface))
