@@ -439,6 +439,46 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     }
   });
 
+  test('batch request ledger replays a completed mutation without a second write', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const request = {
+      repoId: fx.repository.repoId,
+      requestId: 'batch-ledger-replay-once',
+      steps: [
+        {
+          kind: 'apply_patch' as const,
+          input: {
+            operations: [
+              {
+                type: 'replace',
+                path: 'src/lib.ts',
+                replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 9;' }],
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    const first = await executeRepositoryBatch(
+      { controllerHome: fx.controllerHome, repository: fx.repository },
+      request,
+    );
+    expect(first.ok).toBe(true);
+    expect(first.steps).toHaveLength(1);
+    expect(readFileSync(join(fx.repoRoot, 'src/lib.ts'), 'utf8')).toBe('export const n = 9;\n');
+
+    const replay = await executeRepositoryBatch(
+      { controllerHome: fx.controllerHome, repository: fx.repository },
+      request,
+    );
+    expect(replay.ok).toBe(true);
+    expect(replay.steps).toEqual([]);
+    expect('resultRef' in replay).toBe(false);
+    expect(readFileSync(join(fx.repoRoot, 'src/lib.ts'), 'utf8')).toBe('export const n = 9;\n');
+  });
+
   test('batch staging still waits for the real Git index owner (#713)', async () => {
     const fx = fixture();
     roots.push(fx.root);

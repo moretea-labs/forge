@@ -214,7 +214,6 @@ export async function executeRepositoryBatch(
         partialFailure: false,
         latency: trace.snapshot(request.includeLatencyBreakdown === true),
         receipt: undefined,
-        resultRef: ledger.entry.resultRef,
       };
     }
     if (ledger.kind === 'in_progress') {

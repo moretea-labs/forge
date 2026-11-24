@@ -10,7 +10,6 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  readdirSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -44,12 +43,10 @@ export interface FastRequestLedgerEntry {
   heartbeatAt: string;
   expiresAt: string;
   finishedAt?: string;
-  resultRef?: string;
   resultSummary?: string;
   error?: string;
   receiptExecutionId?: string;
   baseSnapshot?: string;
-  resultSnapshot?: string;
   reconcileNotes?: string;
 }
 
@@ -65,18 +62,6 @@ export interface LedgerCompleteResult {
   entry?: FastRequestLedgerEntry;
   warning?: string;
   code?: 'LEDGER_STALE_OWNER' | 'LEDGER_WRITE_FAILED' | 'LEDGER_MISSING' | 'LEDGER_CAS_FAILED';
-}
-
-export type LedgerReconcileVerdict =
-  | 'succeeded'
-  | 'not_started'
-  | 'unknown';
-
-export interface LedgerReconcileResult {
-  entry: FastRequestLedgerEntry;
-  verdict: LedgerReconcileVerdict;
-  notes: string;
-  autoRetriable: boolean;
 }
 
 const DEFAULT_LEDGER_TTL_MS = 15 * 60_000;
@@ -409,11 +394,9 @@ export function completeFastRequest(
   expected: FastRequestLedgerEntry,
   update: {
     status: 'succeeded' | 'failed' | 'unknown';
-    resultRef?: string;
     resultSummary?: string;
     error?: string;
     receiptExecutionId?: string;
-    resultSnapshot?: string;
   },
 ): LedgerCompleteResult {
   return withLedgerLock(controllerHome, expected.repoId, `${expected.requestId}:complete`, () => {
@@ -453,11 +436,9 @@ export function completeFastRequest(
         status: update.status,
         finishedAt: new Date().toISOString(),
         heartbeatAt: new Date().toISOString(),
-        resultRef: update.resultRef,
         resultSummary: update.resultSummary?.slice(0, 2_048),
         error: update.error?.slice(0, 1_024),
         receiptExecutionId: update.receiptExecutionId,
-        resultSnapshot: update.resultSnapshot,
       };
       writeEntryAtomic(path, next);
       return { ok: true, entry: next };
@@ -469,127 +450,4 @@ export function completeFastRequest(
       };
     }
   });
-}
-
-/**
- * Reconcile a stale active/unknown entry using workspace evidence.
- * Never auto-retries when execution cannot be proven incomplete.
- */
-function reconcileFastRequestUnlocked(input: {
-  controllerHome: string;
-  entry: FastRequestLedgerEntry;
-  currentSnapshot?: string;
-  commitHash?: string | null;
-  receiptExecutionId?: string;
-  changedPaths?: string[];
-  evidence?: {
-    /** Explicit proof mutation completed (receipt, commit, result snapshot match). */
-    provenSucceeded?: boolean;
-    /** Explicit proof mutation never started (identical base snapshot, no changed paths, no receipt). */
-    provenNotStarted?: boolean;
-  };
-}): LedgerReconcileResult {
-  const path = entryPath(
-    input.controllerHome,
-    input.entry.repoId,
-    input.entry.checkoutId,
-    input.entry.requestId,
-  );
-  const current = readEntry(path) ?? input.entry;
-
-  if (current.status === 'succeeded') {
-    return { entry: current, verdict: 'succeeded', notes: 'already_succeeded', autoRetriable: false };
-  }
-  if (current.status === 'failed') {
-    return { entry: current, verdict: 'not_started', notes: 'terminal_failed_may_retry', autoRetriable: true };
-  }
-
-  let verdict: LedgerReconcileVerdict = 'unknown';
-  let notes = 'insufficient_evidence';
-  let autoRetriable = false;
-
-  if (input.evidence?.provenSucceeded || current.receiptExecutionId || input.receiptExecutionId) {
-    verdict = 'succeeded';
-    notes = 'receipt_or_explicit_success_evidence';
-    autoRetriable = false;
-  } else if (
-    input.evidence?.provenNotStarted
-    || (
-      current.baseSnapshot
-      && input.currentSnapshot
-      && current.baseSnapshot === input.currentSnapshot
-      && (!input.changedPaths || input.changedPaths.length === 0)
-      && !current.receiptExecutionId
-    )
-  ) {
-    verdict = 'not_started';
-    notes = 'base_snapshot_unchanged_no_receipt';
-    autoRetriable = true;
-  } else if (input.commitHash && current.baseSnapshot && input.commitHash !== current.baseSnapshot) {
-    // HEAD moved but we cannot prove this request caused it → unknown
-    verdict = 'unknown';
-    notes = 'head_moved_without_request_proof';
-    autoRetriable = false;
-  } else {
-    verdict = 'unknown';
-    notes = 'cannot_prove_not_started_or_succeeded';
-    autoRetriable = false;
-  }
-
-  const nextStatus: FastRequestLedgerStatus =
-    verdict === 'succeeded' ? 'succeeded' : verdict === 'not_started' ? 'failed' : 'unknown';
-
-  const next: FastRequestLedgerEntry = {
-    ...current,
-    status: nextStatus,
-    finishedAt: new Date().toISOString(),
-    heartbeatAt: new Date().toISOString(),
-    resultSnapshot: input.currentSnapshot ?? current.resultSnapshot,
-    receiptExecutionId: input.receiptExecutionId ?? current.receiptExecutionId,
-    reconcileNotes: notes,
-    error: verdict === 'unknown'
-      ? (current.error ?? 'reconcile_unknown')
-      : verdict === 'not_started'
-        ? 'reconciled_not_started'
-        : current.error,
-  };
-
-  try {
-    writeEntryAtomic(path, next);
-  } catch {
-    /* best effort persist */
-  }
-
-  return { entry: next, verdict, notes, autoRetriable };
-}
-
-export function reconcileFastRequest(
-  input: Parameters<typeof reconcileFastRequestUnlocked>[0],
-): LedgerReconcileResult {
-  return withLedgerLock(
-    input.controllerHome,
-    input.entry.repoId,
-    `${input.entry.requestId}:reconcile`,
-    () => reconcileFastRequestUnlocked(input),
-  );
-}
-
-export function readFastRequest(
-  controllerHome: string,
-  repoId: string,
-  checkoutId: string,
-  requestId: string,
-): FastRequestLedgerEntry | undefined {
-  return readEntry(entryPath(controllerHome, repoId, checkoutId, requestId));
-}
-
-export function listFastRequests(controllerHome: string, repoId: string, limit = 50): FastRequestLedgerEntry[] {
-  const dir = ledgerDir(controllerHome, repoId);
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((name) => name.endsWith('.json'))
-    .map((name) => readEntry(join(dir, name)))
-    .filter((entry): entry is FastRequestLedgerEntry => Boolean(entry))
-    .sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''))
-    .slice(0, Math.max(1, Math.min(limit, 200)));
 }
