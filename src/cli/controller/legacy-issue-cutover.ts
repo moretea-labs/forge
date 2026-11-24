@@ -10,7 +10,7 @@ import {
 } from '../../runtime/control-plane/persistence/sqlite-store';
 import type { Requirement } from '../../runtime/control-plane/persistence/requirement-store';
 import type { EvidenceRef, PlanContract } from '../../runtime/control-plane/facade/types';
-import type { CompletionReceipt, ControllerIssue, IssueStatus, TaskStatus } from './types';
+import type { ControllerIssue, IssueStatus, RepositoryCompletionReceipt, TaskStatus } from './types';
 import type { EffectiveTaskState, IssueLifecycleStatus, VerificationStatus } from './task-status-resolver';
 import {
   REQUIREMENT_PORTFOLIO_MIGRATION_ID,
@@ -249,7 +249,7 @@ export interface MigratedTaskCompletionState {
 }
 
 function completionEvidence(
-  receipt: CompletionReceipt,
+  receipt: RepositoryCompletionReceipt,
   input: {
     reviewer: string;
     note?: string;
@@ -433,7 +433,7 @@ export function recordMigratedTaskCompletion(
   input: {
     issueId: string;
     taskId: string;
-    receipt: CompletionReceipt;
+    receipt: RepositoryCompletionReceipt;
     reviewer: string;
     note?: string;
     checks?: Array<{ checkId: string; ok: boolean; summary?: string }>;

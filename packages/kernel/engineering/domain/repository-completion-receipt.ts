@@ -66,6 +66,3 @@ export interface RepositoryCompletionReceipt {
   verifiedAt: string;
   recordedAt: string;
 }
-
-/** Legacy public name retained as an inward projection. */
-export type CompletionReceipt = RepositoryCompletionReceipt;

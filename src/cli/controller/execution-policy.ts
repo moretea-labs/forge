@@ -1,4 +1,4 @@
-import type { CleanupEvidence, CompletionReceipt, CompletionResourceBlocker, ControllerTask, IntegrationEvidence, TaskAcceptanceOutcome, TaskAcceptanceResult, TaskRisk, TaskVerification } from './types';
+import type { CleanupEvidence, CompletionResourceBlocker, ControllerTask, IntegrationEvidence, RepositoryCompletionReceipt, TaskAcceptanceOutcome, TaskAcceptanceResult, TaskRisk, TaskVerification } from './types';
 
 export type TaskExecutionClass =
   | 'read_only'
@@ -24,16 +24,16 @@ export interface CompletionReceiptExpectation {
   targetBranch?: string;
 }
 
-function receiptSourceIdentityComplete(receipt: CompletionReceipt): boolean {
+function receiptSourceIdentityComplete(receipt: RepositoryCompletionReceipt): boolean {
   if (receipt.source === 'direct_edit') return Boolean(receipt.editSessionId?.trim()) && !receipt.runId;
   if (receipt.source === 'isolated_agent_run' || receipt.source === 'workspace_run') return Boolean(receipt.runId?.trim());
   return true;
 }
 
 export function completionReceiptComplete(
-  receipt: CompletionReceipt | undefined,
+  receipt: RepositoryCompletionReceipt | undefined,
   expected: CompletionReceiptExpectation = {},
-): receipt is CompletionReceipt {
+): receipt is RepositoryCompletionReceipt {
   return Boolean(receipt
     && receipt.schemaVersion === 1
     && receipt.receiptId.trim()
@@ -107,7 +107,7 @@ export function completionEvidenceComplete(
 ): verification is TaskVerification & {
   integrationEvidence?: IntegrationEvidence;
   cleanupEvidence?: CleanupEvidence;
-  completionReceipt?: CompletionReceipt;
+  completionReceipt?: RepositoryCompletionReceipt;
 } {
   const expectedReceipt = { ...expected, runId: expected.runId ?? verification?.runId };
   if (completionReceiptComplete(verification?.completionReceipt, expectedReceipt)) return true;

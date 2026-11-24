@@ -2,7 +2,6 @@ import { spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join, sep } from 'path';
 import type {
-  CompletionReceipt,
   ControllerIssue,
   ControllerTask,
   GitHubIssueLink,

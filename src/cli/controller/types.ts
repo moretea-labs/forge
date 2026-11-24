@@ -3,13 +3,13 @@ import type { ControllerAgent } from '../../runtime/agents/types';
 import type { TaskRisk } from '../../runtime/local-bridge/types';
 import type {
   CompletionMaintenanceWarning,
-  CompletionReceipt,
+  RepositoryCompletionReceipt,
   CompletionResourceBlocker,
 } from '../../../packages/kernel/engineering/api/index';
 export type { TaskRisk };
 export type {
   CompletionMaintenanceWarning,
-  CompletionReceipt,
+  RepositoryCompletionReceipt,
   CompletionReceiptCleanupStatus,
   CompletionReceiptDeliveryKind,
   CompletionReceiptDeliveryStatus,
@@ -130,7 +130,7 @@ export interface TaskVerification {
   reviewer: string;
   verifiedAt: string;
   autoCompleted?: boolean;
-  completionReceipt?: CompletionReceipt;
+  completionReceipt?: RepositoryCompletionReceipt;
   integrationEvidence?: IntegrationEvidence;
   cleanupEvidence?: CleanupEvidence;
 }

@@ -20,7 +20,7 @@ import { completionEvidenceComplete } from './execution-policy';
 import { currentCompletionTarget, resolveCompletionTargetBranch } from './completion-target';
 import { runControllerCheck } from '../../runtime/execution/process-runtime/check-runner';
 import type { ControllerIssue, ControllerTask, IntegrationEvidence, TaskVerification } from './types';
-import type { CompletionMaintenanceWarning, CompletionReceipt, CompletionResourceBlocker } from './types';
+import type { CompletionMaintenanceWarning, CompletionResourceBlocker, RepositoryCompletionReceipt } from './types';
 import {
   legacyIssueAuthorityRetired,
   legacyIssueCutoverState,
@@ -52,7 +52,7 @@ export interface FinishEditSessionResult {
   reason?: string;
   commitSha?: string;
   commitError?: string;
-  completionReceipt?: CompletionReceipt;
+  completionReceipt?: RepositoryCompletionReceipt;
   maintenanceWarnings?: CompletionMaintenanceWarning[];
 }
 
@@ -821,7 +821,7 @@ function directEditReceiptId(ownerId: string, targetRevision: string): string {
 function cleanupStatus(
   warnings: readonly CompletionMaintenanceWarning[],
   blockers: readonly CompletionResourceBlocker[],
-): CompletionReceipt['cleanup']['status'] {
+): RepositoryCompletionReceipt['cleanup']['status'] {
   if (blockers.length > 0) return 'blocked';
   return warnings.length > 0 ? 'maintenance_warning' : 'complete';
 }
@@ -845,7 +845,7 @@ function buildDirectEditCompletionReceipt(input: {
   cleanupWarnings?: CompletionMaintenanceWarning[];
   cleanupBlockers?: CompletionResourceBlocker[];
   verifiedAt?: string;
-}): CompletionReceipt {
+}): RepositoryCompletionReceipt {
   const warnings = [...(input.cleanupWarnings ?? [])];
   const blockers = [
     ...(input.cleanupBlockers ?? []),
