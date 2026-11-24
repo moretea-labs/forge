@@ -209,15 +209,21 @@ function snippetAround(content: string, needle: string): SafePatchFailureContext
 function applyTextPreview(
   operation: Exclude<EditOperation, { type: 'create' | 'write' | 'delete' }>,
   before: string,
+  requireUnique = false,
 ): string {
   if (operation.type === 'replace') {
     let after = before;
     for (const replacement of operation.replacements) {
       if (!replacement.oldText) throw new Error('replacement oldText is empty');
-      if (!after.includes(replacement.oldText)) throw new Error('replacement text not found');
+      const index = after.indexOf(replacement.oldText);
+      if (index < 0) throw new Error('replacement text not found');
+      if (requireUnique && after.indexOf(replacement.oldText, index + 1) >= 0)
+        throw new Error(
+          'replacement text is ambiguous; provide unique context or an exact file version for bulk replacement',
+        );
       after = replacement.replaceAll
         ? after.split(replacement.oldText).join(replacement.newText)
-        : after.replace(replacement.oldText, replacement.newText);
+        : after.slice(0, index) + replacement.newText + after.slice(index + replacement.oldText.length);
     }
     return after;
   }
@@ -228,6 +234,8 @@ function applyTextPreview(
   const occurrence = Math.max(1, Math.trunc(anchored.occurrence ?? 1));
   const index = findOccurrence(before, anchored.anchor, occurrence);
   if (index < 0) throw new Error(`anchor occurrence ${occurrence} not found`);
+  if (requireUnique && (occurrence !== 1 || before.indexOf(anchored.anchor, index + 1) >= 0))
+    throw new Error('anchor is ambiguous; provide unique context or an exact file version for ordinal insertion');
   const insertion = anchored.type === 'insert_before' ? index : index + anchored.anchor.length;
   return `${before.slice(0, insertion)}${anchored.content}${before.slice(insertion)}`;
 }
@@ -453,10 +461,6 @@ export function applySessionlessSafePatch(
     throw new Error(`SAFE_PATCH_PATH_OUTSIDE_SCOPE: ${resolved.relativePath}`);
 
   const plan = buildSafePatchPlan(repository, { operations, chunkSize: 1 });
-  // Explicit caller SHA is an optimistic concurrency precondition, never a
-  // refresh hint. Only fill a missing fingerprint; do not silently replace a
-  // stale one even when refresh_fingerprints=true (#713).
-  const checked = preflightChunk(repository, operations, 1, false);
   const failureResult = (failures: SafePatchPreflightFailure[]) => ({
     status: 'failed' as const,
     sessionless: true as const,
@@ -466,80 +470,93 @@ export function applySessionlessSafePatch(
     failures,
     plan,
   });
-  if (checked.failures.length) return failureResult(checked.failures);
-  const operation = checked.operations[0]!;
+  const operation = original;
   if (operation.type === 'create' || operation.type === 'delete')
     throw new Error('SESSIONLESS_SAFE_PATCH_SINGLE_TEXT_OPERATION_REQUIRED');
-  const current = currentFile(repository, operation.path);
-  if (!current.exists || !current.sha256) {
-    return failureResult([
-      {
-        chunkIndex: 1,
-        operationIndex: 1,
-        type: operation.type,
-        path: resolved.relativePath,
-        code: 'TARGET_MISSING',
-        message: 'target is no longer present',
-      },
-    ]);
-  }
-  if (operation.expectedSha256 !== current.sha256) {
-    return failureResult([
-      {
-        chunkIndex: 1,
-        operationIndex: 1,
-        type: operation.type,
-        path: resolved.relativePath,
-        code: 'STALE_FILE_SHA',
-        message: `stale file version for ${resolved.relativePath}`,
-        currentSha256: current.sha256,
-        expectedSha256: operation.expectedSha256,
-        context: snippetAround(
-          current.content,
-          operation.type === 'replace' ? (operation.replacements[0]?.oldText ?? '') : '',
-        ),
-      },
-    ]);
-  }
-  const content =
-    operation.type === 'write'
-      ? operation.content
-      : applyTextPreview(operation as Exclude<EditOperation, { type: 'create' | 'write' | 'delete' }>, current.content);
-  try {
-    const receipt = atomicCompareAndSwapText(repository.canonicalRoot, resolved.relativePath, current.sha256, content);
-    return {
-      status: 'applied',
-      sessionless: true,
-      createdSession: false,
-      changedFiles: [resolved.relativePath],
-      appliedChunks: [{ index: 1, operationCount: 1, paths: [resolved.relativePath] }],
-      failures: [],
-      receipt: { path: resolved.relativePath, ...receipt },
-      plan,
-    };
-  } catch (error) {
-    const latest = currentFile(repository, resolved.relativePath);
-    const message = error instanceof Error ? error.message : String(error);
-    const code = message.startsWith('STALE_FILE_SHA:') ? 'STALE_FILE_SHA' : 'APPLY_FAILED';
-    const needle =
-      operation.type === 'replace'
-        ? (operation.replacements[0]?.oldText ?? '')
-        : 'anchor' in operation
-          ? operation.anchor
-          : '';
-    return failureResult([
-      {
-        chunkIndex: 1,
-        operationIndex: 1,
-        type: operation.type,
-        path: resolved.relativePath,
-        code,
-        message,
-        currentSha256: latest.sha256,
-        expectedSha256: current.sha256,
-        context: snippetAround(latest.content, needle),
-      },
-    ]);
+  const base = { chunkIndex: 1, operationIndex: 1, type: operation.type, path: resolved.relativePath };
+  const isLocal =
+    operation.type === 'replace' || operation.type === 'insert_before' || operation.type === 'insert_after';
+  // With no explicit whole-file condition, exact unique text is the semantic
+  // precondition. The fresh hash is only the mechanical CAS witness.
+  const retryLocal = isLocal && !operation.expectedSha256;
+  const needle =
+    operation.type === 'replace'
+      ? (operation.replacements[0]?.oldText ?? '')
+      : 'anchor' in operation
+        ? operation.anchor
+        : '';
+  for (let attempt = 0; ; attempt++) {
+    const current = currentFile(repository, operation.path);
+    if (!current.exists || !current.sha256)
+      return failureResult([{ ...base, code: 'TARGET_MISSING', message: 'target is no longer present' }]);
+    if (operation.expectedSha256 && operation.expectedSha256 !== current.sha256)
+      return failureResult([
+        {
+          ...base,
+          code: 'STALE_FILE_SHA',
+          message: `stale file version for ${resolved.relativePath}`,
+          currentSha256: current.sha256,
+          expectedSha256: operation.expectedSha256,
+          context: snippetAround(current.content, needle),
+        },
+      ]);
+    let content: string;
+    try {
+      content =
+        operation.type === 'write' ? operation.content : applyTextPreview(operation, current.content, retryLocal);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const target =
+        operation.type === 'replace'
+          ? (operation.replacements.find((r) => !current.content.includes(r.oldText))?.oldText ?? needle)
+          : needle;
+      return failureResult([
+        {
+          ...base,
+          code: operation.type === 'replace' ? 'REPLACEMENT_TEXT_NOT_FOUND' : 'ANCHOR_NOT_FOUND',
+          message,
+          currentSha256: current.sha256,
+          context: snippetAround(current.content, target),
+        },
+      ]);
+    }
+    if (content === current.content)
+      return failureResult([
+        { ...base, code: 'NO_CHANGE', message: 'edit operation produced no change', currentSha256: current.sha256 },
+      ]);
+    try {
+      const receipt = atomicCompareAndSwapText(
+        repository.canonicalRoot,
+        resolved.relativePath,
+        current.sha256,
+        content,
+      );
+      return {
+        status: 'applied',
+        sessionless: true,
+        createdSession: false,
+        changedFiles: [resolved.relativePath],
+        appliedChunks: [{ index: 1, operationCount: 1, paths: [resolved.relativePath] }],
+        failures: [],
+        receipt: { path: resolved.relativePath, ...receipt },
+        plan,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = message.startsWith('STALE_FILE_SHA:') ? 'STALE_FILE_SHA' : 'APPLY_FAILED';
+      if (retryLocal && code === 'STALE_FILE_SHA' && attempt < 2) continue;
+      const latest = currentFile(repository, resolved.relativePath);
+      return failureResult([
+        {
+          ...base,
+          code,
+          message,
+          currentSha256: latest.sha256,
+          expectedSha256: current.sha256,
+          context: snippetAround(latest.content, needle),
+        },
+      ]);
+    }
   }
 }
 

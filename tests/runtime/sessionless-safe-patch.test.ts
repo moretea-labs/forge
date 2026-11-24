@@ -118,6 +118,43 @@ test('two writers on the same file get stale evidence and preserve both edits af
   expect(fx.sessions()).toHaveLength(count);
 });
 
+test('independent exact replacements continue after source and HEAD change without a session (#716)', async () => {
+  const fx = fixture();
+  const a = await apply(fx, {
+    type: 'replace',
+    path: 'source.ts',
+    replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
+  });
+  expect(a.payload.status).toBe('applied');
+  const commit = spawnSync('git', ['commit', '-am', 'independent edit'], { cwd: fx.repoRoot, encoding: 'utf8' });
+  expect(commit.status).toBe(0);
+  const b = await apply(fx, {
+    type: 'replace',
+    path: 'source.ts',
+    replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
+  });
+  expect(b.payload.status).toBe('applied');
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const n = 2;\nexport const label = 2;\n');
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('unversioned exact patch rejects ambiguous or changed targets without writing (#716)', async () => {
+  const fx = fixture();
+  const duplicate = fx.initial + 'export const duplicate = 1;\n';
+  writeFileSync(join(fx.repoRoot, 'source.ts'), duplicate);
+  for (const operation of [
+    { type: 'replace', replacements: [{ old_text: '= 1', new_text: '= 2' }] },
+    { type: 'insert_after', anchor: '= 1', content: ' /* ambiguous */' },
+    { type: 'replace', replacements: [{ old_text: 'n = 3', new_text: 'n = 4' }] },
+  ]) {
+    const result = await apply(fx, { ...operation, path: 'source.ts' });
+    expect(result.isError).toBe(true);
+    expect(result.payload.failures[0].context).toBeDefined();
+    expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(duplicate);
+  }
+  expect(fx.sessions()).toHaveLength(0);
+});
+
 test('sessionless Safe Patch refuses symlink targets and multi-file batches without source mutation', async () => {
   const fx = fixture();
   symlinkSync('source.ts', join(fx.repoRoot, 'alias.ts'));
