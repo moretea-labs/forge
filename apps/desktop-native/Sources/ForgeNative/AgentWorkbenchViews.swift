@@ -93,29 +93,32 @@ enum AgentCapabilityExtension: String, CaseIterable, Identifiable {
     }
 }
 
-/// The split is available only when both real pane minima and native divider
-/// Inspector presentation is intentionally independent of conversation layout.
-/// Opening the Inspector overlays it on the trailing edge; only explicit maximize
-/// replaces the conversation.
+/// Dock both panes only when each has usable reading space.
+/// Narrow windows use the same workspace as a full-width detail view.
 enum AgentWorkSurfaceLayout {
-    static let conversationMinimumWidth: CGFloat = 420
-    static let workSurfaceMinimumWidth: CGFloat = 340
-    static let workSurfaceMaximumWidth: CGFloat = 420
+    static let conversationMinimumWidth: CGFloat = 440
+    static let workSurfaceMinimumWidth: CGFloat = 440
+    static let dividerWidth: CGFloat = 10
 
     enum Presentation: Equatable {
         case conversationOnly
-        case overlay
+        case docked
         case replacement
     }
 
-    static func presentation(isVisible: Bool, isMaximized: Bool) -> Presentation {
-        guard isVisible else { return .conversationOnly }
-        return isMaximized ? .replacement : .overlay
+    static func canDock(availableWidth: CGFloat) -> Bool {
+        availableWidth >= conversationMinimumWidth + dividerWidth + workSurfaceMinimumWidth
     }
 
-    static func overlayWidth(availableWidth: CGFloat) -> CGFloat {
-        min(workSurfaceMaximumWidth,
-            max(workSurfaceMinimumWidth, availableWidth * 0.38))
+    static func presentation(isVisible: Bool, isMaximized: Bool, availableWidth: CGFloat) -> Presentation {
+        guard isVisible else { return .conversationOnly }
+        return isMaximized || !canDock(availableWidth:availableWidth) ? .replacement : .docked
+    }
+
+    static func dockedWidth(availableWidth: CGFloat, preferredWidth: CGFloat? = nil) -> CGFloat {
+        guard canDock(availableWidth:availableWidth) else { return max(0,availableWidth) }
+        return min(availableWidth - dividerWidth - conversationMinimumWidth,
+                   max(workSurfaceMinimumWidth, preferredWidth ?? (availableWidth - dividerWidth) * 0.5))
     }
 }
 
@@ -155,6 +158,8 @@ struct AgentPane: View {
     @StateObject private var voiceDictation = AgentVoiceDictation()
     @State private var voiceBaseDraft = ""
     @State private var restoreComposerFocusAfterWorkSurface = false
+    @State private var inspectorPreferredWidth: CGFloat?
+    @GestureState private var inspectorDragOffset: CGFloat = 0
     @State private var fileSelectedRepoId = ""
     @State private var fileShowLocalResources = true
     @State private var fileShowRemoteImages = true
@@ -275,7 +280,7 @@ struct AgentPane: View {
         .accessibilityIdentifier(AgentConversationToolbarContract.inspectorIdentifier)
     }
 
-    private var inspectorHeader: some View {
+    private func inspectorHeader(canDock: Bool) -> some View {
         HStack(spacing:3) {
             ForEach(AgentWorkSurface.allCases) { surface in
                 let selected = selectedWorkSurface == surface
@@ -294,18 +299,20 @@ struct AgentPane: View {
                 .accessibilityIdentifier("agent.\(surface.rawValue)")
             }
             Spacer(minLength:2)
-            Button {
-                withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
-                    workSurfaceMaximized.toggle()
+            if canDock {
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
+                        workSurfaceMaximized.toggle()
+                    }
+                } label: {
+                    ForgeGlyph(workSurfaceMaximized ? .restore : .expand)
+                        .forgeChromeSurface(cornerRadius:8)
                 }
-            } label: {
-                ForgeGlyph(workSurfaceMaximized ? .restore : .expand)
-                    .forgeChromeSurface(cornerRadius:8)
+                .buttonStyle(.plain)
+                .help(workSurfaceMaximized ? "恢复分栏" : "展开工作区")
+                .accessibilityLabel(workSurfaceMaximized ? "恢复分栏" : "展开工作区")
+                .accessibilityIdentifier("agent.work-surface.maximize")
             }
-            .buttonStyle(.plain)
-            .help(workSurfaceMaximized ? "还原工作面板" : "扩展工作面板")
-            .accessibilityLabel(workSurfaceMaximized ? "还原工作面板" : "扩展工作面板")
-            .accessibilityIdentifier("agent.work-surface.maximize")
             Button { closeWorkSurface() } label: {
                 ForgeGlyph(.close)
                     .forgeChromeSurface(cornerRadius:8)
@@ -323,11 +330,25 @@ struct AgentPane: View {
 
     private func agentContent(availableWidth:CGFloat) -> some View {
         let splitWidth = max(0, availableWidth - 16)
+        let canDock = AgentWorkSurfaceLayout.canDock(availableWidth:splitWidth)
         let workSurfacePresentation = AgentWorkSurfaceLayout.presentation(
             isVisible:workSurfaceVisible,
-            isMaximized:workSurfaceMaximized)
-        return ZStack(alignment:.trailing) {
-                ZStack {
+            isMaximized:workSurfaceMaximized,
+            availableWidth:splitWidth)
+        let baseInspectorWidth = AgentWorkSurfaceLayout.dockedWidth(
+            availableWidth:splitWidth, preferredWidth:inspectorPreferredWidth)
+        let inspectorWidth = AgentWorkSurfaceLayout.dockedWidth(
+            availableWidth:splitWidth, preferredWidth:baseInspectorWidth - inspectorDragOffset)
+        let docked = workSurfacePresentation == .docked
+        let conversationWidth = docked
+            ? splitWidth - inspectorWidth - AgentWorkSurfaceLayout.dividerWidth
+            : splitWidth
+        let compactComposer = ForgeClientDesign.Shell.composerUsesTwoControlRows(
+            conversationWidth:conversationWidth)
+        let layout = workSurfacePresentation == .replacement
+            ? AnyLayout(ZStackLayout())
+            : AnyLayout(HStackLayout(spacing:0))
+        return layout {
                     // Keep the composer and transcript mounted during review.
                     // The compact workspace header owns context and the single inspector toggle.
                     VStack(spacing:0) {
@@ -833,18 +854,6 @@ struct AgentPane: View {
                     }
                 }
             }
-            .overlay(alignment:.trailing) {
-                if workSurfacePresentation == .overlay {
-                    workSurfaceContent()
-                        .frame(width:AgentWorkSurfaceLayout.overlayWidth(availableWidth:splitWidth))
-                        .frame(maxHeight:.infinity)
-                        .forgeFloatingGlass(cornerRadius:18)
-                        .transition(reduceMotion
-                                    ? .identity
-                                    : .move(edge:.trailing).combined(with:.opacity))
-                        .zIndex(2)
-                }
-            }
             VStack(alignment:.leading,spacing:0) {
                 ZStack(alignment:.topLeading) {
                     if model.draft.isEmpty {
@@ -884,6 +893,11 @@ struct AgentPane: View {
                         .padding(.horizontal,13).padding(.bottom,7)
                     }
                     .scrollIndicators(.hidden)
+                }
+                if compactComposer {
+                    composerConfigurationStrip
+                        .padding(.horizontal,ForgeClientDesign.Shell.composerControlInset)
+                        .padding(.bottom,2)
                 }
                 HStack(spacing:5) {
                     Button {
@@ -925,10 +939,11 @@ struct AgentPane: View {
                     .accessibilityHint("添加当前工作区文件或当前模型服务支持的图片")
                     .accessibilityIdentifier("agent.attach")
 
-                    composerQuickConfigurationControls
-                        .disabled(model.busy || model.zenRefinementActive)
+                    if !compactComposer {
+                        composerConfigurationStrip
+                    }
 
-                    Spacer(minLength:12)
+                    Spacer(minLength:6)
 
                     if voiceDictation.isRecording || voiceDictation.isStarting {
                         Text(voiceDictation.isStarting ? "正在请求麦克风…" : "正在听写…")
@@ -1028,11 +1043,11 @@ struct AgentPane: View {
                                 .frame(width:15,height:15)
                                 .foregroundStyle(sendDisabled
                                                  ? ForgePalette.secondary.opacity(0.50)
-                                                 : Color.black.opacity(0.88))
+                                                 : Color(nsColor:.windowBackgroundColor))
                                 .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
                                 .background(sendDisabled
-                                            ? Color.white.opacity(0.07)
-                                            : Color.white.opacity(0.92),
+                                            ? ForgePalette.softFill
+                                            : ForgePalette.ink,
                                             in:Circle())
                         }
                         .buttonStyle(.plain)
@@ -1048,7 +1063,9 @@ struct AgentPane: View {
                             : "按 Command Return 发送")
                         .accessibilityIdentifier("agent.send")
                     }
-                }.padding(.horizontal,13).padding(.bottom,8)
+                }
+                .padding(.horizontal,ForgeClientDesign.Shell.composerControlInset)
+                .padding(.bottom,8)
                 if !model.busy,!model.zenRefinementActive,let reason = model.agentSendBlockReason {
                     HStack(alignment:.firstTextBaseline,spacing:5) {
                         Circle().fill(Color.orange.opacity(0.7)).frame(width:5,height:5)
@@ -1099,42 +1116,69 @@ struct AgentPane: View {
                     .forgeConversationColumn()
                     .padding(.bottom,10)
                 }
-                // Compact and maximized work surfaces replace the *presentation*,
-                // not the mounted Agent transcript or its input state.
-                .opacity(workSurfacePresentation == .replacement ? 0 : 1)
-                .allowsHitTesting(workSurfacePresentation != .replacement)
-                .accessibilityHidden(workSurfacePresentation == .replacement)
+            // Switching layouts preserves the mounted transcript and Composer.
+            .frame(width:conversationWidth)
+            .frame(maxHeight:.infinity)
+            .opacity(workSurfacePresentation == .replacement ? 0 : 1)
+            .allowsHitTesting(workSurfacePresentation != .replacement)
+            .accessibilityHidden(workSurfacePresentation == .replacement)
 
-                if workSurfacePresentation == .replacement {
-                    workSurfaceContent()
-                        .transition(reduceMotion ? .identity : .opacity)
-                }
+            if docked {
+                Rectangle()
+                    .fill(ForgePalette.secondary.opacity(0.16))
+                    .frame(width:1)
+                    .frame(width:AgentWorkSurfaceLayout.dividerWidth)
+                    .frame(maxHeight:.infinity)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance:0,coordinateSpace:.global)
+                            .updating($inspectorDragOffset) { value, state, _ in
+                                state = value.translation.width
+                            }
+                            .onEnded { value in
+                                inspectorPreferredWidth = AgentWorkSurfaceLayout.dockedWidth(
+                                    availableWidth:splitWidth,
+                                    preferredWidth:baseInspectorWidth - value.translation.width)
+                            }
+                    )
+                    .onHover { hovering in
+                        if hovering { NSCursor.resizeLeftRight.set() } else { NSCursor.arrow.set() }
+                    }
+                    .accessibilityLabel("工作面板宽度")
+                    .accessibilityValue("\(Int(inspectorWidth)) 点")
+                    .accessibilityIdentifier("agent.inspector.resize")
+                    .accessibilityAdjustableAction { direction in
+                        let change: CGFloat
+                        switch direction {
+                        case .increment: change = 40
+                        case .decrement: change = -40
+                        @unknown default: return
+                        }
+                        inspectorPreferredWidth = AgentWorkSurfaceLayout.dockedWidth(
+                            availableWidth:splitWidth, preferredWidth:inspectorWidth + change)
+                    }
             }
-            .frame(minWidth:AgentWorkSurfaceLayout.conversationMinimumWidth)
-            .frame(maxWidth:.infinity,maxHeight:.infinity)
 
+            if workSurfaceVisible {
+                workSurfaceContent(canDock:canDock)
+                    .frame(width:docked ? inspectorWidth : splitWidth)
+                    .frame(maxHeight:.infinity)
+            }
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .padding(8)
         .background(ForgePalette.canvas)
         .animation(reduceMotion ? nil : .easeOut(duration:0.16),
                    value:workSurfacePresentation)
-        .onChange(of:workSurfaceVisible) { visible in
-            if !visible && restoreComposerFocusAfterWorkSurface {
-                restoreComposerFocusAfterWorkSurface = false
-                if !model.busy && !model.zenRefinementActive && !voiceDictation.blocksSend {
-                    composerFocused = true
-                }
-            }
-        }
-        .onChange(of:workSurfaceMaximized) { maximized in
-            guard workSurfaceVisible else { return }
-            if maximized {
+        .onChange(of:workSurfacePresentation) { presentation in
+            if presentation == .replacement {
                 restoreComposerFocusAfterWorkSurface = composerFocused
                 composerFocused = false
             } else if restoreComposerFocusAfterWorkSurface {
                 restoreComposerFocusAfterWorkSurface = false
-                if !model.busy && !voiceDictation.blocksSend { composerFocused = true }
+                if !model.busy && !model.zenRefinementActive && !voiceDictation.blocksSend {
+                    composerFocused = true
+                }
             }
         }
         .confirmationDialog(
@@ -1160,7 +1204,7 @@ struct AgentPane: View {
         }
         .onAppear {
             if !model.busy && !model.zenRefinementActive
-                && !(workSurfaceVisible && workSurfaceMaximized) {
+                && workSurfacePresentation != .replacement {
                 composerFocused = true
             }
         }
@@ -1238,9 +1282,9 @@ struct AgentPane: View {
         workSurfaceMaximized = false
     }
 
-    private func workSurfaceContent() -> some View {
+    private func workSurfaceContent(canDock: Bool) -> some View {
         VStack(spacing:0) {
-            inspectorHeader
+            inspectorHeader(canDock:canDock)
             ZStack {
             AgentChangesPane(model:model)
                 .opacity(selectedWorkSurface == .changes ? 1 : 0)
@@ -1440,6 +1484,19 @@ struct AgentPane: View {
         case "unknown": return "questionmark.circle"
         default: return activityIcon(event.phase)
         }
+    }
+
+    private var composerConfigurationStrip: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing:5) {
+                composerQuickConfigurationControls
+            }
+            .frame(height:ForgeClientDesign.Shell.composerControlHeight)
+        }
+        .scrollIndicators(.hidden)
+        .frame(height:ForgeClientDesign.Shell.composerControlHeight)
+        .disabled(model.busy || model.zenRefinementActive)
+        .accessibilityIdentifier("agent.composer.configuration")
     }
 
     @ViewBuilder
@@ -1679,12 +1736,13 @@ struct AgentPane: View {
                 .foregroundStyle(ForgePalette.secondary.opacity(0.88))
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .frame(maxWidth:138,alignment:.leading)
             Image(systemName:"chevron.down")
                 .font(.system(size:6.5,weight:.semibold))
                 .foregroundStyle(ForgePalette.secondary.opacity(0.45))
         }
         .padding(.horizontal,5)
-        .frame(height:24)
+        .frame(height:ForgeClientDesign.Shell.composerControlHeight)
         .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
         .forgeHoverFill(cornerRadius:8)
     }

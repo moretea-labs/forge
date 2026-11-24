@@ -52,6 +52,16 @@ final class ForgeClientLayoutTests: XCTestCase {
     }
   }
 
+  func testComposerUsesSeparateConfigurationRowInNarrowConversation() {
+    for width: CGFloat in [0, 440, 474, 600, 625] {
+      XCTAssertTrue(ForgeClientDesign.Shell.composerUsesTwoControlRows(conversationWidth: width))
+    }
+    for width: CGFloat in [626, 695, 760, 1400] {
+      XCTAssertFalse(ForgeClientDesign.Shell.composerUsesTwoControlRows(conversationWidth: width))
+    }
+    XCTAssertEqual(ForgeClientDesign.Shell.composerControlHeight, ForgeClientDesign.Icon.hit)
+  }
+
   func testHeaderAndReadingGutterHaveSharedMetrics() {
     XCTAssertEqual(ForgeClientDesign.Shell.workspaceHeaderHeight, 36)
     XCTAssertEqual(ForgeClientDesign.Shell.workspaceStatusSlotWidth, 112)

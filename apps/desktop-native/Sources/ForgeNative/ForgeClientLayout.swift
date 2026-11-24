@@ -6,6 +6,14 @@ extension ForgeClientDesign.Shell {
   static let workspaceStatusSlotWidth: CGFloat = 112
   static let composerTextHeight: CGFloat = 38
   static let readingGutter: CGFloat = 20
+  static let composerControlInset: CGFloat = 13
+  static let composerControlHeight: CGFloat = 30
+
+  // The reading cap and gutters determine the actual Composer width.
+  static func composerUsesTwoControlRows(conversationWidth: CGFloat) -> Bool {
+    let width = min(readingColumn, max(0, conversationWidth - 2 * readingGutter))
+    return width - 2 * composerControlInset < 560
+  }
   /// 52pt icon rail + 176pt compact list; desktop still grows to the existing 288pt ideal.
   static let compactSidebarMin: CGFloat = iconRailWidth + 176
 

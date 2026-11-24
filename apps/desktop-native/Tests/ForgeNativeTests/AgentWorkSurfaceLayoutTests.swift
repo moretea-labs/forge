@@ -3,30 +3,30 @@ import XCTest
 @testable import ForgeNative
 
 final class AgentWorkSurfaceLayoutTests: XCTestCase {
-  func testInspectorOpeningUsesOverlayAndNeverWidthDependentReplacement() {
-    let widths: [CGFloat] = [560, 840, 958, 1400]
-    let presentations = widths.map { _ in
-      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: false)
+  func testInspectorDocksWhenBothPanesFitAndUsesFullWidthInCompactWindows() {
+    let widths: [CGFloat] = [560, 889, 890, 958, 1400]
+    let presentations = widths.map {
+      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: false, availableWidth: $0)
     }
-    XCTAssertEqual(presentations, [.overlay, .overlay, .overlay, .overlay])
+    XCTAssertEqual(presentations, [.replacement, .replacement, .docked, .docked, .docked])
   }
 
-  func testInspectorOverlayWidthIsClampedWithoutChangingConversationGeometry() {
-    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 560), 340)
-    XCTAssertEqual(
-      AgentWorkSurfaceLayout.overlayWidth(availableWidth: 958),
-      364.04,
-      accuracy: 0.001)
-    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 1400), 420)
+  func testDockedWidthDefaultsToHalfAndClampsDragWithoutSacrificingEitherPane() {
+    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 560), 560)
+    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 890), 440)
+    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 958), 474)
+    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 1400), 695)
+    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 1400, preferredWidth: 100), 440)
+    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 1400, preferredWidth: 1200), 950)
   }
 
   func testClosedAndMaximizedWorkSurfacePresentationIsExplicit() {
     XCTAssertEqual(
-      AgentWorkSurfaceLayout.presentation(isVisible: false, isMaximized: false),
+      AgentWorkSurfaceLayout.presentation(isVisible: false, isMaximized: false, availableWidth: 1400),
       .conversationOnly
     )
     XCTAssertEqual(
-      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: true),
+      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: true, availableWidth: 1400),
       .replacement
     )
   }

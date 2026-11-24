@@ -4,16 +4,17 @@ import XCTest
 @testable import ForgeNative
 
 final class NativeWorkspaceTests: XCTestCase {
-  func testAgentWorkSurfaceNormalOpenUsesOverlayWithoutConversationReflow() {
-    XCTAssertEqual(
-      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: false),
-      .overlay)
-    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 560), 340)
-    XCTAssertEqual(
-      AgentWorkSurfaceLayout.overlayWidth(availableWidth: 958),
-      364.04,
-      accuracy: 0.001)
-    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 1400), 420)
+  func testAgentWorkSurfaceNormalOpenReservesDisjointPaneGeometry() {
+    for width: CGFloat in [890, 958, 1400] {
+      XCTAssertEqual(
+        AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: false, availableWidth: width),
+        .docked)
+      let inspector = AgentWorkSurfaceLayout.dockedWidth(availableWidth: width)
+      let conversation = width - inspector - AgentWorkSurfaceLayout.dividerWidth
+      XCTAssertGreaterThanOrEqual(inspector, AgentWorkSurfaceLayout.workSurfaceMinimumWidth)
+      XCTAssertGreaterThanOrEqual(conversation, AgentWorkSurfaceLayout.conversationMinimumWidth)
+      XCTAssertEqual(conversation + inspector + AgentWorkSurfaceLayout.dividerWidth, width)
+    }
   }
 
   @MainActor
