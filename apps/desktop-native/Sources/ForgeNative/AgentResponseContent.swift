@@ -36,6 +36,22 @@ enum AgentMessageBlock: Equatable {
     case choices(prompt: String, options: [AgentResponseChoice])
     case code(language: String?, text: String)
 
+    static func selectedChecklistItems(
+        in blocks: [AgentMessageBlock],
+        selections: [String: Bool]
+    ) -> [String] {
+        var selected: [String] = []
+        for (blockIndex, block) in blocks.enumerated() {
+            guard case .list(let items) = block else { continue }
+            for (itemIndex, item) in items.enumerated() {
+                guard let initial = item.checked,
+                      selections["\(blockIndex):\(itemIndex)"] ?? initial else { continue }
+                selected.append(item.text)
+            }
+        }
+        return selected
+    }
+
     static func parse(_ source: String) -> [AgentMessageBlock] {
         let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
         if source.utf8.count <= 65_536, let first = trimmed.first,

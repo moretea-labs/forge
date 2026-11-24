@@ -77,6 +77,7 @@ struct AgentAssistantMessageBody: View {
   }
   var onReplySelection: ((String) -> Void)? = nil
   @State private var taskSelections: [String: Bool] = [:]
+  @State private var selectedTaskCache: [String] = []
   @State private var blockCache = AgentMessageBlockCache()
 
   private var blocks: [AgentMessageBlock] { blockCache.blocks(for: text) }
@@ -86,9 +87,9 @@ struct AgentAssistantMessageBody: View {
       ForEach(blocks.indices, id: \.self) { index in
         content(blocks[index], blockIndex: index)
       }
-      if onReplySelection != nil, !selectedTasks.isEmpty {
+      if onReplySelection != nil, !selectedTaskCache.isEmpty {
         Button {
-          onReplySelection?("我选择：\n" + selectedTasks.map { "- " + $0 }.joined(separator: "\n"))
+          onReplySelection?("我选择：\n" + selectedTaskCache.map { "- " + $0 }.joined(separator: "\n"))
         } label: {
           Label("将勾选项填入输入框", systemImage: "arrow.turn.down.right")
             .font(.system(size: 10.5, weight: .medium))
@@ -108,18 +109,15 @@ struct AgentAssistantMessageBody: View {
         NSWorkspace.shared.open(url)
         return .handled
       })
+    .onAppear(perform: refreshSelectedTaskCache)
+    .onChange(of: text) { _ in refreshSelectedTaskCache() }
   }
 
-  private var selectedTasks: [String] {
-    blocks.enumerated().flatMap { blockIndex, block -> [String] in
-      guard case .list(let items) = block else { return [] }
-      return items.enumerated().compactMap { itemIndex, item in
-        guard let initial = item.checked,
-          taskSelections["\(blockIndex):\(itemIndex)"] ?? initial
-        else { return nil }
-        return item.text
-      }
-    }
+  private func refreshSelectedTaskCache() {
+    selectedTaskCache = AgentMessageBlock.selectedChecklistItems(
+      in: blocks,
+      selections: taskSelections
+    )
   }
 
   @ViewBuilder
@@ -165,6 +163,7 @@ struct AgentAssistantMessageBody: View {
               let isChecked = taskSelections[key] ?? original
               Button {
                 taskSelections[key] = !isChecked
+                refreshSelectedTaskCache()
               } label: {
                 Image(systemName: isChecked ? "checkmark.square.fill" : "square")
                   .font(.system(size: 13))

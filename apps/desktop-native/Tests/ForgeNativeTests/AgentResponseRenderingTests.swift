@@ -160,6 +160,32 @@ final class AgentResponseRenderingTests: XCTestCase {
         XCTAssertEqual(parsedInputs, ["{\"state\":", "{\"state\":\"ready\"}"])
     }
 
+    func testSelectedChecklistItemsUsesInitialAndUserOverridesWithoutBodyRescans() {
+        let blocks: [AgentMessageBlock] = [
+            .markdown("Choose one"),
+            .list([
+                AgentListItem(marker: "", text: "Already checked", indent: 0, checked: true),
+                AgentListItem(marker: "", text: "Initially unchecked", indent: 0, checked: false),
+                AgentListItem(marker: "•", text: "Ordinary item", indent: 0, checked: nil)
+            ]),
+            .list([
+                AgentListItem(marker: "", text: "Second group", indent: 0, checked: false)
+            ])
+        ]
+
+        XCTAssertEqual(
+            AgentMessageBlock.selectedChecklistItems(in: blocks, selections: [:]),
+            ["Already checked"]
+        )
+        XCTAssertEqual(
+            AgentMessageBlock.selectedChecklistItems(
+                in: blocks,
+                selections: ["1:0": false, "1:1": true, "2:0": true]
+            ),
+            ["Initially unchecked", "Second group"]
+        )
+    }
+
     func testInlineMarkdownCacheReusesAttributedParsingForSameSnapshot() {
         var parseCount = 0
         let cache = AgentInlineMarkdownCache { source in
