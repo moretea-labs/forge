@@ -219,7 +219,10 @@ struct ForgeWorkspaceView: View {
         return Button {
             openSidebarDestination(destination)
         } label: {
-            ForgeGlyph(destination.glyph, role:.rail, active:selected)
+            Image(systemName:destination.railSystemImage)
+                .font(.system(size:ForgeClientDesign.Icon.railPoint,weight:.regular))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
                 .frame(width:32,height:32)
                 .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
                 .forgeChromeSurface(selected:selected,cornerRadius:8)

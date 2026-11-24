@@ -44,6 +44,10 @@ final class ForgeClientLayoutTests: XCTestCase {
     let glyphs = ForgeSidebarDestination.allCases.map(\.glyph)
     XCTAssertEqual(Set(glyphs).count, glyphs.count)
     XCTAssertEqual(glyphs, [.chat, .folder, .board, .tasks, .library, .analytics, .settings])
+
+    let railSymbols = ForgeSidebarDestination.allCases.map(\.railSystemImage)
+    XCTAssertEqual(Set(railSymbols).count, railSymbols.count)
+    XCTAssertTrue(railSymbols.allSatisfy { !$0.isEmpty })
   }
 
   func testEveryCustomGlyphFitsTheSharedOutlineGrid() {

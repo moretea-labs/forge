@@ -548,77 +548,87 @@ struct ZenWorkspacePane: View {
                         projectDirectoryRestoreContext=nil
                         showingProjectDirectory = true
                     } label: {
-                        Label("项目",systemImage:"folder")
+                        Image(systemName:"folder")
+                            .font(.system(size:12,weight:.regular))
+                            .frame(width:26,height:26)
                     }
                     .buttonStyle(.plain)
+                    .help("项目")
+                    .accessibilityLabel("项目")
                     .accessibilityIdentifier("zen.projects.open")
+
                     Button {
-                        goalDraft = ""
-                        showingGoalSheet = true
+                        newTitle = ""; newOutcome = ""; newCriteria = ""
+                        newTaskStatus = "planned"; newPriority = "normal"; newAssignee = ""
+                        newDependencyRequirementIds=[]; newDependencyIdDraft=""
+                        model.error = nil
+                        showingRequirementSheet = true
                     } label: {
-                        Label("描述目标",systemImage:"sparkles")
+                        Image(systemName:"plus")
+                            .font(.system(size:12,weight:.regular))
+                            .frame(width:26,height:26)
                     }
                     .buttonStyle(.plain)
-                    .disabled(model.selectedProjectId == nil || model.busy || model.zenRefinementActive)
-                    .help(model.zenRefinementActive ? "自动精化进行中，请先按 Esc 停止" : "描述并分析新的目标")
-                    .accessibilityIdentifier("zen.goal.describe")
-                    if reviewableProposals.count > 1 {
-                        Menu {
-                            ForEach(reviewableProposals,id:\.threadId) { candidate in
-                                Button(candidate.menuLabel) {
-                                    reviewProposal(threadId:candidate.threadId)
+                    .disabled(model.selectedProjectId == nil)
+                    .help("新建任务")
+                    .accessibilityLabel("新建任务")
+                    .accessibilityIdentifier("zen.requirement.new")
+
+                    Menu {
+                        Button {
+                            goalDraft = ""
+                            showingGoalSheet = true
+                        } label: {
+                            Label("描述目标",systemImage:"sparkles")
+                        }
+                        .disabled(model.selectedProjectId == nil || model.busy || model.zenRefinementActive)
+                        .accessibilityIdentifier("zen.goal.describe")
+
+                        if reviewableProposals.count > 1 {
+                            Menu("审阅提案") {
+                                ForEach(reviewableProposals,id:\.threadId) { candidate in
+                                    Button(candidate.menuLabel) {
+                                        reviewProposal(threadId:candidate.threadId)
+                                    }
+                                }
+                            }
+                            .accessibilityIdentifier("zen.proposal.open")
+                        } else {
+                            Button {
+                                reviewLatestProposal()
+                            } label: {
+                                Label("审阅提案",systemImage:"doc.text.magnifyingglass")
+                            }
+                            .disabled(model.selectedProjectId == nil || model.busy || reviewableProposals.isEmpty)
+                            .accessibilityIdentifier("zen.proposal.open")
+                        }
+
+                        Divider()
+
+                        Button {
+                            if model.selectedProjectId != nil {
+                                Task {
+                                    await model.loadPage()
+                                    await model.refreshPlanningAutopilotStatuses()
+                                    if boardMode == "github",model.projectRepositoryId != nil {
+                                        await model.loadZenGitHubBoard()
+                                    }
                                 }
                             }
                         } label: {
-                            Label("审阅提案",systemImage:"doc.text.magnifyingglass")
+                            Label("刷新当前项目",systemImage:"arrow.clockwise")
                         }
-                        .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                        .disabled(model.selectedProjectId == nil || model.busy)
-                        .accessibilityIdentifier("zen.proposal.open")
-                    } else {
-                        Button {
-                            reviewLatestProposal()
-                        } label: {
-                            Label("审阅提案",systemImage:"doc.text.magnifyingglass")
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(model.selectedProjectId == nil || model.busy || reviewableProposals.isEmpty)
-                        .accessibilityIdentifier("zen.proposal.open")
-                    }
-                    Menu {
-                        Button("新建任务") {
-                            newTitle = ""; newOutcome = ""; newCriteria = ""
-                            newTaskStatus = "planned"; newPriority = "normal"; newAssignee = ""
-                            newDependencyRequirementIds=[]; newDependencyIdDraft=""
-                            model.error = nil
-                            showingRequirementSheet = true
-                        }
+                        .disabled(model.selectedProjectId == nil || model.checkoutContextLoading)
                     } label: {
-                        Image(systemName:"plus").frame(width:28,height:28)
+                        Image(systemName:"ellipsis")
+                            .font(.system(size:12,weight:.medium))
+                            .frame(width:26,height:26)
                     }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                    .fixedSize()
-                    .disabled(model.selectedProjectId == nil)
-                    .help("新建任务")
-                    .accessibilityIdentifier("zen.requirement.new")
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .help("更多")
+                    .accessibilityLabel("更多看板操作")
                 }
-                Button {
-                    if model.selectedProjectId != nil {
-                        Task {
-                            await model.loadPage()
-                            await model.refreshPlanningAutopilotStatuses()
-                            if boardMode == "github",model.projectRepositoryId != nil {
-                                await model.loadZenGitHubBoard()
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName:"arrow.clockwise").frame(width:28,height:28)
-                }
-                .buttonStyle(.plain)
-                .disabled(model.selectedProjectId == nil || model.checkoutContextLoading)
-                .help("刷新当前项目")
-                .accessibilityLabel("刷新当前项目")
         }
     }
 

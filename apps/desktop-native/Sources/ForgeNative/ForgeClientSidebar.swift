@@ -65,6 +65,19 @@ enum ForgeSidebarDestination: String, CaseIterable {
     }
   }
 
+  /// Native rail symbols keep the shell optically consistent with macOS tooling.
+  var railSystemImage: String {
+    switch self {
+    case .agent: return "bubble.left"
+    case .projects: return "folder"
+    case .workbench: return "rectangle.3.group"
+    case .automations: return "checklist"
+    case .resources: return "paperclip"
+    case .analytics: return "chart.xyaxis.line"
+    case .settings: return "slider.horizontal.3"
+    }
+  }
+
   /// Primary icon-rail entries (会话 / 项目 / 看板).
   static var primaryRail: [ForgeSidebarDestination] { [.agent, .projects, .workbench] }
   /// Tool destinations shown directly in the rail (never collapsed into a menu).
