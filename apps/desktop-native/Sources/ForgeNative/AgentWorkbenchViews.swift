@@ -207,7 +207,9 @@ struct AgentPane: View {
             Spacer(minLength:8)
             agentWorkspaceStatusChip
                 .frame(width:ForgeClientDesign.Shell.workspaceStatusSlotWidth,alignment:.trailing)
-            inspectorToggle
+            if !workSurfaceVisible {
+                inspectorToggle
+            }
         }
         .padding(.horizontal,16)
         .frame(height:ForgeClientDesign.Shell.workspaceHeaderHeight)
@@ -286,11 +288,11 @@ struct AgentPane: View {
                 let selected = selectedWorkSurface == surface
                 Button { openWorkSurface(surface) } label: {
                     Text(surface.title)
-                        .font(.system(size:12,weight:selected ? .medium : .regular))
+                        .font(.system(size:11,weight:selected ? .medium : .regular))
                         .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
                         .lineLimit(1)
-                        .padding(.horizontal,8)
-                        .frame(height:30)
+                        .padding(.horizontal,6)
+                        .frame(height:26)
                         .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
                         .forgeChromeSurface(selected:selected,cornerRadius:8)
                 }
@@ -323,8 +325,8 @@ struct AgentPane: View {
             .accessibilityLabel("关闭工作面板")
             .accessibilityIdentifier("agent.work-surface.close")
         }
-        .padding(.horizontal,12)
-        .padding(.vertical,5)
+        .padding(.horizontal,10)
+        .padding(.vertical,3)
         .accessibilityElement(children:.contain)
         .accessibilityIdentifier("agent.inspector.tabs")
     }
@@ -906,17 +908,6 @@ struct AgentPane: View {
                         .padding(.bottom,2)
                 }
                 HStack(spacing:5) {
-                    Button {
-                        openWorkSurface(.capabilities)
-                    } label: {
-                        ForgeGlyph(.capabilities, active:workSurfaceVisible && selectedWorkSurface == .capabilities)
-                            .forgeChromeSurface(selected:workSurfaceVisible && selectedWorkSurface == .capabilities,cornerRadius:8)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Agent 能力与扩展")
-                    .accessibilityLabel("打开 Agent 能力")
-                    .accessibilityIdentifier("agent.capabilities.open")
-
                     Menu {
                         Button {
                             chooseAgentFiles(model)
