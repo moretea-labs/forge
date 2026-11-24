@@ -334,13 +334,29 @@ function requireAppDocumentPath(value: unknown): string {
   const path = requireString(value, 'path');
   const parts = path.split('/');
   if (parts.length !== 2 || parts[0] !== 'Documents'
-    || !/^[^\\/\u0000-\u001f\u007f]+\.(?:pdf|png|jpe?g|heic)$/i.test(parts[1] ?? '')
+    || !/^[^\\/\p{Cc}]+\.(?:pdf|png|jpe?g|heic)$/iu.test(parts[1] ?? '')
     || parts[1] === '.' || parts[1] === '..' || path.length > 512) {
     throw new AssistantPluginError('IOS_DEVICE_DOCUMENT_PATH_INVALID',
       'Provide one exact PDF/image filename immediately within the selected app Documents directory.',
       { retryable: false });
   }
   return path;
+}
+
+/**
+ * PDF EOF framing permits only NUL, TAB, LF, FF, CR and ASCII space
+ * after %%EOF, matching the legacy validation byte for byte.
+ */
+export function hasPdfEofMarkerAtTail(bytes: Buffer): boolean {
+  const tail = bytes.subarray(-2048);
+  let end = tail.length;
+  while (end > 0) {
+    const byte = tail[end - 1]!;
+    if (byte !== 0x00 && byte !== 0x09 && byte !== 0x0a
+      && byte !== 0x0c && byte !== 0x0d && byte !== 0x20) break;
+    end -= 1;
+  }
+  return end >= 5 && tail.subarray(end - 5, end).toString('ascii') === '%%EOF';
 }
 
 function requireBundleId(value: unknown): string {
@@ -1789,7 +1805,7 @@ export async function executeIosPhysicalDeviceAction(input: AssistantPluginActio
         // become a successful medical-document export or organized index entry.
         const isExpectedFormat = ext === '.pdf'
           ? bytes.subarray(0, 5).toString('ascii') === '%PDF-'
-            && /%%EOF[\x00\x09\x0a\x0c\x0d\x20]*$/.test(bytes.subarray(-2048).toString('latin1'))
+            && hasPdfEofMarkerAtTail(bytes)
           : ext === '.png' ? pngDisplayGeometry(bytes) !== undefined
             : ext === '.jpg' || ext === '.jpeg'
               ? bytes.length > 4 && bytes.subarray(0, 3).toString('hex') === 'ffd8ff'
