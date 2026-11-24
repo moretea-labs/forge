@@ -218,8 +218,6 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
   if (task.status === 'done') {
     if (
       !completionEvidenceComplete(task.verification, {
-        issueId: issue.id,
-        taskId: task.id,
         targetBranch: resolveCompletionTargetBranch(repoRoot),
       })
     ) {
@@ -617,8 +615,6 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
         ]
       : [];
   const completionReceipt = buildDirectEditCompletionReceipt({
-    issueId: issue.id,
-    taskId: task.id,
     editSessionId: session.sessionId,
     integrationEvidence,
     changedPaths,
@@ -837,9 +833,7 @@ function blocker(
 }
 
 function buildDirectEditCompletionReceipt(input: {
-  issueId: string;
-  taskId: string;
-  editSessionId?: string;
+  editSessionId: string;
   integrationEvidence: Omit<IntegrationEvidence, 'runId'>;
   changedPaths: readonly string[];
   cleanupWarnings?: CompletionMaintenanceWarning[];
@@ -866,13 +860,8 @@ function buildDirectEditCompletionReceipt(input: {
   const recordedAt = nowIso();
   return {
     schemaVersion: 1,
-    receiptId: directEditReceiptId(
-      input.editSessionId ?? input.issueId + '/' + input.taskId,
-      input.integrationEvidence.targetRevision,
-    ),
+    receiptId: directEditReceiptId(input.editSessionId, input.integrationEvidence.targetRevision),
     source: 'direct_edit',
-    issueId: input.issueId,
-    taskId: input.taskId,
     editSessionId: input.editSessionId,
     targetBranch: input.integrationEvidence.targetBranch,
     targetRevision: input.integrationEvidence.targetRevision,

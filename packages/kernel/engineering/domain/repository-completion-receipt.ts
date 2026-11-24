@@ -26,13 +26,11 @@ export interface CompletionResourceBlocker {
   recordedAt: string;
 }
 
-/** Kernel-owned repository delivery receipt; legacy Task/Issue fields remain compatibility projection identity. */
+/** Kernel-owned repository delivery receipt derived from native execution, Git, and resource facts. */
 export interface RepositoryCompletionReceipt {
   schemaVersion: 1;
   receiptId: string;
   source: 'direct_edit' | 'isolated_agent_run' | 'workspace_run' | 'remote_no_change_execution';
-  issueId: string;
-  taskId: string;
   runId?: string;
   editSessionId?: string;
   targetBranch: string;

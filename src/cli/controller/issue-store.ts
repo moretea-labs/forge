@@ -823,14 +823,12 @@ export function acceptVerifiedTask(
   const verification = task.verification;
   if (
     !completionEvidenceComplete(verification, {
-      issueId: issue.id,
-      taskId: task.id,
       runId: verification.runId,
       targetBranch: resolveCompletionTargetBranch(repoRoot),
     })
   ) {
     throw new Error(
-      'task completion requires a complete delivery receipt bound to this Task and integration target, or compatible legacy Run evidence',
+      'task completion requires a complete delivery receipt bound to its verification and integration target, or compatible legacy Run evidence',
     );
   }
   const integration = verification.completionReceipt

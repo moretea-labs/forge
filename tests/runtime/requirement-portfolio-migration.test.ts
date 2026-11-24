@@ -30,8 +30,6 @@ function completionReceipt(issueId: string, taskId: string) {
     schemaVersion: 1 as const,
     receiptId: `REC-${issueId}-${taskId}`,
     source: 'direct_edit' as const,
-    issueId,
-    taskId,
     targetBranch: 'main',
     targetRevision: `rev-${issueId}`,
     changedPaths: [`src/${issueId}.ts`],

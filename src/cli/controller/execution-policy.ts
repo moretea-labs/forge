@@ -17,8 +17,6 @@ export interface TaskExecutionPolicy {
 }
 
 export interface CompletionReceiptExpectation {
-  issueId?: string;
-  taskId?: string;
   runId?: string;
   editSessionId?: string;
   targetBranch?: string;
@@ -37,13 +35,9 @@ export function completionReceiptComplete(
   return Boolean(receipt
     && receipt.schemaVersion === 1
     && receipt.receiptId.trim()
-    && receipt.issueId.trim()
-    && receipt.taskId.trim()
     && receipt.targetBranch.trim()
     && receipt.targetRevision.trim()
     && receiptSourceIdentityComplete(receipt)
-    && (!expected.issueId || receipt.issueId === expected.issueId)
-    && (!expected.taskId || receipt.taskId === expected.taskId)
     && (!expected.runId || receipt.runId === expected.runId)
     && (!expected.editSessionId || receipt.editSessionId === expected.editSessionId)
     && (!expected.targetBranch || receipt.targetBranch === expected.targetBranch)
