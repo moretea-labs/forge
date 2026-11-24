@@ -12,12 +12,12 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
   }
 
   func testInspectorOverlayWidthIsClampedWithoutChangingConversationGeometry() {
-    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 560), 360)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 560), 340)
     XCTAssertEqual(
       AgentWorkSurfaceLayout.overlayWidth(availableWidth: 958),
-      402.36,
+      364.04,
       accuracy: 0.001)
-    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 1400), 460)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 1400), 420)
   }
 
   func testClosedAndMaximizedWorkSurfacePresentationIsExplicit() {
@@ -35,7 +35,7 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
     XCTAssertEqual(
       AgentConversationToolbarContract.requiredActionIdentifiers, ["agent.inspector.toggle"])
     XCTAssertEqual(
-      AgentWorkSurface.allCases.map(\.rawValue), ["changes", "files", "planning", "knowledge"])
+      AgentWorkSurface.allCases.map(\.rawValue), ["changes", "files", "planning", "knowledge", "capabilities"])
     XCTAssertEqual(AgentConversationToolbarContract.filesIdentifier, "agent.files")
     XCTAssertFalse(
       AgentConversationToolbarContract.requiredActionIdentifiers.contains("agent.changes"))
@@ -48,9 +48,11 @@ final class AgentWorkSurfaceLayoutTests: XCTestCase {
     XCTAssertEqual(AgentWorkSurface.preferredTab(selected: .knowledge, available: all), .knowledge)
     let noWorkspace = AgentWorkSurface.availableTabs(
       hasCheckout: false, hasProject: false, hasRepository: false)
-    XCTAssertEqual(noWorkspace, [.files])
+    XCTAssertEqual(noWorkspace, [.files, .capabilities])
     XCTAssertEqual(
       AgentWorkSurface.preferredTab(selected: .changes, available: noWorkspace), .files)
     XCTAssertEqual(AgentWorkSurface.preferredTab(selected: .files, available: noWorkspace), .files)
+    XCTAssertEqual(
+      AgentWorkSurface.preferredTab(selected: .capabilities, available: noWorkspace), .capabilities)
   }
 }

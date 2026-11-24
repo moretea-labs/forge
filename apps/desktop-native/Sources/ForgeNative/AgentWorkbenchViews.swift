@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 /// On-demand inspector tabs, never a permanently visible right activity rail.
 enum AgentWorkSurface: String, CaseIterable, Identifiable, Equatable {
-    case changes, files, planning, knowledge
+    case changes, files, planning, knowledge, capabilities
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -12,6 +12,7 @@ enum AgentWorkSurface: String, CaseIterable, Identifiable, Equatable {
         case .files: return "附件"
         case .planning: return "规划"
         case .knowledge: return "知识"
+        case .capabilities: return "能力"
         }
     }
     var symbol: String {
@@ -20,6 +21,7 @@ enum AgentWorkSurface: String, CaseIterable, Identifiable, Equatable {
         case .files: return "paperclip"
         case .planning: return "list.bullet.indent"
         case .knowledge: return "books.vertical"
+        case .capabilities: return "sparkles.rectangle.stack"
         }
     }
     static func availableTabs(hasCheckout: Bool, hasProject: Bool, hasRepository: Bool) -> [Self] {
@@ -29,6 +31,7 @@ enum AgentWorkSurface: String, CaseIterable, Identifiable, Equatable {
             case .files: return true
             case .planning: return hasProject
             case .knowledge: return hasRepository
+            case .capabilities: return true
             }
         }
     }
@@ -52,8 +55,8 @@ enum AgentConversationToolbarContract {
 /// replaces the conversation.
 enum AgentWorkSurfaceLayout {
     static let conversationMinimumWidth: CGFloat = 420
-    static let workSurfaceMinimumWidth: CGFloat = 360
-    static let workSurfaceMaximumWidth: CGFloat = 460
+    static let workSurfaceMinimumWidth: CGFloat = 340
+    static let workSurfaceMaximumWidth: CGFloat = 420
 
     enum Presentation: Equatable {
         case conversationOnly
@@ -68,7 +71,7 @@ enum AgentWorkSurfaceLayout {
 
     static func overlayWidth(availableWidth: CGFloat) -> CGFloat {
         min(workSurfaceMaximumWidth,
-            max(workSurfaceMinimumWidth, availableWidth * 0.42))
+            max(workSurfaceMinimumWidth, availableWidth * 0.38))
     }
 }
 
@@ -833,6 +836,17 @@ struct AgentPane: View {
                     .scrollIndicators(.hidden)
                 }
                 HStack(spacing:5) {
+                    Button {
+                        openWorkSurface(.capabilities)
+                    } label: {
+                        Image(systemName:"sparkles.rectangle.stack")
+                            .forgeChromeIcon(active:workSurfaceVisible && selectedWorkSurface == .capabilities)
+                    }
+                    .buttonStyle(.plain)
+                    .help("能力：插件、Skills 与外部工具")
+                    .accessibilityLabel("打开 Agent 能力")
+                    .accessibilityIdentifier("agent.capabilities.open")
+
                     Menu {
                         Button {
                             chooseAgentFiles(model)
@@ -1170,6 +1184,9 @@ struct AgentPane: View {
         if newlyOpened && surface == .changes {
             Task { await model.refreshAgentChanges() }
         }
+        if newlyOpened && surface == .capabilities {
+            Task { await model.loadPluginManagement() }
+        }
     }
 
     private func closeWorkSurface() {
@@ -1211,6 +1228,14 @@ struct AgentPane: View {
             .opacity(selectedWorkSurface == .knowledge ? 1 : 0)
             .allowsHitTesting(selectedWorkSurface == .knowledge)
             .accessibilityHidden(selectedWorkSurface != .knowledge)
+
+            AgentCapabilitiesInspector(model:model) {
+                closeWorkSurface()
+                model.show(.plugins)
+            }
+            .opacity(selectedWorkSurface == .capabilities ? 1 : 0)
+            .allowsHitTesting(selectedWorkSurface == .capabilities)
+            .accessibilityHidden(selectedWorkSurface != .capabilities)
         }
             .frame(maxWidth:.infinity,maxHeight:.infinity)
         }
@@ -1707,6 +1732,229 @@ private func chooseAgentImages(_ model: NativeWorkspace) {
 func copyAgentText(_ text: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text,forType:.string)
+}
+
+struct AgentCapabilitiesInspector: View {
+    @ObservedObject var model: NativeWorkspace
+    let onManagePlugins: () -> Void
+
+    private var installedPlugins: [PluginManagementItem] {
+        model.pluginManagement.filter { $0.installedVersion != nil }
+    }
+
+    private var readyProjectPlugins: [ProjectPluginDetail] {
+        model.plugins.filter { $0.enabled && $0.ready }
+    }
+
+    private var currentToolCount: Int {
+        model.plugins.reduce(0) { $0 + $1.actionCount }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment:.leading,spacing:14) {
+                Text("当前 Agent 的扩展能力；未接入项只预留位置，不伪装成可用。")
+                    .font(.system(size:10.5))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .fixedSize(horizontal:false,vertical:true)
+
+                Text("当前可用")
+                    .font(.system(size:10.5,weight:.semibold))
+                    .foregroundStyle(ForgePalette.secondary)
+
+                capabilityRow(
+                    icon:"puzzlepiece.extension",
+                    title:"Plugins",
+                    detail:pluginSummary,
+                    status:pluginStatus,
+                    active:!installedPlugins.isEmpty
+                )
+
+                if model.pluginManagementLoading && model.pluginManagement.isEmpty {
+                    HStack(spacing:8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在读取插件…")
+                            .font(.system(size:10.5))
+                            .foregroundStyle(ForgePalette.secondary)
+                    }
+                    .padding(.top,2)
+                } else if let error = model.pluginManagementError {
+                    HStack(spacing:7) {
+                        Image(systemName:"exclamationmark.circle")
+                            .font(.system(size:9.5,weight:.medium))
+                        Text("插件目录暂时不可用")
+                            .font(.system(size:10))
+                            .lineLimit(1)
+                        Spacer(minLength:6)
+                        Button("重试") {
+                            Task { await model.loadPluginManagement() }
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size:9.5,weight:.medium))
+                    }
+                    .foregroundStyle(Color.orange.opacity(0.88))
+                    .help(error)
+                } else if !installedPlugins.isEmpty {
+                    VStack(alignment:.leading,spacing:8) {
+                        Text("已安装")
+                            .font(.system(size:10.5,weight:.semibold))
+                            .foregroundStyle(ForgePalette.secondary)
+                        ForEach(Array(installedPlugins.prefix(5))) { item in
+                            HStack(spacing:8) {
+                                Circle()
+                                    .fill(item.enabled == false ? Color.orange : Color.green)
+                                    .frame(width:6,height:6)
+                                VStack(alignment:.leading,spacing:1) {
+                                    Text(item.name)
+                                        .font(.system(size:10.75,weight:.medium))
+                                        .foregroundStyle(ForgePalette.ink)
+                                        .lineLimit(1)
+                                    Text(item.installedVersion ?? item.version)
+                                        .font(.system(size:9,design:.monospaced))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                Spacer(minLength:6)
+                                if item.authorizationCount > 0 {
+                                    Text("\(item.authorizationCount) 授权")
+                                        .font(.system(size:9))
+                                        .foregroundStyle(ForgePalette.secondary)
+                                }
+                            }
+                            .padding(.vertical,3)
+                        }
+                        if installedPlugins.count > 5 {
+                            Text("另有 \(installedPlugins.count - 5) 个插件")
+                                .font(.system(size:9.5))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+
+                Divider().opacity(0.25)
+
+                VStack(alignment:.leading,spacing:2) {
+                    Text("扩展预留")
+                        .font(.system(size:10.5,weight:.semibold))
+                        .foregroundStyle(ForgePalette.secondary)
+                    Text("后端接入后直接激活，不再改变 Inspector 布局。")
+                        .font(.system(size:9.5))
+                        .foregroundStyle(.tertiary)
+                }
+
+                capabilityRow(
+                    icon:"sparkles.rectangle.stack",
+                    title:"Skills",
+                    detail:"项目级 / 个人级发现、启用与显式调用。"
+                )
+
+                capabilityRow(
+                    icon:"point.3.connected.trianglepath.dotted",
+                    title:"MCP / 外部工具",
+                    detail:"与 Plugin manifest、Skill dependencies 和工具权限统一展示。"
+                )
+
+                capabilityRow(
+                    icon:"person.2.badge.gearshape",
+                    title:"Agents",
+                    detail:"自定义 Agent / Mode 配置与会话级切换。"
+                )
+
+                capabilityRow(
+                    icon:"terminal",
+                    title:"Commands",
+                    detail:"显式命令与快捷调用，不增加常驻工具栏。"
+                )
+
+                capabilityRow(
+                    icon:"arrow.triangle.branch",
+                    title:"Hooks",
+                    detail:"Agent 生命周期事件与自动化钩子状态。"
+                )
+
+                Divider().opacity(0.25)
+
+                Button {
+                    onManagePlugins()
+                } label: {
+                    HStack(spacing:7) {
+                        Image(systemName:"slider.horizontal.3")
+                            .font(.system(size:10.5,weight:.medium))
+                        Text("管理插件与授权")
+                            .font(.system(size:10.75,weight:.medium))
+                        Spacer()
+                        Image(systemName:"chevron.right")
+                            .font(.system(size:9,weight:.semibold))
+                    }
+                    .foregroundStyle(ForgePalette.secondary)
+                    .padding(.vertical,7)
+                    .contentShape(Rectangle())
+                    .forgeHoverFill(cornerRadius:8)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("agent.capabilities.manage-plugins")
+            }
+            .padding(14)
+            .frame(maxWidth:.infinity,alignment:.leading)
+        }
+        .task {
+            if model.pluginManagement.isEmpty && !model.pluginManagementLoading {
+                await model.loadPluginManagement()
+            }
+        }
+        .accessibilityIdentifier("agent.capabilities")
+    }
+
+    private var pluginStatus: String {
+        if model.pluginManagementLoading && model.pluginManagement.isEmpty { return "读取中" }
+        if model.pluginManagementError != nil && model.pluginManagement.isEmpty { return "未知" }
+        return installedPlugins.isEmpty ? "未安装" : "\(installedPlugins.count) 个"
+    }
+
+    private var pluginSummary: String {
+        if model.pluginManagementError != nil && model.pluginManagement.isEmpty {
+            return "插件目录状态暂未确认；可重试或进入管理页查看。"
+        }
+        if !model.plugins.isEmpty {
+            return "\(readyProjectPlugins.count)/\(model.plugins.count) 项目插件就绪 · \(currentToolCount) tools"
+        }
+        if !installedPlugins.isEmpty {
+            return "已安装 \(installedPlugins.count) 个；项目绑定后显示可调用能力。"
+        }
+        return "Forge 已有官方插件、健康与授权管理；可在这里快速进入。"
+    }
+
+    private func capabilityRow(
+        icon: String,
+        title: String,
+        detail: String,
+        status: String? = nil,
+        active: Bool = false
+    ) -> some View {
+        HStack(alignment:.top,spacing:10) {
+            Image(systemName:icon)
+                .font(.system(size:12,weight:.medium))
+                .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
+                .frame(width:20)
+                .padding(.top,1)
+            VStack(alignment:.leading,spacing:2) {
+                Text(title)
+                    .font(.system(size:11.5,weight:.medium))
+                    .foregroundStyle(ForgePalette.ink)
+                Text(detail)
+                    .font(.system(size:9.75))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal:false,vertical:true)
+            }
+            Spacer(minLength:8)
+            if let status {
+                Text(status)
+                    .font(.system(size:9.5,weight:.medium))
+                    .foregroundStyle(active ? Color.green : ForgePalette.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical,6)
+    }
 }
 
 struct AgentChangesPane: View {

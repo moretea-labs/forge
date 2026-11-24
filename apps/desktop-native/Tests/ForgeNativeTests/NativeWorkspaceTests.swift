@@ -8,12 +8,12 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(
       AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: false),
       .overlay)
-    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 560), 360)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 560), 340)
     XCTAssertEqual(
       AgentWorkSurfaceLayout.overlayWidth(availableWidth: 958),
-      402.36,
+      364.04,
       accuracy: 0.001)
-    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 1400), 460)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 1400), 420)
   }
 
   @MainActor

@@ -1573,22 +1573,30 @@ struct ForgeWorkspaceView: View {
     private var main: some View {
         VStack(spacing:0) {
             if let error = model.error, model.page != .schedule && model.page != .plugins {
-                HStack(spacing:9) {
+                HStack(spacing:7) {
                     Image(systemName:"exclamationmark.circle")
+                        .font(.system(size:10.5,weight:.medium))
                     Text(error)
-                        .lineLimit(4)
-                        .fixedSize(horizontal:false,vertical:true)
-                        .textSelection(.enabled)
-                    Spacer()
-                    Button("关闭") { model.error = nil }.buttonStyle(.plain)
+                        .font(.system(size:10.5))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(error)
+                    Spacer(minLength:8)
+                    Button { model.error = nil } label: {
+                        Image(systemName:"xmark")
+                            .font(.system(size:9,weight:.semibold))
+                            .frame(width:22,height:22)
+                    }
+                    .buttonStyle(.plain)
+                    .help("关闭")
+                    .accessibilityLabel("关闭错误提示")
                 }
-                .font(.system(size:11))
-                .foregroundStyle(Color.orange)
-                .padding(.horizontal,12).padding(.vertical,9)
-                .frame(minHeight:38)
-                .background(Color.orange.opacity(0.10),
-                            in:RoundedRectangle(cornerRadius:9,style:.continuous))
-                .padding(.horizontal,14).padding(.top,8)
+                .foregroundStyle(Color.orange.opacity(0.92))
+                .padding(.horizontal,10)
+                .frame(height:30)
+                .background(Color.orange.opacity(0.065),
+                            in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                .padding(.horizontal,10).padding(.top,4)
             }
             switch model.page {
             case .agent:
