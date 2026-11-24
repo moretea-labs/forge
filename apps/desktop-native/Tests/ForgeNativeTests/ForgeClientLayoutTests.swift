@@ -5,6 +5,8 @@ import XCTest
 
 final class ForgeClientLayoutTests: XCTestCase {
   func testCompactWindowsReclaimSidebarWidthWithoutCollapsingNavigation() {
+    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 720), 204)
+    XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 800), 224, accuracy: 0.001)
     XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 860), 228)
     XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1100), 231)
     XCTAssertEqual(ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1260), 264.6, accuracy: 0.001)
@@ -17,12 +19,16 @@ final class ForgeClientLayoutTests: XCTestCase {
     XCTAssertEqual(result, result.sorted())
     XCTAssertTrue(
       result.allSatisfy {
-        $0 >= ForgeClientDesign.Shell.compactSidebarMin
+        $0 >= ForgeClientDesign.Shell.iconRailWidth + ForgeClientDesign.Shell.compactSidebarListMin
           && $0 <= ForgeClientDesign.Shell.sidebarIdeal
       })
   }
 
   func testSidebarWidthChangesContinuouslyAboveCompactMinimum() {
+    let narrowBefore = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 799)
+    let narrowAfter = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 800)
+    XCTAssertEqual(narrowAfter - narrowBefore, 0.28, accuracy: 0.001)
+
     let before = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1259)
     let after = ForgeClientDesign.Shell.sidebarWidth(windowWidth: 1260)
     XCTAssertEqual(after - before, 0.21, accuracy: 0.001)
@@ -77,6 +83,7 @@ final class ForgeClientLayoutTests: XCTestCase {
     XCTAssertEqual(ForgeClientDesign.Shell.workspaceStatusSlotWidth, 112)
     XCTAssertEqual(ForgeClientDesign.Shell.composerTextHeight, 38)
     XCTAssertEqual(ForgeClientDesign.Shell.readingGutter, 20)
-    XCTAssertEqual(ForgeClientDesign.Shell.compactSidebarMin, 228)
+    XCTAssertEqual(ForgeClientDesign.Shell.compactSidebarListMin, 152)
+    XCTAssertEqual(ForgeClientDesign.Shell.compactSidebarListIdeal, 176)
   }
 }

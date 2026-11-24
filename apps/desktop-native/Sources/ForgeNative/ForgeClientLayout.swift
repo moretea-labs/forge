@@ -14,12 +14,19 @@ extension ForgeClientDesign.Shell {
     let width = min(readingColumn, max(0, conversationWidth - 2 * readingGutter))
     return width - 2 * composerControlInset < 560
   }
-  /// 52pt icon rail + 176pt compact list; desktop still grows to the existing 288pt ideal.
-  static let compactSidebarMin: CGFloat = iconRailWidth + 176
+  /// Compact windows can reclaim up to 24pt from the list while keeping the icon rail unchanged.
+  static let compactSidebarListMin: CGFloat = 152
+  static let compactSidebarListIdeal: CGFloat = 176
 
   /// Keep navigation usable on compact windows without reserving desktop-width space.
+  /// The compact list grows continuously from 152pt to 176pt, avoiding a resize breakpoint jump.
   static func sidebarWidth(windowWidth: CGFloat) -> CGFloat {
-    min(sidebarIdeal, max(compactSidebarMin, windowWidth * 0.21))
+    let compactList = min(
+      compactSidebarListIdeal,
+      max(compactSidebarListMin, windowWidth * 0.28 - iconRailWidth)
+    )
+    let compactFloor = iconRailWidth + compactList
+    return min(sidebarIdeal, max(compactFloor, windowWidth * 0.21))
   }
 }
 
