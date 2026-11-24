@@ -26,7 +26,7 @@ export type UserFacingPhase =
   | 'needs_attention'
   | 'cancelled';
 
-export interface OperationDigest {
+interface OperationDigest {
   schemaVersion: 1;
   operationId?: string;
   operationType?: string;
@@ -105,7 +105,7 @@ export function classifyUserFacingError(input: {
   return classifyLegacyFailureMessage(input.message);
 }
 
-export function phaseFromJobStatus(status: ExecutionJobStatus | string): UserFacingPhase {
+function phaseFromJobStatus(status: ExecutionJobStatus | string): UserFacingPhase {
   switch (status) {
     case 'queued':
     case 'dispatched':
@@ -303,7 +303,7 @@ export function buildJobOperationDigest(job: ExecutionJob, options: {
   waited?: boolean;
   stillRunning?: boolean;
 } = {}): OperationDigest {
-  const phase = options.stillRunning ? phaseFromJobStatus(job.status) : phaseFromJobStatus(job.status);
+  const phase = phaseFromJobStatus(job.status);
   const terminal = TERMINAL_JOB_STATUSES.has(job.status);
   const operation = typeof job.payload.operation === 'string' ? job.payload.operation : job.type;
   const errorMessage = readableErrorMessage(job);

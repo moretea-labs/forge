@@ -1,6 +1,6 @@
 import type { ExecutionJob } from './types';
 
-export interface ChildReferenceReceiptLike {
+interface ChildReferenceReceiptLike {
   childReference?: unknown;
   result?: Record<string, unknown>;
 }
