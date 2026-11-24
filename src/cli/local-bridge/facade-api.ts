@@ -507,7 +507,6 @@ export async function buildSystemReadiness(
 ): Promise<SystemReadinessViewModel> {
   const runtime = observeRuntimeStatus(ctx.controllerHome);
   const bootstrap = await createSetupBootstrapControlApi({ controllerHome: ctx.controllerHome }).refresh();
-  const runtimeHealth = undefined;
   const freshness = await evaluateConsoleConnectorFreshness(ctx, {
     connectorToolNames: opts.connectorToolNames,
   });
@@ -593,8 +592,6 @@ export async function buildSystemReadiness(
     connectorTone: freshness.connectorTone,
     connectorFreshness: mapConnectorFreshnessView(freshness),
     pendingHandoffCount,
-    runtimeHealth,
-    operationalView: undefined,
     sections,
   };
 }

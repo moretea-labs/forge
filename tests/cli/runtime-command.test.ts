@@ -538,6 +538,8 @@ describe('runtime command surface', () => {
     expect(localBridgeFacade).toContain('observeRuntimeStatus(ctx.controllerHome)');
     expect(localBridgeFacade).not.toContain("from '../controller/lifecycle'");
     expect(localBridgeFacade).not.toContain('buildRuntimeOperationalView');
+    expect(localBridgeFacade).not.toContain('operationalView: undefined');
+    expect(localBridgeFacade).not.toContain('const runtimeHealth = undefined');
     expect(standaloneRecovery).not.toContain('runtime-slots');
     expect(standaloneRecovery).not.toContain('stableIngressUrl');
     expect(standaloneRecovery).not.toContain('supervisorStatus');

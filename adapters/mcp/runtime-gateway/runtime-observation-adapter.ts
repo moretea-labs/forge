@@ -50,12 +50,10 @@ import {
   readRepositoryProjectionSnapshot,
 } from '../../../src/runtime/projections/materialized-view';
 import {
-  buildRuntimeOperationalView,
   classifyRuntimeReadinessSemantics,
   evaluateRuntimeHealth,
   RUNTIME_HEALTH_THRESHOLDS,
   type RuntimeHealthEvaluation,
-  type RuntimeOperationalView,
   type GradedObservation,
 } from '../../../src/runtime/health';
 import { inspectRepositoryRuntimeStorage } from '../../../src/runtime/repositories/runtime-storage';
