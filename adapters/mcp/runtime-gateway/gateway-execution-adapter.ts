@@ -217,36 +217,6 @@ export async function executeGatewayRoutedOperation(
     }
   }
 
-  // Edit-session verification uses the same resource-aware Process Runtime
-  // coordinator as the stable Direct Edit composite below.
-  if (name === 'verify_edit_session' && classification.path === 'fast') {
-    const repository = resolveRepositorySelection({
-      repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
-      checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
-      explicitPath: ctx.explicitRepository?.canonicalRoot,
-      controllerHome: ctx.controllerHome,
-      allowSoleRepository: true,
-    });
-    if (!repository) {
-      return result({
-        accepted: false,
-        mode: 'reject',
-        path: 'reject',
-        message: 'verify_edit_session requires a resolvable repository',
-      });
-    }
-    const editSessionId = String(args.session_id ?? '').trim();
-    if (!editSessionId) {
-      return result({
-        accepted: false,
-        mode: 'reject',
-        path: 'reject',
-        message: 'verify_edit_session requires session_id',
-      });
-    }
-    return runEditSessionValidationViaProcessRuntime(ctx, repository, editSessionId, args);
-  }
-
   // Stable Direct Edit composite: checks are opt-in. The same helper is also
   // used by repository.direct_edit through capability_execute so the canonical
   // capability and the compatibility top-level tool cannot drift.
