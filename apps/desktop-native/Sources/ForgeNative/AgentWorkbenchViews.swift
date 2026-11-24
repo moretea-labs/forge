@@ -320,7 +320,7 @@ struct AgentPane: View {
                     VStack(spacing:0) {
                         ScrollViewReader { reader in
                 ScrollView {
-                    LazyVStack(alignment:.leading,spacing:16) {
+                    LazyVStack(alignment:.leading,spacing:14) {
                         if model.thread?.messages.isEmpty != false {
                             VStack(spacing:12) {
                                 VStack(spacing:5) {
@@ -381,6 +381,13 @@ struct AgentPane: View {
                                 // no longer consume the whole conversation viewport.
                                 let isLongInstruction = message.text.count > 480
                                     || message.text.filter { $0 == "\n" }.count > 10
+                                let hasRichContext = !(message.contextPaths?.isEmpty ?? true)
+                                    || !(message.attachmentPaths?.isEmpty ?? true)
+                                    || !(message.attachmentNames?.isEmpty ?? true)
+                                let isCompactUserMessage = !isLongInstruction
+                                    && !hasRichContext
+                                    && !message.text.contains("\n")
+                                    && message.text.count <= 32
                                 let instructionExpanded = expandedUserInstructions.contains(message.id)
                                 HStack(alignment:.top) {
                                     Spacer(minLength:0)
@@ -472,7 +479,11 @@ struct AgentPane: View {
                                                 .lineLimit(1)
                                         }
                                     }
-                                    .frame(maxWidth:isLongInstruction ? 740 : 880,alignment:.leading)
+                                    .frame(maxWidth:isCompactUserMessage
+                                           ? nil
+                                           : (isLongInstruction ? 740 : 880),
+                                           alignment:.leading)
+                                    .fixedSize(horizontal:isCompactUserMessage,vertical:false)
                                     .padding(.horizontal,14).padding(.vertical,9)
                                     .background(ForgePalette.userBubble,
                                                 in:RoundedRectangle(cornerRadius:14,style:.continuous))
