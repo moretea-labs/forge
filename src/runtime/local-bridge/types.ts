@@ -95,12 +95,6 @@ export type LocalBridgeJobPayload =
   | VerifyEditSessionPayload
   | RepositoryCommandPayload;
 
-export interface LocalBridgeJobRequest {
-  action: LocalBridgeJobAction;
-  payload: LocalBridgeJobPayload;
-  requestedBy?: string;
-}
-
 export interface LocalBridgeJobEvent {
   at: string;
   type:
@@ -171,7 +165,6 @@ export interface LocalBridgeConfig {
   port?: number;
   /** Allow only authenticated /mobile/intent requests on a wildcard/LAN bind. */
   allowLanMobileIntents?: boolean;
-  approvals?: Partial<Record<LocalBridgeJobAction, LocalBridgeApproval>>;
   defaultTimeoutMs?: number;
   maxTimeoutMs?: number;
 }
