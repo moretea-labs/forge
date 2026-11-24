@@ -3,9 +3,9 @@ import type { HandoffItem, HandoffStatus } from '../control-plane/facade/types';
 import { isTerminalHandoffStatus } from '../control-plane/facade/types';
 import type { RuntimeHealthEvaluation } from './evaluator';
 
-export type AttentionDispositionStatus = Extract<HandoffStatus, 'pending' | 'acknowledged' | 'resolved' | 'dismissed'>;
+type AttentionDispositionStatus = Extract<HandoffStatus, 'pending' | 'acknowledged' | 'resolved' | 'dismissed'>;
 
-export interface AttentionDisposition {
+interface AttentionDisposition {
   attentionId: string;
   sourceJobId?: string;
   status: AttentionDispositionStatus;
@@ -16,14 +16,14 @@ export interface AttentionDisposition {
   resolution?: string;
 }
 
-export interface ActiveBlocker {
+interface ActiveBlocker {
   code: string;
   message: string;
   component: string;
   details?: Record<string, unknown>;
 }
 
-export interface AttentionItem {
+interface AttentionItem {
   attentionId: string;
   sourceJobId?: string;
   title: string;
@@ -32,7 +32,7 @@ export interface AttentionItem {
   disposition: AttentionDisposition;
 }
 
-export interface HistoricalIncident {
+interface HistoricalIncident {
   incidentId: string;
   sourceJobId?: string;
   sourceHandoffId?: string;
@@ -58,7 +58,7 @@ export interface RuntimeOperationalView {
   };
 }
 
-export interface RuntimeOperationalViewInput {
+interface RuntimeOperationalViewInput {
   health: RuntimeHealthEvaluation;
   handoffs?: readonly HandoffItem[];
   jobs?: readonly ExecutionJob[];
