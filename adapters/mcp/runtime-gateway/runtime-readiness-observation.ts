@@ -62,6 +62,7 @@ export async function controllerReadinessEvidence(
   repository = ctx.explicitRepository,
   signals: ControllerReadinessSignals = {},
   precomputed: ControllerReadinessPrecomputed = {},
+  options: { includeOperationalView?: boolean } = {},
 ) {
   const daemon = readForgeRuntimeStatus(ctx.controllerHome);
   const scheduler = readSchedulerHealthSnapshot(ctx.controllerHome);
@@ -140,13 +141,15 @@ export async function controllerReadinessEvidence(
       : { readable: true, ready: true },
     ...signals,
   });
-  const operationalView: RuntimeOperationalView = buildRuntimeOperationalView({
-    health: runtimeHealth,
-    handoffs: repository
-      ? listHandoffItems({ controllerHome: ctx.controllerHome, repoId: repository.repoId, status: 'all', limit: 100 })
-      : [],
-    jobs: repository ? listExecutionJobs(ctx.controllerHome, repository.repoId, 100) : [],
-  });
+  const operationalView: RuntimeOperationalView | undefined = options.includeOperationalView
+    ? buildRuntimeOperationalView({
+        health: runtimeHealth,
+        handoffs: repository
+          ? listHandoffItems({ controllerHome: ctx.controllerHome, repoId: repository.repoId, status: 'all', limit: 100 })
+          : [],
+        jobs: repository ? listExecutionJobs(ctx.controllerHome, repository.repoId, 100) : [],
+      })
+    : undefined;
   const reasons: Array<{ code: string; message: string }> = runtimeHealth.activeBlockers.map((item) => ({
     code: item.code === 'SCHEDULER_NOT_PROGRESSING'
       ? 'DISPATCH_LOOP_STALLED'
@@ -171,7 +174,7 @@ export async function controllerReadinessEvidence(
     reasons,
     warnings: runtimeHealth.warnings.map((item) => ({ code: item.code, message: item.message })),
     health: runtimeHealth,
-    operationalView,
+    ...(operationalView ? { operationalView } : {}),
     daemon,
     durableScheduler: {
       status: runtimeHealth.components.scheduler.ready ? 'ready' : daemon.status === 'ready' ? 'degraded' : 'not_ready',

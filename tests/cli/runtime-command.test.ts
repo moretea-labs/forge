@@ -348,6 +348,8 @@ describe('runtime command surface', () => {
     expect(contextHandlerBlock).toContain("markPhase('build.task_board', taskBoardStartedAt)");
     expect(contextHandlerBlock).toContain("markPhase('build.task_ledger', taskLedgerStartedAt)");
     expect(contextHandlerBlock).not.toContain('await controllerReadinessEvidence(ctx, repository)');
+    expect(runtimeReadinessObservation).toContain('options.includeOperationalView');
+    expect(recoveryAdapter).toContain('includeOperationalView: true');
     expect(contextHandlerBlock).not.toContain('operationalView: readiness.operationalView');
     expect(contextHandlerBlock).toContain('fallbackToLive: false');
     expect(contextHandlerBlock).toContain("markPhase('build.plugins', pluginsStartedAt)");

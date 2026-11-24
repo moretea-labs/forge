@@ -40,7 +40,7 @@ async function capabilityRecoveryInput(
   repository: ReturnType<typeof selected> | undefined,
   args: Record<string, unknown>,
 ) {
-  const readiness = await controllerReadinessEvidence(ctx, repository);
+  const readiness = await controllerReadinessEvidence(ctx, repository, {}, {}, { includeOperationalView: true });
   const runtimeSnapshot = repository
     ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId)
     : undefined;
