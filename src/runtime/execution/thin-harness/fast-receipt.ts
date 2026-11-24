@@ -120,7 +120,6 @@ export function writeFastReceipt(controllerHome: string, input: CreateFastReceip
     const temporary = `${target}.${process.pid}.tmp`;
     writeFileSync(temporary, `${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
     renameSync(temporary, target);
-    noteFastReceiptWritten();
     pruneCounter += 1;
     if (pruneCounter % 25 === 0) pruneFastReceipts(controllerHome, input.repoId);
     return { receipt, persisted: true };
@@ -145,16 +144,6 @@ export function readFastReceipt(
   } catch {
     return undefined;
   }
-}
-
-export function findFastReceiptByRequestId(
-  controllerHome: string,
-  repoId: string,
-  requestId: string,
-): FastExecutionReceipt | undefined {
-  if (!requestId.trim()) return undefined;
-  const list = listFastReceipts(controllerHome, repoId, FAST_RECEIPT_RETENTION);
-  return list.find((entry) => entry.requestId === requestId);
 }
 
 export function listFastReceipts(
@@ -195,39 +184,6 @@ function pruneFastReceipts(controllerHome: string, repoId: string): void {
       /* best-effort */
     }
   }
-}
-
-export interface FastPathMetrics {
-  executionJobCount: number;
-  localJobCount: number;
-  workerSpawnCount: number;
-  projectionUpdateCount: number;
-  receiptCount: number;
-}
-
-const metrics: FastPathMetrics = {
-  executionJobCount: 0,
-  localJobCount: 0,
-  workerSpawnCount: 0,
-  projectionUpdateCount: 0,
-  receiptCount: 0,
-};
-
-export function resetFastPathMetrics(): void {
-  metrics.executionJobCount = 0;
-  metrics.localJobCount = 0;
-  metrics.workerSpawnCount = 0;
-  metrics.projectionUpdateCount = 0;
-  metrics.receiptCount = 0;
-  pruneCounter = 0;
-}
-
-export function noteFastReceiptWritten(): void {
-  metrics.receiptCount += 1;
-}
-
-export function getFastPathMetrics(): FastPathMetrics {
-  return { ...metrics };
 }
 
 export function hashRequestInput(value: unknown): string {
