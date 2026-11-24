@@ -147,13 +147,14 @@ describe('legacy control-plane cutover', () => {
   test('late Issue/Task and project-state writes cannot change the SQLite-derived compatibility projection', () => {
     withRepo((repoRoot, _controllerHome, issuePath) => {
       const before = frozenLegacyIssueProjection(repoRoot, ISSUE_ID, 'full');
+      if (!before) throw new Error('FROZEN_LEGACY_ISSUE_PROJECTION_MISSING');
       expect(before).toMatchObject({
         projection: 'deprecated_frozen_legacy_issue',
         authority: 'controller-home-sqlite',
         title: 'SQLite authoritative control plane',
         status: 'done',
       });
-      expect(before.tasks.find((task) => ('taskId' in task ? task.taskId : task.id) === 'T6')).toMatchObject({
+      expect(before.tasks.find((task) => task.taskId === 'T6')).toMatchObject({
         status: 'done',
         planStepStatus: 'completed',
         deprecated: true,
