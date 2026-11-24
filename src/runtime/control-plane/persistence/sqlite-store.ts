@@ -151,10 +151,7 @@ export const REBUILDABLE_RECORD_AUDIT_NAMESPACES = [
  * compatibility authorities: keeping their rows would preserve the retired
  * Work/WorkHandle ledger that #483 explicitly removed.
  */
-export const RETIRED_CONTROL_PLANE_NAMESPACES = [
-  'execution_work_handle',
-  'work_semantic_revision',
-] as const;
+export const RETIRED_CONTROL_PLANE_NAMESPACES = ['execution_work_handle', 'work_semantic_revision'] as const;
 const RETIRED_NAMESPACE_AUDIT_MAX_ROWS_PER_PASS = 20_000;
 
 export interface PruneOrphanedAuditOptions {
@@ -917,10 +914,7 @@ export function deleteControlPlaneRecord(
   );
 }
 
-const PHYSICALLY_PURGEABLE_REBUILDABLE_NAMESPACES = new Set([
-  'process_request_binding',
-  'process_handle_index',
-]);
+const PHYSICALLY_PURGEABLE_REBUILDABLE_NAMESPACES = new Set(['process_request_binding', 'process_handle_index']);
 
 /**
  * Physically purge expired rebuildable mechanics after their domain retention

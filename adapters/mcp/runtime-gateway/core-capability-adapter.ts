@@ -1,12 +1,27 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { callRepositoryTool } from '../../../src/runtime/control-plane/facade/repository-tool-dispatch';
-import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/runtime/repositories/selected-path-actions';
+import {
+  commitSelectedPaths,
+  restoreSelectedPaths,
+  selectedPathDiff,
+  stageSelectedPaths,
+} from '../../../src/runtime/repositories/selected-path-actions';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
-import { configureInitialControllerConnection, readControllerConnectionSnapshot, repairControllerConnection } from './controller-connection';
+import {
+  configureInitialControllerConnection,
+  readControllerConnectionSnapshot,
+  repairControllerConnection,
+} from './controller-connection';
 import { installControllerOfficialPlugin, readControllerPluginManagement } from './controller-plugins';
-import { cancelLocalConversation, readLocalConversationActivity, readLocalConversationModelCatalog, readLocalConversationProviderStatus, sendLocalConversation } from '../../../src/runtime/control-plane/launcher/local-conversation-controller';
+import {
+  cancelLocalConversation,
+  readLocalConversationActivity,
+  readLocalConversationModelCatalog,
+  readLocalConversationProviderStatus,
+  sendLocalConversation,
+} from '../../../src/runtime/control-plane/launcher/local-conversation-controller';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -27,30 +42,50 @@ export async function callCoreCapabilityAdapter(
     if (capabilityId === 'controller.connection') {
       if (action === 'get') return result({ ...readControllerConnectionSnapshot(ctx.controllerHome) });
       if (action === 'configure_initial') {
-        return result(configureInitialControllerConnection(ctx.controllerHome, {
-          controller: String(input.controller ?? ''),
-          tunnel: input.tunnel == null ? undefined : String(input.tunnel),
-        }));
+        return result(
+          configureInitialControllerConnection(ctx.controllerHome, {
+            controller: String(input.controller ?? ''),
+            tunnel: input.tunnel == null ? undefined : String(input.tunnel),
+          }),
+        );
       }
       if (action === 'repair_connector') return result(repairControllerConnection(ctx.controllerHome));
-      return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported controller.connection action: ${action || '<empty>'}` } }, true);
+      return result(
+        {
+          error: {
+            code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED',
+            message: `Unsupported controller.connection action: ${action || '<empty>'}`,
+          },
+        },
+        true,
+      );
     }
     if (capabilityId === 'controller.plugins') {
       if (action === 'get') return result({ ...readControllerPluginManagement(ctx.controllerHome) });
       if (action === 'install_official') {
         return result(installControllerOfficialPlugin(ctx.controllerHome, String(input.plugin_id ?? '')));
       }
-      return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: 'Unsupported controller.plugins action: ' + (action || '<empty>') } }, true);
+      return result(
+        {
+          error: {
+            code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED',
+            message: 'Unsupported controller.plugins action: ' + (action || '<empty>'),
+          },
+        },
+        true,
+      );
     }
     if (capabilityId === 'controller.local_conversation') {
-      if (action === 'status') return result({ ...await readLocalConversationProviderStatus() });
-      if (action === 'models') return result({ ...await readLocalConversationModelCatalog() });
-      if (action === 'activity') return result({ ...readLocalConversationActivity(String(input.conversation_id ?? '')) });
+      if (action === 'status') return result({ ...(await readLocalConversationProviderStatus()) });
+      if (action === 'models') return result({ ...(await readLocalConversationModelCatalog()) });
+      if (action === 'activity')
+        return result({ ...readLocalConversationActivity(String(input.conversation_id ?? '')) });
       if (action === 'cancel') return result(cancelLocalConversation(String(input.conversation_id ?? '')));
       if (action === 'send') {
         const conversationId = typeof input.conversation_id === 'string' ? input.conversation_id.trim() : '';
         const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
-        const providerSessionId = typeof input.provider_session_id === 'string' ? input.provider_session_id.trim() : undefined;
+        const providerSessionId =
+          typeof input.provider_session_id === 'string' ? input.provider_session_id.trim() : undefined;
         const model = typeof input.model === 'string' ? input.model.trim() : undefined;
         const reasoningEffort = typeof input.reasoning_effort === 'string' ? input.reasoning_effort.trim() : undefined;
         let imagePaths: string[] | undefined;
@@ -63,56 +98,103 @@ export async function callCoreCapabilityAdapter(
         const timeoutMs = typeof input.timeout_ms === 'number' ? input.timeout_ms : undefined;
         const requestedRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
         const repository = requestedRepoId ? selected(ctx, args) : undefined;
-        return result({ ...await sendLocalConversation({
-          controllerHome: ctx.controllerHome,
-          conversationId,
-          prompt,
-          providerSessionId,
-          repoId: repository?.repoId,
-          checkoutId: repository?.activeCheckoutId,
-          model,
-          reasoningEffort,
-          imagePaths,
-          timeoutMs,
-        }) });
+        return result({
+          ...(await sendLocalConversation({
+            controllerHome: ctx.controllerHome,
+            conversationId,
+            prompt,
+            providerSessionId,
+            repoId: repository?.repoId,
+            checkoutId: repository?.activeCheckoutId,
+            model,
+            reasoningEffort,
+            imagePaths,
+            timeoutMs,
+          })),
+        });
       }
-      return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported controller.local_conversation action: ${action || '<empty>'}` } }, true);
+      return result(
+        {
+          error: {
+            code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED',
+            message: `Unsupported controller.local_conversation action: ${action || '<empty>'}`,
+          },
+        },
+        true,
+      );
     }
     if (capabilityId === 'repository.direct_edit') {
-      const toolName = action === 'plan'
-        ? 'repository_safe_patch_plan'
-        : action === 'apply'
-          ? 'repository_safe_patch_apply'
-          : undefined;
+      const toolName =
+        action === 'plan'
+          ? 'repository_safe_patch_plan'
+          : action === 'apply'
+            ? 'repository_safe_patch_apply'
+            : undefined;
       if (!toolName) {
-        return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported repository.direct_edit action: ${action || '<empty>'}` } }, true);
+        return result(
+          {
+            error: {
+              code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED',
+              message: `Unsupported repository.direct_edit action: ${action || '<empty>'}`,
+            },
+          },
+          true,
+        );
       }
       // The canonical repository dispatcher owns the sessionless default,
       // including legacy session/validation exclusion. No duplicate decision
       // or additional edit engine belongs in this transport adapter (#713).
-      const forwarded = await callRepositoryTool(ctx.controllerHome, toolName, {
-        ...input,
-        ...(typeof args.repo_id === 'string' && args.repo_id.trim() ? { repo_id: args.repo_id.trim() } : {}),
-        ...(typeof args.checkout_id === 'string' && args.checkout_id.trim() ? { checkout_id: args.checkout_id.trim() } : {}),
-      }, {
-        sessionId: ctx.sessionId,
-        principalId: ctx.principalId,
-        controllerInstanceId: ctx.controllerInstanceId,
-      });
-      return forwarded ?? result({
-        error: { code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE', message: 'Repository direct-edit capability route is unavailable.' },
-      }, true);
+      const forwarded = await callRepositoryTool(
+        ctx.controllerHome,
+        toolName,
+        {
+          ...input,
+          ...(typeof args.repo_id === 'string' && args.repo_id.trim() ? { repo_id: args.repo_id.trim() } : {}),
+          ...(typeof args.checkout_id === 'string' && args.checkout_id.trim()
+            ? { checkout_id: args.checkout_id.trim() }
+            : {}),
+        },
+        {
+          sessionId: ctx.sessionId,
+          principalId: ctx.principalId,
+          controllerInstanceId: ctx.controllerInstanceId,
+        },
+      );
+      return (
+        forwarded ??
+        result(
+          {
+            error: {
+              code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE',
+              message: 'Repository direct-edit capability route is unavailable.',
+            },
+          },
+          true,
+        )
+      );
     }
     if (capabilityId === 'repository.validation') {
-      return result({
-        error: {
-          code: 'WORK_LIFECYCLE_RETIRED',
-          message: 'repository.validation.validate_work is retired; run registered checks directly against repo_id/checkout_id.',
+      return result(
+        {
+          error: {
+            code: 'WORK_LIFECYCLE_RETIRED',
+            message:
+              'repository.validation.validate_work is retired; run registered checks directly against repo_id/checkout_id.',
+          },
         },
-      }, true);
+        true,
+      );
     }
     if (capabilityId !== 'repository.git') {
-      return result({ error: { code: 'CORE_CAPABILITY_UNSUPPORTED', message: `Unsupported core capability: ${capabilityId || '<empty>'}` } }, true);
+      return result(
+        {
+          error: {
+            code: 'CORE_CAPABILITY_UNSUPPORTED',
+            message: `Unsupported core capability: ${capabilityId || '<empty>'}`,
+          },
+        },
+        true,
+      );
     }
     const repository = selected(ctx, args);
     switch (action) {
@@ -126,22 +208,28 @@ export async function callCoreCapabilityAdapter(
         });
       case 'stage_paths': {
         const staged = stageSelectedPaths(ctx.controllerHome, repository, { paths: input.paths });
-        return result({
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
-          ...staged,
-        }, staged.execution.ok !== true);
+        return result(
+          {
+            repoId: repository.repoId,
+            checkoutId: repository.activeCheckoutId,
+            ...staged,
+          },
+          staged.execution.ok !== true,
+        );
       }
       case 'commit_paths': {
         const committed = commitSelectedPaths(ctx.controllerHome, repository, {
           paths: input.paths,
           message: input.message,
         });
-        return result({
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
-          ...committed,
-        }, Boolean(committed.error));
+        return result(
+          {
+            repoId: repository.repoId,
+            checkoutId: repository.activeCheckoutId,
+            ...committed,
+          },
+          Boolean(committed.error),
+        );
       }
       case 'restore_paths': {
         const restored = restoreSelectedPaths(ctx.controllerHome, repository, {
@@ -151,11 +239,14 @@ export async function callCoreCapabilityAdapter(
           expectedPatch: input.expected_patch,
           confirmAuthorization: input.confirm_authorization,
         });
-        return result({
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
-          ...restored,
-        }, Boolean(restored.error));
+        return result(
+          {
+            repoId: repository.repoId,
+            checkoutId: repository.activeCheckoutId,
+            ...restored,
+          },
+          Boolean(restored.error),
+        );
       }
       case 'delete_remote_branch': {
         const forwarded = await callRepositoryTool(ctx.controllerHome, 'repository_git_delete_branch', {
@@ -168,20 +259,40 @@ export async function callCoreCapabilityAdapter(
             ? { approval_request_id: input.approval_request_id.trim() }
             : {}),
         });
-        return forwarded ?? result({
-          error: { code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE', message: 'Repository remote-branch delete route is unavailable.' },
-        }, true);
+        return (
+          forwarded ??
+          result(
+            {
+              error: {
+                code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE',
+                message: 'Repository remote-branch delete route is unavailable.',
+              },
+            },
+            true,
+          )
+        );
       }
       case 'deliver_work':
       case 'discard_work':
-        return result({
-          error: {
-            code: 'WORK_LIFECYCLE_RETIRED',
-            message: `repository.git.${action} is retired; use ordinary Git/checkout capabilities. Historical Work cleanup is maintenance-owned.`,
+        return result(
+          {
+            error: {
+              code: 'WORK_LIFECYCLE_RETIRED',
+              message: `repository.git.${action} is retired; use ordinary Git/checkout capabilities. Historical Work cleanup is maintenance-owned.`,
+            },
           },
-        }, true);
+          true,
+        );
       default:
-        return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported repository.git action: ${action || '<empty>'}` } }, true);
+        return result(
+          {
+            error: {
+              code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED',
+              message: `Unsupported repository.git action: ${action || '<empty>'}`,
+            },
+          },
+          true,
+        );
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

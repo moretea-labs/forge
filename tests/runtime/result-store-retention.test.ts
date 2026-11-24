@@ -103,6 +103,8 @@ describe('controller result store retention', () => {
     expect(report.eligible).toBe(1);
     expect(report.removed).toBe(0);
     expect(report.budgetExhausted).toBe(true);
-    expect(existsSync(join(controllerHome, 'system', 'outputs', 'results', 'records', `${result.resultId}.json`))).toBe(true);
+    expect(existsSync(join(controllerHome, 'system', 'outputs', 'results', 'records', `${result.resultId}.json`))).toBe(
+      true,
+    );
   });
 });

@@ -285,10 +285,7 @@ function normalizePlanSemanticRevisionRecord(record: PlanSemanticRevisionRecord)
   };
 }
 
-function planSemanticRevisionRecordFromView(
-  view: PlanSemanticView,
-  recordedAt: string,
-): PlanSemanticRevisionRecord {
+function planSemanticRevisionRecordFromView(view: PlanSemanticView, recordedAt: string): PlanSemanticRevisionRecord {
   return { schemaVersion: 1, ...view, recordedAt };
 }
 
@@ -306,9 +303,7 @@ function reconstructPlanSemanticRevisionWithinTransaction(
   )?.value;
   if (archived) return normalizePlanSemanticRevisionRecord(archived);
 
-  const current = readControlPlaneRecordWithinTransaction<PlanContract>(
-    database, 'plan_contract', scope, planId,
-  );
+  const current = readControlPlaneRecordWithinTransaction<PlanContract>(database, 'plan_contract', scope, planId);
   if (!current) return undefined;
   const currentRevision = currentPlanSemanticRevision(current.value);
   if (targetRevision >= currentRevision) return undefined;
@@ -316,7 +311,10 @@ function reconstructPlanSemanticRevisionWithinTransaction(
   let view = planSemanticView(current.value);
   for (let revision = currentRevision - 1; revision >= targetRevision; revision -= 1) {
     const change = readControlPlaneRecordWithinTransaction<SemanticInverseChangeRecord>(
-      database, PLAN_SEMANTIC_CHANGE_NAMESPACE, scope, planRevisionRecordKey(planId, revision),
+      database,
+      PLAN_SEMANTIC_CHANGE_NAMESPACE,
+      scope,
+      planRevisionRecordKey(planId, revision),
     )?.value;
     if (!change || change.revision !== revision || change.nextRevision !== revision + 1) return undefined;
     view = applySemanticInverseChange(
@@ -490,14 +488,15 @@ export function listPlanSemanticRevisionRecords(
   return withControlPlaneReadDatabase(options.controllerHome, (database) => {
     if (normalizedPlanId) {
       const current = readControlPlaneRecordWithinTransaction<PlanContract>(
-        database, 'plan_contract', scope, normalizedPlanId,
+        database,
+        'plan_contract',
+        scope,
+        normalizedPlanId,
       );
       const latestArchivedRevision = (current ? currentPlanSemanticRevision(current.value) : 1) - 1;
       const revisions: PlanSemanticRevisionRecord[] = [];
       for (let revision = latestArchivedRevision; revision >= 1 && revisions.length < 5_000; revision -= 1) {
-        const archived = reconstructPlanSemanticRevisionWithinTransaction(
-          database, scope, normalizedPlanId, revision,
-        );
+        const archived = reconstructPlanSemanticRevisionWithinTransaction(database, scope, normalizedPlanId, revision);
         if (archived) revisions.push(archived);
       }
       if (revisions.length > 0 || current) return revisions;
@@ -521,7 +520,11 @@ export function listPlanSemanticRevisionRecords(
         limit: 5_000,
       })) {
         const plan = current.value;
-        for (let revision = currentPlanSemanticRevision(plan) - 1; revision >= 1 && byIdentity.size < 5_000; revision -= 1) {
+        for (
+          let revision = currentPlanSemanticRevision(plan) - 1;
+          revision >= 1 && byIdentity.size < 5_000;
+          revision -= 1
+        ) {
           const archived = reconstructPlanSemanticRevisionWithinTransaction(database, scope, plan.planId, revision);
           if (archived) byIdentity.set(archived.planId + ':r' + archived.revision, archived);
         }
@@ -583,9 +586,7 @@ function revisionDraftFromCandidate(
     obligationDispositions: candidate.obligationDispositions
       ? structuredClone(candidate.obligationDispositions)
       : undefined,
-    deliveryCarries: candidate.deliveryCarries
-      ? structuredClone(candidate.deliveryCarries)
-      : undefined,
+    deliveryCarries: candidate.deliveryCarries ? structuredClone(candidate.deliveryCarries) : undefined,
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,
   };

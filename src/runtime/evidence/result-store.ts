@@ -3,7 +3,13 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 
 import { join } from 'path';
 import { controllerSystemRoot, repositoryControllerRoot } from '../../effects/controller-home';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
-import { deleteOutputHandleIndexEntry, recordOutputHandleIndexEntry, readOutputHandleIndexEntry, refreshOutputHandleFingerprint, type OutputHandleStorage } from './output-handle-index';
+import {
+  deleteOutputHandleIndexEntry,
+  recordOutputHandleIndexEntry,
+  readOutputHandleIndexEntry,
+  refreshOutputHandleFingerprint,
+  type OutputHandleStorage,
+} from './output-handle-index';
 import { redactSensitiveValue, type SensitiveRedactionCount } from './sensitive-output';
 
 export interface ControllerResultRecord {
@@ -52,7 +58,11 @@ function dataPath(controllerHome: string, storage: OutputHandleStorage, resultId
 
 function writePrivateJson(path: string, value: unknown): void {
   writeJsonAtomic(path, value);
-  try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    /* Windows or restricted filesystem. */
+  }
 }
 
 function redactionMetadata(redactions: SensitiveRedactionCount[]): NonNullable<ControllerResultRecord['redaction']> {
@@ -69,14 +79,18 @@ function canonicalResultRef(resultId: string): string {
 }
 
 function resultFingerprint(record: ControllerResultRecord, value: unknown): string {
-  return createHash('sha256').update(JSON.stringify({
-    resultId: record.resultId,
-    sessionId: record.sessionId,
-    principalId: record.principalId,
-    kind: record.kind,
-    createdAt: record.createdAt,
-    value,
-  })).digest('hex');
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        resultId: record.resultId,
+        sessionId: record.sessionId,
+        principalId: record.principalId,
+        kind: record.kind,
+        createdAt: record.createdAt,
+        value,
+      }),
+    )
+    .digest('hex');
 }
 
 function registerResult(
@@ -146,7 +160,9 @@ function resolveStoredResult(
   const storage: OutputHandleStorage = { scope: 'instance' };
   const canonicalRecord = recordPath(controllerHome, storage, resultId);
   if (!existsSync(canonicalRecord)) {
-    throw new Error(`RESULT_LOCATOR_NOT_FOUND: ${resultId}; legacy results require their historical result://<repoId>/<resultId> reference once`);
+    throw new Error(
+      `RESULT_LOCATOR_NOT_FOUND: ${resultId}; legacy results require their historical result://<repoId>/<resultId> reference once`,
+    );
   }
   const loaded = loadResultAt(controllerHome, resultId, storage);
   registerResult(controllerHome, loaded.record, loaded.value, storage);
@@ -216,7 +232,8 @@ export function writeControllerResult(input: {
 }
 
 function authorizeRecord(record: ControllerResultRecord, sessionId: string, principalId: string): void {
-  if (record.sessionId !== sessionId || record.principalId !== principalId) throw new Error('RESULT_ACCESS_DENIED: result belongs to another session or principal');
+  if (record.sessionId !== sessionId || record.principalId !== principalId)
+    throw new Error('RESULT_ACCESS_DENIED: result belongs to another session or principal');
 }
 
 export function readControllerResult(input: {
@@ -236,21 +253,45 @@ export function readControllerResult(input: {
   const limit = Math.max(1, Math.min(500, Math.trunc(input.limit ?? 100)));
   if (Array.isArray(value)) {
     const items = value.slice(cursor, cursor + limit);
-    return { record: sanitized.record, items, cursor, ...(cursor + items.length < value.length ? { nextCursor: cursor + items.length } : {}), truncated: cursor + items.length < value.length };
+    return {
+      record: sanitized.record,
+      items,
+      cursor,
+      ...(cursor + items.length < value.length ? { nextCursor: cursor + items.length } : {}),
+      truncated: cursor + items.length < value.length,
+    };
   }
   if (typeof value === 'string') {
     const items = value.slice(cursor, cursor + limit * 4_096);
-    return { record: sanitized.record, items, cursor, ...(cursor + items.length < value.length ? { nextCursor: cursor + items.length } : {}), truncated: cursor + items.length < value.length };
+    return {
+      record: sanitized.record,
+      items,
+      cursor,
+      ...(cursor + items.length < value.length ? { nextCursor: cursor + items.length } : {}),
+      truncated: cursor + items.length < value.length,
+    };
   }
   if (value && typeof value === 'object' && Array.isArray((value as Record<string, unknown>).items)) {
     const source = (value as Record<string, unknown>).items as unknown[];
     const items = source.slice(cursor, cursor + limit);
-    return { record: sanitized.record, items, cursor, ...(cursor + items.length < source.length ? { nextCursor: cursor + items.length } : {}), truncated: cursor + items.length < source.length };
+    return {
+      record: sanitized.record,
+      items,
+      cursor,
+      ...(cursor + items.length < source.length ? { nextCursor: cursor + items.length } : {}),
+      truncated: cursor + items.length < source.length,
+    };
   }
   if (value && typeof value === 'object') {
     const source = JSON.stringify(value, null, 2);
     const items = source.slice(cursor, cursor + limit * 4_096);
-    return { record: sanitized.record, items, cursor, ...(cursor + items.length < source.length ? { nextCursor: cursor + items.length } : {}), truncated: cursor + items.length < source.length };
+    return {
+      record: sanitized.record,
+      items,
+      cursor,
+      ...(cursor + items.length < source.length ? { nextCursor: cursor + items.length } : {}),
+      truncated: cursor + items.length < source.length,
+    };
   }
   return { record: sanitized.record, items: value, cursor, truncated: false };
 }
@@ -272,12 +313,24 @@ export function searchControllerResult(input: {
   if (!query) throw new Error('RESULT_QUERY_REQUIRED');
   const lines = JSON.stringify(value, null, 2).split(/\r?\n/);
   const limit = Math.max(1, Math.min(500, Math.trunc(input.limit ?? 100)));
-  const matches = lines.flatMap((text, index) => text.toLowerCase().includes(query) ? [{ line: index + 1, text: text.slice(0, 2_000) }] : []).slice(0, limit);
-  return { record: sanitized.record, matches, truncated: lines.filter((text) => text.toLowerCase().includes(query)).length > matches.length };
+  const matches = lines
+    .flatMap((text, index) =>
+      text.toLowerCase().includes(query) ? [{ line: index + 1, text: text.slice(0, 2_000) }] : [],
+    )
+    .slice(0, limit);
+  return {
+    record: sanitized.record,
+    matches,
+    truncated: lines.filter((text) => text.toLowerCase().includes(query)).length > matches.length,
+  };
 }
 
 /** Bounded maintenance of the canonical instance Result store only. */
-export function sanitizeControllerResultStore(controllerHome: string, _repoId: string, limit = 10_000): {
+export function sanitizeControllerResultStore(
+  controllerHome: string,
+  _repoId: string,
+  limit = 10_000,
+): {
   scanned: number;
   changed: number;
   failed: number;
@@ -313,7 +366,6 @@ export function sanitizeControllerResultStore(controllerHome: string, _repoId: s
   }
   return { scanned, changed, failed, resultIds };
 }
-
 
 export interface ControllerResultStoreCleanupReport {
   inspected: number;

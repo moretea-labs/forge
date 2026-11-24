@@ -260,11 +260,12 @@ describe('Goal authority convergence', () => {
     expect(listPlanSemanticRevisionRecords(planOptions, planId)).toMatchObject([
       { revision: 1, sourceBasisRevision: 'source-a', goal: 'Original plan goal' },
     ]);
-    expect(readControlPlaneRecord(
-      controllerHome, 'plan_semantic_revision', repoId, planId + ':r1',
-    )).toBeUndefined();
+    expect(readControlPlaneRecord(controllerHome, 'plan_semantic_revision', repoId, planId + ':r1')).toBeUndefined();
     const planChange = readControlPlaneRecord<Record<string, unknown>>(
-      controllerHome, 'plan_semantic_change', repoId, planId + ':r1',
+      controllerHome,
+      'plan_semantic_change',
+      repoId,
+      planId + ':r1',
     )?.value;
     expect(planChange).toMatchObject({ revision: 1, nextRevision: 2 });
     expect(JSON.stringify(planChange).length).toBeLessThan(

@@ -5,7 +5,16 @@ import {
 } from '../../../../packages/protocols/computer/index';
 import type { AssistantPluginManifest } from '../../plugins/types';
 import { EDIT_OPERATION_INPUT_SCHEMA } from '../../editing/edit-operation-contract';
-import { FACADE_TOOLS, type CapabilityDescriptor, type CapabilityDomain, type CapabilityExecutionSurface, type CapabilityGroupSummary, type CapabilityOperationClass, type CapabilityRisk, type FacadeTool } from './types';
+import {
+  FACADE_TOOLS,
+  type CapabilityDescriptor,
+  type CapabilityDomain,
+  type CapabilityExecutionSurface,
+  type CapabilityGroupSummary,
+  type CapabilityOperationClass,
+  type CapabilityRisk,
+  type FacadeTool,
+} from './types';
 
 const CORE_CAPABILITIES: CapabilityDescriptor[] = [
   {
@@ -16,7 +25,8 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'local_repo_write',
     exposedVia: 'capability_execute',
     schemaExposure: 'stable_static',
-    summary: 'Plan and apply bounded repository edits through Safe Patch. Ordinary single-file text edits use sessionless atomic CAS by default; multi-file, validation and explicitly resumed sessions retain the legacy journal.',
+    summary:
+      'Plan and apply bounded repository edits through Safe Patch. Ordinary single-file text edits use sessionless atomic CAS by default; multi-file, validation and explicitly resumed sessions retain the legacy journal.',
   },
   {
     capabilityId: 'controller.handoff_inbox',
@@ -26,7 +36,8 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'readonly',
     exposedVia: 'rh_inbox',
     schemaExposure: 'stable_static',
-    summary: 'Persist pending decisions that need ChatGPT or user judgement without turning normal logs into inbox items.',
+    summary:
+      'Persist pending decisions that need ChatGPT or user judgement without turning normal logs into inbox items.',
   },
   {
     capabilityId: 'controller.status',
@@ -46,7 +57,8 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'workspace_write',
     exposedVia: 'capability_execute',
     schemaExposure: 'stable_static',
-    summary: 'Read product-safe controller and tunnel connection state, and refresh the existing Forge Connector through setup authority without creating another configuration owner.',
+    summary:
+      'Read product-safe controller and tunnel connection state, and refresh the existing Forge Connector through setup authority without creating another configuration owner.',
   },
   {
     capabilityId: 'controller.plugins',
@@ -56,7 +68,8 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'workspace_write',
     exposedVia: 'capability_execute',
     schemaExposure: 'stable_static',
-    summary: 'Read the official pinned plugin catalog and install/update official plugins through the existing plugin lifecycle, trust, lock and authorization authorities.',
+    summary:
+      'Read the official pinned plugin catalog and install/update official plugins through the existing plugin lifecycle, trust, lock and authorization authorities.',
   },
   {
     capabilityId: 'controller.local_conversation',
@@ -66,7 +79,8 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'workspace_write',
     exposedVia: 'capability_execute',
     schemaExposure: 'stable_static',
-    summary: 'Run one Work-independent local controller conversation through the existing Codex provider and current Forge Runtime MCP capabilities; conversation transport never creates semantic Work implicitly.',
+    summary:
+      'Run one Work-independent local controller conversation through the existing Codex provider and current Forge Runtime MCP capabilities; conversation transport never creates semantic Work implicitly.',
   },
   {
     capabilityId: 'repository.context',
@@ -76,7 +90,8 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'readonly',
     exposedVia: 'rh_context',
     schemaExposure: 'stable_static',
-    summary: 'Read bounded repository context, checks, project state, source structure, and execution evidence without choosing the model workflow.',
+    summary:
+      'Read bounded repository context, checks, project state, source structure, and execution evidence without choosing the model workflow.',
   },
   {
     capabilityId: 'evidence.read',
@@ -106,7 +121,8 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'workspace_write',
     exposedVia: 'rh_work',
     schemaExposure: 'stable_static',
-    summary: 'Diagnose and dry-run repair stuck jobs, stale projections, invalid check pollution, and worker unavailability without treating infrastructure failure as acceptance failure.',
+    summary:
+      'Diagnose and dry-run repair stuck jobs, stale projections, invalid check pollution, and worker unavailability without treating infrastructure failure as acceptance failure.',
   },
   {
     capabilityId: 'controller.plan_contract',
@@ -116,7 +132,8 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'readonly',
     exposedVia: 'rh_work',
     schemaExposure: 'stable_static',
-    summary: 'Persist model-authored Plan working memory with stable identity and semantic revision/CAS; Plan items do not own execution, checks, or acceptance.',
+    summary:
+      'Persist model-authored Plan working memory with stable identity and semantic revision/CAS; Plan items do not own execution, checks, or acceptance.',
   },
   {
     capabilityId: 'repository.git',
@@ -126,7 +143,8 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'local_repo_write',
     exposedVia: 'capability_execute',
     schemaExposure: 'stable_static',
-    summary: 'Repository-native typed Git handlers own identity, dirty-path, CAS, lease, conflict, authorization, and idempotency fences; Work completion is not a Git admission gate.',
+    summary:
+      'Repository-native typed Git handlers own identity, dirty-path, CAS, lease, conflict, authorization, and idempotency fences; Work completion is not a Git admission gate.',
   },
   {
     capabilityId: 'platform.ios',
@@ -136,7 +154,8 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     risk: 'workspace_write',
     exposedVia: 'plugin_action_execute',
     schemaExposure: 'stable_static',
-    summary: 'Use typed Xcode, simulator, screenshot, log, and smoke-review actions through plugin_action_execute when the local iOS toolchain is ready.',
+    summary:
+      'Use typed Xcode, simulator, screenshot, log, and smoke-review actions through plugin_action_execute when the local iOS toolchain is ready.',
   },
 ];
 
@@ -188,12 +207,15 @@ function pluginCapabilityDescriptor(
 }
 
 export function pluginCapabilities(manifests: readonly AssistantPluginManifest[] = []): CapabilityDescriptor[] {
-  return manifests.flatMap((manifest) => manifest.actions.map((action) => pluginCapabilityDescriptor(manifest, action)));
+  return manifests.flatMap((manifest) =>
+    manifest.actions.map((action) => pluginCapabilityDescriptor(manifest, action)),
+  );
 }
 
 export function listCapabilityDescriptors(manifests: readonly AssistantPluginManifest[] = []): CapabilityDescriptor[] {
   const byId = new Map<string, CapabilityDescriptor>();
-  for (const descriptor of [...CORE_CAPABILITIES, ...pluginCapabilities(manifests)]) byId.set(descriptor.capabilityId, descriptor);
+  for (const descriptor of [...CORE_CAPABILITIES, ...pluginCapabilities(manifests)])
+    byId.set(descriptor.capabilityId, descriptor);
   return [...byId.values()].sort((a, b) => a.capabilityId.localeCompare(b.capabilityId));
 }
 
@@ -213,7 +235,13 @@ function normalizedCapabilityText(value: string): string {
 }
 
 function capabilityIntentTokens(query: string): string[] {
-  return [...new Set(normalizedCapabilityText(query).split(' ').filter((token) => token.length >= 2))];
+  return [
+    ...new Set(
+      normalizedCapabilityText(query)
+        .split(' ')
+        .filter((token) => token.length >= 2),
+    ),
+  ];
 }
 
 function intentBoosts(query: string, descriptor: CapabilityDescriptor): Array<{ label: string; score: number }> {
@@ -221,23 +249,31 @@ function intentBoosts(query: string, descriptor: CapabilityDescriptor): Array<{ 
   const capabilityId = descriptor.capabilityId;
   const semanticCapabilities = new Set(descriptor.semanticCapabilities ?? []);
   const boosts: Array<{ label: string; score: number }> = [];
-  const appleDevelopmentIntent = /\b(xcode|provision|provisioning|signing|developer account|apple developer)\b/.test(normalized);
+  const appleDevelopmentIntent = /\b(xcode|provision|provisioning|signing|developer account|apple developer)\b/.test(
+    normalized,
+  );
   if (appleDevelopmentIntent) {
     if (capabilityId === 'platform.ios') boosts.push({ label: 'apple-development', score: 90 });
     if (capabilityId.startsWith('plugin.ios.')) boosts.push({ label: 'apple-development', score: 72 });
     if (capabilityId === 'plugin.app_store_connect.auth_status') boosts.push({ label: 'apple-development', score: 88 });
-    else if (capabilityId === 'plugin.app_store_connect.configure') boosts.push({ label: 'apple-development', score: 82 });
-    else if (capabilityId.startsWith('plugin.app_store_connect.')) boosts.push({ label: 'apple-development', score: 28 });
-    if (semanticCapabilities.has(COMPUTER_OBSERVE_CAPABILITY)) boosts.push({ label: 'xcode-computer-observe', score: 78 });
+    else if (capabilityId === 'plugin.app_store_connect.configure')
+      boosts.push({ label: 'apple-development', score: 82 });
+    else if (capabilityId.startsWith('plugin.app_store_connect.'))
+      boosts.push({ label: 'apple-development', score: 28 });
+    if (semanticCapabilities.has(COMPUTER_OBSERVE_CAPABILITY))
+      boosts.push({ label: 'xcode-computer-observe', score: 78 });
     if (semanticCapabilities.has(COMPUTER_INPUT_CAPABILITY)) boosts.push({ label: 'xcode-computer-input', score: 74 });
-    if (semanticCapabilities.has(COMPUTER_CAPTURE_CAPABILITY)) boosts.push({ label: 'xcode-computer-capture', score: 44 });
+    if (semanticCapabilities.has(COMPUTER_CAPTURE_CAPABILITY))
+      boosts.push({ label: 'xcode-computer-capture', score: 44 });
   }
 
-  const browserLoginIntent = normalized.includes('browser')
-    && /\b(login|log in|signin|sign in|auth|authentication|session)\b/.test(normalized);
+  const browserLoginIntent =
+    normalized.includes('browser') && /\b(login|log in|signin|sign in|auth|authentication|session)\b/.test(normalized);
   if (browserLoginIntent) {
-    if (semanticCapabilities.has(COMPUTER_OBSERVE_CAPABILITY)) boosts.push({ label: 'browser-computer-observe', score: 90 });
-    if (semanticCapabilities.has(COMPUTER_INPUT_CAPABILITY)) boosts.push({ label: 'browser-computer-input', score: 82 });
+    if (semanticCapabilities.has(COMPUTER_OBSERVE_CAPABILITY))
+      boosts.push({ label: 'browser-computer-observe', score: 90 });
+    if (semanticCapabilities.has(COMPUTER_INPUT_CAPABILITY))
+      boosts.push({ label: 'browser-computer-input', score: 82 });
   }
   return boosts;
 }
@@ -254,15 +290,17 @@ export function searchCapabilityDescriptors(
 
   return listCapabilityDescriptors(manifests)
     .map((descriptor): CapabilitySearchMatch | undefined => {
-      const haystack = normalizedCapabilityText([
-        descriptor.capabilityId,
-        descriptor.summary,
-        descriptor.group,
-        descriptor.domain,
-        descriptor.operationClass,
-        descriptor.exposedVia,
-        ...(descriptor.semanticCapabilities ?? []),
-      ].join(' '));
+      const haystack = normalizedCapabilityText(
+        [
+          descriptor.capabilityId,
+          descriptor.summary,
+          descriptor.group,
+          descriptor.domain,
+          descriptor.operationClass,
+          descriptor.exposedVia,
+          ...(descriptor.semanticCapabilities ?? []),
+        ].join(' '),
+      );
       let score = haystack.includes(normalizedQuery) ? 48 : 0;
       const matchedTerms = new Set<string>();
       for (const token of tokens) {
@@ -287,7 +325,9 @@ export function searchCapabilityDescriptors(
     .slice(0, boundedLimit);
 }
 
-export function summarizeCapabilityGroups(manifests: readonly AssistantPluginManifest[] = []): CapabilityGroupSummary[] {
+export function summarizeCapabilityGroups(
+  manifests: readonly AssistantPluginManifest[] = [],
+): CapabilityGroupSummary[] {
   const grouped = new Map<CapabilityDescriptor['group'], CapabilityDescriptor[]>();
   for (const descriptor of listCapabilityDescriptors(manifests)) {
     const entries = grouped.get(descriptor.group) ?? [];
@@ -301,7 +341,13 @@ export function summarizeCapabilityGroups(manifests: readonly AssistantPluginMan
       capabilityCount: entries.length,
       domains: [...new Set(entries.map((entry) => entry.domain))].sort(),
       executionSurfaces: [...new Set(entries.map((entry) => entry.exposedVia))].sort(),
-      facadeTools: [...new Set(entries.map((entry) => entry.exposedVia).filter((surface): surface is FacadeTool => FACADE_TOOLS.includes(surface as FacadeTool)))].sort(),
+      facadeTools: [
+        ...new Set(
+          entries
+            .map((entry) => entry.exposedVia)
+            .filter((surface): surface is FacadeTool => FACADE_TOOLS.includes(surface as FacadeTool)),
+        ),
+      ].sort(),
       operationClasses: [...new Set(entries.map((entry) => entry.operationClass))].sort(),
       risks: [...new Set(entries.map((entry) => entry.risk))].sort(),
       schemaExposures: [...new Set(entries.map((entry) => entry.schemaExposure))].sort(),
@@ -393,10 +439,14 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
         cancel: {
           readOnly: false,
           risk: 'workspace_write',
-          argumentsSchema: { type: 'object', additionalProperties: false,
-            required: ['conversation_id'], properties: {
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['conversation_id'],
+            properties: {
               conversation_id: { type: 'string', minLength: 1, maxLength: 160 },
-            } },
+            },
+          },
         },
         send: {
           readOnly: false,
@@ -412,7 +462,8 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
               model: { type: 'string', minLength: 1, maxLength: 120 },
               reasoning_effort: { type: 'string', minLength: 1, maxLength: 32 },
               image_paths: {
-                type: 'array', maxItems: 4,
+                type: 'array',
+                maxItems: 4,
                 items: { type: 'string', minLength: 1, maxLength: 4096 },
               },
               timeout_ms: { type: 'number', minimum: 5_000, maximum: 600_000 },
@@ -574,12 +625,14 @@ export function getPluginActionCapabilitySchema(
         scopes: [...action.scopes],
         resourceClaims: structuredClone(action.resourceClaims),
         argumentsSchema: structuredClone(action.argumentsSchema),
-        authorizationReuse: action.confirmation === 'authorization'
-          ? {
-              mode: 'exact_target_persistent_when_adapter_supported',
-              hostPermissionBoundary: 'Tool invocation permission remains host-managed; reusable Forge grants never bypass strong_confirmation or destructive gates.',
-            }
-          : { mode: 'not_reusable' },
+        authorizationReuse:
+          action.confirmation === 'authorization'
+            ? {
+                mode: 'exact_target_persistent_when_adapter_supported',
+                hostPermissionBoundary:
+                  'Tool invocation permission remains host-managed; reusable Forge grants never bypass strong_confirmation or destructive gates.',
+              }
+            : { mode: 'not_reusable' },
         executeWith: 'plugin_action_execute',
       };
     }
@@ -587,7 +640,10 @@ export function getPluginActionCapabilitySchema(
   return undefined;
 }
 
-export function getCapabilityDescriptor(capabilityId: string, manifests: readonly AssistantPluginManifest[] = []): CapabilityDescriptor | undefined {
+export function getCapabilityDescriptor(
+  capabilityId: string,
+  manifests: readonly AssistantPluginManifest[] = [],
+): CapabilityDescriptor | undefined {
   const core = CORE_CAPABILITIES.find((descriptor) => descriptor.capabilityId === capabilityId);
   if (core) return core;
   for (const manifest of manifests) {

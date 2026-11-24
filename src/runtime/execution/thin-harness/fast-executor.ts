@@ -765,13 +765,14 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
         }
         const explicitLegacyFlow = Boolean(
           request.input.session_id ||
-          request.input.expected_revision !== undefined ||
-          request.input.validation_only === true ||
-          request.input.check_ids ||
-          request.input.validation_request_id ||
-          request.input.continue_on_error === true,
+            request.input.expected_revision !== undefined ||
+            request.input.validation_only === true ||
+            request.input.check_ids ||
+            request.input.validation_request_id ||
+            request.input.continue_on_error === true,
         );
-        const useSessionless = request.input.sessionless === true ||
+        const useSessionless =
+          request.input.sessionless === true ||
           (request.input.sessionless !== false &&
             !explicitLegacyFlow &&
             isSessionlessTextEditBatch(request.input.operations));
@@ -801,125 +802,125 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
                 },
               };
         } else {
-        // Multi-file/legacy edits still need binary-safe crash recovery.
-        // Create binary-safe savepoint (files, symlinks, modes, create/delete) before apply.
-        let savepoint: WorkspaceSavepoint | undefined;
-        try {
-          savepoint = createWorkspaceSavepoint({
-            controllerHome: ctx.controllerHome,
-            repoId: ctx.repository.repoId,
-            repoRoot: root,
-            paths: opPaths,
-          });
-        } catch (error) {
-          throw new Error(`SAVEPOINT_CREATE_FAILED: ${error instanceof Error ? error.message : String(error)}`);
-        }
-        let applied: ReturnType<typeof applySafePatch>;
-        try {
-          helpers?.assert();
-          applied = await trace.measure('executionMs', async () =>
-            applySafePatch(ctx.repository, {
+          // Multi-file/legacy edits still need binary-safe crash recovery.
+          // Create binary-safe savepoint (files, symlinks, modes, create/delete) before apply.
+          let savepoint: WorkspaceSavepoint | undefined;
+          try {
+            savepoint = createWorkspaceSavepoint({
               controllerHome: ctx.controllerHome,
-              sessionId: request.input.session_id,
-              purpose: request.input.purpose ?? 'fast-path-patch',
-              operations: request.input.operations,
-              chunkSize: request.input.chunk_size,
-              expectedRevision: request.input.expected_revision,
-              allowedPaths: allowed,
-              continueOnError: false,
-              refreshFingerprints: request.input.refresh_fingerprints === true,
-              recoverStaleSession: request.input.recover_stale_session !== false,
-              leaseOwnerJobId: helpers?.getGate().ownerJobId,
-            }),
-          );
-        } catch (error) {
-          const restored = restoreWorkspaceSavepoint(savepoint);
-          const verified = verifySavepointRestored(root, savepoint);
-          if (!restored.ok || !verified.ok) {
-            resultPayload = {
-              error: {
-                code: 'PATCH_ROLLBACK_INCOMPLETE',
-                message: error instanceof Error ? error.message : String(error),
-                repositoryChanged: true,
-                cleanupRequired: true,
-                reconciliationRequired: true,
-                failedPaths: restored.failedPaths,
-                residual: verified.residual,
-              },
-            };
+              repoId: ctx.repository.repoId,
+              repoRoot: root,
+              paths: opPaths,
+            });
+          } catch (error) {
+            throw new Error(`SAVEPOINT_CREATE_FAILED: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          let applied: ReturnType<typeof applySafePatch>;
+          try {
+            helpers?.assert();
+            applied = await trace.measure('executionMs', async () =>
+              applySafePatch(ctx.repository, {
+                controllerHome: ctx.controllerHome,
+                sessionId: request.input.session_id,
+                purpose: request.input.purpose ?? 'fast-path-patch',
+                operations: request.input.operations,
+                chunkSize: request.input.chunk_size,
+                expectedRevision: request.input.expected_revision,
+                allowedPaths: allowed,
+                continueOnError: false,
+                refreshFingerprints: request.input.refresh_fingerprints === true,
+                recoverStaleSession: request.input.recover_stale_session !== false,
+                leaseOwnerJobId: helpers?.getGate().ownerJobId,
+              }),
+            );
+          } catch (error) {
+            const restored = restoreWorkspaceSavepoint(savepoint);
+            const verified = verifySavepointRestored(root, savepoint);
+            if (!restored.ok || !verified.ok) {
+              resultPayload = {
+                error: {
+                  code: 'PATCH_ROLLBACK_INCOMPLETE',
+                  message: error instanceof Error ? error.message : String(error),
+                  repositoryChanged: true,
+                  cleanupRequired: true,
+                  reconciliationRequired: true,
+                  failedPaths: restored.failedPaths,
+                  residual: verified.residual,
+                },
+              };
+              ok = false;
+              outcome = 'failed';
+              repositoryChanged = true;
+              changedPaths = [...new Set([...restored.failedPaths, ...verified.residual])];
+              policyDecision = 'rollback_incomplete';
+              // Do not discard savepoint on incomplete restore.
+              return {
+                ok,
+                outcome,
+                changedPaths,
+                repositoryChanged,
+                resultPayload,
+                authorizationDecision: String(authorizationDecision),
+                policyDecision,
+              };
+            }
+            discardWorkspaceSavepoint(savepoint);
+            throw error;
+          }
+          changedPaths = [...new Set((applied.appliedChunks ?? []).flatMap((chunk) => chunk.paths ?? []))];
+          repositoryChanged = changedPaths.length > 0;
+          ok = applied.status === 'applied';
+          outcome = ok ? 'succeeded' : 'failed';
+          policyDecision = ok ? 'allowed' : 'failed';
+
+          const needsRollback =
+            !ok || (allowed?.length ? changedPaths.some((path) => !pathAllowed(path, allowed)) : false);
+
+          if (needsRollback) {
+            const outOfScope = allowed?.length ? changedPaths.filter((path) => !pathAllowed(path, allowed)) : [];
+            const restored = restoreWorkspaceSavepoint(savepoint);
+            const verified = verifySavepointRestored(root, savepoint);
+            const rollbackOk = restored.ok && verified.ok;
             ok = false;
             outcome = 'failed';
-            repositoryChanged = true;
-            changedPaths = [...new Set([...restored.failedPaths, ...verified.residual])];
-            policyDecision = 'rollback_incomplete';
-            // Do not discard savepoint on incomplete restore.
-            return {
-              ok,
-              outcome,
-              changedPaths,
-              repositoryChanged,
-              resultPayload,
-              authorizationDecision: String(authorizationDecision),
-              policyDecision,
-            };
-          }
-          discardWorkspaceSavepoint(savepoint);
-          throw error;
-        }
-        changedPaths = [...new Set((applied.appliedChunks ?? []).flatMap((chunk) => chunk.paths ?? []))];
-        repositoryChanged = changedPaths.length > 0;
-        ok = applied.status === 'applied';
-        outcome = ok ? 'succeeded' : 'failed';
-        policyDecision = ok ? 'allowed' : 'failed';
-
-        const needsRollback =
-          !ok || (allowed?.length ? changedPaths.some((path) => !pathAllowed(path, allowed)) : false);
-
-        if (needsRollback) {
-          const outOfScope = allowed?.length ? changedPaths.filter((path) => !pathAllowed(path, allowed)) : [];
-          const restored = restoreWorkspaceSavepoint(savepoint);
-          const verified = verifySavepointRestored(root, savepoint);
-          const rollbackOk = restored.ok && verified.ok;
-          ok = false;
-          outcome = 'failed';
-          if (rollbackOk) {
-            policyDecision = outOfScope.length ? 'path_scope_violation_rolled_back' : 'patch_failed_rolled_back';
-            repositoryChanged = false;
-            changedPaths = [];
-            discardWorkspaceSavepoint(savepoint);
-            resultPayload = {
-              error: {
-                code: outOfScope.length ? 'PATH_SCOPE_VIOLATION' : 'PATCH_FAILED_ROLLED_BACK',
-                message: outOfScope.length
-                  ? `changed paths outside declared scope; rolled back: ${outOfScope.join(', ')}`
-                  : `patch failed; workspace restored to savepoint`,
-                outOfScope,
-                cleanupRequired: false,
-                reconciliationRequired: false,
-                repositoryChanged: false,
-              },
-              applied,
-            };
+            if (rollbackOk) {
+              policyDecision = outOfScope.length ? 'path_scope_violation_rolled_back' : 'patch_failed_rolled_back';
+              repositoryChanged = false;
+              changedPaths = [];
+              discardWorkspaceSavepoint(savepoint);
+              resultPayload = {
+                error: {
+                  code: outOfScope.length ? 'PATH_SCOPE_VIOLATION' : 'PATCH_FAILED_ROLLED_BACK',
+                  message: outOfScope.length
+                    ? `changed paths outside declared scope; rolled back: ${outOfScope.join(', ')}`
+                    : `patch failed; workspace restored to savepoint`,
+                  outOfScope,
+                  cleanupRequired: false,
+                  reconciliationRequired: false,
+                  repositoryChanged: false,
+                },
+                applied,
+              };
+            } else {
+              policyDecision = 'path_scope_violation_cleanup_required';
+              repositoryChanged = true;
+              changedPaths = [...new Set([...outOfScope, ...restored.failedPaths, ...verified.residual])];
+              resultPayload = {
+                error: {
+                  code: 'PATH_SCOPE_VIOLATION_CLEANUP_REQUIRED',
+                  message: `changed paths; rollback incomplete: ${changedPaths.join(', ')}`,
+                  outOfScope,
+                  cleanupRequired: true,
+                  reconciliationRequired: true,
+                  repositoryChanged: true,
+                },
+                applied,
+              };
+            }
           } else {
-            policyDecision = 'path_scope_violation_cleanup_required';
-            repositoryChanged = true;
-            changedPaths = [...new Set([...outOfScope, ...restored.failedPaths, ...verified.residual])];
-            resultPayload = {
-              error: {
-                code: 'PATH_SCOPE_VIOLATION_CLEANUP_REQUIRED',
-                message: `changed paths; rollback incomplete: ${changedPaths.join(', ')}`,
-                outOfScope,
-                cleanupRequired: true,
-                reconciliationRequired: true,
-                repositoryChanged: true,
-              },
-              applied,
-            };
+            discardWorkspaceSavepoint(savepoint);
+            resultPayload = { applied, changedPaths, fencingToken };
           }
-        } else {
-          discardWorkspaceSavepoint(savepoint);
-          resultPayload = { applied, changedPaths, fencingToken };
-        }
         }
       } else if (operation === 'stage_paths' || operation === 'git_stage_paths') {
         helpers?.assert();

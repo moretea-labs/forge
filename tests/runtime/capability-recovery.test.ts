@@ -1249,11 +1249,7 @@ describe('owned worktree identity across macOS remounts', () => {
     };
     const original = recordOwnedResource(controllerHome, input);
     expect(recordOwnedResource(controllerHome, input)).toEqual(original);
-    for (const change of [
-      { creator: 'other' },
-      { repoId: 'other' },
-      { associatedRequirementId: 'other' },
-    ]) {
+    for (const change of [{ creator: 'other' }, { repoId: 'other' }, { associatedRequirementId: 'other' }]) {
       expect(() => recordOwnedResource(controllerHome, { ...input, ...change })).toThrow(
         'OWNED_RESOURCE_IDENTITY_CONFLICT',
       );

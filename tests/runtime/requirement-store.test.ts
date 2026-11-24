@@ -417,7 +417,10 @@ test('task detail reads its latest revisions even when other Requirements own th
   expect(readControlPlaneRecord(home, 'requirement_revision', 'controller', 'req-z-history:r1')).toBeUndefined();
   expect(readControlPlaneRecord(home, 'requirement_revision', 'controller', 'req-z-history:r2')).toBeUndefined();
   const change = readControlPlaneRecord<Record<string, unknown>>(
-    home, 'requirement_change', 'controller', 'req-z-history:r2',
+    home,
+    'requirement_change',
+    'controller',
+    'req-z-history:r2',
   )?.value;
   expect(change).toMatchObject({ revision: 2, nextRevision: 3 });
   expect(JSON.stringify(change).length).toBeLessThan(

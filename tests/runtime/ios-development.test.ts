@@ -314,13 +314,15 @@ describe('iOS development simulator reliability', () => {
           return result(command, args, { stdout: 'System-wide memory free percentage: 45%' });
         if (command === 'xcrun' && args[1] === 'list')
           return result(command, args, {
-            stdout: JSON.stringify({ devices: {
-              'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
-                { name: 'Avela', udid: 'D1', state: 'Booted' },
-                { name: 'Shenbaobao', udid: 'D2', state: 'Booted' },
-                { name: 'TempoVela', udid: 'D3', state: 'Shutdown' },
-              ],
-            } }),
+            stdout: JSON.stringify({
+              devices: {
+                'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+                  { name: 'Avela', udid: 'D1', state: 'Booted' },
+                  { name: 'Shenbaobao', udid: 'D2', state: 'Booted' },
+                  { name: 'TempoVela', udid: 'D3', state: 'Shutdown' },
+                ],
+              },
+            }),
           });
         return result(command, args);
       },
@@ -344,12 +346,14 @@ describe('iOS development simulator reliability', () => {
           return result(command, args, { stdout: 'System-wide memory free percentage: 44%' });
         if (command === 'xcrun' && args[1] === 'list')
           return result(command, args, {
-            stdout: JSON.stringify({ devices: {
-              'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
-                { name: 'Existing', udid: 'D1', state: 'Booted' },
-                { name: 'New', udid: 'D2', state: 'Shutdown' },
-              ],
-            } }),
+            stdout: JSON.stringify({
+              devices: {
+                'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+                  { name: 'Existing', udid: 'D1', state: 'Booted' },
+                  { name: 'New', udid: 'D2', state: 'Shutdown' },
+                ],
+              },
+            }),
           });
         return result(command, args);
       },

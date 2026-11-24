@@ -87,12 +87,16 @@ test('two writers on the same file get stale evidence and preserve both edits af
   const count = fx.sessions().length;
   const oldHash = hash(fx.initial);
   const writerA = await apply(fx, {
-    type: 'replace', path: 'source.ts', expected_sha256: oldHash,
+    type: 'replace',
+    path: 'source.ts',
+    expected_sha256: oldHash,
     replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
   });
   expect(writerA.payload.status).toBe('applied');
   const staleB = await apply(fx, {
-    type: 'replace', path: 'source.ts', expected_sha256: oldHash,
+    type: 'replace',
+    path: 'source.ts',
+    expected_sha256: oldHash,
     replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
   });
   expect(staleB.isError).toBe(true);
@@ -104,7 +108,9 @@ test('two writers on the same file get stale evidence and preserve both edits af
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toContain('label = 1');
 
   const writerB = await apply(fx, {
-    type: 'replace', path: 'source.ts', expected_sha256: staleB.payload.failures[0].currentSha256,
+    type: 'replace',
+    path: 'source.ts',
+    expected_sha256: staleB.payload.failures[0].currentSha256,
     replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
   });
   expect(writerB.payload.status).toBe('applied');
@@ -116,7 +122,9 @@ test('sessionless Safe Patch refuses symlink targets and multi-file batches with
   const fx = fixture();
   symlinkSync('source.ts', join(fx.repoRoot, 'alias.ts'));
   const linked = await apply(fx, {
-    type: 'write', path: 'alias.ts', expected_sha256: hash(fx.initial),
+    type: 'write',
+    path: 'alias.ts',
+    expected_sha256: hash(fx.initial),
     content: 'export const danger = 1;\n',
   });
   expect(linked.isError).toBe(true);
@@ -140,12 +148,14 @@ test('canonical MCP Safe Patch defaults ordinary single-file edits to sessionles
   const oldSessionCount = fx.sessions().length;
   const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
     repo_id: fx.repository.repoId,
-    operations: [{
-      type: 'replace',
-      path: 'source.ts',
-      expected_sha256: hash(fx.initial),
-      replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
-    }],
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expected_sha256: hash(fx.initial),
+        replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
+      },
+    ],
   });
   if (!response || response.isError) throw new Error(JSON.stringify(response?.structuredContent ?? response));
   const payload = response.structuredContent as Record<string, any>;
@@ -166,12 +176,14 @@ test('explicit stale SHA stays stale even when caller requests fingerprint refre
   const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
     repo_id: fx.repository.repoId,
     refresh_fingerprints: true,
-    operations: [{
-      type: 'replace',
-      path: 'source.ts',
-      expected_sha256: stale,
-      replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
-    }],
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expected_sha256: stale,
+        replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
+      },
+    ],
   });
   expect(response?.isError).toBe(true);
   const payload = response?.structuredContent as Record<string, any>;
@@ -189,12 +201,14 @@ test('explicit sessionless=false retains resumable legacy EditSession for compat
   const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
     repo_id: fx.repository.repoId,
     sessionless: false,
-    operations: [{
-      type: 'replace',
-      path: 'source.ts',
-      expected_sha256: hash(fx.initial),
-      replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
-    }],
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expected_sha256: hash(fx.initial),
+        replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
+      },
+    ],
   });
   if (!response || response.isError) throw new Error(JSON.stringify(response?.structuredContent ?? response));
   const payload = response.structuredContent as Record<string, any>;
@@ -208,40 +222,50 @@ test('Local Bridge Console defaults single-file edits to CAS; explicit legacy re
   const fx = fixture();
   const ctx = { repository: fx.repository, controllerHome: fx.controllerHome };
   const atomic = applyConsoleSafePatch(ctx, {
-    operations: [{
-      type: 'replace',
-      path: 'source.ts',
-      expected_sha256: hash(fx.initial),
-      replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
-    }],
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expected_sha256: hash(fx.initial),
+        replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
+      },
+    ],
   });
   expect(atomic).toMatchObject({
-    status: 'applied', sessionless: true, createdSession: false, receipt: { beforeSha256: hash(fx.initial) },
+    status: 'applied',
+    sessionless: true,
+    createdSession: false,
+    receipt: { beforeSha256: hash(fx.initial) },
   });
   expect(fx.sessions()).toHaveLength(0);
 
   const stale = applyConsoleSafePatch(ctx, {
-    operations: [{
-      type: 'replace',
-      path: 'source.ts',
-      expected_sha256: hash(fx.initial),
-      replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
-    }],
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expected_sha256: hash(fx.initial),
+        replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
+      },
+    ],
   });
   expect(stale).toMatchObject({
-    status: 'failed', sessionless: true,
+    status: 'failed',
+    sessionless: true,
     failures: [{ code: 'STALE_FILE_SHA', expectedSha256: hash(fx.initial) }],
   });
   expect(fx.sessions()).toHaveLength(0);
 
   const legacy = applyConsoleSafePatch(ctx, {
     sessionless: false,
-    operations: [{
-      type: 'replace',
-      path: 'source.ts',
-      expected_sha256: hash('export const n = 2;\nexport const label = 1;\n'),
-      replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
-    }],
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        expected_sha256: hash('export const n = 2;\nexport const label = 1;\n'),
+        replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
+      },
+    ],
   });
   expect((legacy as any).session?.sessionId).toMatch(/^EDIT-/);
   expect(fx.sessions()).toHaveLength(1);
@@ -254,16 +278,22 @@ test('Fast Executor uses CAS without EditSession or Workspace Savepoint and retu
   const first = await executeFast(ctx, {
     operation: 'repository_safe_patch_apply',
     requestId: 'fast-sessionless-first',
-    input: { operations: [{
-      type: 'replace',
-      path: 'source.ts',
-      expected_sha256: hash(fx.initial),
-      replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
-    }] },
+    input: {
+      operations: [
+        {
+          type: 'replace',
+          path: 'source.ts',
+          expected_sha256: hash(fx.initial),
+          replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
+        },
+      ],
+    },
   });
   expect(first.ok).toBe(true);
   expect((first.result as any).applied).toMatchObject({
-    sessionless: true, createdSession: false, status: 'applied',
+    sessionless: true,
+    createdSession: false,
+    status: 'applied',
   });
   expect(fx.sessions()).toHaveLength(before);
   expect(existsSync(join(fx.repoRoot, '.ai/harness/backups/fs-transaction'))).toBe(false);
@@ -271,17 +301,21 @@ test('Fast Executor uses CAS without EditSession or Workspace Savepoint and retu
   const stale = await executeFast(ctx, {
     operation: 'repository_safe_patch_apply',
     requestId: 'fast-sessionless-stale',
-    input: { operations: [{
-      type: 'replace',
-      path: 'source.ts',
-      expected_sha256: hash(fx.initial),
-      replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
-    }] },
+    input: {
+      operations: [
+        {
+          type: 'replace',
+          path: 'source.ts',
+          expected_sha256: hash(fx.initial),
+          replacements: [{ old_text: 'label = 1', new_text: 'label = 2' }],
+        },
+      ],
+    },
   });
   expect(stale.ok).toBe(false);
-  expect((stale.result as any).applied.failures).toEqual(expect.arrayContaining([
-    expect.objectContaining({ code: 'STALE_FILE_SHA', expectedSha256: hash(fx.initial) }),
-  ]));
+  expect((stale.result as any).applied.failures).toEqual(
+    expect.arrayContaining([expect.objectContaining({ code: 'STALE_FILE_SHA', expectedSha256: hash(fx.initial) })]),
+  );
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const n = 2;\nexport const label = 1;\n');
   expect(fx.sessions()).toHaveLength(before);
 });

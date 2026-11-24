@@ -855,11 +855,7 @@ function currentHashMismatches(repoRoot: string, session: EditSession): string[]
 
 /** A superseded multi-file session may still have another uniquely uncommitted
  * after-image. Metadata retirement must never discard that recovery evidence. */
-function uncommittedMatchingAfterImages(
-  repoRoot: string,
-  session: EditSession,
-  mismatches: string[],
-): string[] {
+function uncommittedMatchingAfterImages(repoRoot: string, session: EditSession, mismatches: string[]): string[] {
   const replacedPaths = new Set(mismatches);
   return uncommittedSessionPaths(
     repoRoot,
@@ -1234,8 +1230,7 @@ export function inspectIntegratedEditSession(
     if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0)
       return reject('EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE');
     const mismatches = currentHashMismatches(repoRoot, session);
-    if (mismatches.length === 0)
-      return reject('EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED');
+    if (mismatches.length === 0) return reject('EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED');
     if (uncommittedMatchingAfterImages(repoRoot, session, mismatches).length > 0)
       return reject('EDIT_SESSION_RECONCILIATION_PARTIAL_UNCOMMITTED_SOURCE');
     // A legacy session has no checkout identity, so compare only its tracked
@@ -1249,8 +1244,7 @@ export function inspectIntegratedEditSession(
       const scopedPath = /^path:([^:]+):(.+)$/.exec(lease.resourceKey);
       if (scopedPath) {
         const statedCheckout = lease.checkoutId ?? lease.ownerIdentity?.checkoutId;
-        if (statedCheckout && statedCheckout !== 'unscoped' && statedCheckout !== scopedPath[1])
-          return true;
+        if (statedCheckout && statedCheckout !== 'unscoped' && statedCheckout !== scopedPath[1]) return true;
         return trackedPaths.some((path) =>
           claimsConflict({ resourceKey: `path:${scopedPath[1]}:${path}`, mode: 'write' }, lease),
         );
@@ -2033,10 +2027,7 @@ export function cleanupTerminalEditSessionRecords(
     }
     if (input.minCreatedAgeMs !== undefined) {
       const createdMs = Date.parse(session.createdAt);
-      if (
-        !Number.isFinite(createdMs) ||
-        nowMs - createdMs < Math.max(0, input.minCreatedAgeMs)
-      ) {
+      if (!Number.isFinite(createdMs) || nowMs - createdMs < Math.max(0, input.minCreatedAgeMs)) {
         skip('session_too_recent_for_explicit_cleanup');
         continue;
       }

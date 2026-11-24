@@ -12,9 +12,9 @@ import {
   rmSync,
   writeSync,
   writeFileSync,
-} from "fs";
-import { createHash } from "crypto";
-import { basename, dirname, relative, resolve } from "path";
+} from 'fs';
+import { createHash } from 'crypto';
+import { basename, dirname, relative, resolve } from 'path';
 import type {
   AdoptionOperation,
   AdoptionOperationStatus,
@@ -22,13 +22,13 @@ import type {
   AppendManagedBlockOperation,
   MkdirOperation,
   WriteFileOperation,
-} from "../core/adoption/operations";
-import { isWorkflowContractInstallOperation } from "../core/adoption/workflow-contract-plan";
-import { resolveInsideRepo, resolveParentInsideRepo } from "./path-safety";
-import { upsertManagedBlock } from "./managed-block";
+} from '../core/adoption/operations';
+import { isWorkflowContractInstallOperation } from '../core/adoption/workflow-contract-plan';
+import { resolveInsideRepo, resolveParentInsideRepo } from './path-safety';
+import { upsertManagedBlock } from './managed-block';
 
-const BACKUP_ROOT = ".ai/harness/backups/fs-transaction";
-const LOCK_SUFFIX = ".forge.lock";
+const BACKUP_ROOT = '.ai/harness/backups/fs-transaction';
+const LOCK_SUFFIX = '.forge.lock';
 let atomicWriteSequence = 0;
 let transactionSequence = 0;
 
@@ -40,10 +40,9 @@ export function atomicWriteFileSync(filePath: string, content: string): void {
   renameSync(temporaryPath, filePath);
 }
 
-
 export interface ApplyOperationResult {
   readonly id: string;
-  readonly kind: AdoptionOperation["kind"];
+  readonly kind: AdoptionOperation['kind'];
   readonly path?: string;
   readonly status: AdoptionOperationStatus;
   readonly backupPath?: string;
@@ -60,7 +59,7 @@ export interface ApplyAdoptionPlanResult {
 
 export interface FsTransactionManifestOperation {
   readonly id: string;
-  readonly kind: AdoptionOperation["kind"];
+  readonly kind: AdoptionOperation['kind'];
   readonly path?: string;
   readonly status: AdoptionOperationStatus;
   readonly backupPath?: string;
@@ -71,10 +70,10 @@ export interface FsTransactionManifestOperation {
 
 export interface FsTransactionManifest {
   readonly protocol: 1;
-  readonly command: "adopt";
+  readonly command: 'adopt';
   readonly createdAt: string;
   readonly repoRoot: string;
-  readonly mode: AdoptionPlan["mode"];
+  readonly mode: AdoptionPlan['mode'];
   readonly operations: readonly FsTransactionManifestOperation[];
   readonly rollback: {
     readonly command: string;
@@ -83,16 +82,16 @@ export interface FsTransactionManifest {
 
 export interface RollbackOperationResult {
   readonly id: string;
-  readonly kind: AdoptionOperation["kind"];
+  readonly kind: AdoptionOperation['kind'];
   readonly path?: string;
-  readonly status: "rolled_back" | "skipped" | "failed";
-  readonly action: "restore_backup" | "delete_created_file" | "remove_empty_directory" | "none";
+  readonly status: 'rolled_back' | 'skipped' | 'failed';
+  readonly action: 'restore_backup' | 'delete_created_file' | 'remove_empty_directory' | 'none';
   readonly error?: string;
 }
 
 export interface RollbackAdoptionTransactionResult {
   readonly protocol: 1;
-  readonly command: "adopt rollback";
+  readonly command: 'adopt rollback';
   readonly repoRoot: string;
   readonly transactionManifestPath: string;
   readonly ok: boolean;
@@ -104,26 +103,28 @@ function failure(operation: AdoptionOperation, error: string): ApplyOperationRes
     id: operation.id,
     kind: operation.kind,
     path: operation.path,
-    status: "failed",
+    status: 'failed',
     error,
   };
 }
 
 export function isSupportedAdoptionOperation(operation: AdoptionOperation): boolean {
-  if (operation.kind === "mkdir" || operation.kind === "appendManagedBlock") return true;
-  return operation.kind === "writeFile" && (operation.ifMissing === true || isWorkflowContractInstallOperation(operation));
+  if (operation.kind === 'mkdir' || operation.kind === 'appendManagedBlock') return true;
+  return (
+    operation.kind === 'writeFile' && (operation.ifMissing === true || isWorkflowContractInstallOperation(operation))
+  );
 }
 
 function unsupportedOperationReason(operation: AdoptionOperation): string {
-  if (operation.kind === "writeFile") {
-    return "writeFile applicator only supports ifMissing operations and workflow-contract install";
+  if (operation.kind === 'writeFile') {
+    return 'writeFile applicator only supports ifMissing operations and workflow-contract install';
   }
   return `unsupported operation kind: ${operation.kind}`;
 }
 
 function ensureParent(repoRoot: string, path: string): string | null {
   const parent = resolveParentInsideRepo(repoRoot, path);
-  if (!parent.ok || !parent.path) return parent.error ?? "failed to resolve parent directory";
+  if (!parent.ok || !parent.path) return parent.error ?? 'failed to resolve parent directory';
   mkdirSync(parent.path, { recursive: true });
   return null;
 }
@@ -139,7 +140,7 @@ function fsyncDirectory(path: string): void {
     fsyncSync(fd);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (!["EINVAL", "EPERM", "ENOTSUP", "EISDIR"].includes(code ?? "")) throw error;
+    if (!['EINVAL', 'EPERM', 'ENOTSUP', 'EISDIR'].includes(code ?? '')) throw error;
   } finally {
     if (fd !== null) closeSync(fd);
   }
@@ -161,11 +162,11 @@ function writeFileDurably(path: string, content: string, mode?: number): void {
 }
 
 function sanitizeBackupStem(path: string): string {
-  return path.replace(/[^a-zA-Z0-9._-]+/g, "__").replace(/^_+|_+$/g, "") || "file";
+  return path.replace(/[^a-zA-Z0-9._-]+/g, '__').replace(/^_+|_+$/g, '') || 'file';
 }
 
 function contentHash(content: string): string {
-  return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+  return `sha256:${createHash('sha256').update(content).digest('hex')}`;
 }
 
 function backupPathFor(path: string, backupRoot = BACKUP_ROOT): string {
@@ -192,7 +193,7 @@ function withTargetLock<T>(targetPath: string, fn: () => T): T {
     return fn();
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EEXIST") throw new Error(`target is locked: ${lockPath}`);
+    if (code === 'EEXIST') throw new Error(`target is locked: ${lockPath}`);
     throw error;
   } finally {
     if (fd !== null) closeSync(fd);
@@ -264,7 +265,7 @@ export function atomicWriteFile(
   opts: { readonly mode?: number; readonly backupRoot?: string } = {},
 ): AtomicWriteResult {
   const target = resolveInsideRepo(repoRoot, path);
-  if (!target.ok || !target.path) throw new Error(target.error ?? "invalid path");
+  if (!target.ok || !target.path) throw new Error(target.error ?? 'invalid path');
   const targetPath = target.path;
   const parentError = ensureParent(repoRoot, path);
   if (parentError) throw new Error(parentError);
@@ -274,11 +275,11 @@ export function atomicWriteFile(
     if (existsSync(targetPath)) {
       backupPath = backupPathFor(path, opts.backupRoot);
       const backup = resolveInsideRepo(repoRoot, backupPath);
-      if (!backup.ok || !backup.path) throw new Error(backup.error ?? "invalid backup path");
+      if (!backup.ok || !backup.path) throw new Error(backup.error ?? 'invalid backup path');
       const resolvedBackupPath = backup.path;
       const backupParentError = ensureParent(repoRoot, backupPath);
       if (backupParentError) throw new Error(backupParentError);
-      writeFileDurably(resolvedBackupPath, readFileSync(targetPath, "utf-8"));
+      writeFileDurably(resolvedBackupPath, readFileSync(targetPath, 'utf-8'));
       fsyncDirectory(dirname(resolvedBackupPath));
     }
 
@@ -299,7 +300,7 @@ export function atomicWriteFile(
  * atomicWriteFile, this intentionally does not create another recovery backup. */
 function replaceFileDurably(repoRoot: string, path: string, content: string, mode?: number): void {
   const target = resolveInsideRepo(repoRoot, path);
-  if (!target.ok || !target.path) throw new Error(target.error ?? "invalid path");
+  if (!target.ok || !target.path) throw new Error(target.error ?? 'invalid path');
   const parentError = ensureParent(repoRoot, path);
   if (parentError) throw new Error(parentError);
   const targetPath = target.path;
@@ -317,15 +318,15 @@ function replaceFileDurably(repoRoot: string, path: string, content: string, mod
 
 export function applyMkdirOperation(repoRoot: string, operation: MkdirOperation, dryRun = false): ApplyOperationResult {
   const target = resolveInsideRepo(repoRoot, operation.path);
-  if (!target.ok || !target.path) return failure(operation, target.error ?? "invalid path");
-  if (dryRun) return { id: operation.id, kind: operation.kind, path: operation.path, status: "planned" };
+  if (!target.ok || !target.path) return failure(operation, target.error ?? 'invalid path');
+  if (dryRun) return { id: operation.id, kind: operation.kind, path: operation.path, status: 'planned' };
   // Only report an applied (rollback-eligible) result when we actually create the
   // directory. A directory that already existed must never be removed during rollback.
   if (existsSync(target.path)) {
-    return { id: operation.id, kind: operation.kind, path: operation.path, status: "skipped" };
+    return { id: operation.id, kind: operation.kind, path: operation.path, status: 'skipped' };
   }
   mkdirSync(target.path, { recursive: true });
-  return { id: operation.id, kind: operation.kind, path: operation.path, status: "applied" };
+  return { id: operation.id, kind: operation.kind, path: operation.path, status: 'applied' };
 }
 
 export function applyWriteFileOperation(
@@ -335,24 +336,28 @@ export function applyWriteFileOperation(
   backupRoot?: string,
 ): ApplyOperationResult {
   const target = resolveInsideRepo(repoRoot, operation.path);
-  if (!target.ok || !target.path) return failure(operation, target.error ?? "invalid path");
+  if (!target.ok || !target.path) return failure(operation, target.error ?? 'invalid path');
   if (operation.ifMissing === true && existsSync(target.path)) {
-    return { id: operation.id, kind: operation.kind, path: operation.path, status: "skipped" };
+    return { id: operation.id, kind: operation.kind, path: operation.path, status: 'skipped' };
   }
   if (operation.ifMissing !== true && !isWorkflowContractInstallOperation(operation)) {
-    return failure(operation, "writeFile applicator only supports ifMissing operations and workflow-contract install");
+    return failure(operation, 'writeFile applicator only supports ifMissing operations and workflow-contract install');
   }
-  if (operation.ifMissing !== true && existsSync(target.path) && readFileSync(target.path, "utf-8") === operation.content) {
-    return { id: operation.id, kind: operation.kind, path: operation.path, status: "skipped" };
+  if (
+    operation.ifMissing !== true &&
+    existsSync(target.path) &&
+    readFileSync(target.path, 'utf-8') === operation.content
+  ) {
+    return { id: operation.id, kind: operation.kind, path: operation.path, status: 'skipped' };
   }
-  if (dryRun) return { id: operation.id, kind: operation.kind, path: operation.path, status: "planned" };
+  if (dryRun) return { id: operation.id, kind: operation.kind, path: operation.path, status: 'planned' };
   try {
     const write = atomicWriteFile(repoRoot, operation.path, operation.content, { mode: operation.mode, backupRoot });
     return {
       id: operation.id,
       kind: operation.kind,
       path: operation.path,
-      status: "applied",
+      status: 'applied',
       backupPath: write.backupPath,
       contentHash: contentHash(operation.content),
     };
@@ -368,22 +373,22 @@ export function applyAppendManagedBlockOperation(
   backupRoot?: string,
 ): ApplyOperationResult {
   const target = resolveInsideRepo(repoRoot, operation.path);
-  if (!target.ok || !target.path) return failure(operation, target.error ?? "invalid path");
-  const existing = existsSync(target.path) ? readFileSync(target.path, "utf-8") : "";
+  if (!target.ok || !target.path) return failure(operation, target.error ?? 'invalid path');
+  const existing = existsSync(target.path) ? readFileSync(target.path, 'utf-8') : '';
   const update = upsertManagedBlock(existing, operation);
-  if (!update.ok) return failure(operation, update.error ?? "failed to update managed block");
+  if (!update.ok) return failure(operation, update.error ?? 'failed to update managed block');
   if (!update.changed) {
-    return { id: operation.id, kind: operation.kind, path: operation.path, status: "skipped" };
+    return { id: operation.id, kind: operation.kind, path: operation.path, status: 'skipped' };
   }
-  if (dryRun) return { id: operation.id, kind: operation.kind, path: operation.path, status: "planned" };
+  if (dryRun) return { id: operation.id, kind: operation.kind, path: operation.path, status: 'planned' };
   try {
-    const content = update.content ?? "";
+    const content = update.content ?? '';
     const write = atomicWriteFile(repoRoot, operation.path, content, { backupRoot });
     return {
       id: operation.id,
       kind: operation.kind,
       path: operation.path,
-      status: "applied",
+      status: 'applied',
       backupPath: write.backupPath,
       contentHash: contentHash(content),
     };
@@ -401,7 +406,7 @@ function writeTransactionManifest(
   const manifestPath = `${transactionDir}/manifest.json`;
   const manifest: FsTransactionManifest = {
     protocol: 1,
-    command: "adopt",
+    command: 'adopt',
     createdAt,
     repoRoot: plan.repoRoot,
     mode: plan.mode,
@@ -439,13 +444,17 @@ export function applyAdoptionPlan(plan: AdoptionPlan, dryRun = false): ApplyAdop
   if (dryRun) {
     const results = plan.operations.map((operation) => {
       switch (operation.kind) {
-        case "mkdir": return applyMkdirOperation(plan.repoRoot, operation, true);
-        case "writeFile": return applyWriteFileOperation(plan.repoRoot, operation, true);
-        case "appendManagedBlock": return applyAppendManagedBlockOperation(plan.repoRoot, operation, true);
-        default: return failure(operation, `unsupported operation kind: ${operation.kind}`);
+        case 'mkdir':
+          return applyMkdirOperation(plan.repoRoot, operation, true);
+        case 'writeFile':
+          return applyWriteFileOperation(plan.repoRoot, operation, true);
+        case 'appendManagedBlock':
+          return applyAppendManagedBlockOperation(plan.repoRoot, operation, true);
+        default:
+          return failure(operation, `unsupported operation kind: ${operation.kind}`);
       }
     });
-    return { ok: results.every((result) => result.status !== "failed"), dryRun: true, results };
+    return { ok: results.every((result) => result.status !== 'failed'), dryRun: true, results };
   }
 
   const transactionDir = transactionDirFor();
@@ -460,22 +469,28 @@ export function applyAdoptionPlan(plan: AdoptionPlan, dryRun = false): ApplyAdop
     return {
       ok: false,
       dryRun: false,
-      results: [{
-        id: "transaction-manifest",
-        kind: "runCheck",
-        status: "failed",
-        error: `failed to initialize transaction manifest: ${errorMessage(error)}`,
-      }],
+      results: [
+        {
+          id: 'transaction-manifest',
+          kind: 'runCheck',
+          status: 'failed',
+          error: `failed to initialize transaction manifest: ${errorMessage(error)}`,
+        },
+      ],
     };
   }
 
   for (const operation of plan.operations) {
     const result = (() => {
       switch (operation.kind) {
-        case "mkdir": return applyMkdirOperation(plan.repoRoot, operation, false);
-        case "writeFile": return applyWriteFileOperation(plan.repoRoot, operation, false, transactionDir);
-        case "appendManagedBlock": return applyAppendManagedBlockOperation(plan.repoRoot, operation, false, transactionDir);
-        default: return failure(operation, `unsupported operation kind: ${operation.kind}`);
+        case 'mkdir':
+          return applyMkdirOperation(plan.repoRoot, operation, false);
+        case 'writeFile':
+          return applyWriteFileOperation(plan.repoRoot, operation, false, transactionDir);
+        case 'appendManagedBlock':
+          return applyAppendManagedBlockOperation(plan.repoRoot, operation, false, transactionDir);
+        default:
+          return failure(operation, `unsupported operation kind: ${operation.kind}`);
       }
     })();
     results.push(result);
@@ -483,17 +498,17 @@ export function applyAdoptionPlan(plan: AdoptionPlan, dryRun = false): ApplyAdop
       writeTransactionManifest(plan, transactionDir, createdAt, results);
     } catch (error) {
       results.push({
-        id: "transaction-manifest",
-        kind: "runCheck",
-        status: "failed",
+        id: 'transaction-manifest',
+        kind: 'runCheck',
+        status: 'failed',
         error: `failed to checkpoint transaction manifest: ${errorMessage(error)}`,
       });
       break;
     }
-    if (result.status === "failed") break;
+    if (result.status === 'failed') break;
   }
 
-  const ok = results.every((result) => result.status !== "failed");
+  const ok = results.every((result) => result.status !== 'failed');
 
   return {
     ok,
@@ -503,119 +518,176 @@ export function applyAdoptionPlan(plan: AdoptionPlan, dryRun = false): ApplyAdop
   };
 }
 
-function resolveTransactionManifest(repoRoot: string, transaction: string): { ok: true; path: string; rel: string } | { ok: false; error: string } {
+function resolveTransactionManifest(
+  repoRoot: string,
+  transaction: string,
+): { ok: true; path: string; rel: string } | { ok: false; error: string } {
   const root = resolve(repoRoot);
   const target = resolve(root, transaction);
-  const rel = relative(root, target).replace(/\\/g, "/");
-  if (rel === "" || rel.startsWith("..") || rel.includes("\0")) {
+  const rel = relative(root, target).replace(/\\/g, '/');
+  if (rel === '' || rel.startsWith('..') || rel.includes('\0')) {
     return { ok: false, error: `transaction manifest escapes repo root: ${transaction}` };
   }
-  if (!rel.startsWith(`${BACKUP_ROOT}/`) || !rel.endsWith("/manifest.json")) {
+  if (!rel.startsWith(`${BACKUP_ROOT}/`) || !rel.endsWith('/manifest.json')) {
     return { ok: false, error: `transaction manifest must be under ${BACKUP_ROOT}/<transaction>/manifest.json` };
   }
   return { ok: true, path: target, rel };
 }
 
-function rollbackFailed(operation: FsTransactionManifestOperation, action: RollbackOperationResult["action"], error: string): RollbackOperationResult {
-  return { id: operation.id, kind: operation.kind, path: operation.path, status: "failed", action, error };
+function rollbackFailed(
+  operation: FsTransactionManifestOperation,
+  action: RollbackOperationResult['action'],
+  error: string,
+): RollbackOperationResult {
+  return { id: operation.id, kind: operation.kind, path: operation.path, status: 'failed', action, error };
 }
 
 function rollbackFileOperation(repoRoot: string, operation: FsTransactionManifestOperation): RollbackOperationResult {
-  if (!operation.path) return rollbackFailed(operation, "none", "file operation is missing path");
+  if (!operation.path) return rollbackFailed(operation, 'none', 'file operation is missing path');
   const target = resolveInsideRepo(repoRoot, operation.path);
-  if (!target.ok || !target.path) return rollbackFailed(operation, "none", target.error ?? "invalid path");
+  if (!target.ok || !target.path) return rollbackFailed(operation, 'none', target.error ?? 'invalid path');
 
   if (operation.backupPath) {
     const backup = resolveInsideRepo(repoRoot, operation.backupPath);
-    if (!backup.ok || !backup.path) return rollbackFailed(operation, "restore_backup", backup.error ?? "invalid backup path");
-    if (!existsSync(backup.path)) return rollbackFailed(operation, "restore_backup", `missing backup: ${operation.backupPath}`);
+    if (!backup.ok || !backup.path)
+      return rollbackFailed(operation, 'restore_backup', backup.error ?? 'invalid backup path');
+    if (!existsSync(backup.path))
+      return rollbackFailed(operation, 'restore_backup', `missing backup: ${operation.backupPath}`);
     try {
       // Fail closed: never overwrite a target whose current content diverges from
       // what this transaction applied (e.g. the user edited the file after apply).
       // Mirrors the delete_created_file guard so both destructive paths are symmetric.
       if (existsSync(target.path)) {
         if (!operation.contentHash) {
-          return rollbackFailed(operation, "restore_backup", "missing content hash for replaced file rollback");
+          return rollbackFailed(operation, 'restore_backup', 'missing content hash for replaced file rollback');
         }
-        const currentHash = contentHash(readFileSync(target.path, "utf-8"));
+        const currentHash = contentHash(readFileSync(target.path, 'utf-8'));
         if (currentHash !== operation.contentHash) {
-          return rollbackFailed(operation, "restore_backup", "current file hash differs from transaction content hash");
+          return rollbackFailed(operation, 'restore_backup', 'current file hash differs from transaction content hash');
         }
       }
-      replaceFileDurably(repoRoot, operation.path, readFileSync(backup.path, "utf-8"));
-      return { id: operation.id, kind: operation.kind, path: operation.path, status: "rolled_back", action: "restore_backup" };
+      replaceFileDurably(repoRoot, operation.path, readFileSync(backup.path, 'utf-8'));
+      return {
+        id: operation.id,
+        kind: operation.kind,
+        path: operation.path,
+        status: 'rolled_back',
+        action: 'restore_backup',
+      };
     } catch (error) {
-      return rollbackFailed(operation, "restore_backup", errorMessage(error));
+      return rollbackFailed(operation, 'restore_backup', errorMessage(error));
     }
   }
 
-  if (!operation.contentHash) return rollbackFailed(operation, "delete_created_file", "missing content hash for created file rollback");
+  if (!operation.contentHash)
+    return rollbackFailed(operation, 'delete_created_file', 'missing content hash for created file rollback');
   if (!existsSync(target.path)) {
-    return { id: operation.id, kind: operation.kind, path: operation.path, status: "skipped", action: "delete_created_file" };
+    return {
+      id: operation.id,
+      kind: operation.kind,
+      path: operation.path,
+      status: 'skipped',
+      action: 'delete_created_file',
+    };
   }
   try {
     // Read + hash inside the try so an unreadable target (e.g. replaced by a
     // directory) returns a structured failed result instead of throwing to the CLI.
-    const currentHash = contentHash(readFileSync(target.path, "utf-8"));
+    const currentHash = contentHash(readFileSync(target.path, 'utf-8'));
     if (currentHash !== operation.contentHash) {
-      return rollbackFailed(operation, "delete_created_file", "current file hash differs from transaction content hash");
+      return rollbackFailed(
+        operation,
+        'delete_created_file',
+        'current file hash differs from transaction content hash',
+      );
     }
     rmSync(target.path);
     fsyncDirectory(dirname(target.path));
-    return { id: operation.id, kind: operation.kind, path: operation.path, status: "rolled_back", action: "delete_created_file" };
+    return {
+      id: operation.id,
+      kind: operation.kind,
+      path: operation.path,
+      status: 'rolled_back',
+      action: 'delete_created_file',
+    };
   } catch (error) {
-    return rollbackFailed(operation, "delete_created_file", errorMessage(error));
+    return rollbackFailed(operation, 'delete_created_file', errorMessage(error));
   }
 }
 
 function rollbackMkdirOperation(repoRoot: string, operation: FsTransactionManifestOperation): RollbackOperationResult {
-  if (!operation.path) return rollbackFailed(operation, "remove_empty_directory", "mkdir operation is missing path");
+  if (!operation.path) return rollbackFailed(operation, 'remove_empty_directory', 'mkdir operation is missing path');
   const target = resolveInsideRepo(repoRoot, operation.path);
-  if (!target.ok || !target.path) return rollbackFailed(operation, "remove_empty_directory", target.error ?? "invalid path");
+  if (!target.ok || !target.path)
+    return rollbackFailed(operation, 'remove_empty_directory', target.error ?? 'invalid path');
   if (!existsSync(target.path)) {
-    return { id: operation.id, kind: operation.kind, path: operation.path, status: "skipped", action: "remove_empty_directory" };
+    return {
+      id: operation.id,
+      kind: operation.kind,
+      path: operation.path,
+      status: 'skipped',
+      action: 'remove_empty_directory',
+    };
   }
   try {
     rmdirSync(target.path);
     fsyncDirectory(dirname(target.path));
-    return { id: operation.id, kind: operation.kind, path: operation.path, status: "rolled_back", action: "remove_empty_directory" };
+    return {
+      id: operation.id,
+      kind: operation.kind,
+      path: operation.path,
+      status: 'rolled_back',
+      action: 'remove_empty_directory',
+    };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (["ENOENT", "ENOTEMPTY", "EEXIST"].includes(code ?? "")) {
-      return { id: operation.id, kind: operation.kind, path: operation.path, status: "skipped", action: "remove_empty_directory" };
+    if (['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(code ?? '')) {
+      return {
+        id: operation.id,
+        kind: operation.kind,
+        path: operation.path,
+        status: 'skipped',
+        action: 'remove_empty_directory',
+      };
     }
-    return rollbackFailed(operation, "remove_empty_directory", errorMessage(error));
+    return rollbackFailed(operation, 'remove_empty_directory', errorMessage(error));
   }
 }
 
-function isValidManifestOperation(operation: unknown, transactionDir: string): operation is FsTransactionManifestOperation {
-  if (typeof operation !== "object" || operation === null) return false;
+function isValidManifestOperation(
+  operation: unknown,
+  transactionDir: string,
+): operation is FsTransactionManifestOperation {
+  if (typeof operation !== 'object' || operation === null) return false;
   const op = operation as Record<string, unknown>;
-  if (typeof op.id !== "string" || typeof op.kind !== "string" || typeof op.status !== "string") return false;
-  if (op.path !== undefined && typeof op.path !== "string") return false;
-  if (op.contentHash !== undefined && typeof op.contentHash !== "string") return false;
-  if (op.rollbackStrategy !== undefined && typeof op.rollbackStrategy !== "string") return false;
-  if (op.error !== undefined && typeof op.error !== "string") return false;
+  if (typeof op.id !== 'string' || typeof op.kind !== 'string' || typeof op.status !== 'string') return false;
+  if (op.path !== undefined && typeof op.path !== 'string') return false;
+  if (op.contentHash !== undefined && typeof op.contentHash !== 'string') return false;
+  if (op.rollbackStrategy !== undefined && typeof op.rollbackStrategy !== 'string') return false;
+  if (op.error !== undefined && typeof op.error !== 'string') return false;
   if (op.backupPath !== undefined) {
-    if (typeof op.backupPath !== "string") return false;
+    if (typeof op.backupPath !== 'string') return false;
     // A manifest is untrusted file data: pin the restore source to this manifest's
     // own transaction directory so a crafted manifest cannot point backups elsewhere.
-    const normalized = op.backupPath.replace(/\\/g, "/");
+    const normalized = op.backupPath.replace(/\\/g, '/');
     if (!normalized.startsWith(`${transactionDir}/`)) return false;
   }
   return true;
 }
 
-function readTransactionManifest(repoRoot: string, transaction: string): { manifest?: FsTransactionManifest; rel?: string; error?: string } {
+function readTransactionManifest(
+  repoRoot: string,
+  transaction: string,
+): { manifest?: FsTransactionManifest; rel?: string; error?: string } {
   const resolved = resolveTransactionManifest(repoRoot, transaction);
   if (!resolved.ok) return { error: resolved.error };
   if (!existsSync(resolved.path)) return { error: `transaction manifest not found: ${resolved.rel}` };
   try {
-    const manifest = JSON.parse(readFileSync(resolved.path, "utf-8")) as FsTransactionManifest;
-    const transactionDir = resolved.rel.replace(/\/manifest\.json$/, "");
+    const manifest = JSON.parse(readFileSync(resolved.path, 'utf-8')) as FsTransactionManifest;
+    const transactionDir = resolved.rel.replace(/\/manifest\.json$/, '');
     if (
       manifest.protocol !== 1 ||
-      manifest.command !== "adopt" ||
+      manifest.command !== 'adopt' ||
       !Array.isArray(manifest.operations) ||
       !manifest.operations.every((operation) => isValidManifestOperation(operation, transactionDir))
     ) {
@@ -627,43 +699,53 @@ function readTransactionManifest(repoRoot: string, transaction: string): { manif
   }
 }
 
-export function rollbackAdoptionTransaction(opts: { readonly repoRoot: string; readonly transaction: string }): RollbackAdoptionTransactionResult {
+export function rollbackAdoptionTransaction(opts: {
+  readonly repoRoot: string;
+  readonly transaction: string;
+}): RollbackAdoptionTransactionResult {
   const repoRoot = resolve(opts.repoRoot);
   const loaded = readTransactionManifest(repoRoot, opts.transaction);
   if (!loaded.manifest || !loaded.rel) {
     return {
       protocol: 1,
-      command: "adopt rollback",
+      command: 'adopt rollback',
       repoRoot,
       transactionManifestPath: opts.transaction,
       ok: false,
       results: [
         {
-          id: "transaction-manifest",
-          kind: "runCheck",
-          status: "failed",
-          action: "none",
-          error: loaded.error ?? "failed to read transaction manifest",
+          id: 'transaction-manifest',
+          kind: 'runCheck',
+          status: 'failed',
+          action: 'none',
+          error: loaded.error ?? 'failed to read transaction manifest',
         },
       ],
     };
   }
 
   const results = [...loaded.manifest.operations].reverse().map((operation) => {
-    if (operation.status !== "applied") {
-      return { id: operation.id, kind: operation.kind, path: operation.path, status: "skipped" as const, action: "none" as const };
+    if (operation.status !== 'applied') {
+      return {
+        id: operation.id,
+        kind: operation.kind,
+        path: operation.path,
+        status: 'skipped' as const,
+        action: 'none' as const,
+      };
     }
-    if (operation.kind === "mkdir") return rollbackMkdirOperation(repoRoot, operation);
-    if (operation.kind === "writeFile" || operation.kind === "appendManagedBlock") return rollbackFileOperation(repoRoot, operation);
-    return rollbackFailed(operation, "none", `unsupported rollback operation kind: ${operation.kind}`);
+    if (operation.kind === 'mkdir') return rollbackMkdirOperation(repoRoot, operation);
+    if (operation.kind === 'writeFile' || operation.kind === 'appendManagedBlock')
+      return rollbackFileOperation(repoRoot, operation);
+    return rollbackFailed(operation, 'none', `unsupported rollback operation kind: ${operation.kind}`);
   });
 
   return {
     protocol: 1,
-    command: "adopt rollback",
+    command: 'adopt rollback',
     repoRoot,
     transactionManifestPath: loaded.rel,
-    ok: results.every((result) => result.status !== "failed"),
+    ok: results.every((result) => result.status !== 'failed'),
     results,
   };
 }

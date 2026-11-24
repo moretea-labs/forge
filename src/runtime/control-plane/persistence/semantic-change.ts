@@ -26,9 +26,7 @@ export function createSemanticInverseChange(
     const previousValue = previousView[key];
     const nextValue = nextView[key];
     if (previousPresent === nextPresent && isDeepStrictEqual(previousValue, nextValue)) continue;
-    previous[key] = previousPresent
-      ? { present: true, value: structuredClone(previousValue) }
-      : { present: false };
+    previous[key] = previousPresent ? { present: true, value: structuredClone(previousValue) } : { present: false };
   }
   return {
     schemaVersion: 1,

@@ -80,11 +80,7 @@ const CONTROLLER_RESULT_RETENTION_MS = numericSetting(
   7 * 24 * 60 * 60_000,
   60_000,
 );
-const CONTROLLER_RESULT_GC_MAX_ROWS = numericSetting(
-  process.env.FORGE_CONTROLLER_RESULT_GC_MAX_ROWS,
-  500,
-  1,
-);
+const CONTROLLER_RESULT_GC_MAX_ROWS = numericSetting(process.env.FORGE_CONTROLLER_RESULT_GC_MAX_ROWS, 500, 1);
 
 /** Terminal / abandoned runs that no longer need their worktree for integration/review. */
 const WORKTREE_RELEASE_STATUSES = new Set([
@@ -978,11 +974,7 @@ function cleanupManagedWorktreeDependencyCopies(
         skip('dependency_path_not_directory');
         continue;
       }
-      if (
-        activeLeases.some(
-          (lease) => lease.checkoutId === checkout.checkoutId,
-        )
-      ) {
+      if (activeLeases.some((lease) => lease.checkoutId === checkout.checkoutId)) {
         skip('dependency_active_owner');
         continue;
       }

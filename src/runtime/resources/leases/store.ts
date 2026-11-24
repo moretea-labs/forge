@@ -270,9 +270,7 @@ export function listConflictingResourceLeases(controllerHome: string, resourceKe
 // while observing current Process claims. Neither path can pass both checks
 // while the other has a physical writer in flight.
 function repositorySourceResourceKey(resourceKey: string): boolean {
-  return /^(?:path:|git-index:|git-head:|git-ref:|git-refs:|repo-content:)/.test(
-    resourceKey,
-  );
+  return /^(?:path:|git-index:|git-head:|git-ref:|git-refs:|repo-content:)/.test(resourceKey);
 }
 
 /**
@@ -560,14 +558,19 @@ export function acquireExecutionLeases(
         // iOS Plugin native builds; previous lease owners continue unchanged.
         if (claims.some((c) => c.resourceKey === 'host-service:ios-build' && c.mode !== 'read')) {
           const pressure = checkHostBuildCpu();
-          if (!pressure.allowed) return {
-            acquired: false, leases: [], blockers: [{
-              resourceKey: 'host-service:ios-build:cpu-pressure',
-              ownerJobId: 'host-capacity-governor',
-              leaseId: `cpu-${pressure.reason}-${pressure.ratio ?? 'unknown'}`,
-              mode: 'exclusive' as const,
-            }],
-          };
+          if (!pressure.allowed)
+            return {
+              acquired: false,
+              leases: [],
+              blockers: [
+                {
+                  resourceKey: 'host-service:ios-build:cpu-pressure',
+                  ownerJobId: 'host-capacity-governor',
+                  leaseId: `cpu-${pressure.reason}-${pressure.ratio ?? 'unknown'}`,
+                  mode: 'exclusive' as const,
+                },
+              ],
+            };
         }
         const active = listAllActiveLeases(controllerHome).filter(
           (lease) => lease.ownerJobId !== ownerJobId || lease.repoId !== repoId,

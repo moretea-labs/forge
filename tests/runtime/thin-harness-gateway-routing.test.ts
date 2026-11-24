@@ -266,22 +266,23 @@ describe('repository.direct_edit capability', () => {
       { ...fx.ctx, principalId: 'legacy-direct-edit-test-principal' },
       'capability_execute',
       {
-      repo_id: fx.repository.repoId,
-      capability_id: 'repository.direct_edit',
-      action: 'apply',
-      request_id: 'direct-edit-capability-apply',
-      arguments: {
-        purpose: 'Exercise the canonical direct-edit capability route.',
-        sessionless: false,
-        operations: [
-          {
-            type: 'replace',
-            path: 'src/lib.ts',
-            replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 2;' }],
-          },
-        ],
+        repo_id: fx.repository.repoId,
+        capability_id: 'repository.direct_edit',
+        action: 'apply',
+        request_id: 'direct-edit-capability-apply',
+        arguments: {
+          purpose: 'Exercise the canonical direct-edit capability route.',
+          sessionless: false,
+          operations: [
+            {
+              type: 'replace',
+              path: 'src/lib.ts',
+              replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 2;' }],
+            },
+          ],
+        },
       },
-    });
+    );
 
     if (edited?.isError) throw new Error(JSON.stringify(edited.structuredContent ?? edited));
     const payload = edited?.structuredContent as {
@@ -300,8 +301,8 @@ test('repository.direct_edit defaults to sessionless CAS without a durable EditS
   const fx = fixture();
   roots.push(fx.root);
   const sessionRoot = join(fx.repoRoot, '.ai/harness/edit-sessions');
-  const sessionCount = () => existsSync(sessionRoot)
-    ? readdirSync(sessionRoot).filter((name) => name.startsWith('EDIT-')).length : 0;
+  const sessionCount = () =>
+    existsSync(sessionRoot) ? readdirSync(sessionRoot).filter((name) => name.startsWith('EDIT-')).length : 0;
   const before = sessionCount();
   const initial = readFileSync(join(fx.repoRoot, 'src/lib.ts'), 'utf8');
   const edited = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
@@ -310,17 +311,21 @@ test('repository.direct_edit defaults to sessionless CAS without a durable EditS
     action: 'apply',
     request_id: 'direct-edit-sessionless-atomic-cas',
     arguments: {
-      operations: [{
-        type: 'replace',
-        path: 'src/lib.ts',
-        expected_sha256: createHash('sha256').update(initial).digest('hex'),
-        replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 4;' }],
-      }],
+      operations: [
+        {
+          type: 'replace',
+          path: 'src/lib.ts',
+          expected_sha256: createHash('sha256').update(initial).digest('hex'),
+          replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 4;' }],
+        },
+      ],
     },
   });
   if (edited?.isError) throw new Error(JSON.stringify(edited.structuredContent ?? edited));
   const payload = edited?.structuredContent as {
-    status?: string; sessionless?: boolean; session?: unknown;
+    status?: string;
+    sessionless?: boolean;
+    session?: unknown;
     reviewEvidence?: { source?: string; afterSha256?: string };
   };
   expect(payload).toMatchObject({ status: 'applied', sessionless: true });

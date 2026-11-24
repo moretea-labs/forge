@@ -3,7 +3,11 @@ import { readFileSync } from 'fs';
 import { createServer, type Server } from 'http';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { describeFailure } from '../../../packages/protocols/failure';
-import { ControllerLockContentionError, withControllerLock, withControllerLockAsync } from '../../effects/controller-locks';
+import {
+  ControllerLockContentionError,
+  withControllerLock,
+  withControllerLockAsync,
+} from '../../effects/controller-locks';
 import {
   cancelAgentJob,
   getAgentJob,

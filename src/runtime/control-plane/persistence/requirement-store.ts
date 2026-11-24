@@ -17,10 +17,24 @@ import {
   type SemanticInverseChangeRecord,
 } from './semantic-change';
 import { createHash } from 'node:crypto';
-import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATE_TRANSITIONS, type RequirementPriority, type RequirementState } from '../../../../packages/kernel/goal/api/index';
+import {
+  REQUIREMENT_PRIORITIES,
+  REQUIREMENT_STATE_TRANSITIONS,
+  type RequirementPriority,
+  type RequirementState,
+} from '../../../../packages/kernel/goal/api/index';
 import type { ProjectIdentity, ProjectPlacement, ScopeRef } from '../../../../packages/kernel/identity/api/index';
-import { bindProjectRootRequirementWithinTransaction, PROJECT_PLACEMENT_NAMESPACE, PROJECT_SEMANTIC_NAMESPACE } from '../workspace/workspace-store';
-export { REQUIREMENT_PRIORITIES, REQUIREMENT_STATES, type RequirementPriority, type RequirementState } from '../../../../packages/kernel/goal/api/index';
+import {
+  bindProjectRootRequirementWithinTransaction,
+  PROJECT_PLACEMENT_NAMESPACE,
+  PROJECT_SEMANTIC_NAMESPACE,
+} from '../workspace/workspace-store';
+export {
+  REQUIREMENT_PRIORITIES,
+  REQUIREMENT_STATES,
+  type RequirementPriority,
+  type RequirementState,
+} from '../../../../packages/kernel/goal/api/index';
 
 export interface Requirement {
   schemaVersion: 1;
@@ -157,13 +171,17 @@ const SCHEMA_VERSION = 1;
 /** A repository-bound task must honor the status of its existing Project placement. */
 function assertRepositoryProjectAcceptsTask(database: SqliteDatabase, repoId: string): void {
   const placements = listControlPlaneRecordsWithinTransaction<ProjectPlacement>(database, {
-    namespace: PROJECT_PLACEMENT_NAMESPACE, limit: 1_000,
+    namespace: PROJECT_PLACEMENT_NAMESPACE,
+    limit: 1_000,
   });
   if (placements.length >= 1_000) throw new Error('PROJECT_PLACEMENT_LOOKUP_LIMIT');
-  const projectIds = new Set(placements.filter(({ value }) => value.repositoryId === repoId).map(({ value }) => value.projectId));
+  const projectIds = new Set(
+    placements.filter(({ value }) => value.repositoryId === repoId).map(({ value }) => value.projectId),
+  );
   if (!projectIds.size) return;
   const projects = listControlPlaneRecordsWithinTransaction<ProjectIdentity>(database, {
-    namespace: PROJECT_SEMANTIC_NAMESPACE, limit: 1_000,
+    namespace: PROJECT_SEMANTIC_NAMESPACE,
+    limit: 1_000,
   });
   if (projects.length >= 1_000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
   for (const projectId of projectIds) {
@@ -181,26 +199,33 @@ function projectIdForRequirementWithinTransaction(
   const repoId = repositoryId(requirement.repoId);
   if (!repoId) return undefined;
   const placements = listControlPlaneRecordsWithinTransaction<ProjectPlacement>(database, {
-    namespace: PROJECT_PLACEMENT_NAMESPACE, limit: 1_000,
+    namespace: PROJECT_PLACEMENT_NAMESPACE,
+    limit: 1_000,
   });
   if (placements.length >= 1_000) throw new Error('PROJECT_PLACEMENT_LOOKUP_LIMIT');
-  const projectIds = [...new Set(placements
-    .filter(({ value }) => value.repositoryId === repoId)
-    .map(({ value }) => value.projectId))];
+  const projectIds = [
+    ...new Set(placements.filter(({ value }) => value.repositoryId === repoId).map(({ value }) => value.projectId)),
+  ];
   if (projectIds.length > 1) throw new Error(`REQUIREMENT_PROJECT_PLACEMENT_AMBIGUOUS:${repoId}`);
   return projectIds[0];
 }
 
-function projectIdentityWithinTransaction(database: SqliteDatabase, projectId: string): ControlPlaneRecord<ProjectIdentity> {
+function projectIdentityWithinTransaction(
+  database: SqliteDatabase,
+  projectId: string,
+): ControlPlaneRecord<ProjectIdentity> {
   const projects = listControlPlaneRecordsWithinTransaction<ProjectIdentity>(database, {
-    namespace: PROJECT_SEMANTIC_NAMESPACE, limit: 1_000,
+    namespace: PROJECT_SEMANTIC_NAMESPACE,
+    limit: 1_000,
   });
   if (projects.length >= 1_000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
   const matches = projects.filter(({ value }) => value.projectId === projectId);
-  if (matches.length !== 1) throw new Error(matches.length
-    ? `PROJECT_IDENTITY_AMBIGUOUS:${projectId}`
-    : `REQUIREMENT_PROJECT_NOT_FOUND:${projectId}`);
-  if ((matches[0]!.value.status ?? 'active') === 'archived') throw new Error(`REQUIREMENT_PROJECT_ARCHIVED:${projectId}`);
+  if (matches.length !== 1)
+    throw new Error(
+      matches.length ? `PROJECT_IDENTITY_AMBIGUOUS:${projectId}` : `REQUIREMENT_PROJECT_NOT_FOUND:${projectId}`,
+    );
+  if ((matches[0]!.value.status ?? 'active') === 'archived')
+    throw new Error(`REQUIREMENT_PROJECT_ARCHIVED:${projectId}`);
   return matches[0]!;
 }
 
@@ -209,7 +234,8 @@ function assertRequirementHierarchyParentWithinTransaction(
   input: { requirementId: string; repoId?: string; projectId?: string; parentRequirementId: string },
 ): { parentRequirementId: string; rootRequirementId: string; projectId: string } {
   const parentRequirementId = id(input.parentRequirementId);
-  if (parentRequirementId === input.requirementId) throw new Error(`REQUIREMENT_HIERARCHY_CYCLE:${input.requirementId}`);
+  if (parentRequirementId === input.requirementId)
+    throw new Error(`REQUIREMENT_HIERARCHY_CYCLE:${input.requirementId}`);
   const parent = readWithin(database, parentRequirementId);
   if (!parent) throw new Error(`REQUIREMENT_PARENT_NOT_FOUND:${parentRequirementId}`);
   if (parent.value.state === 'done' || parent.value.state === 'cancelled') {
@@ -230,7 +256,8 @@ function assertRequirementHierarchyParentWithinTransaction(
   if (!root || root.value.rootRequirementId !== rootRequirementId || root.value.parentRequirementId) {
     throw new Error(`REQUIREMENT_HIERARCHY_ROOT_INVALID:${rootRequirementId}`);
   }
-  if (root.value.state === 'done' || root.value.state === 'cancelled') throw new Error(`REQUIREMENT_PARENT_TERMINAL:${rootRequirementId}`);
+  if (root.value.state === 'done' || root.value.state === 'cancelled')
+    throw new Error(`REQUIREMENT_PARENT_TERMINAL:${rootRequirementId}`);
   if (projectIdForRequirementWithinTransaction(database, root.value) !== projectId) {
     throw new Error(`REQUIREMENT_HIERARCHY_PROJECT_MISMATCH:${rootRequirementId}:${projectId}`);
   }
@@ -249,7 +276,8 @@ function assertRequirementHierarchyParentWithinTransaction(
     }
     cursor = ancestor.value;
   }
-  if (cursor.requirementId !== rootRequirementId) throw new Error(`REQUIREMENT_HIERARCHY_ROOT_INVALID:${rootRequirementId}`);
+  if (cursor.requirementId !== rootRequirementId)
+    throw new Error(`REQUIREMENT_HIERARCHY_ROOT_INVALID:${rootRequirementId}`);
   return { parentRequirementId, rootRequirementId, projectId };
 }
 
@@ -261,27 +289,64 @@ function assertRequirementHierarchyParentWithinTransaction(
 export function normalizeLegacyRequirementAcceptance(options: RequirementStoreOptions): number {
   return withControlPlaneTransaction(options.controllerHome, (database) => {
     let normalized = 0;
-    for (const record of listAllControlPlaneRecordsWithinTransaction<Requirement & { semanticAcceptance?: unknown }>(database, { namespace: NAMESPACE, scope: SCOPE })) {
+    for (const record of listAllControlPlaneRecordsWithinTransaction<Requirement & { semanticAcceptance?: unknown }>(
+      database,
+      { namespace: NAMESPACE, scope: SCOPE },
+    )) {
       const value = record.value;
-      if (value.state !== 'done' || (value.acceptedEvidenceRefs?.length ?? 0) > 0
-        || (value.remainingWork?.length ?? 0) > 0) continue;
+      if (
+        value.state !== 'done' ||
+        (value.acceptedEvidenceRefs?.length ?? 0) > 0 ||
+        (value.remainingWork?.length ?? 0) > 0
+      )
+        continue;
       const acceptance = value.semanticAcceptance;
       if (!acceptance || typeof acceptance !== 'object' || Array.isArray(acceptance)) continue;
       const legacy = acceptance as Record<string, unknown>;
-      if (typeof legacy.reviewer !== 'string' || !legacy.reviewer.trim()
-        || typeof legacy.rationale !== 'string' || !legacy.rationale.trim()
-        || typeof legacy.acceptedAt !== 'string' || !Number.isFinite(Date.parse(legacy.acceptedAt))
-        || !Array.isArray(legacy.planIds) || !legacy.planIds.every((planId) => typeof planId === 'string' && planId.trim())) continue;
-      const digest = createHash('sha256').update(JSON.stringify({ requirementId: value.requirementId, acceptance })).digest('hex');
-      const updated = { ...value, remainingWork: [], acceptedEvidenceRefs: [`requirement:${value.requirementId}:legacy-acceptance:sha256:${digest}`] };
+      if (
+        typeof legacy.reviewer !== 'string' ||
+        !legacy.reviewer.trim() ||
+        typeof legacy.rationale !== 'string' ||
+        !legacy.rationale.trim() ||
+        typeof legacy.acceptedAt !== 'string' ||
+        !Number.isFinite(Date.parse(legacy.acceptedAt)) ||
+        !Array.isArray(legacy.planIds) ||
+        !legacy.planIds.every((planId) => typeof planId === 'string' && planId.trim())
+      )
+        continue;
+      const digest = createHash('sha256')
+        .update(JSON.stringify({ requirementId: value.requirementId, acceptance }))
+        .digest('hex');
+      const updated = {
+        ...value,
+        remainingWork: [],
+        acceptedEvidenceRefs: [`requirement:${value.requirementId}:legacy-acceptance:sha256:${digest}`],
+      };
       // This is a representation upgrade, not a semantic revision. Keep both
       // record and authored revision/timestamps, state, and original provenance.
-      const statement = database.prepare('UPDATE control_plane_records SET payload = ? WHERE namespace = ? AND scope = ? AND record_key = ? AND revision = ?');
-      try { statement.run(JSON.stringify(updated), NAMESPACE, SCOPE, record.key, record.revision); }
-      finally { statement.finalize?.(); }
-      const audit = database.prepare('INSERT INTO control_plane_audit(namespace,scope,record_key,action,revision,occurred_at) VALUES (?,?,?,?,?,?)');
-      try { audit.run(NAMESPACE, SCOPE, record.key, 'requirement_legacy_acceptance_normalized_v1', record.revision, nowIso(options)); }
-      finally { audit.finalize?.(); }
+      const statement = database.prepare(
+        'UPDATE control_plane_records SET payload = ? WHERE namespace = ? AND scope = ? AND record_key = ? AND revision = ?',
+      );
+      try {
+        statement.run(JSON.stringify(updated), NAMESPACE, SCOPE, record.key, record.revision);
+      } finally {
+        statement.finalize?.();
+      }
+      const audit = database.prepare(
+        'INSERT INTO control_plane_audit(namespace,scope,record_key,action,revision,occurred_at) VALUES (?,?,?,?,?,?)',
+      );
+      try {
+        audit.run(
+          NAMESPACE,
+          SCOPE,
+          record.key,
+          'requirement_legacy_acceptance_normalized_v1',
+          record.revision,
+          nowIso(options),
+        );
+      } finally {
+        audit.finalize?.();
+      }
       normalized++;
     }
     return normalized;
@@ -304,9 +369,12 @@ function repositoryId(value: unknown): string | undefined {
 }
 
 function normalizePriority(value: unknown): RequirementPriority | undefined {
-  const normalized = String(value ?? '').trim().toLowerCase();
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
   if (!normalized) return undefined;
-  if (!(REQUIREMENT_PRIORITIES as readonly string[]).includes(normalized)) throw new Error('REQUIREMENT_PRIORITY_INVALID');
+  if (!(REQUIREMENT_PRIORITIES as readonly string[]).includes(normalized))
+    throw new Error('REQUIREMENT_PRIORITY_INVALID');
   return normalized as RequirementPriority;
 }
 
@@ -317,7 +385,11 @@ function normalizeAssignee(value: unknown): string | undefined {
 }
 
 function bounded(values: readonly string[] | undefined, limit: number, maxLength = 500): string[] {
-  return (values ?? []).map((value) => String(value).trim()).filter(Boolean).slice(0, limit).map((value) => value.slice(0, maxLength));
+  return (values ?? [])
+    .map((value) => String(value).trim())
+    .filter(Boolean)
+    .slice(0, limit)
+    .map((value) => value.slice(0, maxLength));
 }
 
 export function currentRequirementSemanticRevision(requirement: Requirement): number {
@@ -384,7 +456,10 @@ function reconstructRequirementRevisionWithinTransaction(
   targetRevision: number,
 ): RequirementRevisionRecord | undefined {
   const archived = readControlPlaneRecordWithinTransaction<RequirementRevisionRecord>(
-    database, REVISION_NAMESPACE, SCOPE, requirementRevisionKey(requirementId, targetRevision),
+    database,
+    REVISION_NAMESPACE,
+    SCOPE,
+    requirementRevisionKey(requirementId, targetRevision),
   )?.value;
   if (archived) return normalizeRequirementRevisionRecord(archived);
 
@@ -396,7 +471,10 @@ function reconstructRequirementRevisionWithinTransaction(
   let view = requirementSemanticView(current.value);
   for (let revision = currentRevision - 1; revision >= targetRevision; revision -= 1) {
     const change = readControlPlaneRecordWithinTransaction<SemanticInverseChangeRecord>(
-      database, CHANGE_NAMESPACE, SCOPE, requirementRevisionKey(requirementId, revision),
+      database,
+      CHANGE_NAMESPACE,
+      SCOPE,
+      requirementRevisionKey(requirementId, revision),
     )?.value;
     if (!change || change.revision !== revision || change.nextRevision !== revision + 1) return undefined;
     view = applySemanticInverseChange(
@@ -409,8 +487,12 @@ function reconstructRequirementRevisionWithinTransaction(
 }
 
 export function isLegacyMachineRequirementWait(requirement: Pick<Requirement, 'state' | 'attentionSummary'>): boolean {
-  return requirement.state === 'waiting_for_user'
-    && /^Work .+ delivered machine-valid evidence \(.+\); ChatGPT\/user semantic acceptance is still required\.$/.test(requirement.attentionSummary ?? '');
+  return (
+    requirement.state === 'waiting_for_user' &&
+    /^Work .+ delivered machine-valid evidence \(.+\); ChatGPT\/user semantic acceptance is still required\.$/.test(
+      requirement.attentionSummary ?? '',
+    )
+  );
 }
 
 function readWithin(database: SqliteDatabase, requirementId: string): ControlPlaneRecord<Requirement> | undefined {
@@ -436,7 +518,10 @@ function assertUniqueRequirementLegacyAliasesWithinTransaction(
 ): void {
   if (aliases.length === 0) return;
   const requested = new Set(aliases);
-  const existing = listAllControlPlaneRecordsWithinTransaction<Requirement>(database, { namespace: NAMESPACE, scope: SCOPE });
+  const existing = listAllControlPlaneRecordsWithinTransaction<Requirement>(database, {
+    namespace: NAMESPACE,
+    scope: SCOPE,
+  });
   for (const record of existing) {
     if (record.value.requirementId === requirementId) continue;
     const conflict = (record.value.legacyAliases ?? []).find((alias) => requested.has(alias));
@@ -475,13 +560,10 @@ export function readRequirementWithinTransaction(
   database: SqliteDatabase,
   requirementId: string,
 ): ControlPlaneRecord<Requirement> | undefined {
-  return readWithin(database,id(requirementId));
+  return readWithin(database, id(requirementId));
 }
 
-export function listRequirements(
-  options: RequirementStoreOptions,
-  limit = 500,
-): ControlPlaneRecord<Requirement>[] {
+export function listRequirements(options: RequirementStoreOptions, limit = 500): ControlPlaneRecord<Requirement>[] {
   return listControlPlaneRecords<Requirement>(options.controllerHome, {
     namespace: NAMESPACE,
     scope: SCOPE,
@@ -521,19 +603,19 @@ export function listRequirementRevisionRecords(
         return revisions;
       })
     : listControlPlaneRecords<RequirementRevisionRecord>(options.controllerHome, {
-        namespace: REVISION_NAMESPACE, scope: SCOPE, limit: boundedLimit,
+        namespace: REVISION_NAMESPACE,
+        scope: SCOPE,
+        limit: boundedLimit,
       }).map((record) => record.value);
-  return records.map(normalizeRequirementRevisionRecord)
-    .sort((left, right) => right.revision - left.revision);
+  return records.map(normalizeRequirementRevisionRecord).sort((left, right) => right.revision - left.revision);
 }
 
-export function listRequirementActivityEvents(
-  options: RequirementStoreOptions,
-  requirementId: string,
-  limit = 20,
-) {
+export function listRequirementActivityEvents(options: RequirementStoreOptions, requirementId: string, limit = 20) {
   return listControlPlaneAuditEvents(options.controllerHome, {
-    namespace: NAMESPACE, scope: SCOPE, key: id(requirementId), limit,
+    namespace: NAMESPACE,
+    scope: SCOPE,
+    key: id(requirementId),
+    limit,
   });
 }
 
@@ -543,22 +625,30 @@ export function reviseRequirementSemantic(
   input: ReviseRequirementSemanticInput,
 ): Requirement {
   const requirementId = id(requirementIdInput);
-  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) throw new Error('REQUIREMENT_EXPECTED_REVISION_INVALID');
+  if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1)
+    throw new Error('REQUIREMENT_EXPECTED_REVISION_INVALID');
   return withControlPlaneTransaction(options.controllerHome, (database) => {
     const current = readWithin(database, requirementId);
     if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
     const semanticRevision = currentRequirementSemanticRevision(current.value);
     if (semanticRevision !== input.expectedRevision) {
-      throw new Error(`REQUIREMENT_REVISION_CONFLICT:${requirementId}:expected=${input.expectedRevision}:actual=${semanticRevision}`);
+      throw new Error(
+        `REQUIREMENT_REVISION_CONFLICT:${requirementId}:expected=${input.expectedRevision}:actual=${semanticRevision}`,
+      );
     }
     const requestedRepoId = repositoryId(input.repoId);
-    if (requestedRepoId && current.value.projectId) throw new Error(`REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT:${requirementId}`);
+    if (requestedRepoId && current.value.projectId)
+      throw new Error(`REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT:${requirementId}`);
     if (requestedRepoId && current.value.repoId && current.value.repoId !== requestedRepoId) {
-      throw new Error(`REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${requestedRepoId}`);
+      throw new Error(
+        `REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${requestedRepoId}`,
+      );
     }
     if (requestedRepoId && !current.value.repoId) assertRepositoryProjectAcceptsTask(database, requestedRepoId);
-    const requestedParentRequirementId = input.parentRequirementId === undefined ? undefined : id(input.parentRequirementId);
-    if (input.isProjectRoot && requestedParentRequirementId) throw new Error('REQUIREMENT_HIERARCHY_ROOT_PARENT_CONFLICT');
+    const requestedParentRequirementId =
+      input.parentRequirementId === undefined ? undefined : id(input.parentRequirementId);
+    if (input.isProjectRoot && requestedParentRequirementId)
+      throw new Error('REQUIREMENT_HIERARCHY_ROOT_PARENT_CONFLICT');
     let nextParentRequirementId = current.value.parentRequirementId;
     let nextRootRequirementId = current.value.rootRequirementId;
     let projectRootToBind: string | undefined;
@@ -567,7 +657,8 @@ export function reviseRequirementSemantic(
         throw new Error(`REQUIREMENT_HIERARCHY_ROOT_IMMUTABLE:${requirementId}`);
       }
       const projectId = projectIdForRequirementWithinTransaction(database, {
-        projectId: current.value.projectId, repoId: requestedRepoId ?? current.value.repoId,
+        projectId: current.value.projectId,
+        repoId: requestedRepoId ?? current.value.repoId,
       });
       if (!projectId) throw new Error(`REQUIREMENT_PROJECT_ROOT_REQUIRES_PROJECT:${requirementId}`);
       const project = projectIdentityWithinTransaction(database, projectId);
@@ -593,33 +684,38 @@ export function reviseRequirementSemantic(
       nextParentRequirementId = hierarchy.parentRequirementId;
       nextRootRequirementId = hierarchy.rootRequirementId;
     }
-    const hierarchyChanged = nextParentRequirementId !== current.value.parentRequirementId
-      || nextRootRequirementId !== current.value.rootRequirementId;
+    const hierarchyChanged =
+      nextParentRequirementId !== current.value.parentRequirementId ||
+      nextRootRequirementId !== current.value.rootRequirementId;
     const currentDependencies = [...(current.value.dependsOnRequirementIds ?? [])];
-    const dependsOnRequirementIds = input.dependsOnRequirementIds === undefined
-      ? currentDependencies
-      : normalizeRequirementDependencies(input.dependsOnRequirementIds);
+    const dependsOnRequirementIds =
+      input.dependsOnRequirementIds === undefined
+        ? currentDependencies
+        : normalizeRequirementDependencies(input.dependsOnRequirementIds);
     const normalizedCurrentDependencies = [...currentDependencies].sort((left, right) => left.localeCompare(right));
-    const dependenciesChanged = input.dependsOnRequirementIds !== undefined
-      && (dependsOnRequirementIds.length !== normalizedCurrentDependencies.length
-        || dependsOnRequirementIds.some((dependencyId, index) => dependencyId !== normalizedCurrentDependencies[index]));
+    const dependenciesChanged =
+      input.dependsOnRequirementIds !== undefined &&
+      (dependsOnRequirementIds.length !== normalizedCurrentDependencies.length ||
+        dependsOnRequirementIds.some((dependencyId, index) => dependencyId !== normalizedCurrentDependencies[index]));
     if (dependenciesChanged) {
       assertRequirementDependenciesWithinTransaction(database, requirementId, dependsOnRequirementIds);
     }
-    const legacyAliases = input.legacyAliases === undefined
-      ? [...(current.value.legacyAliases ?? [])]
-      : normalizeRequirementLegacyAliases(input.legacyAliases);
+    const legacyAliases =
+      input.legacyAliases === undefined
+        ? [...(current.value.legacyAliases ?? [])]
+        : normalizeRequirementLegacyAliases(input.legacyAliases);
     if (input.legacyAliases !== undefined) {
       assertUniqueRequirementLegacyAliasesWithinTransaction(database, requirementId, legacyAliases);
     }
     const requestedState = input.state;
-    const semanticStatus: RequirementState | undefined = requestedState === 'completed'
-      ? 'done'
-      : requestedState === 'cancelled'
-        ? 'cancelled'
-        : requestedState === 'open'
-          ? 'active'
-          : undefined;
+    const semanticStatus: RequirementState | undefined =
+      requestedState === 'completed'
+        ? 'done'
+        : requestedState === 'cancelled'
+          ? 'cancelled'
+          : requestedState === 'open'
+            ? 'active'
+            : undefined;
     const requestedStatus = input.status;
     if (semanticStatus && requestedStatus && semanticStatus !== requestedStatus) {
       throw new Error(`REQUIREMENT_STATE_INPUT_CONFLICT:${requirementId}:${semanticStatus}!=${requestedStatus}`);
@@ -630,24 +726,33 @@ export function reviseRequirementSemantic(
       throw new Error(`REQUIREMENT_SEMANTIC_REOPEN_FORBIDDEN:${requirementId}:${current.value.state}`);
     }
     if (requestedState && currentTerminal && semanticStatus !== current.value.state) {
-      throw new Error(`REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN:${requirementId}:${current.value.state}->${legacyState}`);
+      throw new Error(
+        `REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN:${requirementId}:${current.value.state}->${legacyState}`,
+      );
     }
     if (requestedStatus && currentTerminal && requestedStatus !== current.value.state) {
-      throw new Error(`REQUIREMENT_STATUS_TERMINAL_TRANSITION_FORBIDDEN:${requirementId}:${current.value.state}->${requestedStatus}`);
+      throw new Error(
+        `REQUIREMENT_STATUS_TERMINAL_TRANSITION_FORBIDDEN:${requirementId}:${current.value.state}->${requestedStatus}`,
+      );
     }
     if (currentTerminal) {
       throw new Error(`REQUIREMENT_SEMANTIC_TERMINAL_IMMUTABLE:${requirementId}:${current.value.state}`);
     }
-    if (requestedStatus && requestedStatus !== 'done'
-      && !REQUIREMENT_STATE_TRANSITIONS[current.value.state].includes(requestedStatus)) {
+    if (
+      requestedStatus &&
+      requestedStatus !== 'done' &&
+      !REQUIREMENT_STATE_TRANSITIONS[current.value.state].includes(requestedStatus)
+    ) {
       throw new Error(`REQUIREMENT_STATE_TRANSITION_INVALID:${current.value.state} -> ${requestedStatus}`);
     }
     const at = nowIso(options);
     const revisionKey = requirementRevisionKey(requirementId, semanticRevision);
-    const remainingWork = input.remainingWork === undefined ? [...(current.value.remainingWork ?? [])] : bounded(input.remainingWork, 50);
-    const acceptedEvidenceRefs = input.acceptedEvidenceRefs === undefined
-      ? [...(current.value.acceptedEvidenceRefs ?? [])]
-      : bounded(input.acceptedEvidenceRefs, 100, 512);
+    const remainingWork =
+      input.remainingWork === undefined ? [...(current.value.remainingWork ?? [])] : bounded(input.remainingWork, 50);
+    const acceptedEvidenceRefs =
+      input.acceptedEvidenceRefs === undefined
+        ? [...(current.value.acceptedEvidenceRefs ?? [])]
+        : bounded(input.acceptedEvidenceRefs, 100, 512);
     if (legacyState === 'done' && (remainingWork.length > 0 || acceptedEvidenceRefs.length === 0)) {
       throw new Error(`REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED:${requirementId}`);
     }
@@ -656,7 +761,10 @@ export function reviseRequirementSemantic(
     const currentValue = { ...current.value } as Requirement & { semanticAcceptance?: unknown };
     delete currentValue.semanticAcceptance;
     const title = input.title === undefined ? current.value.title : String(input.title).trim().slice(0, 500);
-    const outcomeStatement = input.outcomeStatement === undefined ? current.value.outcomeStatement : String(input.outcomeStatement).trim().slice(0, 2_000);
+    const outcomeStatement =
+      input.outcomeStatement === undefined
+        ? current.value.outcomeStatement
+        : String(input.outcomeStatement).trim().slice(0, 2_000);
     if (!title || !outcomeStatement) throw new Error('REQUIREMENT_CONTENT_REQUIRED');
     const updated: Requirement = {
       ...currentValue,
@@ -665,14 +773,25 @@ export function reviseRequirementSemantic(
       assignee: input.assignee === undefined ? current.value.assignee : normalizeAssignee(input.assignee),
       title,
       outcomeStatement,
-      acceptanceCriteria: input.acceptanceCriteria === undefined ? [...current.value.acceptanceCriteria] : bounded(input.acceptanceCriteria, 50),
-      requiredDeliveryReferences: input.requiredDeliveryReferences === undefined ? [...current.value.requiredDeliveryReferences] : bounded(input.requiredDeliveryReferences, 50),
-      progressSummary: input.progressSummary === undefined ? current.value.progressSummary ?? '' : String(input.progressSummary).trim().slice(0, 2_000),
+      acceptanceCriteria:
+        input.acceptanceCriteria === undefined
+          ? [...current.value.acceptanceCriteria]
+          : bounded(input.acceptanceCriteria, 50),
+      requiredDeliveryReferences:
+        input.requiredDeliveryReferences === undefined
+          ? [...current.value.requiredDeliveryReferences]
+          : bounded(input.requiredDeliveryReferences, 50),
+      progressSummary:
+        input.progressSummary === undefined
+          ? (current.value.progressSummary ?? '')
+          : String(input.progressSummary).trim().slice(0, 2_000),
       remainingWork,
       acceptedEvidenceRefs,
       dependsOnRequirementIds,
       legacyAliases,
-      ...(hierarchyChanged ? { parentRequirementId: nextParentRequirementId, rootRequirementId: nextRootRequirementId } : {}),
+      ...(hierarchyChanged
+        ? { parentRequirementId: nextParentRequirementId, rootRequirementId: nextRootRequirementId }
+        : {}),
       state: legacyState,
       ...(requestedState ? { needsAttention: false, attentionSummary: undefined } : {}),
       semanticRevision: semanticRevision + 1,
@@ -680,9 +799,14 @@ export function reviseRequirementSemantic(
       revision: current.value.revision + 1,
       updatedAt: at,
     };
-    if (!readControlPlaneRecordWithinTransaction<SemanticInverseChangeRecord>(
-      database, CHANGE_NAMESPACE, SCOPE, revisionKey,
-    )) {
+    if (
+      !readControlPlaneRecordWithinTransaction<SemanticInverseChangeRecord>(
+        database,
+        CHANGE_NAMESPACE,
+        SCOPE,
+        revisionKey,
+      )
+    ) {
       const previousView = requirementSemanticView(current.value);
       const nextView = requirementSemanticView(updated);
       const change = createSemanticInverseChange(
@@ -691,28 +815,36 @@ export function reviseRequirementSemantic(
         { revision: semanticRevision, nextRevision: semanticRevision + 1, recordedAt: at },
       );
       writeControlPlaneRecordWithinTransaction(database, {
-        namespace: CHANGE_NAMESPACE, scope: SCOPE, key: revisionKey, schemaVersion: 1,
-        value: change, action: 'requirement_semantic_change_recorded', expectedRevision: null,
+        namespace: CHANGE_NAMESPACE,
+        scope: SCOPE,
+        key: revisionKey,
+        schemaVersion: 1,
+        value: change,
+        action: 'requirement_semantic_change_recorded',
+        expectedRevision: null,
       });
     }
     const written = writeControlPlaneRecordWithinTransaction(database, {
-      namespace: NAMESPACE, scope: SCOPE, key: requirementId, schemaVersion: SCHEMA_VERSION,
-      value: updated, action: 'requirement_semantic_revised', expectedRevision: current.revision,
+      namespace: NAMESPACE,
+      scope: SCOPE,
+      key: requirementId,
+      schemaVersion: SCHEMA_VERSION,
+      value: updated,
+      action: 'requirement_semantic_revised',
+      expectedRevision: current.revision,
     });
     if (projectRootToBind) bindProjectRootRequirementWithinTransaction(database, projectRootToBind, requirementId, at);
     return written.value;
   });
 }
 
-export function createRequirement(
-  options: RequirementStoreOptions,
-  input: CreateRequirementInput,
-): Requirement {
+export function createRequirement(options: RequirementStoreOptions, input: CreateRequirementInput): Requirement {
   const requirementId = id(input.requirementId);
   const projectId = String(input.projectId ?? '').trim() || undefined;
   const repoId = repositoryId(input.repoId);
   const parentRequirementId = input.parentRequirementId === undefined ? undefined : id(input.parentRequirementId);
-  if (projectId && (projectId.length > 512 || repoId)) throw new Error('REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT');
+  if (projectId && (projectId.length > 512 || repoId))
+    throw new Error('REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT');
   if (input.isProjectRoot && parentRequirementId) throw new Error('REQUIREMENT_HIERARCHY_ROOT_PARENT_CONFLICT');
   const at = nowIso(options);
   const initialStatus = input.status ?? 'planned';
@@ -730,8 +862,12 @@ export function createRequirement(
     ...(normalizeAssignee(input.assignee) ? { assignee: normalizeAssignee(input.assignee) } : {}),
     legacyAliases,
     ...(dependsOnRequirementIds.length > 0 ? { dependsOnRequirementIds } : {}),
-    title: String(input.title ?? '').trim().slice(0, 500),
-    outcomeStatement: String(input.outcomeStatement ?? '').trim().slice(0, 2_000),
+    title: String(input.title ?? '')
+      .trim()
+      .slice(0, 500),
+    outcomeStatement: String(input.outcomeStatement ?? '')
+      .trim()
+      .slice(0, 2_000),
     acceptanceCriteria: bounded(input.acceptanceCriteria, 50),
     requiredDeliveryReferences: bounded(input.requiredDeliveryReferences, 50),
     progressSummary: '',
@@ -755,7 +891,10 @@ export function createRequirement(
     const resolvedProjectId = projectIdForRequirementWithinTransaction(database, requirement);
     if (parentRequirementId) {
       const hierarchy = assertRequirementHierarchyParentWithinTransaction(database, {
-        requirementId, repoId, projectId, parentRequirementId,
+        requirementId,
+        repoId,
+        projectId,
+        parentRequirementId,
       });
       createdRequirement = {
         ...requirement,
@@ -766,13 +905,17 @@ export function createRequirement(
       if (!resolvedProjectId) throw new Error(`REQUIREMENT_PROJECT_ROOT_REQUIRES_PROJECT:${requirementId}`);
       const project = projectIdentityWithinTransaction(database, resolvedProjectId);
       if (project.value.rootRequirementId && project.value.rootRequirementId !== requirementId) {
-        throw new Error(`PROJECT_ROOT_REQUIREMENT_ALREADY_BOUND:${resolvedProjectId}:${project.value.rootRequirementId}`);
+        throw new Error(
+          `PROJECT_ROOT_REQUIREMENT_ALREADY_BOUND:${resolvedProjectId}:${project.value.rootRequirementId}`,
+        );
       }
       createdRequirement = { ...requirement, rootRequirementId: requirementId };
     }
     assertUniqueRequirementLegacyAliasesWithinTransaction(database, requirementId, legacyAliases);
     assertRequirementDependenciesWithinTransaction(database, requirementId, dependsOnRequirementIds);
-    const exclusiveCandidateRefs = requirement.auditRefs.filter(ref => ref.startsWith('cognitive-requirement-candidate:'));
+    const exclusiveCandidateRefs = requirement.auditRefs.filter((ref) =>
+      ref.startsWith('cognitive-requirement-candidate:'),
+    );
     if (exclusiveCandidateRefs.length > 0) {
       const existing = listControlPlaneRecordsWithinTransaction<Requirement>(database, {
         namespace: NAMESPACE,
@@ -780,7 +923,9 @@ export function createRequirement(
         limit: 1000,
       });
       if (existing.length >= 1000) throw new Error('REQUIREMENT_CANDIDATE_BINDING_LOOKUP_LIMIT');
-      const alreadyBound = existing.find(record => exclusiveCandidateRefs.some(ref => record.value.auditRefs.includes(ref)));
+      const alreadyBound = existing.find((record) =>
+        exclusiveCandidateRefs.some((ref) => record.value.auditRefs.includes(ref)),
+      );
       if (alreadyBound) throw new Error('REQUIREMENT_CANDIDATE_ALREADY_PROMOTED');
     }
     writeControlPlaneRecordWithinTransaction(database, {
@@ -813,7 +958,9 @@ export function bindRequirementRepositoryPlacement(
     if (current.value.projectId) throw new Error(`REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT:${requirementId}`);
     if (current.value.repoId === repoId) return current.value;
     if (current.value.repoId) {
-      throw new Error(`REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${repoId}`);
+      throw new Error(
+        `REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${repoId}`,
+      );
     }
     assertRepositoryProjectAcceptsTask(database, repoId);
     const updated: Requirement = {
@@ -840,7 +987,9 @@ export function bindRequirementProjectPlacement(
   projectIdInput: string,
 ): Requirement {
   const requirementId = id(requirementIdInput);
-  const projectId = String(projectIdInput ?? '').trim().slice(0, 512);
+  const projectId = String(projectIdInput ?? '')
+    .trim()
+    .slice(0, 512);
   if (!projectId) throw new Error('REQUIREMENT_PROJECT_REQUIRED');
   return withControlPlaneTransaction(options.controllerHome, (database) => {
     const current = readWithin(database, requirementId);
@@ -848,7 +997,9 @@ export function bindRequirementProjectPlacement(
     if (current.value.repoId) throw new Error(`REQUIREMENT_PROJECT_REPOSITORY_PLACEMENT_CONFLICT:${requirementId}`);
     if (current.value.projectId === projectId) return current.value;
     if (current.value.projectId) {
-      throw new Error(`REQUIREMENT_PROJECT_CONFLICT:${requirementId}:existing=${current.value.projectId}:requested=${projectId}`);
+      throw new Error(
+        `REQUIREMENT_PROJECT_CONFLICT:${requirementId}:existing=${current.value.projectId}:requested=${projectId}`,
+      );
     }
     const projects = listControlPlaneRecordsWithinTransaction<ProjectIdentity>(database, {
       namespace: PROJECT_SEMANTIC_NAMESPACE,
@@ -882,7 +1033,9 @@ export function bindRequirementCandidateAuditRef(
   candidateAuditRefInput: string,
 ): Requirement {
   const requirementId = id(requirementIdInput);
-  const candidateAuditRef = String(candidateAuditRefInput ?? '').trim().slice(0, 500);
+  const candidateAuditRef = String(candidateAuditRefInput ?? '')
+    .trim()
+    .slice(0, 500);
   if (!candidateAuditRef.startsWith('cognitive-requirement-candidate:')) {
     throw new Error('REQUIREMENT_CANDIDATE_AUDIT_REF_INVALID');
   }
@@ -893,7 +1046,7 @@ export function bindRequirementCandidateAuditRef(
       limit: 1000,
     });
     if (records.length >= 1000) throw new Error('REQUIREMENT_CANDIDATE_BINDING_LOOKUP_LIMIT');
-    const bound = records.find(record => record.value.auditRefs.includes(candidateAuditRef));
+    const bound = records.find((record) => record.value.auditRefs.includes(candidateAuditRef));
     if (bound && bound.value.requirementId !== requirementId) {
       throw new Error('REQUIREMENT_CANDIDATE_ALREADY_PROMOTED');
     }
@@ -934,8 +1087,10 @@ export function updateRequirement(
     if (next === current.value) return current.value;
     const nextLegacyAliases = normalizeRequirementLegacyAliases(next.legacyAliases);
     const currentLegacyAliases = current.value.legacyAliases ?? [];
-    if (nextLegacyAliases.length !== currentLegacyAliases.length
-      || nextLegacyAliases.some((alias, index) => alias !== currentLegacyAliases[index])) {
+    if (
+      nextLegacyAliases.length !== currentLegacyAliases.length ||
+      nextLegacyAliases.some((alias, index) => alias !== currentLegacyAliases[index])
+    ) {
       assertUniqueRequirementLegacyAliasesWithinTransaction(database, requirementId, nextLegacyAliases);
     }
     if (current.value.state === 'done' || current.value.state === 'cancelled') {

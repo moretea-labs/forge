@@ -24,13 +24,16 @@ describe('Computer cross-platform manifest contract', () => {
     const mac = manifestFor('darwin');
     const linux = manifestFor('linux');
     const windows = manifestFor('win32');
-    const contract = (actions: typeof mac.actions) => actions.map((action) => ({
-      id: action.actionId,
-      risk: action.risk,
-      confirmation: action.confirmation,
-      scopes: action.scopes,
-      argumentsSchema: action.argumentsSchema,
-    })).sort((a, b) => a.id.localeCompare(b.id));
+    const contract = (actions: typeof mac.actions) =>
+      actions
+        .map((action) => ({
+          id: action.actionId,
+          risk: action.risk,
+          confirmation: action.confirmation,
+          scopes: action.scopes,
+          argumentsSchema: action.argumentsSchema,
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id));
 
     expect(contract(linux.actions)).toEqual(contract(mac.actions));
     expect(contract(windows.actions)).toEqual(contract(mac.actions));
@@ -38,9 +41,11 @@ describe('Computer cross-platform manifest contract', () => {
     expect(actionIds.has('autofill_saved_password')).toBe(true);
     expect(actionIds.has('desktop_element_action')).toBe(true);
     const desktopAction = mac.actions.find((action) => action.actionId === 'desktop_element_action');
-    const actionEnum = (desktopAction?.argumentsSchema as {
-      properties?: { action?: { enum?: string[] } };
-    })?.properties?.action?.enum;
+    const actionEnum = (
+      desktopAction?.argumentsSchema as {
+        properties?: { action?: { enum?: string[] } };
+      }
+    )?.properties?.action?.enum;
     expect(actionEnum).toContain('click');
   });
 
@@ -48,10 +53,12 @@ describe('Computer cross-platform manifest contract', () => {
     const mac = manifestFor('darwin');
     const linux = manifestFor('linux');
     expect(linux.health.details?.desktop).toMatchObject({
-      supported: false, ready: false,
+      supported: false,
+      ready: false,
     });
     expect(linux.health.details?.iphone).toMatchObject({
-      supported: false, ready: false,
+      supported: false,
+      ready: false,
     });
     expect(mac.health.details?.desktop).toHaveProperty('supported', true);
   });

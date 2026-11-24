@@ -223,12 +223,15 @@ export function gcOrphanedProcessHandleIndexEntries(
     const processPath = processRecordPathForHandle(controllerHome, entry);
     if (processPath && existsSync(processPath)) continue;
     try {
-      if (purgeExpiredRebuildableControlPlaneRecord(controllerHome, {
-        namespace: PROCESS_HANDLE_INDEX_NAMESPACE,
-        scope: record.scope,
-        key: record.key,
-        expectedRevision: record.revision,
-      })) removed += 1;
+      if (
+        purgeExpiredRebuildableControlPlaneRecord(controllerHome, {
+          namespace: PROCESS_HANDLE_INDEX_NAMESPACE,
+          scope: record.scope,
+          key: record.key,
+          expectedRevision: record.revision,
+        })
+      )
+        removed += 1;
     } catch {
       // A refreshed locator won the race with this stale scan. Leave the
       // current authority intact and let a later maintenance sweep re-evaluate.

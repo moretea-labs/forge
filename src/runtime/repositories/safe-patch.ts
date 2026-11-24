@@ -103,7 +103,9 @@ function hash(value: string): string {
 
 function objectEntries(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null && !Array.isArray(entry));
+  return value.filter(
+    (entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null && !Array.isArray(entry),
+  );
 }
 
 function normalizeOperation(entry: Record<string, unknown>, originalIndex: number): NormalizedOperation {
@@ -131,7 +133,8 @@ function stripInternalIndex(operation: NormalizedOperation): EditOperation {
 }
 
 function chunkSize(value: unknown): number {
-  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : DEFAULT_SAFE_PATCH_CHUNK_SIZE;
+  const parsed =
+    typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : DEFAULT_SAFE_PATCH_CHUNK_SIZE;
   if (!Number.isFinite(parsed)) return DEFAULT_SAFE_PATCH_CHUNK_SIZE;
   return Math.max(1, Math.min(Math.trunc(parsed), MAX_SAFE_PATCH_CHUNK_SIZE));
 }
@@ -140,7 +143,8 @@ function repoRelativePath(repository: RepositoryRecord, rawPath: string): string
   const root = resolve(repository.canonicalRoot);
   const resolved = resolve(root, rawPath.replace(/\\/g, '/'));
   const rel = relative(root, resolved).replace(/\\/g, '/');
-  if (!rel || rel === '..' || rel.startsWith('../')) throw new Error(`SAFE_PATCH_PATH_DENIED: ${rawPath} escapes the repository`);
+  if (!rel || rel === '..' || rel.startsWith('../'))
+    throw new Error(`SAFE_PATCH_PATH_DENIED: ${rawPath} escapes the repository`);
   return rel;
 }
 
@@ -151,7 +155,10 @@ function fingerprint(repository: RepositoryRecord, rawPath: string): SafePatchFi
   return { path, exists: true, sha256: hash(readFileSync(absolute, 'utf-8')) };
 }
 
-function currentFile(repository: RepositoryRecord, rawPath: string): { path: string; absolute: string; exists: boolean; content: string; sha256?: string } {
+function currentFile(
+  repository: RepositoryRecord,
+  rawPath: string,
+): { path: string; absolute: string; exists: boolean; content: string; sha256?: string } {
   const path = repoRelativePath(repository, rawPath);
   const absolute = join(repository.canonicalRoot, path);
   if (!existsSync(absolute)) return { path, absolute, exists: false, content: '' };
@@ -187,19 +194,30 @@ function snippetAround(content: string, needle: string): SafePatchFailureContext
     const found = trimmed ? lines.findIndex((line) => line.includes(trimmed)) : -1;
     lineIndex = found >= 0 ? found : 0;
   }
-  const before = lines.slice(Math.max(0, lineIndex - 3), lineIndex).join('\n').slice(-MAX_TEXT_PREVIEW);
+  const before = lines
+    .slice(Math.max(0, lineIndex - 3), lineIndex)
+    .join('\n')
+    .slice(-MAX_TEXT_PREVIEW);
   const focus = (lines[lineIndex] ?? '').slice(0, MAX_TEXT_PREVIEW);
-  const after = lines.slice(lineIndex + 1, lineIndex + 4).join('\n').slice(0, MAX_TEXT_PREVIEW);
+  const after = lines
+    .slice(lineIndex + 1, lineIndex + 4)
+    .join('\n')
+    .slice(0, MAX_TEXT_PREVIEW);
   return { line: lineIndex + 1, before, focus, after };
 }
 
-function applyTextPreview(operation: Exclude<EditOperation, { type: 'create' | 'write' | 'delete' }>, before: string): string {
+function applyTextPreview(
+  operation: Exclude<EditOperation, { type: 'create' | 'write' | 'delete' }>,
+  before: string,
+): string {
   if (operation.type === 'replace') {
     let after = before;
     for (const replacement of operation.replacements) {
       if (!replacement.oldText) throw new Error('replacement oldText is empty');
       if (!after.includes(replacement.oldText)) throw new Error('replacement text not found');
-      after = replacement.replaceAll ? after.split(replacement.oldText).join(replacement.newText) : after.replace(replacement.oldText, replacement.newText);
+      after = replacement.replaceAll
+        ? after.split(replacement.oldText).join(replacement.newText)
+        : after.replace(replacement.oldText, replacement.newText);
     }
     return after;
   }
@@ -214,7 +232,11 @@ function applyTextPreview(operation: Exclude<EditOperation, { type: 'create' | '
   return `${before.slice(0, insertion)}${anchored.content}${before.slice(insertion)}`;
 }
 
-function refreshFingerprint(repository: RepositoryRecord, operation: NormalizedOperation, refresh: boolean): NormalizedOperation {
+function refreshFingerprint(
+  repository: RepositoryRecord,
+  operation: NormalizedOperation,
+  refresh: boolean,
+): NormalizedOperation {
   if (operation.type === 'create') return operation;
   const current = fingerprint(repository, operation.path);
   if (!current.exists || !current.sha256) return operation;
@@ -222,7 +244,12 @@ function refreshFingerprint(repository: RepositoryRecord, operation: NormalizedO
   return { ...operation, expectedSha256: current.sha256 } as NormalizedOperation;
 }
 
-function preflightChunk(repository: RepositoryRecord, chunk: NormalizedOperation[], chunkIndex: number, refresh: boolean): { operations: NormalizedOperation[]; failures: SafePatchPreflightFailure[] } {
+function preflightChunk(
+  repository: RepositoryRecord,
+  chunk: NormalizedOperation[],
+  chunkIndex: number,
+  refresh: boolean,
+): { operations: NormalizedOperation[]; failures: SafePatchPreflightFailure[] } {
   const failures: SafePatchPreflightFailure[] = [];
   const refreshed = chunk.map((operation) => refreshFingerprint(repository, operation, refresh));
   for (const operation of refreshed) {
@@ -234,7 +261,13 @@ function preflightChunk(repository: RepositoryRecord, chunk: NormalizedOperation
       path: current.path,
     };
     if (operation.type === 'create') {
-      if (current.exists) failures.push({ ...base, code: 'CREATE_TARGET_EXISTS', message: `create target already exists: ${current.path}`, currentSha256: current.sha256 });
+      if (current.exists)
+        failures.push({
+          ...base,
+          code: 'CREATE_TARGET_EXISTS',
+          message: `create target already exists: ${current.path}`,
+          currentSha256: current.sha256,
+        });
       continue;
     }
     if (!current.exists) {
@@ -242,11 +275,12 @@ function preflightChunk(repository: RepositoryRecord, chunk: NormalizedOperation
       continue;
     }
     if (operation.expectedSha256 && current.sha256 && operation.expectedSha256 !== current.sha256) {
-      const conflictNeedle = operation.type === 'replace'
-        ? operation.replacements[0]?.oldText ?? ''
-        : operation.type === 'insert_before' || operation.type === 'insert_after'
-          ? operation.anchor
-          : '';
+      const conflictNeedle =
+        operation.type === 'replace'
+          ? (operation.replacements[0]?.oldText ?? '')
+          : operation.type === 'insert_before' || operation.type === 'insert_after'
+            ? operation.anchor
+            : '';
       failures.push({
         ...base,
         code: 'STALE_FILE_SHA',
@@ -258,27 +292,58 @@ function preflightChunk(repository: RepositoryRecord, chunk: NormalizedOperation
       continue;
     }
     if (operation.type === 'delete') continue;
-    const after = operation.type === 'write' ? operation.content : (() => {
-      try { return applyTextPreview(operation, current.content); }
-      catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const needle = operation.type === 'replace' ? operation.replacements.find((replacement) => replacement.oldText && !current.content.includes(replacement.oldText))?.oldText ?? operation.replacements[0]?.oldText ?? '' : 'anchor' in operation ? operation.anchor : '';
-        failures.push({ ...base, code: operation.type === 'replace' ? 'REPLACEMENT_TEXT_NOT_FOUND' : 'ANCHOR_NOT_FOUND', message: `${message} in ${current.path}`, currentSha256: current.sha256, context: snippetAround(current.content, needle) });
-        return current.content;
-      }
-    })();
-    if (current.content === after) failures.push({ ...base, code: 'NO_CHANGE', message: `edit operation produced no change: ${current.path}`, currentSha256: current.sha256 });
+    const after =
+      operation.type === 'write'
+        ? operation.content
+        : (() => {
+            try {
+              return applyTextPreview(operation, current.content);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              const needle =
+                operation.type === 'replace'
+                  ? (operation.replacements.find(
+                      (replacement) => replacement.oldText && !current.content.includes(replacement.oldText),
+                    )?.oldText ??
+                    operation.replacements[0]?.oldText ??
+                    '')
+                  : 'anchor' in operation
+                    ? operation.anchor
+                    : '';
+              failures.push({
+                ...base,
+                code: operation.type === 'replace' ? 'REPLACEMENT_TEXT_NOT_FOUND' : 'ANCHOR_NOT_FOUND',
+                message: `${message} in ${current.path}`,
+                currentSha256: current.sha256,
+                context: snippetAround(current.content, needle),
+              });
+              return current.content;
+            }
+          })();
+    if (current.content === after)
+      failures.push({
+        ...base,
+        code: 'NO_CHANGE',
+        message: `edit operation produced no change: ${current.path}`,
+        currentSha256: current.sha256,
+      });
   }
   return { operations: refreshed, failures };
 }
 
-export function buildSafePatchPlan(repository: RepositoryRecord, input: { operations: unknown; chunkSize?: unknown }): SafePatchPlan {
+export function buildSafePatchPlan(
+  repository: RepositoryRecord,
+  input: { operations: unknown; chunkSize?: unknown },
+): SafePatchPlan {
   const operations = normalizedSafePatchOperations(input.operations);
   const size = chunkSize(input.chunkSize);
   const grouped = buildChunks(operations, size);
   const warnings: string[] = [];
   if (operations.length === 0) warnings.push('No operations were provided.');
-  if (grouped.length > 1) warnings.push(`Operations will be applied in ${grouped.length} deterministic chunk(s) of at most ${size}, with repeated paths isolated into separate revisions.`);
+  if (grouped.length > 1)
+    warnings.push(
+      `Operations will be applied in ${grouped.length} deterministic chunk(s) of at most ${size}, with repeated paths isolated into separate revisions.`,
+    );
   const seen = new Set<string>();
   const repeated = new Set<string>();
   for (const operation of operations) {
@@ -292,7 +357,12 @@ export function buildSafePatchPlan(repository: RepositoryRecord, input: { operat
     chunkSize: size,
     chunks: grouped.map((group, index) => {
       const paths = [...new Set(group.map((operation) => repoRelativePath(repository, operation.path)))].sort();
-      return { index: index + 1, operationCount: group.length, paths, fingerprints: paths.map((path) => fingerprint(repository, path)) };
+      return {
+        index: index + 1,
+        operationCount: group.length,
+        paths,
+        fingerprints: paths.map((path) => fingerprint(repository, path)),
+      };
     }),
     warnings,
   };
@@ -300,13 +370,30 @@ export function buildSafePatchPlan(repository: RepositoryRecord, input: { operat
 
 function patchErrorFailures(error: unknown, chunkIndex: number): SafePatchPreflightFailure[] {
   const details = (error as EditSessionPatchError | undefined)?.details;
-  if (!details?.failures) return [{ chunkIndex, operationIndex: 0, type: 'write', path: '.', code: 'APPLY_FAILED', message: error instanceof Error ? error.message : String(error) }];
+  if (!details?.failures)
+    return [
+      {
+        chunkIndex,
+        operationIndex: 0,
+        type: 'write',
+        path: '.',
+        code: 'APPLY_FAILED',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    ];
   return details.failures.map((failure) => ({
     chunkIndex,
     operationIndex: failure.operationIndex ?? 0,
     type: failure.type ?? 'write',
     path: failure.path ?? '.',
-    code: failure.code === 'ANCHOR_NOT_FOUND' ? 'ANCHOR_NOT_FOUND' : failure.code === 'REPLACEMENT_TEXT_NOT_FOUND' ? 'REPLACEMENT_TEXT_NOT_FOUND' : failure.code === 'STALE_FILE_SHA' ? 'STALE_FILE_SHA' : 'APPLY_FAILED',
+    code:
+      failure.code === 'ANCHOR_NOT_FOUND'
+        ? 'ANCHOR_NOT_FOUND'
+        : failure.code === 'REPLACEMENT_TEXT_NOT_FOUND'
+          ? 'REPLACEMENT_TEXT_NOT_FOUND'
+          : failure.code === 'STALE_FILE_SHA'
+            ? 'STALE_FILE_SHA'
+            : 'APPLY_FAILED',
     message: failure.message,
     currentSha256: failure.currentSha256,
   }));
@@ -319,20 +406,25 @@ function patchErrorFailures(error: unknown, chunkIndex: number): SafePatchPrefli
  */
 /** Whether this batch can be written atomically without a durable edit journal. */
 export function isSessionlessTextEditBatch(operations: unknown): boolean {
-  return Array.isArray(operations) &&
+  return (
+    Array.isArray(operations) &&
     operations.length === 1 &&
     typeof operations[0] === 'object' &&
     operations[0] !== null &&
     ['replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after'].includes(
       String((operations[0] as Record<string, unknown>).type ?? ''),
-    );
+    )
+  );
 }
 
-export function applySessionlessSafePatch(repository: RepositoryRecord, input: {
-  operations: unknown;
-  allowedPaths?: unknown;
-  refreshFingerprints?: unknown;
-}): {
+export function applySessionlessSafePatch(
+  repository: RepositoryRecord,
+  input: {
+    operations: unknown;
+    allowedPaths?: unknown;
+    refreshFingerprints?: unknown;
+  },
+): {
   status: 'applied' | 'failed';
   sessionless: true;
   createdSession: false;
@@ -343,7 +435,10 @@ export function applySessionlessSafePatch(repository: RepositoryRecord, input: {
   plan: SafePatchPlan;
 } {
   const operations = normalizedSafePatchOperations(input.operations);
-  if (operations.length !== 1 || !['replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after'].includes(operations[0]!.type)) {
+  if (
+    operations.length !== 1 ||
+    !['replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after'].includes(operations[0]!.type)
+  ) {
     throw new Error('SESSIONLESS_SAFE_PATCH_SINGLE_TEXT_OPERATION_REQUIRED');
   }
   const original = operations[0]!;
@@ -377,24 +472,39 @@ export function applySessionlessSafePatch(repository: RepositoryRecord, input: {
     throw new Error('SESSIONLESS_SAFE_PATCH_SINGLE_TEXT_OPERATION_REQUIRED');
   const current = currentFile(repository, operation.path);
   if (!current.exists || !current.sha256) {
-    return failureResult([{
-      chunkIndex: 1, operationIndex: 1, type: operation.type,
-      path: resolved.relativePath, code: 'TARGET_MISSING', message: 'target is no longer present',
-    }]);
+    return failureResult([
+      {
+        chunkIndex: 1,
+        operationIndex: 1,
+        type: operation.type,
+        path: resolved.relativePath,
+        code: 'TARGET_MISSING',
+        message: 'target is no longer present',
+      },
+    ]);
   }
   if (operation.expectedSha256 !== current.sha256) {
-    return failureResult([{
-      chunkIndex: 1, operationIndex: 1, type: operation.type,
-      path: resolved.relativePath, code: 'STALE_FILE_SHA',
-      message: `stale file version for ${resolved.relativePath}`,
-      currentSha256: current.sha256,
-      expectedSha256: operation.expectedSha256,
-      context: snippetAround(current.content, operation.type === 'replace' ? operation.replacements[0]?.oldText ?? '' : ''),
-    }]);
+    return failureResult([
+      {
+        chunkIndex: 1,
+        operationIndex: 1,
+        type: operation.type,
+        path: resolved.relativePath,
+        code: 'STALE_FILE_SHA',
+        message: `stale file version for ${resolved.relativePath}`,
+        currentSha256: current.sha256,
+        expectedSha256: operation.expectedSha256,
+        context: snippetAround(
+          current.content,
+          operation.type === 'replace' ? (operation.replacements[0]?.oldText ?? '') : '',
+        ),
+      },
+    ]);
   }
-  const content = operation.type === 'write'
-    ? operation.content
-    : applyTextPreview(operation as Exclude<EditOperation, { type: 'create' | 'write' | 'delete' }>, current.content);
+  const content =
+    operation.type === 'write'
+      ? operation.content
+      : applyTextPreview(operation as Exclude<EditOperation, { type: 'create' | 'write' | 'delete' }>, current.content);
   try {
     const receipt = atomicCompareAndSwapText(repository.canonicalRoot, resolved.relativePath, current.sha256, content);
     return {
@@ -411,33 +521,45 @@ export function applySessionlessSafePatch(repository: RepositoryRecord, input: {
     const latest = currentFile(repository, resolved.relativePath);
     const message = error instanceof Error ? error.message : String(error);
     const code = message.startsWith('STALE_FILE_SHA:') ? 'STALE_FILE_SHA' : 'APPLY_FAILED';
-    const needle = operation.type === 'replace'
-      ? operation.replacements[0]?.oldText ?? ''
-      : 'anchor' in operation ? operation.anchor : '';
-    return failureResult([{
-      chunkIndex: 1, operationIndex: 1, type: operation.type,
-      path: resolved.relativePath, code, message,
-      currentSha256: latest.sha256,
-      expectedSha256: current.sha256,
-      context: snippetAround(latest.content, needle),
-    }]);
+    const needle =
+      operation.type === 'replace'
+        ? (operation.replacements[0]?.oldText ?? '')
+        : 'anchor' in operation
+          ? operation.anchor
+          : '';
+    return failureResult([
+      {
+        chunkIndex: 1,
+        operationIndex: 1,
+        type: operation.type,
+        path: resolved.relativePath,
+        code,
+        message,
+        currentSha256: latest.sha256,
+        expectedSha256: current.sha256,
+        context: snippetAround(latest.content, needle),
+      },
+    ]);
   }
 }
 
-export function applySafePatch(repository: RepositoryRecord, input: {
-  controllerHome?: string;
-  leaseOwnerJobId?: string;
-  sessionId?: unknown;
-  purpose?: unknown;
-  operations: unknown;
-  chunkSize?: unknown;
-  expectedRevision?: unknown;
-  allowedPaths?: unknown;
-  continueOnError?: unknown;
-  refreshFingerprints?: unknown;
-  recoverStaleSession?: unknown;
-  binding?: EditSessionBinding;
-}): SafePatchApplyResult {
+export function applySafePatch(
+  repository: RepositoryRecord,
+  input: {
+    controllerHome?: string;
+    leaseOwnerJobId?: string;
+    sessionId?: unknown;
+    purpose?: unknown;
+    operations: unknown;
+    chunkSize?: unknown;
+    expectedRevision?: unknown;
+    allowedPaths?: unknown;
+    continueOnError?: unknown;
+    refreshFingerprints?: unknown;
+    recoverStaleSession?: unknown;
+    binding?: EditSessionBinding;
+  },
+): SafePatchApplyResult {
   const controllerHome = input.controllerHome?.trim() || resolveRepoPreferredControllerHome(repository.canonicalRoot);
   const editStorage = ensureRepositoryRuntimeStorageBinding(repository, 'edit-sessions', controllerHome);
   if (editStorage.status === 'legacy-active' || editStorage.status === 'conflict') {
@@ -450,17 +572,24 @@ export function applySafePatch(repository: RepositoryRecord, input: {
   const continueOnError = input.continueOnError === true;
   const policy = getToolPolicy('controller', { repoRoot: repository.canonicalRoot });
   const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
-  const allowedPaths = Array.isArray(input.allowedPaths) ? input.allowedPaths.map((item) => String(item).trim()).filter(Boolean) : undefined;
+  const allowedPaths = Array.isArray(input.allowedPaths)
+    ? input.allowedPaths.map((item) => String(item).trim()).filter(Boolean)
+    : undefined;
   let session = sessionId
     ? getEditSession(repository.canonicalRoot, sessionId)
-    : beginEditSession(repository.canonicalRoot, { purpose: String(input.purpose ?? 'Safe repository patch').trim() || 'Safe repository patch', allowedPaths, binding: input.binding });
+    : beginEditSession(repository.canonicalRoot, {
+        purpose: String(input.purpose ?? 'Safe repository patch').trim() || 'Safe repository patch',
+        allowedPaths,
+        binding: input.binding,
+      });
   const createdSession = !sessionId;
   let recoveredSession: SafePatchRecoveredSession | undefined;
   const appliedChunks: SafePatchAppliedChunk[] = [];
   const failures: SafePatchPreflightFailure[] = [];
   const grouped = buildChunks(operations, size);
   const plan = buildSafePatchPlan(repository, { operations, chunkSize: size });
-  let expectedRevision = typeof input.expectedRevision === 'number' ? Math.trunc(input.expectedRevision) : session.currentRevision;
+  let expectedRevision =
+    typeof input.expectedRevision === 'number' ? Math.trunc(input.expectedRevision) : session.currentRevision;
   let failedChunk: number | undefined;
 
   for (const [index, group] of grouped.entries()) {
@@ -474,14 +603,20 @@ export function applySafePatch(repository: RepositoryRecord, input: {
     }
     try {
       const previousBaseRevision = session.baseRevision;
-      session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, preflight.operations.map(stripInternalIndex), {
-        controllerHome,
-        expectedRevision,
-        maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE,
-        allowSuccessorHeadAdoption: input.recoverStaleSession !== false,
-        leaseOwnerJobId: input.leaseOwnerJobId,
-        binding: input.binding,
-      });
+      session = applyEditOperations(
+        repository.canonicalRoot,
+        policy,
+        session.sessionId,
+        preflight.operations.map(stripInternalIndex),
+        {
+          controllerHome,
+          expectedRevision,
+          maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE,
+          allowSuccessorHeadAdoption: input.recoverStaleSession !== false,
+          leaseOwnerJobId: input.leaseOwnerJobId,
+          binding: input.binding,
+        },
+      );
       if (session.baseRevision !== previousBaseRevision) {
         recoveredSession = {
           reason: 'Existing edit session adopted a verified successor HEAD.',
@@ -501,17 +636,27 @@ export function applySafePatch(repository: RepositoryRecord, input: {
             leaseOwnerJobId: input.leaseOwnerJobId,
           });
           expectedRevision = session.currentRevision;
-          recoveredSession = { reason: 'Existing edit session adopted a verified successor HEAD.', previousSessionId, newSessionId: session.sessionId };
+          recoveredSession = {
+            reason: 'Existing edit session adopted a verified successor HEAD.',
+            previousSessionId,
+            newSessionId: session.sessionId,
+          };
           const retry = preflightChunk(repository, group, chunkIndex, refresh);
           if (retry.failures.length === 0) {
-            session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, retry.operations.map(stripInternalIndex), {
-              expectedRevision,
-              maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE,
-              allowSuccessorHeadAdoption: input.recoverStaleSession !== false,
-              controllerHome,
-              leaseOwnerJobId: input.leaseOwnerJobId,
-              binding: input.binding,
-            });
+            session = applyEditOperations(
+              repository.canonicalRoot,
+              policy,
+              session.sessionId,
+              retry.operations.map(stripInternalIndex),
+              {
+                expectedRevision,
+                maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE,
+                allowSuccessorHeadAdoption: input.recoverStaleSession !== false,
+                controllerHome,
+                leaseOwnerJobId: input.leaseOwnerJobId,
+                binding: input.binding,
+              },
+            );
           } else {
             failures.push(...retry.failures);
             failedChunk = chunkIndex;
@@ -524,21 +669,39 @@ export function applySafePatch(repository: RepositoryRecord, input: {
           if (!continueOnError) break;
           continue;
         }
-      } else if (!sessionId && input.recoverStaleSession !== false && message.includes('EDIT_SESSION_FINGERPRINT_STALE')) {
+      } else if (
+        !sessionId &&
+        input.recoverStaleSession !== false &&
+        message.includes('EDIT_SESSION_FINGERPRINT_STALE')
+      ) {
         const previousSessionId = session.sessionId;
-        session = beginEditSession(repository.canonicalRoot, { purpose: `${String(input.purpose ?? 'Safe repository patch').trim() || 'Safe repository patch'} (recovered)`, allowedPaths, binding: input.binding });
+        session = beginEditSession(repository.canonicalRoot, {
+          purpose: `${String(input.purpose ?? 'Safe repository patch').trim() || 'Safe repository patch'} (recovered)`,
+          allowedPaths,
+          binding: input.binding,
+        });
         expectedRevision = session.currentRevision;
-        recoveredSession = { reason: 'Previous edit session fingerprints were stale; remaining chunks were moved into a fresh session.', previousSessionId, newSessionId: session.sessionId };
+        recoveredSession = {
+          reason: 'Previous edit session fingerprints were stale; remaining chunks were moved into a fresh session.',
+          previousSessionId,
+          newSessionId: session.sessionId,
+        };
         const retry = preflightChunk(repository, group, chunkIndex, refresh);
         if (retry.failures.length === 0) {
-          session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, retry.operations.map(stripInternalIndex), {
-            expectedRevision,
-            maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE,
-            allowSuccessorHeadAdoption: input.recoverStaleSession !== false,
-            controllerHome,
-            leaseOwnerJobId: input.leaseOwnerJobId,
-            binding: input.binding,
-          });
+          session = applyEditOperations(
+            repository.canonicalRoot,
+            policy,
+            session.sessionId,
+            retry.operations.map(stripInternalIndex),
+            {
+              expectedRevision,
+              maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE,
+              allowSuccessorHeadAdoption: input.recoverStaleSession !== false,
+              controllerHome,
+              leaseOwnerJobId: input.leaseOwnerJobId,
+              binding: input.binding,
+            },
+          );
         } else {
           failures.push(...retry.failures);
           failedChunk = chunkIndex;
@@ -553,10 +716,16 @@ export function applySafePatch(repository: RepositoryRecord, input: {
       }
     }
     expectedRevision = session.currentRevision;
-    appliedChunks.push({ index: chunkIndex, operationCount: group.length, revision: session.currentRevision, paths: [...new Set(group.map((operation) => repoRelativePath(repository, operation.path)))].sort() });
+    appliedChunks.push({
+      index: chunkIndex,
+      operationCount: group.length,
+      revision: session.currentRevision,
+      paths: [...new Set(group.map((operation) => repoRelativePath(repository, operation.path)))].sort(),
+    });
   }
 
-  const status: SafePatchApplyResult['status'] = failures.length === 0 ? 'applied' : appliedChunks.length > 0 ? 'partial' : 'failed';
+  const status: SafePatchApplyResult['status'] =
+    failures.length === 0 ? 'applied' : appliedChunks.length > 0 ? 'partial' : 'failed';
   return {
     status,
     session,
@@ -566,8 +735,9 @@ export function applySafePatch(repository: RepositoryRecord, input: {
     ...(failedChunk ? { failedChunk } : {}),
     failures,
     plan,
-    next: status === 'applied'
-      ? 'Review the returned edit-session diff evidence. Run focused validation only after the coherent edit batch is stable, then commit when acceptance evidence is sufficient.'
-      : 'Inspect failures[].context, refresh the operation text, and re-run only the failed chunk or remaining operations.',
+    next:
+      status === 'applied'
+        ? 'Review the returned edit-session diff evidence. Run focused validation only after the coherent edit batch is stable, then commit when acceptance evidence is sufficient.'
+        : 'Inspect failures[].context, refresh the operation text, and re-run only the failed chunk or remaining operations.',
   };
 }

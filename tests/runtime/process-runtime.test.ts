@@ -1629,23 +1629,27 @@ describe('Unified Process Runtime', () => {
     const sevenDaysMs = 7 * 24 * 60 * 60_000;
     const claimedAtMs = Date.now();
 
-    expect(gcOrphanedProcessRequestBindings(fx.controllerHome, {
-      olderThanMs: sevenDaysMs,
-      maxRows: 100,
-      nowMs: claimedAtMs + sixDaysMs,
-    })).toMatchObject({ removed: 0 });
-    expect(readControlPlaneRecord(
-      fx.controllerHome, 'process_request_binding', fx.repository.repoId, bindingKey,
-    )).toBeDefined();
+    expect(
+      gcOrphanedProcessRequestBindings(fx.controllerHome, {
+        olderThanMs: sevenDaysMs,
+        maxRows: 100,
+        nowMs: claimedAtMs + sixDaysMs,
+      }),
+    ).toMatchObject({ removed: 0 });
+    expect(
+      readControlPlaneRecord(fx.controllerHome, 'process_request_binding', fx.repository.repoId, bindingKey),
+    ).toBeDefined();
 
-    expect(gcOrphanedProcessRequestBindings(fx.controllerHome, {
-      olderThanMs: sevenDaysMs,
-      maxRows: 100,
-      nowMs: claimedAtMs + eightDaysMs,
-    })).toMatchObject({ removed: 1 });
-    expect(readControlPlaneRecord(
-      fx.controllerHome, 'process_request_binding', fx.repository.repoId, bindingKey,
-    )).toBeUndefined();
+    expect(
+      gcOrphanedProcessRequestBindings(fx.controllerHome, {
+        olderThanMs: sevenDaysMs,
+        maxRows: 100,
+        nowMs: claimedAtMs + eightDaysMs,
+      }),
+    ).toMatchObject({ removed: 1 });
+    expect(
+      readControlPlaneRecord(fx.controllerHome, 'process_request_binding', fx.repository.repoId, bindingKey),
+    ).toBeUndefined();
   });
 
   test('request binding GC cursor advances past retained rows instead of starving later garbage', () => {
@@ -1689,20 +1693,24 @@ describe('Unified Process Runtime', () => {
       expectedRevision: null,
     });
 
-    expect(gcOrphanedProcessRequestBindings(fx.controllerHome, {
-      olderThanMs: 7 * 24 * 60 * 60_000,
-      maxRows: 1,
-    })).toMatchObject({ examined: 1, removed: 0 });
-    expect(gcOrphanedProcessRequestBindings(fx.controllerHome, {
-      olderThanMs: 7 * 24 * 60 * 60_000,
-      maxRows: 1,
-    })).toMatchObject({ examined: 1, removed: 1 });
-    expect(readControlPlaneRecord(
-      fx.controllerHome, 'process_request_binding', fx.repository.repoId, '000-protected',
-    )).toBeDefined();
-    expect(readControlPlaneRecord(
-      fx.controllerHome, 'process_request_binding', fx.repository.repoId, 'fff-stale',
-    )).toBeUndefined();
+    expect(
+      gcOrphanedProcessRequestBindings(fx.controllerHome, {
+        olderThanMs: 7 * 24 * 60 * 60_000,
+        maxRows: 1,
+      }),
+    ).toMatchObject({ examined: 1, removed: 0 });
+    expect(
+      gcOrphanedProcessRequestBindings(fx.controllerHome, {
+        olderThanMs: 7 * 24 * 60 * 60_000,
+        maxRows: 1,
+      }),
+    ).toMatchObject({ examined: 1, removed: 1 });
+    expect(
+      readControlPlaneRecord(fx.controllerHome, 'process_request_binding', fx.repository.repoId, '000-protected'),
+    ).toBeDefined();
+    expect(
+      readControlPlaneRecord(fx.controllerHome, 'process_request_binding', fx.repository.repoId, 'fff-stale'),
+    ).toBeUndefined();
   });
 
   test('terminal fencing rejects second completion', async () => {
@@ -3282,11 +3290,17 @@ describe('command classifier safe shell combinations', () => {
     expect(classifyRepositoryCommandReplay(readonly)).toMatchObject({ replayable: true, retryPolicy: 'safe_retry' });
 
     const remoteWrite = "bash -lc 'git push origin main'";
-    expect(classifyRepositoryCommand(remoteWrite)).toMatchObject({ risk: 'remote_write', confirmation: 'authorization' });
+    expect(classifyRepositoryCommand(remoteWrite)).toMatchObject({
+      risk: 'remote_write',
+      confirmation: 'authorization',
+    });
     expect(classifyRepositoryCommandReplay(remoteWrite).replayable).toBe(false);
 
     const unknownExternal = "bash -lc 'curl https://example.com'";
-    expect(classifyRepositoryCommand(unknownExternal)).toMatchObject({ risk: 'workspace_write', confirmation: 'authorization' });
+    expect(classifyRepositoryCommand(unknownExternal)).toMatchObject({
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+    });
     expect(classifyRepositoryCommandReplay(unknownExternal).replayable).toBe(false);
 
     expect(isSafeFixedShellCombination(`${validation} && touch marker.txt`)).toBe(false);
@@ -3390,7 +3404,9 @@ describe('command classifier safe shell combinations', () => {
     ];
     expect(classifyRepositoryCommand(typed).risk).toBe('readonly');
     expect(classifyRepositoryCommand(wrapped).risk).toBe('readonly');
-    expect(claimsForRepositoryCommand(wrapped, 'repo1', 'co1')).toEqual([{ resourceKey: 'validation-input:co1', mode: 'read' }]);
+    expect(claimsForRepositoryCommand(wrapped, 'repo1', 'co1')).toEqual([
+      { resourceKey: 'validation-input:co1', mode: 'read' },
+    ]);
 
     // -readonly alone does not constrain host-side sqlite CLI effects enough.
     expect(classifyRepositoryCommand(['sqlite3', '-readonly', 'db.sqlite', 'SELECT 1']).risk).toBe('workspace_write');
@@ -3502,8 +3518,7 @@ describe('fine-grained resource claims', () => {
     expect(probeClaims).toEqual([{ resourceKey: 'host-service:tcp-client:loopback', mode: 'read' }]);
     expect(serverClaims.some((left) => probeClaims.some((right) => resourceClaimsConflict(left, right)))).toBe(false);
 
-    expect(claimsForRepositoryCommand(['python3', '-m', 'http.server', '8000', '--cgi'], 'repo1', 'co1')).toEqual([
-    ]);
+    expect(claimsForRepositoryCommand(['python3', '-m', 'http.server', '8000', '--cgi'], 'repo1', 'co1')).toEqual([]);
     expect(classifyRepositoryCommand(['curl', '-o', 'response.json', 'http://127.0.0.1:38417/health']).risk).toBe(
       'workspace_write',
     );
@@ -3653,9 +3668,7 @@ APPLESCRIPT`;
       claimsForRepositoryCommand(['bun', 'test', 'tests/runtime/process-runtime.test.ts'], 'repo1', 'co1'),
     ).toEqual([{ resourceKey: 'validation-input:co1', mode: 'read' }]);
     expect(claimsForRepositoryCommand(['bun', 'run', 'build'], 'repo1', 'co1')).toEqual(
-      expect.arrayContaining([
-        { resourceKey: 'build-cache:repo1', mode: 'write' },
-      ]),
+      expect.arrayContaining([{ resourceKey: 'build-cache:repo1', mode: 'write' }]),
     );
   });
 

@@ -2163,41 +2163,46 @@ test('legacy EditSessions retire as superseded metadata only when their original
     purpose: 'Legacy identity-free supersession',
     allowedPaths: ['source.ts'],
   });
-  applyEditOperations(
-    fx.repoRoot,
-    fx.policy,
-    session.sessionId,
-    [
-      {
-        type: 'replace',
-        path: 'source.ts',
-        expectedSha256: sha256(fx.initial),
-        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
-      },
-    ],
-  );
+  applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [
+    {
+      type: 'replace',
+      path: 'source.ts',
+      expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    },
+  ]);
   const sessionFile = join(fx.repoRoot, '.ai/harness/edit-sessions', session.sessionId, 'session.json');
   const stored = JSON.parse(readFileSync(sessionFile, 'utf8')) as Record<string, unknown>;
   stored.updatedAt = new Date(Date.now() - 48 * 60 * 60_000).toISOString();
   writeFileSync(sessionFile, JSON.stringify(stored));
 
   // An old unbound session still owning its exact after-image is not garbage.
-  expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
-    controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
-  })).toMatchObject({ safe: false, reason: 'EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED' });
+  expect(
+    inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+    }),
+  ).toMatchObject({ safe: false, reason: 'EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED' });
 
   writeFileSync(join(fx.repoRoot, 'source.ts'), 'export const value = 3;\n');
-  expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
-    controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
-  })).toMatchObject({ safe: true, reason: 'EDIT_SESSION_LEGACY_SUPERSEDED_METADATA_ONLY' });
+  expect(
+    inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+    }),
+  ).toMatchObject({ safe: true, reason: 'EDIT_SESSION_LEGACY_SUPERSEDED_METADATA_ONLY' });
   const cleaned = cleanupEditSession(fx.repoRoot, session.sessionId, {
-    controllerHome: fx.controllerHome, repoId: fx.repository.repoId, reviewer: 'runtime-maintenance',
+    controllerHome: fx.controllerHome,
+    repoId: fx.repository.repoId,
+    reviewer: 'runtime-maintenance',
   });
   expect(cleaned.status).toBe('superseded');
   expect(cleaned.verifiedAt).toBeUndefined();
-  expect(listControllerWorklogEvents(fx.repoRoot, { editSessionId: session.sessionId }).filter(
-    (event) => event.action === 'edit_session_superseded',
-  )).toHaveLength(0);
+  expect(
+    listControllerWorklogEvents(fx.repoRoot, { editSessionId: session.sessionId }).filter(
+      (event) => event.action === 'edit_session_superseded',
+    ),
+  ).toHaveLength(0);
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
 });
 
@@ -2212,8 +2217,18 @@ test('partially superseded multi-file legacy session retains any still-matching 
     allowedPaths: ['source.ts', 'other.ts'],
   });
   applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [
-    { type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial), replacements: [{ oldText: 'value = 1', newText: 'value = 2' }] },
-    { type: 'replace', path: 'other.ts', expectedSha256: sha256('export const other = 1;\n'), replacements: [{ oldText: 'other = 1', newText: 'other = 2' }] },
+    {
+      type: 'replace',
+      path: 'source.ts',
+      expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    },
+    {
+      type: 'replace',
+      path: 'other.ts',
+      expectedSha256: sha256('export const other = 1;\n'),
+      replacements: [{ oldText: 'other = 1', newText: 'other = 2' }],
+    },
   ]);
   // This file is superseded, but other.ts still holds this session's
   // uncommitted after-image. Its backup/journal must remain intact.
@@ -2224,7 +2239,8 @@ test('partially superseded multi-file legacy session retains any still-matching 
   writeFileSync(sessionFile, JSON.stringify(stored));
   const input = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
   expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, input)).toMatchObject({
-    safe: false, reason: 'EDIT_SESSION_RECONCILIATION_PARTIAL_UNCOMMITTED_SOURCE',
+    safe: false,
+    reason: 'EDIT_SESSION_RECONCILIATION_PARTIAL_UNCOMMITTED_SOURCE',
   });
   expect(() => cleanupEditSession(fx.repoRoot, session.sessionId, input)).toThrow(
     'EDIT_SESSION_RECONCILIATION_PARTIAL_UNCOMMITTED_SOURCE',
@@ -2254,23 +2270,20 @@ test('recent legacy sessions and overlapping or unknown leases remain protected,
     purpose: 'Legacy source lease protection',
     allowedPaths: ['source.ts'],
   });
-  applyEditOperations(
-    fx.repoRoot,
-    fx.policy,
-    session.sessionId,
-    [
-      {
-        type: 'replace',
-        path: 'source.ts',
-        expectedSha256: sha256(fx.initial),
-        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
-      },
-    ],
-  );
+  applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [
+    {
+      type: 'replace',
+      path: 'source.ts',
+      expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    },
+  ]);
   writeFileSync(join(fx.repoRoot, 'source.ts'), 'export const value = 3;\n');
-  const inspect = () => inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
-    controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
-  });
+  const inspect = () =>
+    inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+    });
   expect(inspect()).toMatchObject({ safe: false, reason: 'EDIT_SESSION_LEGACY_NOT_STALE' });
 
   const sessionFile = join(fx.repoRoot, '.ai/harness/edit-sessions', session.sessionId, 'session.json');
@@ -2302,9 +2315,12 @@ test('recent legacy sessions and overlapping or unknown leases remain protected,
   expect(overlapping.acquired).toBe(true);
   try {
     expect(inspect()).toMatchObject({ safe: false, reason: 'EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE' });
-    expect(() => cleanupEditSession(fx.repoRoot, session.sessionId, {
-      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
-    })).toThrow('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
+    expect(() =>
+      cleanupEditSession(fx.repoRoot, session.sessionId, {
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+      }),
+    ).toThrow('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
     expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('dirty');
   } finally {
     releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'overlapping-current-writer');

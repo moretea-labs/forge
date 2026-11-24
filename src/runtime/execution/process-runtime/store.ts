@@ -91,11 +91,7 @@ function requestBindingPath(
   return join(requestBindingsRoot(controllerHome, repoId), `${key}.json`);
 }
 
-function processRecordPathWithoutCreatingStorage(
-  controllerHome: string,
-  repoId: string,
-  processId: string,
-): string {
+function processRecordPathWithoutCreatingStorage(controllerHome: string, repoId: string, processId: string): string {
   const root = isRepositoryProcessScopeKey(repoId)
     ? repositoryControllerRoot(controllerHome, repoId)
     : processScopeRoot(controllerHome, repoId);
@@ -111,12 +107,7 @@ function requestBindingPathWithoutCreatingStorage(
   const root = isRepositoryProcessScopeKey(repoId)
     ? repositoryControllerRoot(controllerHome, repoId)
     : processScopeRoot(controllerHome, repoId);
-  return join(
-    root,
-    'processes',
-    'request-bindings',
-    `${bindingKey(repoId, checkoutId, requestId)}.json`,
-  );
+  return join(root, 'processes', 'request-bindings', `${bindingKey(repoId, checkoutId, requestId)}.json`);
 }
 
 function bindingKey(repoId: string, checkoutId: string | undefined, requestId: string): string {
@@ -523,12 +514,13 @@ export function gcOrphanedProcessRequestBindings(
     examined += 1;
     const binding = record.value;
     if (
-      !binding
-      || binding.schemaVersion !== 1
-      || binding.repoId !== record.scope
-      || !binding.requestId?.trim()
-      || !binding.processId?.trim()
-    ) continue;
+      !binding ||
+      binding.schemaVersion !== 1 ||
+      binding.repoId !== record.scope ||
+      !binding.requestId?.trim() ||
+      !binding.processId?.trim()
+    )
+      continue;
     const createdMs = Date.parse(binding.createdAt);
     if (!Number.isFinite(createdMs) || createdMs > cutoffMs) continue;
     if (existsSync(processRecordPathWithoutCreatingStorage(controllerHome, binding.repoId, binding.processId))) {
