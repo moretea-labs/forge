@@ -34,7 +34,7 @@ import { settleCognitionAfterTool } from './runtime-gateway/cognition-settlement
 import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { observeRuntimeStatus } from '../../src/runtime/root/status';
+import { observeRuntimeStatus, readRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { getRuntimeWriteClaim } from '../../src/runtime/root/write-fence';
 import { recordMcpIncident, recordMcpTiming, type McpTimingTrace } from '../../src/runtime/diagnostics/mcp-timing';
@@ -571,7 +571,9 @@ export interface CanonicalRuntimeProxyIdentity {
 }
 
 function canonicalRuntimeProxyIdentity(ctx: MultiRepositoryMcpToolContext): CanonicalRuntimeProxyIdentity {
-  const snapshot = observeRuntimeStatus(ctx.controllerHome).snapshot;
+  // Handoff readiness is checked separately before leasing a lane. Identity
+  // resolution only consumes the latest snapshot, not a second owner PID probe.
+  const snapshot = readRuntimeStatusSnapshot(ctx.controllerHome);
   if (!snapshot?.runtimeInstanceId) throw new Error('CANONICAL_RUNTIME_IDENTITY_UNAVAILABLE');
   return {
     endpoint: canonicalRuntimeEndpoint(snapshot.endpoint),
