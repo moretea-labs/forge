@@ -1,10 +1,10 @@
 import type { LocalBridgeJob, LocalBridgeJobEvent, LocalBridgeJobStatus, RepositoryCommandPayload, RunCheckPayload, VerifyEditSessionPayload } from "./types";
 
-export type AgentRunLifecycleStatus =
+type AgentRunLifecycleStatus =
   | "queued" | "starting" | "running" | "waiting_for_user"
   | "succeeded" | "failed" | "cancelled" | "unknown";
 
-export interface AgentRunLifecycleSnapshot {
+interface AgentRunLifecycleSnapshot {
   runId: string;
   status: AgentRunLifecycleStatus;
   finishedAt?: string;
@@ -25,7 +25,7 @@ export function projectedExecutionJobId(job: LocalBridgeJob): string | undefined
   return result && typeof result.executionJobId === "string" ? result.executionJobId : undefined;
 }
 
-export interface LocalBridgeAgentRunProjection {
+interface LocalBridgeAgentRunProjection {
   job: LocalBridgeJob;
   previousStatus: LocalBridgeJobStatus;
   statusChanged: boolean;
@@ -76,7 +76,7 @@ export function projectAgentRunToLocalBridgeJob(
 }
 
 
-export interface LocalBridgeReconciliationPort {
+interface LocalBridgeReconciliationPort {
   listActiveJobs(repoRoot: string): LocalBridgeJob[];
   currentCheckRevision(repoRoot: string): string;
   refreshJob(repoRoot: string, job: LocalBridgeJob, checkRevision?: string): LocalBridgeJob;
@@ -105,7 +105,7 @@ export function reconcileLocalBridgeJobs(
 }
 
 
-export interface LocalBridgeRefreshPort {
+interface LocalBridgeRefreshPort {
   currentPid: number;
   now(): string;
   resolveJobTimeout(repoRoot: string, value: unknown): number;

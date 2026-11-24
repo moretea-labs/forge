@@ -33,7 +33,6 @@ import {
   reconcileLocalBridgeJobs as reconcileLocalBridgeJobsInRuntime,
   refreshLocalBridgeJob as refreshLocalBridgeJobInRuntime,
 } from '../../runtime/local-bridge/lifecycle';
-export { projectAgentRunToLocalBridgeStatus } from '../../runtime/local-bridge/lifecycle';
 import type {
   LocalBridgeApproval,
   LocalBridgeJob,
