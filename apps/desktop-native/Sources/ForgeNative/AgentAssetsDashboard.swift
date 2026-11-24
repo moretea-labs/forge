@@ -151,27 +151,29 @@ struct AgentAssetsDashboard: View {
 
       VStack(spacing: 0) {
         let hasQuery = !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if !items.isEmpty || hasQuery {
-          resourceToolbar(count: items.count, compact: geometry.size.width < 640)
-        }
+        resourceToolbar(count: items.count, compact: geometry.size.width < 640)
 
         if items.isEmpty {
-          VStack(spacing: 8) {
-            Image(systemName: "paperclip")
-              .font(.system(size: 20, weight: .light))
-              .foregroundStyle(.tertiary)
-            Text(hasQuery ? "没有匹配的资源" : "暂无附件")
-              .font(.system(size: 12, weight: .medium))
-              .foregroundStyle(ForgePalette.secondary)
-            if !hasQuery {
-              Text("发送消息时添加的文件与图片会出现在这里")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 220)
+          let filtered = hasQuery || !selectedRepoId.isEmpty || !showLocalResources || !showRemoteImages
+          VStack(alignment: .leading, spacing: 8) {
+            ForgeInspectorEmptyState(
+              title: filtered ? "没有匹配的资源" : "暂无附件", symbol: "paperclip")
+            if filtered {
+              Button("清除筛选") {
+                searchQuery = ""
+                selectedRepoId = ""
+                showLocalResources = true
+                showRemoteImages = true
+                focusedResourceId = nil
+              }
+              .buttonStyle(.plain)
+              .font(ForgeClientDesign.Shell.control)
+              .foregroundStyle(ForgePalette.accent)
+              .padding(.horizontal, 14)
+              .accessibilityIdentifier("agent.assets.reset-filters")
             }
           }
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } else if compact, let chosen {
           resourceDetail(chosen, compact: true)
             .id(chosen.id)
@@ -262,8 +264,7 @@ struct AgentAssetsDashboard: View {
         .accessibilityLabel("清除资源搜索")
       }
     }
-    .padding(.vertical, 4)
-    .frame(height: 28)
+    .forgeInspectorSearchSurface()
   }
 
   private var resourceFilters: some View {

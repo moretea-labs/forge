@@ -330,6 +330,29 @@ enum ForgeClientDesign {
 }
 
 /// Use type and spacing instead of cards and separator lines.
+struct ForgeInspectorEmptyState: View {
+  let title: String
+  let symbol: String
+
+  var body: some View {
+    Label(title, systemImage: symbol)
+      .font(.system(size: 12))
+      .foregroundStyle(ForgePalette.secondary)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 14)
+      .padding(.vertical, 10)
+  }
+}
+
+extension View {
+  func forgeInspectorSearchSurface() -> some View {
+    self.padding(.horizontal, 10)
+      .frame(height: 32)
+      .background(ForgePalette.softFill, in: RoundedRectangle(cornerRadius: 8))
+  }
+}
+
+
 struct ForgeClientFormSection<Content: View>: View {
   let title: String
   var detail: String? = nil

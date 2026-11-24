@@ -2643,9 +2643,8 @@ struct AgentPlanningInspector: View {
                     .accessibilityLabel("清除规划筛选")
                 }
             }
-            .padding(.horizontal,10).frame(height:32)
-            .background(ForgePalette.softFill)
-            .padding(.horizontal,14).padding(.top,9).padding(.bottom,7)
+            .forgeInspectorSearchSurface()
+            .padding(.horizontal,14).padding(.vertical,7)
 
             HStack {
                 Text(query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? "可关联规划" : "筛选结果")
@@ -2673,14 +2672,15 @@ struct AgentPlanningInspector: View {
                 }
                 .padding(14).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
             } else if availableRecords.isEmpty {
-                Text(query.isEmpty ? "没有其他可关联的需求或计划。" : "没有匹配的规划记录。")
-                    .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
+                ForgeInspectorEmptyState(
+                    title:query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                        ? "没有其他可关联的规划" : "没有匹配的规划",
+                    symbol:"list.bullet.rectangle")
                     .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
-                    .padding(14)
             } else {
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:0) {
-                        ForEach(Array(availableRecords.prefix(10))) { record in
+                        ForEach(availableRecords) { record in
                             planningRow(record)
                         }
                     }
@@ -2885,9 +2885,8 @@ struct AgentKnowledgeInspector: View {
                     .accessibilityLabel("清除知识搜索")
                 }
             }
-            .padding(.horizontal,10).frame(height:32)
-            .background(ForgePalette.softFill)
-            .padding(.horizontal,14).padding(.top,9).padding(.bottom,7)
+            .forgeInspectorSearchSurface()
+            .padding(.horizontal,14).padding(.vertical,7)
 
             HStack {
                 Text(query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? "当前项目知识" : "搜索结果")
@@ -2915,10 +2914,11 @@ struct AgentKnowledgeInspector: View {
                 }
                 .padding(14).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
             } else if memories.isEmpty {
-                Text("没有匹配的知识记录。")
-                    .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
+                ForgeInspectorEmptyState(
+                    title:query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                        ? "暂无项目知识" : "没有匹配的知识",
+                    symbol:"books.vertical")
                     .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
-                    .padding(14)
             } else {
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:0) {
