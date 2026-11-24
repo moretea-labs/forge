@@ -1,4 +1,5 @@
 import { loadMcpLocalConfig, loadMcpServiceLocalConfig } from './auth';
+import { MCP_TRUNCATED_TEXT_MESSAGE } from './response-text';
 import { getToolPolicy, parseToolProfile } from '../../src/runtime/control-plane/tool-policy';
 import {
   buildMcpToolDefinitions,
@@ -292,7 +293,7 @@ function withRepositoryEnvelope(
         jobId: structuredContent.jobId,
         next: structuredContent.next,
         truncatedTextChannel: true,
-        message: 'Text channel truncated to response budget; use structuredContent or detail APIs.',
+        message: MCP_TRUNCATED_TEXT_MESSAGE,
       });
     }
     return {

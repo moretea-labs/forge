@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { MCP_TRUNCATED_TEXT_MESSAGE, refreshMcpTextMirror } from '../../adapters/mcp/response-text';
 import { createServer, type ServerResponse } from 'http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -67,6 +68,32 @@ import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/proce
 import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
 import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
 import { resetIosDevelopmentHooksForTest, setIosDevelopmentHooksForTest } from '../../src/runtime/safe-tooling';
+
+describe('MCP text-channel response budget', () => {
+  test('preserves a compact text summary across cognition and both trace layers', () => {
+    const structured = { repoId: 'repo-test', stdout: '日志'.repeat(32768) };
+    const summary = { repoId: 'repo-test', truncatedTextChannel: true, message: MCP_TRUNCATED_TEXT_MESSAGE };
+    const cognition = { cognitionSettlement: { accepted: true } };
+    const canonical = { responseMeta: { traceId: 'canonical' } };
+    const gateway = { responseMeta: { traceId: 'gateway', canonicalTraceId: 'canonical' } };
+    let mirror = JSON.stringify(summary);
+    mirror = refreshMcpTextMirror(mirror, { ...structured, ...cognition }, cognition);
+    mirror = refreshMcpTextMirror(mirror, { ...structured, ...cognition, ...canonical }, canonical);
+    mirror = refreshMcpTextMirror(mirror, { ...structured, ...cognition, ...gateway }, gateway);
+    expect(JSON.parse(mirror)).toEqual({ ...summary, ...cognition, ...gateway });
+    expect(Buffer.byteLength(mirror)).toBeLessThan(1024);
+    expect(structured.stdout.length).toBe(65536);
+  });
+
+  test('keeps ordinary and error text mirrors complete; nested or malformed markers do not trigger truncation', () => {
+    const structured = { error: { message: MCP_TRUNCATED_TEXT_MESSAGE }, responseMeta: { traceId: 'trace' } };
+    for (const prior of ['not JSON', JSON.stringify(structured), '{"truncatedTextChannel":true,']) {
+      expect(refreshMcpTextMirror(prior, structured, { responseMeta: structured.responseMeta })).toBe(
+        JSON.stringify(structured),
+      );
+    }
+  });
+});
 
 describe('MCP ordinary tool cognition settlement', () => {
   test('exposes and settles model-authored learning after a successful repository tool outcome', async () => {

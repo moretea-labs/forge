@@ -1,12 +1,16 @@
 import type { CallToolResult, McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { parseControllerLearningSignalDrafts, CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../../src/runtime/context/automatic-learning';
+import {
+  parseControllerLearningSignalDrafts,
+  CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS,
+} from '../../../src/runtime/context/automatic-learning';
 import {
   persistDirectControllerLearning,
   recordDirectControllerLearningFeedback,
   type DirectControllerLearningFeedbackDraft,
 } from '../../../src/runtime/context/direct-controller-learning';
 import { selected } from './shared-adapter';
+import { refreshMcpTextMirror } from '../response-text';
 
 export const COGNITION_SETTLEMENT_PROPERTY = {
   type: 'object',
@@ -16,16 +20,19 @@ export const COGNITION_SETTLEMENT_PROPERTY = {
       type: 'array',
       maxItems: CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS,
       items: { type: 'object' },
-      description: 'Optional model-authored reusable learning using the same LearningSignal contract as rh_work learning_record.',
+      description:
+        'Optional model-authored reusable learning using the same LearningSignal contract as rh_work learning_record.',
     },
     learning_feedback: {
       type: 'array',
       maxItems: 32,
       items: { type: 'object' },
-      description: 'Optional model-authored used/rejected feedback using the same contract as rh_work learning_feedback.',
+      description:
+        'Optional model-authored used/rejected feedback using the same contract as rh_work learning_feedback.',
     },
   },
-  description: 'Optional bounded advisory cognition settlement for a meaningful successful tool outcome. It creates no lifecycle and grants no authority.',
+  description:
+    'Optional bounded advisory cognition settlement for a meaningful successful tool outcome. It creates no lifecycle and grants no authority.',
 } as const;
 
 /**
@@ -135,11 +142,7 @@ export function settleCognitionEnvelope(
   };
 }
 
-function attachSettlementMetadata(
-  outcome: CallToolResult,
-  metadata: unknown,
-  warning?: string,
-): CallToolResult {
+function attachSettlementMetadata(outcome: CallToolResult, metadata: unknown, warning?: string): CallToolResult {
   const structured = outcome.structuredContent;
   if (!structured || typeof structured !== 'object' || Array.isArray(structured)) return outcome;
   const current = structured as Record<string, unknown>;
@@ -154,9 +157,17 @@ function attachSettlementMetadata(
   return {
     ...outcome,
     structuredContent,
-    content: outcome.content.map((block, index) => index === 0 && block.type === 'text'
-      ? { ...block, text: JSON.stringify(structuredContent) }
-      : block),
+    content: outcome.content.map((block, index) =>
+      index === 0 && block.type === 'text'
+        ? {
+            ...block,
+            text: refreshMcpTextMirror(block.text, structuredContent, {
+              cognitionSettlement: metadata,
+              ...(warning ? { warnings: [...currentWarnings, warning] } : {}),
+            }),
+          }
+        : block,
+    ),
   };
 }
 
