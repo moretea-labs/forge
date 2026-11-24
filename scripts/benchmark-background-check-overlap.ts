@@ -34,7 +34,8 @@ const controllerHome = join(root, 'controller');
 const repoRoot = join(root, 'repo');
 
 const behavioralContract = {
-  originalUserFacingGoal: 'A long focused check must run in the background while Forge continues useful independent work, then synchronize once at the true dependency boundary.',
+  originalUserFacingGoal:
+    'A long focused check must run in the background while Forge continues useful independent work, then synchronize once at the true dependency boundary.',
   invariants: {
     backgroundCheck: 'long_check_returns_a_managed_handle_promptly',
     noPollingWhileUsefulWorkExists: 'zero_process_wait_calls_before_independent_work_finishes',
@@ -52,7 +53,8 @@ const behavioralContract = {
     'source_retrieval_building_unrequested_check_readiness',
     'summary_status_triggering_detail_diagnostics',
   ],
-  validation: 'Runs a real managed check, performs rh_context work before the sole join, and separately asserts the rh_status summary hot path.',
+  validation:
+    'Runs a real managed check, performs rh_context work before the sole join, and separately asserts the rh_status summary hot path.',
 };
 
 function percentile(values: number[], ratio: number): number {
@@ -68,23 +70,30 @@ try {
   execFileSync('git', ['config', 'user.name', 'Forge Benchmark'], { cwd: repoRoot });
   writeFileSync(join(repoRoot, 'src', 'fixture.ts'), 'export const backgroundFixture = true;\n');
   const executionMarker = join(root, 'physical-check-executions.txt');
-  writeFileSync(join(repoRoot, '.forge', 'checks.json'), JSON.stringify({
-    version: 1,
-    checks: {
-      background: {
-        description: 'Synthetic long check for controller overlap behavior.',
-        command: [
-          process.execPath,
-          '-e',
-          [
-            `require('fs').appendFileSync(${JSON.stringify(executionMarker)}, '1');`,
-            `setTimeout(() => { process.stdout.write('BACKGROUND_CHECK_DONE\\n'); process.exit(0); }, ${CHECK_DURATION_MS});`,
-          ].join(' '),
-        ],
-        timeoutMs: 10_000,
+  writeFileSync(
+    join(repoRoot, '.forge', 'checks.json'),
+    JSON.stringify(
+      {
+        version: 1,
+        checks: {
+          background: {
+            description: 'Synthetic long check for controller overlap behavior.',
+            command: [
+              process.execPath,
+              '-e',
+              [
+                `require('fs').appendFileSync(${JSON.stringify(executionMarker)}, '1');`,
+                `setTimeout(() => { process.stdout.write('BACKGROUND_CHECK_DONE\\n'); process.exit(0); }, ${CHECK_DURATION_MS});`,
+              ].join(' '),
+            ],
+            timeoutMs: 10_000,
+          },
+        },
       },
-    },
-  }, null, 2));
+      null,
+      2,
+    ),
+  );
   execFileSync('git', ['add', '.'], { cwd: repoRoot });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
 
@@ -113,22 +122,28 @@ try {
   const independentPayload = independent?.structuredContent as { data?: Record<string, unknown> } | undefined;
   const independentData = independentPayload?.data;
   const independentRetrievalPolicy = independentData?.retrievalPolicy as Record<string, unknown> | undefined;
-  const sourceRetrievalSkippedExecutionPreflight = independentData?.executionReadiness === undefined
-    && independentData?.registeredChecks === undefined
-    && independentRetrievalPolicy?.executionReadiness === 'requested_check_ids_only';
+  // The default summary intentionally omits the detail-only retrievalPolicy
+  // object; its absence is not evidence that execution preflight was performed.
+  const sourceRetrievalSkippedExecutionPreflight =
+    independentData?.executionReadiness === undefined &&
+    independentData?.registeredChecks === undefined &&
+    (independentRetrievalPolicy === undefined ||
+      independentRetrievalPolicy.executionReadiness === 'requested_check_ids_only');
   const processWaitCallsBeforeDependencyBoundary = 0;
 
   const joinStartedAtMs = Date.now();
   const joined = processId
     ? await callProcessTool(ctx, 'process_wait', {
-      repo_id: repository.repoId,
-      process_id: processId,
-      timeout_ms: 10_000,
-    })
+        repo_id: repository.repoId,
+        process_id: processId,
+        timeout_ms: 10_000,
+      })
     : undefined;
   const resultObservedAtMs = Date.now();
   const finalSynchronizationCount = processId ? 1 : 0;
-  const joinedPayload = joined?.structuredContent as { process?: { processId?: string; completed?: boolean; ok?: boolean } } | undefined;
+  const joinedPayload = joined?.structuredContent as
+    | { process?: { processId?: string; completed?: boolean; ok?: boolean } }
+    | undefined;
   const record = processId ? getProcessRecord(controllerHome, repository.repoId, processId) : undefined;
   const finishedAtMs = record?.finishedAt ? Date.parse(record.finishedAt) : NaN;
   const completionToObservationLatencyMs = Number.isFinite(finishedAtMs)
@@ -158,27 +173,37 @@ try {
   const detailMeta = detailPayload?.responseMeta as Record<string, unknown> | undefined;
   const summaryData = summaryPayload?.data as Record<string, unknown> | undefined;
   const summaryRepositoryState = summaryData?.repositoryState as Record<string, unknown> | undefined;
-  const summaryUsesCompactPayload = Boolean(summaryData)
-    && summaryData?.access === undefined
-    && summaryData?.pendingHandoffCount === undefined
-    && summaryData?.activeWorkCount === undefined
-    && summaryData?.activeProcessCount === undefined
-    && summaryRepositoryState?.status === undefined
-    && summaryRepositoryState?.diffStat === undefined;
+  const summaryUsesCompactPayload =
+    Boolean(summaryData) &&
+    summaryData?.access === undefined &&
+    summaryData?.pendingHandoffCount === undefined &&
+    summaryData?.activeWorkCount === undefined &&
+    summaryData?.activeProcessCount === undefined &&
+    summaryRepositoryState?.status === undefined &&
+    summaryRepositoryState?.diffStat === undefined;
 
   const assertions = {
-    initialManagedHandle: Boolean(processId) && startPayload?.path === 'process_managed' && initialHandleLatencyMs <= MAX_INITIAL_HANDLE_LATENCY_MS,
+    initialManagedHandle:
+      Boolean(processId) &&
+      startPayload?.path === 'process_managed' &&
+      initialHandleLatencyMs <= MAX_INITIAL_HANDLE_LATENCY_MS,
     independentUsefulOperation: independent?.isError !== true,
     sourceRetrievalSkipsExecutionPreflight: sourceRetrievalSkippedExecutionPreflight,
     noPollingBeforeDependencyBoundary: processWaitCallsBeforeDependencyBoundary === 0,
     oneDependencyJoin: finalSynchronizationCount === 1,
     exactlyOnce: physicalExecutionCount === 1,
-    terminalResultCorrect: joinedPayload?.process?.processId === processId && joinedPayload?.process?.completed === true && joinedPayload?.process?.ok === true,
-    promptResultObservation: completionToObservationLatencyMs === undefined || completionToObservationLatencyMs <= MAX_TERMINAL_OBSERVATION_LATENCY_MS,
-    statusSummaryUsesCompactProjection: Boolean(summaryPayload?.data)
-      && summaryGitSnapshot.refreshes === 0
-      && summaryGitSnapshot.subprocesses === 0
-      && summaryUsesCompactPayload,
+    terminalResultCorrect:
+      joinedPayload?.process?.processId === processId &&
+      joinedPayload?.process?.completed === true &&
+      joinedPayload?.process?.ok === true,
+    promptResultObservation:
+      completionToObservationLatencyMs === undefined ||
+      completionToObservationLatencyMs <= MAX_TERMINAL_OBSERVATION_LATENCY_MS,
+    statusSummaryUsesCompactProjection:
+      Boolean(summaryPayload?.data) &&
+      summaryGitSnapshot.refreshes === 0 &&
+      summaryGitSnapshot.subprocesses === 0 &&
+      summaryUsesCompactPayload,
   };
   const output = {
     schemaVersion: 1,

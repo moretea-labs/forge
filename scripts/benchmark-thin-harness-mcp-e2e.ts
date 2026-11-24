@@ -22,20 +22,17 @@ import { ensureControllerHome, controllerSystemRoot } from '../src/effects/contr
 import { registerRepository } from '../src/runtime/repositories/registry';
 import { createMcpToolContext } from '../adapters/mcp/server';
 import { callRepositoryTool } from '../src/runtime/control-plane/facade/repository-tool-dispatch';
-import {
-  classifyGatewayExecutionPath,
-  routeDurableMcpCall,
-} from '../adapters/mcp/runtime-gateway/router';
+import { classifyGatewayExecutionPath, routeDurableMcpCall } from '../adapters/mcp/runtime-gateway/router';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import { listProcessRecords } from '../src/runtime/execution/process-runtime/store';
 import { listLocalBridgeJobSnapshots } from '../src/runtime/local-bridge/read-model';
-import {
-  getLeaseSideEffectMetrics,
-  resetLeaseSideEffectMetrics,
-} from '../src/runtime/resources/leases/store';
+import { getLeaseSideEffectMetrics, resetLeaseSideEffectMetrics } from '../src/runtime/resources/leases/store';
 import type { MultiRepositoryMcpToolContext } from '../adapters/mcp/multi-repository';
 import { waitForProcess } from '../src/runtime/execution/process-runtime/runtime';
-import { isLightweightProcessId, waitForLightweightProcess } from '../src/runtime/execution/process-runtime/lightweight-managed';
+import {
+  isLightweightProcessId,
+  waitForLightweightProcess,
+} from '../src/runtime/execution/process-runtime/lightweight-managed';
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -70,9 +67,7 @@ function median(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? (sorted[mid - 1]! + sorted[mid]!) / 2
-    : sorted[mid]!;
+  return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
 }
 
 function p95(values: number[]): number {
@@ -94,8 +89,12 @@ function observeEffects(fixture: ReturnType<typeof createFixture>) {
   return {
     jobIds: new Set(jobs.map((job) => job.jobId)),
     localJobIds: new Set(listLocalBridgeJobSnapshots(fixture.repoRoot, 500).map((job) => job.jobId)),
-    processIds: new Set(listProcessRecords(fixture.controllerHome, fixture.repository.repoId, 1000).map((item) => item.processId)),
-    recordedWorkerPids: new Set(jobs.map((job) => job.workerPid).filter((pid): pid is number => typeof pid === 'number')),
+    processIds: new Set(
+      listProcessRecords(fixture.controllerHome, fixture.repository.repoId, 1000).map((item) => item.processId),
+    ),
+    recordedWorkerPids: new Set(
+      jobs.map((job) => job.workerPid).filter((pid): pid is number => typeof pid === 'number'),
+    ),
   };
 }
 
@@ -130,7 +129,18 @@ async function dispatchMcpLike(
   name: string,
   args: Record<string, unknown>,
 ): Promise<{
-  phases: Omit<PhaseSample, 'executionJobDelta' | 'localJobDelta' | 'recordedWorkerPidDelta' | 'managedProcessDelta' | 'schedulerWakeDelta' | 'projectionInvalidationDelta' | 'runtimeEventDelta' | 'terminalObservationMs' | 'terminalOk'>;
+  phases: Omit<
+    PhaseSample,
+    | 'executionJobDelta'
+    | 'localJobDelta'
+    | 'recordedWorkerPidDelta'
+    | 'managedProcessDelta'
+    | 'schedulerWakeDelta'
+    | 'projectionInvalidationDelta'
+    | 'runtimeEventDelta'
+    | 'terminalObservationMs'
+    | 'terminalOk'
+  >;
   payload: Record<string, unknown>;
 }> {
   const wallStart = performance.now();
@@ -158,10 +168,15 @@ async function dispatchMcpLike(
     // Durable accepted path (queued). Measure only accept latency; do not wait for workers.
     payload = (durableResult.structuredContent ?? {}) as Record<string, unknown>;
     const reported = String(payload.path ?? payload.mode ?? 'durable');
-    path = reported === 'fast' || reported === 'direct' || reported === 'process_direct'
-      || reported === 'process_managed' || reported === 'reject' || reported === 'durable'
-      ? reported
-      : 'durable';
+    path =
+      reported === 'fast' ||
+      reported === 'direct' ||
+      reported === 'process_direct' ||
+      reported === 'process_managed' ||
+      reported === 'reject' ||
+      reported === 'durable'
+        ? reported
+        : 'durable';
     operationMs = 0;
     ok = durableResult.isError !== true && payload.accepted !== false;
   } else {
@@ -174,11 +189,18 @@ async function dispatchMcpLike(
     operationMs = Math.round((performance.now() - opStart) * 100) / 100;
     payload = (toolResult?.structuredContent ?? {}) as Record<string, unknown>;
     const reported = String(payload.path ?? payload.mode ?? classification.path);
-    path = reported === 'fast' || reported === 'direct' || reported === 'process_direct'
-      || reported === 'process_managed' || reported === 'reject' || reported === 'durable'
-      || reported === 'durable_worker_inline'
-      ? (reported === 'durable_worker_inline' ? 'durable' : reported as PhaseSample['path'])
-      : classification.path;
+    path =
+      reported === 'fast' ||
+      reported === 'direct' ||
+      reported === 'process_direct' ||
+      reported === 'process_managed' ||
+      reported === 'reject' ||
+      reported === 'durable' ||
+      reported === 'durable_worker_inline'
+        ? reported === 'durable_worker_inline'
+          ? 'durable'
+          : (reported as PhaseSample['path'])
+        : classification.path;
     ok = toolResult?.isError !== true && payload.ok !== false && payload.accepted !== false;
     const latency = payload.latency as { receiptMs?: number; executionMs?: number; totalMs?: number } | undefined;
     receiptMs = latency?.receiptMs ?? 0;
@@ -209,7 +231,7 @@ async function dispatchMcpLike(
 
 async function sampleCase(
   fixture: ReturnType<typeof createFixture>,
-  name: string,
+  _name: string,
   tool: string,
   args: Record<string, unknown>,
 ): Promise<PhaseSample> {
@@ -236,7 +258,9 @@ async function sampleCase(
     if (!processId) throw new Error('BENCHMARK_MANAGED_PROCESS_HANDLE_MISSING');
     const started = performance.now();
     const settled = isLightweightProcessId(processId)
-      ? await waitForLightweightProcess(fixture.controllerHome, fixture.repository.repoId, processId, { timeoutMs: 10_000 })
+      ? await waitForLightweightProcess(fixture.controllerHome, fixture.repository.repoId, processId, {
+          timeoutMs: 10_000,
+        })
       : await waitForProcess(fixture.controllerHome, fixture.repository.repoId, processId, { timeoutMs: 10_000 });
     terminalObservationMs = Math.round((performance.now() - started) * 100) / 100;
     if (!settled.completed) throw new Error(`BENCHMARK_PROCESS_DID_NOT_SETTLE: ${processId}`);
@@ -249,20 +273,32 @@ async function sampleCase(
     terminalObservationMs,
     terminalOk,
     ok: phases.ok && terminalOk !== false,
-    executionJobDelta: Math.max(acceptedJob, side.executionJobCount ?? 0, newCount(effectsBefore.jobIds, effectsAfter.jobIds)),
+    executionJobDelta: Math.max(
+      acceptedJob,
+      side.executionJobCount ?? 0,
+      newCount(effectsBefore.jobIds, effectsAfter.jobIds),
+    ),
     localJobDelta: Math.max(side.localJobCount ?? 0, newCount(effectsBefore.localJobIds, effectsAfter.localJobIds)),
     recordedWorkerPidDelta: newCount(effectsBefore.recordedWorkerPids, effectsAfter.recordedWorkerPids),
-    managedProcessDelta: newCount(effectsBefore.processIds, effectsAfter.processIds),
-    schedulerWakeDelta: Math.max(0, (side.schedulerWakeCount ?? 0) + sideAfter.schedulerWakes - sideBefore.schedulerWakes),
+    // Lightweight Process handles are intentionally not persisted in the durable
+    // Process store. Count the returned handle only after its terminal join succeeds.
+    managedProcessDelta: Math.max(
+      newCount(effectsBefore.processIds, effectsAfter.processIds),
+      isLightweightProcessId(processId) && terminalOk === true ? 1 : 0,
+    ),
+    schedulerWakeDelta: Math.max(
+      0,
+      (side.schedulerWakeCount ?? 0) + sideAfter.schedulerWakes - sideBefore.schedulerWakes,
+    ),
     projectionInvalidationDelta: Math.max(
       0,
       (side.projectionUpdateCount ?? 0) + sideAfter.projectionDirtyMarks - sideBefore.projectionDirtyMarks,
     ),
     runtimeEventDelta: Math.max(
       0,
-      (side.runtimeEventCount ?? 0)
-        + (sideAfter.durableAcquireEvents + sideAfter.durableReleaseEvents)
-        - (sideBefore.durableAcquireEvents + sideBefore.durableReleaseEvents),
+      (side.runtimeEventCount ?? 0) +
+        (sideAfter.durableAcquireEvents + sideAfter.durableReleaseEvents) -
+        (sideBefore.durableAcquireEvents + sideBefore.durableReleaseEvents),
     ),
   };
 }
@@ -322,85 +358,108 @@ async function main() {
   try {
     const cases = [];
 
-    cases.push(await runCase(fixture, 'file_read_facade', 'repository_workbench', () => ({
-      operation: 'batch_execute',
-      payload: {
-        steps: [{ kind: 'read_file', input: { path: 'README.md' } }],
-      },
-    })));
-
-    cases.push(await runCase(fixture, 'rg_search_command', 'execute_command', () => ({
-      command: ['rg', 'export', 'src'],
-      timeout_ms: 8_000,
-    })));
-
-    cases.push(await runCase(fixture, 'git_status_command', 'execute_command', () => ({
-      command: ['git', 'status', '--short'],
-      timeout_ms: 8_000,
-    })));
-
-    cases.push(await runCase(fixture, 'git_diff_command', 'execute_command', () => ({
-      command: ['git', 'diff', '--stat'],
-      timeout_ms: 8_000,
-    })));
-
-    cases.push(await runCase(fixture, 'git_log_command', 'execute_command', () => ({
-      command: ['git', 'log', '-n', '3', '--oneline'],
-      timeout_ms: 8_000,
-    })));
-
-    cases.push(await runCase(fixture, 'focused_readonly_command', 'execute_command', () => ({
-      command: ['git', 'rev-parse', 'HEAD'],
-      timeout_ms: 8_000,
-    })));
-
-    cases.push(await runCase(fixture, 'bounded_patch_batch', 'repository_workbench', () => {
-      writeFileSync(join(fixture.repoRoot, 'src', 'lib.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
-      return {
+    cases.push(
+      await runCase(fixture, 'file_read_facade', 'repository_workbench', () => ({
         operation: 'batch_execute',
         payload: {
-          request_id: `mcp-e2e-patch-${Date.now()}-${Math.random()}`,
-          allowed_paths: ['src/**'],
-          steps: [
-            { kind: 'read_file', input: { path: 'src/lib.ts' } },
-            {
-              kind: 'apply_patch',
-              input: {
-                operations: [{
-                  type: 'replace',
-                  path: 'src/lib.ts',
-                  old_text: 'return a + b;',
-                  new_text: 'return a + b; // e2e',
-                }],
-                allowed_paths: ['src/**'],
-                purpose: 'mcp-e2e-patch',
+          steps: [{ kind: 'read_file', input: { path: 'README.md' } }],
+        },
+      })),
+    );
+
+    cases.push(
+      await runCase(fixture, 'rg_search_command', 'execute_command', () => ({
+        command: ['rg', 'export', 'src'],
+        timeout_ms: 8_000,
+      })),
+    );
+
+    cases.push(
+      await runCase(fixture, 'git_status_command', 'execute_command', () => ({
+        command: ['git', 'status', '--short'],
+        timeout_ms: 8_000,
+      })),
+    );
+
+    cases.push(
+      await runCase(fixture, 'git_diff_command', 'execute_command', () => ({
+        command: ['git', 'diff', '--stat'],
+        timeout_ms: 8_000,
+      })),
+    );
+
+    cases.push(
+      await runCase(fixture, 'git_log_command', 'execute_command', () => ({
+        command: ['git', 'log', '-n', '3', '--oneline'],
+        timeout_ms: 8_000,
+      })),
+    );
+
+    cases.push(
+      await runCase(fixture, 'focused_readonly_command', 'execute_command', () => ({
+        command: ['git', 'rev-parse', 'HEAD'],
+        timeout_ms: 8_000,
+      })),
+    );
+
+    cases.push(
+      await runCase(fixture, 'bounded_patch_batch', 'repository_workbench', () => {
+        writeFileSync(
+          join(fixture.repoRoot, 'src', 'lib.ts'),
+          'export function add(a: number, b: number) { return a + b; }\n',
+        );
+        return {
+          operation: 'batch_execute',
+          payload: {
+            request_id: `mcp-e2e-patch-${Date.now()}-${Math.random()}`,
+            allowed_paths: ['src/**'],
+            steps: [
+              { kind: 'read_file', input: { path: 'src/lib.ts' } },
+              {
+                kind: 'apply_patch',
+                input: {
+                  operations: [
+                    {
+                      type: 'replace',
+                      path: 'src/lib.ts',
+                      old_text: 'return a + b;',
+                      new_text: 'return a + b; // e2e',
+                    },
+                  ],
+                  allowed_paths: ['src/**'],
+                  purpose: 'mcp-e2e-patch',
+                },
               },
-            },
+              { kind: 'git_diff', input: {} },
+            ],
+          },
+        };
+      }),
+    );
+
+    cases.push(
+      await runCase(fixture, 'multi_step_read_batch', 'repository_workbench', () => ({
+        operation: 'batch_execute',
+        payload: {
+          steps: [
+            { kind: 'git_status', input: {} },
+            { kind: 'search', input: { query: 'add' } },
+            { kind: 'read_file', input: { path: 'README.md' } },
+            { kind: 'read_file', input: { path: 'src/util.ts' } },
             { kind: 'git_diff', input: {} },
           ],
         },
-      };
-    }));
+      })),
+    );
 
-    cases.push(await runCase(fixture, 'multi_step_read_batch', 'repository_workbench', () => ({
-      operation: 'batch_execute',
-      payload: {
-        steps: [
-          { kind: 'git_status', input: {} },
-          { kind: 'search', input: { query: 'add' } },
-          { kind: 'read_file', input: { path: 'README.md' } },
-          { kind: 'read_file', input: { path: 'src/util.ts' } },
-          { kind: 'git_diff', input: {} },
-        ],
-      },
-    })));
-
-    cases.push(await runCase(fixture, 'async_command_process_handle', 'execute_command', () => ({
-      command: ['bun', '-e', 'await Bun.sleep(250); console.log("async-bench")'],
-      apply_mode: 'async',
-      request_id: `mcp-e2e-async-${Date.now()}-${Math.random()}`,
-      timeout_ms: 8_000,
-    })));
+    cases.push(
+      await runCase(fixture, 'async_command_process_handle', 'execute_command', () => ({
+        command: ['bun', '-e', 'await Bun.sleep(250); console.log("async-bench")'],
+        apply_mode: 'async',
+        request_id: `mcp-e2e-async-${Date.now()}-${Math.random()}`,
+        timeout_ms: 8_000,
+      })),
+    );
 
     const processCases = cases.filter((entry) => entry.name === 'async_command_process_handle');
     const fastCases = cases.filter((entry) => entry.name !== 'async_command_process_handle');
@@ -421,7 +480,7 @@ async function main() {
       kind: 'mcp_gateway_thin_harness_e2e_benchmark',
       featureRevision: head,
       at: new Date().toISOString(),
-      note: 'MCP-like in-process routing and repository facade, not the external ChatGPT transport. Cold = first sample; warm = next three. Caller return excludes terminal Process observation. Queue delay and worker startup are unmeasured (not zero). Physical Job/Process IDs and recorded worker PIDs are sampled from the fixture stores; arbitrary OS child spawns are unmeasured. The bounded_patch_batch write control must emit Runtime events and is excluded from the read-only zero-event gate. All-sample acceptance; no synthetic A/B claim.',
+      note: 'MCP-like in-process routing and repository facade, not the external ChatGPT transport. Cold = first sample; warm = next three. Caller return excludes terminal Process observation. Queue delay and worker startup are unmeasured (not zero). Persistent Job/Process IDs and recorded worker PIDs are sampled from fixture stores; lightweight Process handles count only after a successful terminal join; arbitrary OS child spawns are unmeasured. The bounded_patch_batch write control must emit Runtime events and is excluded from the read-only zero-event gate. All-sample acceptance; no synthetic A/B claim.',
       cases,
       acceptance: {
         fastZeroExecutionJobs: fastSamples.every((sample) => sample.executionJobDelta === 0),
@@ -431,14 +490,16 @@ async function main() {
         fastZeroSchedulerWakes: fastSamples.every((sample) => sample.schedulerWakeDelta === 0),
         fastZeroProjectionInvalidations: fastSamples.every((sample) => sample.projectionInvalidationDelta === 0),
         readOnlyFastZeroRuntimeEvents: readOnlyFastSamples.every((sample) => sample.runtimeEventDelta === 0),
-        boundedPatchRuntimeEventsObserved: patchSamples.length === 4
-          && patchSamples.every((sample) => sample.runtimeEventDelta > 0),
+        boundedPatchRuntimeEventsObserved:
+          patchSamples.length === 4 && patchSamples.every((sample) => sample.runtimeEventDelta > 0),
         processRuntimeAsyncAccepted: processSamples.every((sample) => sample.path === 'process_managed'),
         processRuntimeAsyncSettled: processSamples.every((sample) => sample.terminalOk === true),
         processRuntimeAsyncManagedProcessesObserved: processSamples.every((sample) => sample.managedProcessDelta > 0),
         processRuntimeAsyncZeroExecutionJobs: processSamples.every((sample) => sample.executionJobDelta === 0),
         processRuntimeAsyncZeroLocalJobs: processSamples.every((sample) => sample.localJobDelta === 0),
-        processRuntimeAsyncZeroRecordedWorkerPids: processSamples.every((sample) => sample.recordedWorkerPidDelta === 0),
+        processRuntimeAsyncZeroRecordedWorkerPids: processSamples.every(
+          (sample) => sample.recordedWorkerPidDelta === 0,
+        ),
         noActiveLeasesAtEnd: activeLeaseFilesAtEnd === 0,
         allOk: allSamples.every((sample) => sample.ok),
       },

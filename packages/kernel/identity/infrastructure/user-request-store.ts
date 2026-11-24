@@ -52,8 +52,15 @@ function canonicalRequestIndex(requests: readonly UserRequest[], requestId: stri
 }
 
 function canonicalUserRequests(requests: readonly UserRequest[]): UserRequest[] {
-  const requestIds = [...new Set(requests.map((request) => request.requestId))];
-  return requestIds.map((requestId) => requests[canonicalRequestIndex(requests, requestId)]!);
+  const canonical = new Map<string, { request: UserRequest; updatedAt: number }>();
+  for (const request of requests) {
+    const parsedAt = Date.parse(request.updatedAt);
+    const updatedAt = Number.isFinite(parsedAt) ? parsedAt : Number.NEGATIVE_INFINITY;
+    const current = canonical.get(request.requestId);
+    // Match canonicalRequestIndex exactly: newest wins, and a later row wins ties.
+    if (!current || updatedAt >= current.updatedAt) canonical.set(request.requestId, { request, updatedAt });
+  }
+  return [...canonical.values()].map((entry) => entry.request);
 }
 
 /**
