@@ -62,6 +62,16 @@ final class ForgeClientLayoutTests: XCTestCase {
     XCTAssertEqual(ForgeClientDesign.Shell.composerControlHeight, ForgeClientDesign.Icon.hit)
   }
 
+  func testReadingRhythmAndThreadControlsUseSharedMetrics() {
+    let shell = ForgeClientDesign.Shell.self
+    let transcript = ForgeClientDesign.Transcript.self
+    XCTAssertGreaterThanOrEqual(shell.threadRowHeight, ForgeClientDesign.Icon.hit)
+    XCTAssertLessThan(shell.threadActionWidth, shell.threadRowHeight)
+    XCTAssertGreaterThan(transcript.blockSpacing, transcript.listSpacing)
+    XCTAssertGreaterThan(transcript.bodyPoint, shell.threadTitlePoint)
+    XCTAssertGreaterThanOrEqual(transcript.lineSpacing, 4)
+  }
+
   func testHeaderAndReadingGutterHaveSharedMetrics() {
     XCTAssertEqual(ForgeClientDesign.Shell.workspaceHeaderHeight, 36)
     XCTAssertEqual(ForgeClientDesign.Shell.workspaceStatusSlotWidth, 112)

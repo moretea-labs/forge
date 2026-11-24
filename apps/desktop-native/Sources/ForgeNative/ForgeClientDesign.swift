@@ -290,26 +290,31 @@ enum ForgeClientDesign {
     /// Centered reading column shared by transcript and composer (Cursor/Claude style).
     static let readingColumn: CGFloat = 760
     static let destinationRowHeight: CGFloat = 46
-    static let threadRowHeight: CGFloat = 30
+    static let threadRowHeight: CGFloat = 32
+    static let threadActionWidth: CGFloat = 22
+    static let threadSectionSpacing: CGFloat = 12
+    static let threadSectionTitle: Font = .system(size: 10, weight: .medium)
+    static let threadTitlePoint: CGFloat = 12.5
     static let sessionTitle: Font = .system(size: 13.5, weight: .semibold)
     static let sidebarTitle: Font = .system(size: 11, weight: .medium)
-    static let threadTitle: Font = .system(size: 11.75, weight: .regular)
-    static let threadTitleSelected: Font = .system(size: 11.75, weight: .medium)
+    static let threadTitle: Font = .system(size: threadTitlePoint, weight: .regular)
+    static let threadTitleSelected: Font = .system(size: threadTitlePoint, weight: .medium)
     static let body: Font = .system(size: 12.5)
     static let supporting: Font = .system(size: 11)
     static let control: Font = .system(size: 10.5, weight: .medium)
   }
   enum Transcript {
-    static let body: Font = .system(size: 12.75)
-    static let lineSpacing: CGFloat = 3
-    static let blockSpacing: CGFloat = 8
-    static let listSpacing: CGFloat = 6
+    static let bodyPoint: CGFloat = 13
+    static let body: Font = .system(size: bodyPoint)
+    static let lineSpacing: CGFloat = 4
+    static let blockSpacing: CGFloat = 10
+    static let listSpacing: CGFloat = 5
     static let heading1: Font = .system(size: 18, weight: .semibold)
     static let heading2: Font = .system(size: 15.5, weight: .semibold)
     static let heading3: Font = .system(size: 14, weight: .semibold)
     static let heading4: Font = .system(size: 12.75, weight: .medium)
     static let table: Font = .system(size: 11.25)
-    static let code: Font = .system(size: 11.25, design: .monospaced)
+    static let code: Font = .system(size: 12, design: .monospaced)
     static let codeHeader: Font = .system(size: 9.75, weight: .medium, design: .monospaced)
   }
   enum Size {

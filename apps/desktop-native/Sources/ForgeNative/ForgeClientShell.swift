@@ -567,8 +567,8 @@ struct ForgeWorkspaceView: View {
                         ForEach(sidebarThreadSections) { section in
                             HStack(spacing:6) {
                                 Text(section.title)
-                                    .font(.system(size:9.75,weight:.semibold))
-                                    .foregroundStyle(ForgePalette.secondary.opacity(0.78))
+                                    .font(ForgeClientDesign.Shell.threadSectionTitle)
+                                    .foregroundStyle(ForgePalette.secondary)
                                     .lineLimit(1)
                                 Spacer()
                                 if let repoId = section.repoId {
@@ -584,7 +584,8 @@ struct ForgeWorkspaceView: View {
                                     .disabled(model.busy || model.zenRefinementActive)
                                 }
                             }
-                            .padding(.leading,10).padding(.trailing,5).padding(.top,8)
+                            .padding(.leading,10).padding(.trailing,5)
+                            .padding(.top,ForgeClientDesign.Shell.threadSectionSpacing)
                             ForEach(section.threads) { thread in
                                 threadRow(thread)
                             }
@@ -851,15 +852,15 @@ struct ForgeWorkspaceView: View {
                                        : ForgeClientDesign.Shell.threadTitle)
                         .lineLimit(1)
                         .frame(maxWidth:.infinity,alignment:.leading)
-                    if thread.hasUnsentContent {
-                        Text("草稿")
-                            .font(.system(size:10,weight:.medium))
-                            .foregroundStyle(ForgePalette.secondary)
-                            .accessibilityLabel("有未发送草稿")
-                    }
                     if running {
                         ProgressView().controlSize(.mini)
-                            .accessibilityLabel("执行中")
+                            .accessibilityHidden(true)
+                    } else if thread.hasUnsentContent {
+                        Circle()
+                            .fill(ForgePalette.secondary)
+                            .frame(width:5,height:5)
+                            .padding(.horizontal,3)
+                            .accessibilityHidden(true)
                     }
                 }
                 .frame(maxWidth:.infinity,alignment:.leading)
@@ -871,6 +872,7 @@ struct ForgeWorkspaceView: View {
                 ? "自动精化进行中，请先按 Esc 停止后再切换会话"
                 : refinementThread ? "自动精化进行中" : accessibilityContext + " · " + thread.title)
             .accessibilityLabel(thread.title)
+            .accessibilityAddTraits(selected ? [.isSelected] : [])
             .accessibilityValue(accessibilityContext)
             .accessibilityHint("打开此会话")
             .accessibilityIdentifier("sidebar.thread.\(thread.id)")
@@ -887,11 +889,12 @@ struct ForgeWorkspaceView: View {
             } label: {
                 Image(systemName:"trash")
                     .font(.system(size:10.5,weight:.medium))
-                    .frame(width:24,height:24)
+                    .frame(width:ForgeClientDesign.Shell.threadActionWidth,height:24)
                     .contentShape(Rectangle())
+                    .forgeChromeSurface(selected:deleting,cornerRadius:6)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(protectedDuringRefinement || running ? ForgePalette.secondary.opacity(0.35) : Color.red.opacity(0.78))
+            .foregroundStyle(protectedDuringRefinement || running ? ForgePalette.secondary.opacity(0.35) : deleting ? Color.red : ForgePalette.secondary)
             .opacity(showDelete ? 1 : 0)
             .allowsHitTesting(showDelete && !protectedDuringRefinement && !running)
             .accessibilityHidden(!showDelete || protectedDuringRefinement || running)
