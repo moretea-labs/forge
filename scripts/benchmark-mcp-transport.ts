@@ -195,19 +195,46 @@ interface ProbeResult {
   }>;
 }
 
+export function parseBenchmarkRequestMeta(raw: string | undefined): Record<string, unknown> | undefined {
+  if (!raw) return undefined;
+  const parsed = JSON.parse(raw) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('MCP_BENCH_META_INVALID: --meta must be one JSON object');
+  }
+  return parsed as Record<string, unknown>;
+}
+
+export function benchmarkConnectionLifecycle(argv: readonly string[] = process.argv): {
+  includeConnect: boolean;
+  terminateSession: boolean;
+  timingScope: 'connect_and_tool_call' | 'tool_call';
+} {
+  const includeConnect = argv.includes('--include-connect');
+  const terminateSession = argv.includes('--terminate-session');
+  if (terminateSession && !includeConnect) {
+    throw new Error('MCP_BENCH_TERMINATE_SESSION_REQUIRES_INCLUDE_CONNECT');
+  }
+  return {
+    includeConnect,
+    terminateSession,
+    timingScope: includeConnect ? 'connect_and_tool_call' : 'tool_call',
+  };
+}
+
 async function probe(): Promise<ProbeResult> {
   const endpointRaw = option('--endpoint');
   if (!endpointRaw) throw new Error('--endpoint is required unless --input is used');
   const endpoint = new URL(endpointRaw);
   const label = option('--label')?.trim() || endpoint.hostname;
   const tool = option('--tool')?.trim() || 'rh_status';
+  const clientName = option('--client-name')?.trim() || 'forge-mcp-transport-benchmark';
+  if (clientName.length > 120) throw new Error('MCP_BENCH_CLIENT_NAME_TOO_LONG');
   const iterations = positiveInteger('--iterations', 30);
   const concurrency = positiveInteger('--concurrency', 1);
   const warmup = integerAtLeast('--warmup', 3, 0);
   const timeoutMs = positiveInteger('--timeout-ms', 120_000);
   const timingLog = option('--timing-log')?.trim();
-  const includeConnect = process.argv.includes('--include-connect');
-  const timingScope = includeConnect ? ('connect_and_tool_call' as const) : ('tool_call' as const);
+  const { includeConnect, terminateSession, timingScope } = benchmarkConnectionLifecycle();
   const tokenEnv = option('--token-env')?.trim() || 'FORGE_MCP_BENCH_TOKEN';
   const localServiceAuth = process.argv.includes('--local-service-auth');
   const token =
@@ -224,6 +251,7 @@ async function probe(): Promise<ProbeResult> {
   }
   const argumentsRaw = option('--arguments');
   const args = argumentsRaw ? (JSON.parse(argumentsRaw) as Record<string, unknown>) : {};
+  const requestMeta = parseBenchmarkRequestMeta(option('--meta'));
   const repoId = option('--repo-id')?.trim();
   if (repoId && args.repo_id === undefined) args.repo_id = repoId;
 
@@ -231,7 +259,7 @@ async function probe(): Promise<ProbeResult> {
     const transport = new StreamableHTTPClientTransport(endpoint, {
       requestInit: { headers: { Authorization: `Bearer ${token}` } },
     });
-    const client = new Client({ name: 'forge-mcp-transport-benchmark', version: '1.0.0' });
+    const client = new Client({ name: clientName, version: '1.0.0' });
     return { client, transport };
   };
   const steadyState = includeConnect ? undefined : createClient();
@@ -246,7 +274,10 @@ async function probe(): Promise<ProbeResult> {
     const started = performance.now();
     try {
       if (includeConnect) await connection.client.connect(connection.transport);
-      const response = await connection.client.callTool({ name: tool, arguments: args }, { timeout: timeoutMs });
+      const response = await connection.client.callTool(
+        { name: tool, arguments: args, ...(requestMeta ? { _meta: requestMeta } : {}) },
+        { timeout: timeoutMs },
+      );
       return {
         response,
         totalMs: performance.now() - started,
@@ -254,7 +285,10 @@ async function probe(): Promise<ProbeResult> {
         clientFinishedAt: new Date().toISOString(),
       };
     } finally {
-      if (includeConnect) await connection.client.close().catch(() => undefined);
+      if (includeConnect) {
+        if (terminateSession) await connection.transport.terminateSession().catch(() => undefined);
+        await connection.client.close().catch(() => undefined);
+      }
     }
   };
   const samples: McpTransportLatencySample[] = [];

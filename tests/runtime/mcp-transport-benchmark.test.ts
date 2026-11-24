@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  benchmarkConnectionLifecycle,
   benchmarkHostPressureSnapshot,
+  parseBenchmarkRequestMeta,
   parseDarwinVmmapSummary,
   runMcpConcurrentBatches,
   timingLedgerServerDuration,
@@ -63,6 +65,35 @@ describe('MCP transport latency benchmark', () => {
     expect(secure.externalResidualMs.p50).toBe(120);
     expect(secure.externalResidualMs.p95).toBe(200);
     expect(secure.serverExceedsClientCount).toBe(0);
+  });
+
+  test('accepts only synthetic object metadata for forwarding diagnostics', () => {
+    expect(parseBenchmarkRequestMeta(undefined)).toBeUndefined();
+    expect(parseBenchmarkRequestMeta('{"forgeRuntimeForwarding":{"controllerType":"chatgpt"}}')).toEqual({
+      forgeRuntimeForwarding: { controllerType: 'chatgpt' },
+    });
+    expect(() => parseBenchmarkRequestMeta('[]')).toThrow('MCP_BENCH_META_INVALID');
+  });
+
+  test('requires explicit connection churn before simulating Gateway session termination', () => {
+    expect(benchmarkConnectionLifecycle([])).toEqual({
+      includeConnect: false,
+      terminateSession: false,
+      timingScope: 'tool_call',
+    });
+    expect(benchmarkConnectionLifecycle(['--include-connect'])).toEqual({
+      includeConnect: true,
+      terminateSession: false,
+      timingScope: 'connect_and_tool_call',
+    });
+    expect(benchmarkConnectionLifecycle(['--include-connect', '--terminate-session'])).toEqual({
+      includeConnect: true,
+      terminateSession: true,
+      timingScope: 'connect_and_tool_call',
+    });
+    expect(() => benchmarkConnectionLifecycle(['--terminate-session'])).toThrow(
+      'MCP_BENCH_TERMINATE_SESSION_REQUIRES_INCLUDE_CONNECT',
+    );
   });
 
   test('keeps connection-inclusive samples separate from steady-state tool calls', () => {
