@@ -390,6 +390,41 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     };
   }
 
+  async refreshExact(identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult> {
+    const record = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(identity));
+    const previous = record?.providerBinding;
+    if (!record || previous?.providerId !== PROVIDER_ID || !previous.ownerToken) {
+      return failure('COMPUTER_CHATGPT_EXTENSION_REFRESH_OWNERSHIP_UNPROVEN', { retryable: false, failoverSafe: false });
+    }
+    const instanceId = providerInstanceId(previous.providerSessionId);
+    if (!instanceId || !this.providerIsFresh(instanceId)) {
+      return failure('COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', { failoverSafe: false });
+    }
+    const closed = await this.retirePhysicalBinding(record, identity);
+    if (!closed) {
+      return failure('COMPUTER_CHATGPT_EXTENSION_REFRESH_CLOSE_UNCONFIRMED', { failoverSafe: false });
+    }
+
+    // executeClose is an acknowledged physical-tab deletion. Remove only that
+    // exact attachment from the cached heartbeat immediately so a refresh does
+    // not wait up to the next 8s heartbeat or accidentally reuse stale inventory.
+    const providerState = this.providerStates.get(instanceId);
+    if (!providerState) return failure('COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', { failoverSafe: false });
+    const remaining = providerState.heartbeat.conversations.filter((entry) => !(
+      entry.conversationId === identity.conversationId
+      && entry.providerBinding?.windowId === previous.windowId
+      && entry.providerBinding?.tabId === previous.tabId
+    ));
+    this.providerStates.set(instanceId, {
+      ...providerState,
+      heartbeat: { ...providerState.heartbeat, conversations: remaining },
+    });
+    if (remaining.some((entry) => entry.conversationId === identity.conversationId)) {
+      return failure('COMPUTER_CHATGPT_EXTENSION_REFRESH_EXACT_TARGET_AMBIGUOUS', { retryable: false, failoverSafe: false });
+    }
+    return await this.ensureExact(identity, { createIfMissing: true }, false);
+  }
+
   async inventory(): Promise<ComputerChatgptConversationInventory> {
     const fresh = this.freshProviders();
     if (fresh.length === 0) return { conversations: [], complete: false, unavailableProviders: [PROVIDER_ID] };

@@ -3395,6 +3395,7 @@ test('Computer reuses exact-target actions for ChatGPT Project bootstrap and kee
   });
   expect(action('chatgpt_target_ensure').argumentsSchema.oneOf).toHaveLength(2);
   expect(action('chatgpt_target_observe').argumentsSchema).toMatchObject({ required: ['canonical_url'] });
+  expect(action('chatgpt_target_refresh').argumentsSchema).toMatchObject({ required: ['canonical_url'] });
   for (const id of ['chatgpt_target_prepare', 'chatgpt_target_dispatch']) {
     expect(action(id).argumentsSchema).toMatchObject({ required: ['prompt'] });
     expect(action(id).argumentsSchema.oneOf).toHaveLength(2);
@@ -3431,6 +3432,17 @@ test('Computer ChatGPT targets keep read, binding, and remote effects on their c
   expect(observe.resourceClaims).toEqual([
     { resource: 'provider-state', mode: 'write' },
     { resource: 'remote', mode: 'read' },
+  ]);
+
+  const refresh = action('chatgpt_target_refresh');
+  expect(refresh.readOnly).toBe(false);
+  expect(refresh.risk).toBe('workspace_write');
+  expect(refresh.confirmation).toBe('none');
+  expect(refresh.idempotent).toBe(true);
+  expect(refresh.executionMode).not.toBe('direct_non_persistent');
+  expect(refresh.resourceClaims).toEqual([
+    { resource: 'provider-state', mode: 'write' },
+    { resource: 'remote', mode: 'write' },
   ]);
 
   for (const actionId of ['chatgpt_target_prepare', 'chatgpt_target_dispatch']) {

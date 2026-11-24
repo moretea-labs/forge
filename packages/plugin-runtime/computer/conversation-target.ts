@@ -26,6 +26,8 @@ export interface ComputerChatgptConversationObservation {
   composerSelectorVersion?: 'visible-single-v2';
   /** Exact loaded content-script contract; file projection/version on disk is not a live browser attestation. */
   composerReplacementContract?: 'exact-backed-up-project-draft-v1';
+  /** Live proof that this exact document can lock unattended Supervisor sends to GPT-5.6 Sol at High reasoning. */
+  modelLockCapability?: 'gpt-5.6-sol-high-v1';
   providerActivityText: string;
   providerFailureText: string;
   pageText?: string;
@@ -163,6 +165,8 @@ export interface ComputerChatgptConversationTargetPort {
   inventory(): Promise<ComputerChatgptConversationInventory>;
   /** May create an owned tab for this exact existing conversation during read-only reconciliation or an authorized Send; it never creates a new conversation or grants Send authority. */
   ensureExact(identity: ComputerChatgptConversationIdentity, options?: { createIfMissing?: boolean }): Promise<ComputerChatgptTargetResult>;
+  /** Close only the attested Forge-owned physical tab, then reopen this same conversation with the current provider projection. Never mutates the composer or clicks Send. */
+  refreshExact(identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult>;
   openBootstrap(projectUrl: string, bootstrapKey: string): Promise<ComputerChatgptTargetResult>;
   findBySubmittedMarker(
     marker: string,

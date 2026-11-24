@@ -144,6 +144,56 @@ test('Computer exact-target socket owns heartbeat, claim, and completion without
     expect(exact.target.targetId).toBeTruthy();
     expect(exact.observation).toEqual(observation);
   }
+
+  const refreshedBinding = { ...binding, tabId: '44', ownerToken: 'socket-refresh-owner' };
+  const refreshPromise = runtimeComputerChatgptAction(controllerHome, {
+    kind: 'refresh',
+    identity: { namespace: 'chatgpt.conversation', conversationId: 'socket-test-123', canonicalUrl },
+  }, 5_000);
+
+  claim = undefined;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', {
+      provider_instance_id: 'centbrowser-default',
+    });
+    if ((claim.result as { command?: unknown } | undefined)?.command) break;
+    await Bun.sleep(10);
+  }
+  const closeCommand = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(closeCommand).toMatchObject({
+    kind: 'close',
+    identity: { namespace: 'chatgpt.conversation', conversationId: 'socket-test-123', canonicalUrl },
+    providerBinding: binding,
+  });
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: 'centbrowser-default', command_id: closeCommand.commandId,
+    result: { kind: 'closed' },
+  });
+
+  claim = undefined;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', {
+      provider_instance_id: 'centbrowser-default',
+    });
+    if ((claim.result as { command?: unknown } | undefined)?.command) break;
+    await Bun.sleep(10);
+  }
+  const ensureCommand = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(ensureCommand).toMatchObject({
+    kind: 'ensure',
+    identity: { namespace: 'chatgpt.conversation', conversationId: 'socket-test-123', canonicalUrl },
+  });
+  expect(ensureCommand).not.toHaveProperty('providerBinding');
+  const refreshedObservation = { ...observation, modelLockCapability: 'gpt-5.6-sol-high-v1' };
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: 'centbrowser-default', command_id: ensureCommand.commandId,
+    result: { kind: 'ensured', providerBinding: refreshedBinding, observation: refreshedObservation },
+  });
+  expect(await refreshPromise).toMatchObject({
+    state: 'ready',
+    identity: { namespace: 'chatgpt.conversation', conversationId: 'socket-test-123', canonicalUrl },
+    observation: { modelLockCapability: 'gpt-5.6-sol-high-v1' },
+  });
 });
 
 test('durable worker proxies observe through the Runtime-owned Computer socket', async () => {

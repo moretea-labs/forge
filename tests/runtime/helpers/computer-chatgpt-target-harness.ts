@@ -153,6 +153,9 @@ export function createTestChatgptTargetPort(
   return {
     inventory,
     ensureExact,
+    async refreshExact(identity) {
+      return await ensureExact(identity);
+    },
     async openBootstrap(projectUrl, bootstrapKey) {
       const identity = { namespace: 'chatgpt.bootstrap' as const, bootstrapKey, projectUrl };
       const targetId = `test-bootstrap-${bootstrapKey}`;
