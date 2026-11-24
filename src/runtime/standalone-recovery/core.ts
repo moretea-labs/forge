@@ -2130,8 +2130,7 @@ async function ensureLaunchdServiceStarted(
   service: LaunchdService,
   runCommand: CommandRunner = command,
 ): Promise<{ ok: boolean; detail: string }> {
-  const proveRegistered = async (): Promise<CommandResult> =>
-    runCommand('launchctl', ['print', service.target], 5_000);
+  const proveRegistered = async (): Promise<CommandResult> => runCommand('launchctl', ['print', service.target], 5_000);
 
   const registerExactService = async (
     context: 'initial' | 'kickstart-repair',
@@ -2227,8 +2226,7 @@ async function ensureLaunchdServiceStarted(
     started = await kickstart();
     kickstartDetail = started.stderr + '\n' + started.stdout;
     serviceNotFound = /could not find service|service could not be found/i.test(kickstartDetail);
-    alreadyInProgress =
-      !serviceNotFound && (started.status === 37 || /already|in progress/i.test(kickstartDetail));
+    alreadyInProgress = !serviceNotFound && (started.status === 37 || /already|in progress/i.test(kickstartDetail));
     if (!started.ok && serviceNotFound) {
       const registeredAfterRetry = await proveRegistered();
       if (registeredAfterRetry.ok) return { ok: true, detail: service.target };
@@ -6263,22 +6261,77 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
       let session = readReleaseSession(config.controllerHome, sessionId);
       if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
       if (session.phase === 'candidate_booted') {
+        const candidateSession = session;
         const observeCandidateRuntime = dependencies.observeCandidateRuntime ?? observeRuntimeStatus;
-        let candidateObservation: ReturnType<typeof observeRuntimeStatus>;
-        try {
-          candidateObservation = observeCandidateRuntime(session.candidate.controllerHome);
-        } catch (error) {
+        const candidateConfig = candidateRecoveryConfig(candidateSession);
+        // A restart briefly makes Runtime observation report running=false while
+        // its launchd job is unloaded. Never interpret that transient state as an
+        // interrupted canary until we own Candidate B's Recovery lock: otherwise
+        // a duplicate Stable A invocation can uninstall the plist underneath the
+        // in-flight restart and make launchctl restart fail.
+        const candidateInspection = await withLock(
+          candidateConfig,
+          {
+            action: 'release_session_candidate_boot',
+            ...(requestId?.trim() ? { requestId: requestId.trim() + ':inspect-candidate' } : {}),
+          },
+          async () => {
+            let candidateObservation: ReturnType<typeof observeRuntimeStatus>;
+            try {
+              candidateObservation = observeCandidateRuntime(candidateSession.candidate.controllerHome);
+            } catch (error) {
+              return {
+                kind: 'unknown' as const,
+                detail:
+                  'Candidate B owner state is uncertain; preserving the booted candidate: ' +
+                  (error instanceof Error ? error.message : String(error)),
+              };
+            }
+            if (candidateObservation.running) return { kind: 'running' as const };
+
+            const retirement = await stopReleaseSessionCandidateService(candidateSession);
+            if (!retirement.ok) {
+              return {
+                kind: 'retirement_failed' as const,
+                detail: 'Candidate B boot/restart canary was interrupted and retirement failed: ' + retirement.detail,
+              };
+            }
+            const latest = readReleaseSession(config.controllerHome, sessionId);
+            if (!latest || latest.revision !== candidateSession.revision || latest.phase !== 'candidate_booted') {
+              return {
+                kind: 'stale' as const,
+                latest,
+              };
+            }
+            const terminal = advanceReleaseSession({
+              controllerHome: config.controllerHome,
+              sessionId,
+              expectedRevision: latest.revision,
+              phase: 'failed',
+              receipts: [
+                {
+                  id: 'candidate_failed',
+                  kind: 'candidate_canary',
+                  summary:
+                    'Candidate B boot/restart canary was interrupted; Candidate B was retired before terminalizing the ReleaseSession',
+                },
+              ],
+            });
+            return { kind: 'retired' as const, session: terminal };
+          },
+        );
+        if (!candidateInspection.acquired) {
           return {
             ok: false as const,
             attempted: false,
             noOp: true,
             detail:
-              'Candidate B owner state is uncertain; preserving the booted candidate: ' +
-              (error instanceof Error ? error.message : String(error)),
-            releaseSession: session,
+              'Candidate B mutation already in progress; preserving it for canary verification: ' +
+              recoveryBusyDetail(candidateInspection.owner),
+            releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? session,
           };
         }
-        if (candidateObservation.running) {
+        if (candidateInspection.value.kind === 'running') {
           return {
             ok: true as const,
             attempted: false,
@@ -6288,29 +6341,36 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
             continueCandidateCanary: true,
           };
         }
-        const retirement = await stopReleaseSessionCandidateService(session);
-        if (!retirement.ok) {
+        if (candidateInspection.value.kind === 'unknown') {
           return {
             ok: false as const,
-            attempted: true,
-            detail: 'Candidate B boot/restart canary was interrupted and retirement failed: ' + retirement.detail,
+            attempted: false,
+            noOp: true,
+            detail: candidateInspection.value.detail,
             releaseSession: session,
           };
         }
-        session = advanceReleaseSession({
-          controllerHome: config.controllerHome,
-          sessionId,
-          expectedRevision: session.revision,
-          phase: 'failed',
-          receipts: [
-            {
-              id: 'candidate_failed',
-              kind: 'candidate_canary',
-              summary:
-                'Candidate B boot/restart canary was interrupted; Candidate B was retired before terminalizing the ReleaseSession',
-            },
-          ],
-        });
+        if (candidateInspection.value.kind === 'retirement_failed') {
+          return {
+            ok: false as const,
+            attempted: true,
+            detail: candidateInspection.value.detail,
+            releaseSession: session,
+          };
+        }
+        if (candidateInspection.value.kind === 'stale') {
+          return {
+            ok: false as const,
+            attempted: true,
+            detail:
+              'RELEASE_SESSION_CANDIDATE_CANARY_COMPLETION_STALE: ' +
+              (candidateInspection.value.latest
+                ? candidateInspection.value.latest.phase + '@' + candidateInspection.value.latest.revision
+                : 'session missing'),
+            ...(candidateInspection.value.latest ? { releaseSession: candidateInspection.value.latest } : {}),
+          };
+        }
+        session = candidateInspection.value.session;
         cleanupRetiredCandidateLane(config, session);
         return {
           ok: false as const,

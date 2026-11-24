@@ -3475,6 +3475,43 @@ test('ReleaseSession accepts a healthy Candidate B after another canary already 
   expect(readReleaseSession(home, session.sessionId)?.phase).toBe('cutover_eligible');
 });
 
+test('ReleaseSession preserves Candidate B while its Recovery restart lock is live', async () => {
+  const { home, config, session } = await candidateBootedFixture('canary-restart-lock-live');
+  const candidateLock = acquireRecoveryOperationLock({
+    controllerHome: session.candidate.controllerHome,
+    action: 'restart_primary_runtime',
+    requestId: 'candidate-restart-in-flight',
+  });
+  expect(candidateLock.acquired).toBe(true);
+  if (!candidateLock.acquired) throw new Error('candidate restart lock fixture could not be acquired');
+  try {
+    const result = await bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
+      config,
+      session.sessionId,
+      'candidate-restart-lock-observation',
+      {
+        observeCandidateRuntime: () => ({
+          schemaVersion: 1,
+          running: false,
+          ready: false,
+          stale: false,
+          reasonCodes: ['RUNTIME_NOT_RUNNING'],
+          observedAt: new Date().toISOString(),
+        }),
+        restartCandidateRuntime: async () => {
+          throw new Error('must not start a duplicate restart');
+        },
+      },
+    );
+    expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
+    expect(result.detail).toContain('Candidate B mutation already in progress');
+    expect(readReleaseSession(home, session.sessionId)?.phase).toBe('candidate_booted');
+    expect(existsSync(recoveryOperationLockPath(session.candidate.controllerHome))).toBe(true);
+  } finally {
+    candidateLock.handle.close();
+  }
+});
+
 test('ReleaseSession fails closed when a new invocation finds an interrupted candidate_booted checkpoint', async () => {
   const { home, config, session } = await candidateBootedFixture('canary-interrupted');
   let restartCalls = 0;
@@ -6226,8 +6263,7 @@ describe('standalone recovery on canonical Runtime', () => {
             return launchdLoaded
               ? { ok: true, status: 0, stdout: 'registered', stderr: '' }
               : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
-          if (args[0] === 'bootstrap')
-            return { ok: false, status: 5, stdout: '', stderr: 'Input/output error' };
+          if (args[0] === 'bootstrap') return { ok: false, status: 5, stdout: '', stderr: 'Input/output error' };
           if (args[0] === 'load') {
             loads += 1;
             launchdLoaded = true;
