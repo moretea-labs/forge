@@ -8,7 +8,7 @@ import { completionEvidenceComplete } from './execution-policy';
 import { currentCompletionTarget, resolveCompletionTargetBranch } from './completion-target';
 import { runControllerCheck } from '../../runtime/execution/process-runtime/check-runner';
 import type { ControllerIssue, ControllerTask, IntegrationEvidence, TaskVerification } from './types';
-import type { CompletionMaintenanceWarning, CompletionReceipt, CompletionReceiptSource, CompletionResourceBlocker } from './types';
+import type { CompletionMaintenanceWarning, CompletionReceipt, CompletionResourceBlocker } from './types';
 import { legacyIssueAuthorityRetired, legacyIssueCutoverState, migratedTaskCompletionState, recordMigratedTaskCompletion, type LegacyIssueCutoverState } from './legacy-issue-cutover';
 
 export type TaskReviewDecision =
@@ -521,8 +521,7 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
   const cleanupBlockers = dirtyOwnedPaths.length > 0
     ? [blocker('dirty_owned_paths', `Direct Edit owned paths still have uncommitted changes: ${dirtyOwnedPaths.join(', ')}`, 'workspace')]
     : [];
-  const completionReceipt = buildCompletionReceipt({
-    source: 'direct_edit',
+  const completionReceipt = buildDirectEditCompletionReceipt({
     issueId: issue.id,
     taskId: task.id,
     editSessionId: session.sessionId,
@@ -683,26 +682,37 @@ function ownedWorkspaceChanges(repoRoot: string, ownedPaths: readonly string[], 
   return scopedWorkspaceChanges(repoRoot, [...fallbackAllowedPaths]);
 }
 
-function receiptId(source: CompletionReceiptSource, ownerId: string, targetRevision: string): string {
-  return `REC-${source}-${createHash('sha256').update(`${source}\0${ownerId}\0${targetRevision}`).digest('hex').slice(0, 16)}`;
+function directEditReceiptId(ownerId: string, targetRevision: string): string {
+  const digest = createHash('sha256')
+    .update(['direct_edit', ownerId, targetRevision].join('\0'))
+    .digest('hex')
+    .slice(0, 16);
+  return 'REC-direct_edit-' + digest;
 }
 
-function cleanupStatus(warnings: readonly CompletionMaintenanceWarning[], blockers: readonly CompletionResourceBlocker[]): CompletionReceipt['cleanup']['status'] {
+function cleanupStatus(
+  warnings: readonly CompletionMaintenanceWarning[],
+  blockers: readonly CompletionResourceBlocker[],
+): CompletionReceipt['cleanup']['status'] {
   if (blockers.length > 0) return 'blocked';
   return warnings.length > 0 ? 'maintenance_warning' : 'complete';
 }
 
-function blocker(code: CompletionResourceBlocker['code'], message: string, resourceKind?: CompletionResourceBlocker['resourceKind'], resourceId?: string, at = nowIso()): CompletionResourceBlocker {
+function blocker(
+  code: CompletionResourceBlocker['code'],
+  message: string,
+  resourceKind?: CompletionResourceBlocker['resourceKind'],
+  resourceId?: string,
+  at = nowIso(),
+): CompletionResourceBlocker {
   return { code, message, resourceKind, resourceId, recordedAt: at };
 }
 
-function buildCompletionReceipt(input: {
-  source: CompletionReceiptSource;
+function buildDirectEditCompletionReceipt(input: {
   issueId: string;
   taskId: string;
-  runId?: string;
   editSessionId?: string;
-  integrationEvidence: Omit<IntegrationEvidence, 'runId'> & { runId?: string };
+  integrationEvidence: Omit<IntegrationEvidence, 'runId'>;
   changedPaths: readonly string[];
   cleanupWarnings?: CompletionMaintenanceWarning[];
   cleanupBlockers?: CompletionResourceBlocker[];
@@ -711,16 +721,30 @@ function buildCompletionReceipt(input: {
   const warnings = [...(input.cleanupWarnings ?? [])];
   const blockers = [
     ...(input.cleanupBlockers ?? []),
-    ...(input.integrationEvidence.reachable ? [] : [blocker('target_revision_unreachable', `Target revision ${input.integrationEvidence.targetRevision} is not reachable from ${input.integrationEvidence.targetBranch}.`, 'workspace')]),
+    ...(input.integrationEvidence.reachable
+      ? []
+      : [
+          blocker(
+            'target_revision_unreachable',
+            'Target revision ' +
+              input.integrationEvidence.targetRevision +
+              ' is not reachable from ' +
+              input.integrationEvidence.targetBranch +
+              '.',
+            'workspace',
+          ),
+        ]),
   ];
   const recordedAt = nowIso();
   return {
     schemaVersion: 1,
-    receiptId: receiptId(input.source, input.runId ?? input.editSessionId ?? `${input.issueId}/${input.taskId}`, input.integrationEvidence.targetRevision),
-    source: input.source,
+    receiptId: directEditReceiptId(
+      input.editSessionId ?? input.issueId + '/' + input.taskId,
+      input.integrationEvidence.targetRevision,
+    ),
+    source: 'direct_edit',
     issueId: input.issueId,
     taskId: input.taskId,
-    runId: input.runId,
     editSessionId: input.editSessionId,
     targetBranch: input.integrationEvidence.targetBranch,
     targetRevision: input.integrationEvidence.targetRevision,
@@ -730,9 +754,11 @@ function buildCompletionReceipt(input: {
     delivery: {
       kind: input.integrationEvidence.kind,
       status: blockers.some((entry) => entry.code === 'target_revision_unreachable') ? 'blocked' : 'integrated',
-      strategy: input.integrationEvidence.strategy === 'already_integrated' ? 'already_integrated'
-        : input.integrationEvidence.strategy === 'no_change' ? 'no_change'
-          : input.source === 'remote_no_change_execution' && input.integrationEvidence.strategy !== 'edit_session_commit' ? 'remote'
+      strategy:
+        input.integrationEvidence.strategy === 'already_integrated'
+          ? 'already_integrated'
+          : input.integrationEvidence.strategy === 'no_change'
+            ? 'no_change'
             : 'edit_session_commit',
       reachable: input.integrationEvidence.reachable,
       recordedAt: input.integrationEvidence.recordedAt,
