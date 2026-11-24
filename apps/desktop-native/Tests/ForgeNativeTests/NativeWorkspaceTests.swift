@@ -13,15 +13,15 @@ final class NativeWorkspaceTests: XCTestCase {
       let conversation = width - inspector - AgentWorkSurfaceLayout.dividerWidth
       XCTAssertGreaterThanOrEqual(inspector, AgentWorkSurfaceLayout.workSurfaceMinimumWidth)
       XCTAssertGreaterThanOrEqual(conversation, AgentWorkSurfaceLayout.conversationMinimumWidth)
-      XCTAssertLessThan(inspector, conversation)
+      XCTAssertEqual(inspector, conversation, accuracy: 0.001)
       XCTAssertEqual(conversation + inspector + AgentWorkSurfaceLayout.dividerWidth, width)
     }
   }
 
-  func testAgentWorkSurfaceUsesCompactDefaultDockedWidth() {
-    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 890), 360)
-    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 958), 379.2, accuracy: 0.001)
-    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 1400), 556, accuracy: 0.001)
+  func testAgentWorkSurfaceUsesBalancedDefaultDockedWidth() {
+    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 890), 440)
+    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 958), 474, accuracy: 0.001)
+    XCTAssertEqual(AgentWorkSurfaceLayout.dockedWidth(availableWidth: 1400), 695, accuracy: 0.001)
   }
 
   @MainActor

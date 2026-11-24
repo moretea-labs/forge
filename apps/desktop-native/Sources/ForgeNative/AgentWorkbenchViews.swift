@@ -97,7 +97,7 @@ enum AgentCapabilityExtension: String, CaseIterable, Identifiable {
 /// Narrow windows use the same workspace as a full-width detail view.
 enum AgentWorkSurfaceLayout {
     static let conversationMinimumWidth: CGFloat = 440
-    static let workSurfaceMinimumWidth: CGFloat = 360
+    static let workSurfaceMinimumWidth: CGFloat = 440
     static let dividerWidth: CGFloat = 10
 
     enum Presentation: Equatable {
@@ -118,7 +118,7 @@ enum AgentWorkSurfaceLayout {
     static func dockedWidth(availableWidth: CGFloat, preferredWidth: CGFloat? = nil) -> CGFloat {
         guard canDock(availableWidth:availableWidth) else { return max(0,availableWidth) }
         return min(availableWidth - dividerWidth - conversationMinimumWidth,
-                   max(workSurfaceMinimumWidth, preferredWidth ?? (availableWidth - dividerWidth) * 0.4))
+                   max(workSurfaceMinimumWidth, preferredWidth ?? (availableWidth - dividerWidth) * 0.5))
     }
 }
 
