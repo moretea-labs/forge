@@ -18,7 +18,7 @@ import {
   reconcileProjectionWithTaskLedger,
   type RepositoryRuntimeProjectionSnapshot,
 } from '../../src/runtime/projections/materialized-view';
-import { executionJobRoot, rebuildExecutionJobIndexes } from '../../src/runtime/execution/jobs/store';
+import { executionJobRoot } from '../../src/runtime/execution/jobs/store';
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import type { TaskLedgerProjection } from '../../src/runtime/projections/task-ledger-types';
 import { flushMcpDiagnostics, recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
@@ -279,7 +279,6 @@ describe('runtime observability', () => {
       const records = join(executionJobRoot(controllerHome, repoId), 'records');
       mkdirSync(records, { recursive: true });
       writeFileSync(join(records, `${legacy.jobId}.json`), `${JSON.stringify(legacy)}\n`, 'utf8');
-      rebuildExecutionJobIndexes(controllerHome, [repoId]);
 
       const snapshot = readRepositoryProjectionSnapshot(controllerHome, repoId);
       expect(snapshot.projection.attention).toContainEqual(

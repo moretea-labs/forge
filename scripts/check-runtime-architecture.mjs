@@ -2188,6 +2188,11 @@ forbid(
   /export function (?:markExecutionJobSchedulerObserved|claimExecutionJobForDispatch|removeExecutionJobFromActiveIndex|removeRequestIndex)\b/,
   'zero-consumer ExecutionJob scheduling/index mutation APIs must stay physically absent',
 );
+forbid(
+  'src/runtime/execution/jobs/store.ts',
+  /export function rebuildExecutionJobIndexes\b/,
+  'tests-only ExecutionJob index rebuild API must stay physically absent',
+);
 requireMissing('src/runtime/execution/jobs/legacy-adapter.ts');
 requireMissing('src/cli/controller/migrated-issue-decision.ts');
 requireMissing('src/cli/mcp/oauth-client-retirement.ts');
