@@ -56,8 +56,8 @@ export function boundUtf8(value: string, maxBytes: number): { text: string; trun
  * the human-readable tail at each tool surface.
  */
 export function leadingErrorCode(message: string, fallback: string): string {
-  const separator = message.indexOf(':');
-  return separator > 0 ? message.slice(0, separator) : fallback;
+  const match = /^([A-Z][A-Z0-9_]+)(?::|$)/.exec(message.trim());
+  return match?.[1] ?? fallback;
 }
 
 /** Prevent recursive JSON dumps inside error.message. */
