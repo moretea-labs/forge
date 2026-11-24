@@ -18,22 +18,29 @@ enum ForgePalette {
   // Selection and hover are light floating washes, not opaque rows.
   static let selection = Color(nsColor: .labelColor).opacity(0.085)
   static let selectionStrong = Color(nsColor: .labelColor).opacity(0.12)
-  static let userBubble = Color.white.opacity(0.032)
-  static let raisedSurface = Color.white.opacity(0.040)
-  static let softFill = Color.white.opacity(0.022)
-  static let inputFill = Color.white.opacity(0.020)
-  static let composer = Color.white.opacity(0.014)
-  /// Near-invisible edge reserved for focus rings and floating glass rims.
-  static let hairline = Color.white.opacity(0.04)
-  static let primaryHairlineFocused = Color.white.opacity(0.10)
-  /// The wallpaper/material should do most of the visual work. These tints are
-  /// deliberately much weaker than the first Dark Glass pass.
-  static let windowTint = Color.black.opacity(0.026)
-  static let railTint = Color.black.opacity(0.024)
-  static let listTint = Color.black.opacity(0.010)
-  static let sidePanel = Color.black.opacity(0.024)
-  static let floatingTint = Color.white.opacity(0.018)
-  static let floatingStroke = Color.white.opacity(0.012)
+  // Semantic washes adapt to appearance instead of disappearing on light glass.
+  private static func wash(dark: CGFloat, light: CGFloat) -> Color {
+    Color(nsColor: NSColor(name: nil) { appearance in
+      let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+      return isDark ? NSColor.white.withAlphaComponent(dark)
+        : NSColor.black.withAlphaComponent(light)
+    })
+  }
+  static let userBubble = wash(dark: 0.065, light: 0.045)
+  static let raisedSurface = wash(dark: 0.055, light: 0.035)
+  static let softFill = wash(dark: 0.030, light: 0.025)
+  static let inputFill = wash(dark: 0.035, light: 0.025)
+  static let composer = wash(dark: 0.025, light: 0.018)
+  static let hairline = wash(dark: 0.065, light: 0.055)
+  static let primaryHairlineFocused = wash(dark: 0.20, light: 0.16)
+  // Keep the reading surface neutral and distinguish navigation by tone,
+  // rather than stacking multiple equally gray translucent layers.
+  static let windowTint = Color.clear
+  static let railTint = Color.clear
+  static let listTint = Color.clear
+  static let sidePanel = Color.clear
+  static let floatingTint = wash(dark: 0.035, light: 0.020)
+  static let floatingStroke = wash(dark: 0.045, light: 0.035)
 }
 
 extension ForgeClientDesign {
