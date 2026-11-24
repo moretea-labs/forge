@@ -348,11 +348,11 @@ export async function callRhWorkRequirementOperation(
       );
 
     const semantic = requirementSemanticView(record.value);
-    const plans = readPlanContractStore({
+    const currentPlans = readPlanContractStore({
       controllerHome: ctx.controllerHome,
       ...(semantic.repoId ? { repoId: semantic.repoId } : { scopeKey: SEMANTIC_SCOPE_KEY }),
-    }).contracts
-      .filter((plan) => plan.requirementId === semantic.requirementId && isCurrentPlanContract(plan))
+    }).contracts.filter((plan) => plan.requirementId === semantic.requirementId && isCurrentPlanContract(plan));
+    const plans = currentPlans
       .map((plan) => {
         const view = planSemanticView(plan);
         return {
@@ -365,6 +365,48 @@ export async function callRhWorkRequirementOperation(
         };
       })
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.planId.localeCompare(right.planId));
+
+    if (args.detail_level === 'detail') {
+      const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
+      if (!planId)
+        return result(
+          buildFacadeResult({
+            status: 'blocked',
+            summary: 'REQUIREMENT_MANIFEST_PLAN_ID_REQUIRED',
+            data: {
+              requirementId: semantic.requirementId,
+              currentPlanIds: plans.map((plan) => plan.planId),
+            },
+          }) as unknown as Record<string, unknown>,
+          true,
+        );
+      const selectedPlan = currentPlans.find((plan) => plan.planId === planId);
+      if (!selectedPlan)
+        return result(
+          buildFacadeResult({
+            status: 'not_found',
+            summary: `Current Plan ${planId} was not found for Requirement ${semantic.requirementId}.`,
+            data: {
+              requirementId: semantic.requirementId,
+              planId,
+              currentPlanIds: plans.map((plan) => plan.planId),
+            },
+          }) as unknown as Record<string, unknown>,
+          true,
+        );
+      return result(
+        buildFacadeResult({
+          summary: `Requirement ${semantic.requirementId} and Plan ${planId} semantic snapshot retrieved atomically.`,
+          data: {
+            requirement: semantic,
+            plan: planSemanticView(selectedPlan),
+            plans,
+            bounded: true,
+            authority: 'semantic_context_only',
+          },
+        }) as unknown as Record<string, unknown>,
+      );
+    }
 
     return result(
       buildFacadeResult({

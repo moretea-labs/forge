@@ -330,6 +330,66 @@ describe('rh_work Requirement bootstrap', () => {
     });
   });
 
+  test('returns an atomic Requirement and exact current Plan detail snapshot when explicitly selected', async () => {
+    const repoRoot = tempRoot('forge-requirement-manifest-detail-repo-');
+    const controllerHome = tempRoot('forge-requirement-manifest-detail-home-');
+    initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Requirement manifest detail fixture' });
+    const ctx = mcpContext(controllerHome, repository);
+    createRequirement(
+      { controllerHome },
+      {
+        requirementId: 'REQ-MANIFEST-DETAIL',
+        repoId: repository.repoId,
+        title: 'Manifest detail requirement',
+        outcomeStatement: 'Return the semantic Requirement and selected current Plan in one read.',
+        acceptanceCriteria: ['Atomic snapshot remains revision fenced.'],
+      },
+    );
+    createPlanSemanticContext(
+      { controllerHome, repoId: repository.repoId },
+      {
+        planId: 'PLAN-MANIFEST-DETAIL',
+        repoId: repository.repoId,
+        requirementId: 'REQ-MANIFEST-DETAIL',
+        scopeKey: 'manifest-detail',
+        sourceBasisRevision: 'manifest-detail-source',
+        goal: 'Manifest detail plan',
+        items: [{ id: 'A', objective: 'Return this detail item.', dependencies: [] }],
+      },
+    );
+    const snapshot = structured(
+      await callRuntimeTool(ctx, 'rh_work', {
+        operation: 'requirement_manifest',
+        requirement_id: 'REQ-MANIFEST-DETAIL',
+        plan_id: 'PLAN-MANIFEST-DETAIL',
+        detail_level: 'detail',
+      }),
+    );
+    expect(snapshot.status).toBe('ok');
+    expect(snapshot.data.requirement).toMatchObject({
+      requirementId: 'REQ-MANIFEST-DETAIL', revision: 1,
+      outcomeStatement: 'Return the semantic Requirement and selected current Plan in one read.',
+      acceptanceCriteria: ['Atomic snapshot remains revision fenced.'],
+    });
+    expect(snapshot.data.plan).toMatchObject({
+      planId: 'PLAN-MANIFEST-DETAIL', requirementId: 'REQ-MANIFEST-DETAIL', revision: 1,
+      goal: 'Manifest detail plan',
+      items: [{ id: 'A', objective: 'Return this detail item.', dependencies: [] }],
+    });
+    const wrongPlan = structured(
+      await callRuntimeTool(ctx, 'rh_work', {
+        operation: 'requirement_manifest', requirement_id: 'REQ-MANIFEST-DETAIL',
+        plan_id: 'PLAN-OTHER', detail_level: 'detail',
+      }),
+    );
+    expect(wrongPlan.status).toBe('not_found');
+    expect(wrongPlan.data).toMatchObject({
+      requirementId: 'REQ-MANIFEST-DETAIL', planId: 'PLAN-OTHER',
+      currentPlanIds: ['PLAN-MANIFEST-DETAIL'],
+    });
+  });
   test('lists canonical Requirements without requiring Work or Plan authority', async () => {
     const repoRoot = tempRoot('forge-requirement-list-repo-');
     const controllerHome = tempRoot('forge-requirement-list-home-');
