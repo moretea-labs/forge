@@ -6,7 +6,6 @@ import type { ControllerIssue, ControllerTask } from "./types";
 import { readIssueRunEvidence } from "./run-evidence";
 import { resolveEffectiveTaskState, resolveIssueTaskStates, resolveTaskDependencies, type EffectiveTaskState } from "./task-status-resolver";
 import { legacyIssueCutoverState } from "./legacy-issue-cutover";
-import { resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 
 export type GovernanceSeverity = "info" | "warning" | "critical";
@@ -191,13 +190,16 @@ function taskQueueItem(issue: ControllerIssue, task: ControllerTask, state: Effe
   return undefined;
 }
 
-export function inspectProjectGovernance(repoRoot: string): ProjectGovernanceSnapshot {
+export function inspectProjectGovernance(
+  repoRoot: string,
+  requirementBoardInput?: ReturnType<typeof buildRequirementBoard>,
+): ProjectGovernanceSnapshot {
   const cutover = legacyIssueCutoverState(repoRoot);
   if (cutover.retired) {
-    const board = buildRequirementBoard({
-      controllerHome: resolveRepoPreferredControllerHome(repoRoot),
+    const board = (requirementBoardInput ?? buildRequirementBoard({
+      controllerHome: cutover.controllerHome,
       repoId: cutover.repoId,
-    }) as {
+    })) as {
       requirements?: unknown[];
       counts?: Record<string, number>;
       activeRequirementCount?: number;

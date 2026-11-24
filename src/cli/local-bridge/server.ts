@@ -18,7 +18,7 @@ import {
 } from '../agent-jobs/job-manager';
 import { cleanupIntegratedWorktree, integrateAgentJob, taskRunDiff } from '../agent-jobs/integration';
 import { listControllerChecks, runControllerCheck } from '../../runtime/execution/process-runtime/check-runner';
-import { inspectIssueReadiness, inspectTaskReadiness, projectBoard } from '../controller/issue-store';
+import { projectBoard } from '../controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../controller/task-ledger';
 import {
   exportControllerWorklog,
@@ -27,7 +27,7 @@ import {
 } from '../../runtime/evidence/controller-worklog';
 import { inspectProjectGovernance } from '../controller/governance';
 import { loadControllerProjectState } from '../controller/project-state';
-import { legacyIssueAuthorityRetired } from '../controller/legacy-issue-cutover';
+import { legacyIssueCutoverState } from '../controller/legacy-issue-cutover';
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../runtime/control-plane/facade/requirement-board';
 import {
   closeIssueWithGitHubPlugin,
@@ -323,26 +323,24 @@ function runtimeControllerSnapshot(repoRoot: string) {
 }
 
 export function buildLocalControllerSnapshot(repoRoot: string) {
-  const retiredLegacyControlPlane = legacyIssueAuthorityRetired(repoRoot);
-  const authoritativeControllerHome = resolveRepoPreferredControllerHome(repoRoot);
-  const runtimeRepository = loadRepositoryRegistry(authoritativeControllerHome).repositories.find(
-    (entry) => entry.canonicalRoot.replace(/\\/g, '/') === repoRoot.replace(/\\/g, '/'),
-  );
+  const cutover = legacyIssueCutoverState(repoRoot);
+  const retiredLegacyControlPlane = cutover.retired;
   const requirementBoard = retiredLegacyControlPlane
-    ? buildRequirementBoard({ controllerHome: authoritativeControllerHome, repoId: runtimeRepository?.repoId })
+    ? buildRequirementBoard({ controllerHome: cutover.controllerHome, repoId: cutover.repoId })
     : undefined;
   const executionDiagnostics = retiredLegacyControlPlane
     ? buildExecutionDiagnostics({
-        controllerHome: authoritativeControllerHome,
-        repoId: runtimeRepository?.repoId,
+        controllerHome: cutover.controllerHome,
+        repoId: cutover.repoId,
         detailLevel: 'detail',
       })
     : undefined;
   const runs = listAgentJobs(repoRoot, 30);
   const editSessions = listEditSessions(repoRoot, 30);
   const localJobs = listLocalBridgeJobs(repoRoot, 30);
-  const board = retiredLegacyControlPlane
-    ? {
+  const legacyBoard = retiredLegacyControlPlane ? undefined : projectBoard(repoRoot);
+  const board = legacyBoard
+    ?? {
         schemaVersion: 1,
         projection: 'deprecated_frozen_legacy_board',
         authority: 'controller-home-sqlite',
@@ -356,9 +354,8 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
         queueableTasks: [],
         archivedIssueCount: 0,
         notice: 'Requirement Board is authoritative. Legacy Issue/Task board data is intentionally omitted.',
-      }
-    : projectBoard(repoRoot);
-  const taskLedger = buildControllerTaskLedgerProjection(repoRoot);
+      };
+  const taskLedger = buildControllerTaskLedgerProjection(repoRoot, legacyBoard, requirementBoard);
   const runtime = runtimeControllerSnapshot(repoRoot);
   const executionJobs = 'executionJobs' in runtime ? (runtime.executionJobs ?? []) : [];
   const controllerHome = resolveControllerHome();
@@ -638,7 +635,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     board,
     taskLedger,
     projectState: loadControllerProjectState(repoRoot),
-    governance: inspectProjectGovernance(repoRoot),
+    governance: inspectProjectGovernance(repoRoot, requirementBoard),
     recovery,
     timeline: listControllerWorklogEvents(repoRoot, { limit: 40 }),
     githubPlugin: getGitHubPluginStatus(repoRoot),

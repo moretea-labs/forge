@@ -281,6 +281,14 @@ describe('runtime command surface', () => {
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).not.toContain('readForgeRuntimeStatus');
     expect(httpObservation).toContain('readForgeRuntimeStatus');
+    const snapshotSource = readFileSync(join(ROOT, 'src/cli/local-bridge/server.ts'), 'utf8');
+    const snapshotBlock = snapshotSource.slice(
+      snapshotSource.indexOf('export function buildLocalControllerSnapshot'),
+      snapshotSource.indexOf('type LocalControllerSnapshot ='),
+    );
+    expect(snapshotBlock.match(/buildRequirementBoard\(/g)?.length).toBe(1);
+    expect(snapshotBlock).toContain('buildControllerTaskLedgerProjection(repoRoot, legacyBoard, requirementBoard)');
+    expect(snapshotBlock).toContain('inspectProjectGovernance(repoRoot, requirementBoard)');
     expect(httpObservation).not.toContain('buildControllerTaskLedgerProjection');
     expect(runtimeReadinessObservation).not.toContain('buildControllerTaskLedgerProjection');
     expect(runtimeReadinessObservation).not.toContain('reconcileReadinessProjectionSource');

@@ -1,7 +1,6 @@
 import { projectBoard } from "./issue-store";
 import { listControllerWorklogEvents } from "../../runtime/evidence/controller-worklog";
 import { legacyIssueCutoverState } from "./legacy-issue-cutover";
-import { resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 
 import {
@@ -329,13 +328,14 @@ function buildSuggestedNextActions(input: {
 export function buildControllerTaskLedgerProjection(
   repoRoot: string,
   boardInput?: ControllerBoardProjection,
+  requirementBoardInput?: ReturnType<typeof buildRequirementBoard>,
 ): TaskLedgerProjection {
   const cutover = legacyIssueCutoverState(repoRoot);
   if (cutover.retired) {
-    const board = buildRequirementBoard({
-      controllerHome: resolveRepoPreferredControllerHome(repoRoot),
+    const board = (requirementBoardInput ?? buildRequirementBoard({
+      controllerHome: cutover.controllerHome,
       repoId: cutover.repoId,
-    }) as { counts?: Record<string, number>; requirementCount?: number };
+    })) as { counts?: Record<string, number>; requirementCount?: number };
     return {
       schemaVersion: TASK_LEDGER_SCHEMA_VERSION,
       generatedAt: cutover.migration?.appliedAt ?? "1970-01-01T00:00:00.000Z",
