@@ -63,8 +63,11 @@ extension Image {
 
   func forgeRailIcon(active: Bool) -> some View {
     self
-      .font(.system(size: ForgeClientDesign.Icon.railPoint,
-                    weight: active ? .semibold : ForgeClientDesign.Icon.weight))
+      .font(
+        .system(
+          size: ForgeClientDesign.Icon.railPoint,
+          weight: active ? .semibold : ForgeClientDesign.Icon.weight)
+      )
       .symbolRenderingMode(.hierarchical)
       .foregroundStyle(active ? ForgePalette.ink : ForgePalette.secondary)
       .frame(height: 18)
@@ -77,8 +80,10 @@ struct ForgeHoverFill: ViewModifier {
   @State private var hovering = false
   func body(content: Content) -> some View {
     content
-      .background(hovering ? ForgePalette.softFill : .clear,
-                  in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+      .background(
+        hovering ? ForgePalette.softFill : .clear,
+        in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+      )
       .onHover { hovering = $0 }
       .animation(.easeOut(duration: 0.12), value: hovering)
   }
@@ -93,10 +98,12 @@ struct ForgeChromeSurface: ViewModifier {
 
   func body(content: Content) -> some View {
     content
-      .background(selected
-                  ? ForgePalette.selection
-                  : (hovering ? ForgePalette.softFill : .clear),
-                  in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+      .background(
+        selected
+          ? ForgePalette.selection
+          : (hovering ? ForgePalette.softFill : .clear),
+        in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+      )
       .onHover { hovering = $0 }
       .animation(.easeOut(duration: 0.12), value: hovering)
   }
@@ -136,8 +143,10 @@ extension View {
 
   /// Rounded outer glass panel used by the left navigation and main workspace.
   /// This is the primary visual separation in the shell; no hard split lines.
-  func forgePanelGlass(cornerRadius: CGFloat = 18,
-                       material: NSVisualEffectView.Material = .underWindowBackground) -> some View {
+  func forgePanelGlass(
+    cornerRadius: CGFloat = 18,
+    material: NSVisualEffectView.Material = .underWindowBackground
+  ) -> some View {
     background {
       ZStack {
         ForgeVisualEffectView(material: material, blendingMode: .behindWindow)
@@ -168,7 +177,9 @@ extension View {
 
   /// Covers the system split divider with the same behind-window glass so column
   /// separation reads as air/gap instead of a black IDE-style rule.
-  func forgeSplitSeamMask(material: NSVisualEffectView.Material = .underWindowBackground) -> some View {
+  func forgeSplitSeamMask(material: NSVisualEffectView.Material = .underWindowBackground)
+    -> some View
+  {
     overlay(alignment: .trailing) {
       ForgeVisualEffectView(material: material, blendingMode: .behindWindow)
         .frame(width: 6)
@@ -230,7 +241,9 @@ struct ForgeTextButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .font(.system(size: 12, weight: .medium))
-      .foregroundStyle(isEnabled ? Color(nsColor: .controlAccentColor) : ForgePalette.secondary.opacity(0.55))
+      .foregroundStyle(
+        isEnabled ? Color(nsColor: .controlAccentColor) : ForgePalette.secondary.opacity(0.55)
+      )
       .padding(.horizontal, 8).padding(.vertical, 4)
       .forgeHoverFill(cornerRadius: 6)
       .opacity(configuration.isPressed ? 0.6 : 1)
