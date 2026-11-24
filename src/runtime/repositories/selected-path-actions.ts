@@ -232,7 +232,7 @@ function writePatchTransferArtifact(
     actor: 'forge',
     source: `patch-transfer:${reason}`,
     notes: [
-      'Integration must use selected-path review gates.',
+      'Integration must revalidate the exact selected paths and current conflict state before applying this patch.',
       'Do not overwrite unrelated dirty files; rerun conflict detection before applying this patch.',
     ],
   });
