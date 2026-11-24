@@ -2130,46 +2130,120 @@ async function ensureLaunchdServiceStarted(
   service: LaunchdService,
   runCommand: CommandRunner = command,
 ): Promise<{ ok: boolean; detail: string }> {
-  const printed = await runCommand('launchctl', ['print', service.target], 5_000);
-  if (!printed.ok) {
+  const proveRegistered = async (): Promise<CommandResult> =>
+    runCommand('launchctl', ['print', service.target], 5_000);
+
+  const registerExactService = async (
+    context: 'initial' | 'kickstart-repair',
+  ): Promise<{ ok: boolean; detail: string }> => {
     if (!existsSync(service.plistPath)) return { ok: false, detail: `launchd plist is missing: ${service.plistPath}` };
     const bootstrapped = await runCommand('launchctl', ['bootstrap', service.domain, service.plistPath], 15_000);
-    if (
-      !bootstrapped.ok &&
-      !/already|in progress|Input\/output error/i.test(`${bootstrapped.stderr}\n${bootstrapped.stdout}`)
-    ) {
+    const bootstrapDetail = `${bootstrapped.stderr}\n${bootstrapped.stdout}`;
+    const toleratedBootstrapFailure =
+      !bootstrapped.ok && /already|in progress|Input\/output error/i.test(bootstrapDetail);
+    if (!bootstrapped.ok && !toleratedBootstrapFailure) {
       return {
         ok: false,
         detail: `launchd bootstrap failed: ${bootstrapped.stderr || bootstrapped.stdout || bootstrapped.status}`,
       };
     }
-    const loaded = await runCommand('launchctl', ['print', service.target], 5_000);
+
+    let loaded = await proveRegistered();
+    if (!loaded.ok && toleratedBootstrapFailure) {
+      // macOS occasionally returns bootstrap EIO without retaining the user job.
+      // The legacy load path is bounded to this exact plist, and acceptance still
+      // requires launchctl print of the exact gui/<uid>/<label> target.
+      const loadedLegacy = await runCommand('launchctl', ['load', service.plistPath], 15_000);
+      const legacyDetail = `${loadedLegacy.stderr}\n${loadedLegacy.stdout}`;
+      if (!loadedLegacy.ok && !/already|in progress|service is already loaded/i.test(legacyDetail)) {
+        return {
+          ok: false,
+          detail:
+            `launchd ${context} bootstrap did not retain service and legacy load failed: ` +
+            (loadedLegacy.stderr || loadedLegacy.stdout || loadedLegacy.status),
+        };
+      }
+      loaded = await proveRegistered();
+    }
     if (!loaded.ok) {
       return {
         ok: false,
-        detail: `launchd bootstrap did not load service: ${loaded.stderr || loaded.stdout || loaded.status}`,
+        detail: `launchd ${context} registration did not load exact service: ${loaded.stderr || loaded.stdout || loaded.status}`,
       };
     }
     await runCommand('launchctl', ['enable', service.target], 5_000);
+    return { ok: true, detail: service.target };
+  };
+
+  const printed = await proveRegistered();
+  if (!printed.ok) {
+    const registered = await registerExactService('initial');
+    if (!registered.ok) return registered;
   }
-  const started = await runCommand('launchctl', ['kickstart', '-k', service.target], 15_000);
-  const kickstartDetail = started.stderr + '\n' + started.stdout;
-  const serviceNotFound = /could not find service|service could not be found/i.test(kickstartDetail);
-  const alreadyInProgress = !serviceNotFound && (started.status === 37 || /already|in progress/i.test(kickstartDetail));
+
+  const kickstart = async (): Promise<CommandResult> =>
+    runCommand('launchctl', ['kickstart', '-k', service.target], 15_000);
+  let started = await kickstart();
+  let kickstartDetail = started.stderr + '\n' + started.stdout;
+  let serviceNotFound = /could not find service|service could not be found/i.test(kickstartDetail);
+  let alreadyInProgress = !serviceNotFound && (started.status === 37 || /already|in progress/i.test(kickstartDetail));
+
   if (!started.ok && serviceNotFound) {
-    // A kickstart lookup race is benign only when this exact target remains registered.
-    const registered = await runCommand('launchctl', ['print', service.target], 5_000);
+    let registered = await proveRegistered();
+    if (registered.ok) {
+      // Preserve the established benign lookup-race semantics: a missing-service
+      // kickstart is acceptable only while the exact gui/<uid>/<label> target is
+      // still registered.
+      return { ok: true, detail: service.target };
+    }
+
+    // A bounded restart can race with launchd dropping the just-bootstrapped
+    // user job. Re-register only the exact verified plist/label, then retry
+    // kickstart once. This keeps the identity fence strict while recovering
+    // the observed macOS launchd registration loss.
+    const repaired = await registerExactService('kickstart-repair');
+    if (!repaired.ok) {
+      return {
+        ok: false,
+        detail:
+          'launchd kickstart failed: ' +
+          (started.stderr || started.stdout || started.status) +
+          '; exact service registration re-probe failed; bounded repair failed: ' +
+          repaired.detail,
+      };
+    }
+    registered = await proveRegistered();
     if (!registered.ok) {
       return {
         ok: false,
         detail:
           'launchd kickstart failed: ' +
           (started.stderr || started.stdout || started.status) +
-          '; exact service registration re-probe failed: ' +
+          '; exact service registration re-probe failed after repair: ' +
           (registered.stderr || registered.stdout || registered.status),
       };
     }
-  } else if (!started.ok && !alreadyInProgress) {
+
+    started = await kickstart();
+    kickstartDetail = started.stderr + '\n' + started.stdout;
+    serviceNotFound = /could not find service|service could not be found/i.test(kickstartDetail);
+    alreadyInProgress =
+      !serviceNotFound && (started.status === 37 || /already|in progress/i.test(kickstartDetail));
+    if (!started.ok && serviceNotFound) {
+      const registeredAfterRetry = await proveRegistered();
+      if (registeredAfterRetry.ok) return { ok: true, detail: service.target };
+      return {
+        ok: false,
+        detail:
+          'launchd kickstart retry failed: ' +
+          (started.stderr || started.stdout || started.status) +
+          '; exact service registration re-probe failed: ' +
+          (registeredAfterRetry.stderr || registeredAfterRetry.stdout || registeredAfterRetry.status),
+      };
+    }
+  }
+
+  if (!started.ok && !alreadyInProgress) {
     return { ok: false, detail: 'launchd kickstart failed: ' + (started.stderr || started.stdout || started.status) };
   }
   return { ok: true, detail: service.target };

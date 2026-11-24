@@ -6130,6 +6130,137 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('repairs a launchd service that disappears between exact registration proof and kickstart', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      const config = createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      let launchdLoaded = true;
+      let bootstraps = 0;
+      let kickstarts = 0;
+      const commands: string[][] = [];
+      const result = await restartPrimaryRuntime(config, {
+        forceHealthyRestart: true,
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          commands.push(args);
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print')
+            return launchdLoaded
+              ? { ok: true, status: 0, stdout: 'registered', stderr: '' }
+              : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
+          if (args[0] === 'bootstrap') {
+            bootstraps += 1;
+            launchdLoaded = true;
+          }
+          if (args[0] === 'kickstart') {
+            kickstarts += 1;
+            if (kickstarts === 1) {
+              launchdLoaded = false;
+              return {
+                ok: false,
+                status: 3,
+                stdout: '',
+                stderr: 'Could not find service "' + args[2] + '" in domain for user gui: 501',
+              };
+            }
+          }
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => launchdLoaded,
+        repairPrimaryConnectorBinding: async () => ({
+          ok: true,
+          attempted: false,
+          noOp: true,
+          detail: 'connector already bound',
+        }),
+        verifyLocal: async () => healthyVerify(),
+        observeLocal: async () => healthyVerify(),
+        now: (() => {
+          let value = 0;
+          return () => (value += 250);
+        })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result).toMatchObject({ ok: true, attempted: true });
+      expect(bootstraps).toBe(2);
+      expect(kickstarts).toBe(2);
+      expect(commands.filter((args) => args[0] === 'print').length).toBeGreaterThanOrEqual(4);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('falls back to legacy launchctl load only when bootstrap EIO did not retain the exact service', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      const config = createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'launchd', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      let launchdLoaded = true;
+      let loads = 0;
+      let kickstarts = 0;
+      const commands: string[][] = [];
+      const result = await restartPrimaryRuntime(config, {
+        forceHealthyRestart: true,
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (_command, args) => {
+          commands.push(args);
+          if (args[0] === 'bootout') launchdLoaded = false;
+          if (args[0] === 'print')
+            return launchdLoaded
+              ? { ok: true, status: 0, stdout: 'registered', stderr: '' }
+              : { ok: false, status: 3, stdout: '', stderr: 'service not found' };
+          if (args[0] === 'bootstrap')
+            return { ok: false, status: 5, stdout: '', stderr: 'Input/output error' };
+          if (args[0] === 'load') {
+            loads += 1;
+            launchdLoaded = true;
+          }
+          if (args[0] === 'kickstart') kickstarts += 1;
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        runtimeRunning: () => launchdLoaded,
+        repairPrimaryConnectorBinding: async () => ({
+          ok: true,
+          attempted: false,
+          noOp: true,
+          detail: 'connector already bound',
+        }),
+        verifyLocal: async () => healthyVerify(),
+        observeLocal: async () => healthyVerify(),
+        now: (() => {
+          let value = 0;
+          return () => (value += 250);
+        })(),
+        sleep: async () => undefined,
+      });
+
+      expect(result).toMatchObject({ ok: true, attempted: true });
+      expect(loads).toBe(1);
+      expect(kickstarts).toBe(1);
+      expect(commands).toContainEqual(['load', paths.installedPlistPath]);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('explicit healthy Runtime restart recycles the service while default recovery semantics remain no-op', async () => {
     const home = controllerHome();
     const previousHome = process.env.HOME;
@@ -8180,12 +8311,12 @@ describe('standalone recovery on canonical Runtime', () => {
       });
 
       expect(result.ok).toBe(false);
-      expect(result.detail).toContain('bootstrap did not load service');
+      expect(result.detail).toContain('registration did not load exact service');
       expect(result.rollback).toMatchObject({ ok: true });
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-a');
       expect(bootstraps).toBe(2);
       expect(kickstarts).toBe(1);
-      expect(printCalls).toBe(6);
+      expect(printCalls).toBe(7);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
