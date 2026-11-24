@@ -93,7 +93,6 @@ import {
   inspectCompletionBacklog,
 } from '../controller/completion-backlog';
 import { finishEditSession, finishTaskRun } from '../controller/completion-orchestrator';
-import { prepareCodexContinuation } from '../controller/codex-continuation';
 import { applyStuckStateMigration, inspectStuckControllerStates } from '../controller/stuck-state-migration';
 import { getToolPolicy } from '../../runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
@@ -2194,20 +2193,6 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
       });
       localSnapshotCache.delete(repoRoot);
       response.json(result);
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post('/api/controller/codex-continuation', (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      response.json(
-        prepareCodexContinuation(repoRoot, {
-          objective: queryString(request.body?.objective),
-          maxItems: typeof request.body?.maxItems === 'number' ? request.body.maxItems : undefined,
-          mode: request.body?.launch === true ? 'launch' : 'prepare',
-        }),
-      );
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }

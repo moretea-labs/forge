@@ -1779,6 +1779,13 @@ describe("Local Execution Bridge", () => {
     const trackedWork = await fetch(new URL("/api/console/requirements", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(trackedWork.requirements)).toBe(true); expect(typeof trackedWork.requirementCount).toBe("number");
     expect((await fetch(new URL("/api/console/work", handle.url), { headers: auth })).status).toBe(404);
     expect((await fetch(new URL("/api/console/work-portfolio", handle.url), { headers: auth })).status).toBe(404);
+    const retiredContinuation = await fetch(new URL("/api/controller/codex-continuation", handle.url), {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ launch: true }),
+    });
+    expect(retiredContinuation.status).toBe(404);
+    expect(existsSync(join(root, ".ai", "harness", "continuations"))).toBe(false);
     const automations = await fetch(new URL("/api/console/automations", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(automations.automations)).toBe(true); expect(typeof automations.summary.total).toBe("number");
 
     const plugins = await fetch(new URL("/api/console/plugins", handle.url), {
