@@ -3992,9 +3992,15 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
       checkedAt: now(),
       ready: false,
       probed: true,
-      errors: ['Browser plugin requires Playwright for the configured browser mode. Run bun install or configure attach_preferred native attach.'],
+      errors: [dependencyReady
+        ? 'Browser has Playwright but no authorized native, CDP or managed provider for the configured mode.'
+        : 'Browser plugin requires Playwright for the configured browser mode. Run bun install or configure attach_preferred native attach.'],
       warnings,
-      details: { ...baseDetails, install: 'bun install', userFacingStatus: 'not ready' },
+      details: {
+        ...baseDetails,
+        ...(dependencyReady ? { providerUnavailable: true } : { install: 'bun install' }),
+        userFacingStatus: 'not ready',
+      },
     };
   }
   if (configErrors.length > 0) {
