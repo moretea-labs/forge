@@ -10,11 +10,28 @@ import { installExternalPluginRegistration, listExternalPluginRegistrations, typ
 import { createDesktopOperatorRegistrationInput } from '../../runtime/plugins/desktop-operator-registration';
 import { getControllerPluginManifest, syncControllerPluginRegistry } from '../../runtime/plugins/store';
 import { assertExternalPluginRepositoryTrusted, assertFirstPartyPluginRepositoryTrusted, readControllerPluginTrustPolicy, trustExternalPluginRepository, untrustExternalPluginRepository } from '../../runtime/plugins/catalog-trust';
+import { loadRuntimeReleaseManifest } from '../../runtime/root/release-manifest';
 
 export interface RegistryEntry { id:string; name:string; version:string; description:string; repository:string; ref:string; installer:string; providerVersion?:string; protocolVersion?:string; platforms:NodeJS.Platform[]; semanticCapabilities?:string[]; }
 interface Registry { schemaVersion:1; plugins:RegistryEntry[]; }
 interface CliOptions { json?:boolean; controllerHome?:string; refresh?:boolean; catalog?:string; }
-const packageRoot=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
+
+export function resolveOfficialPluginPackageRoot(argv:readonly string[]=process.argv,moduleUrl=import.meta.url):string{
+  const manifestIndex=argv.indexOf('--release-manifest');
+  if(manifestIndex>=0){
+    const manifestValue=argv[manifestIndex+1]?.trim();
+    if(!manifestValue)throw new Error('PLUGIN_RUNTIME_RELEASE_MANIFEST_REQUIRED');
+    const controllerHomeIndex=argv.indexOf('--controller-home');
+    const controllerHomeValue=controllerHomeIndex>=0?argv[controllerHomeIndex+1]?.trim():undefined;
+    const manifestPath=resolve(manifestValue);
+    const manifest=loadRuntimeReleaseManifest(manifestPath,resolveControllerHome(controllerHomeValue));
+    if(manifest.packageRoot!=='package'||!manifest.packageArtifactIdentity)throw new Error('PLUGIN_RUNTIME_RELEASE_PACKAGE_UNAVAILABLE');
+    return resolve(dirname(manifestPath),manifest.packageRoot);
+  }
+  return resolve(dirname(fileURLToPath(moduleUrl)),'../../..');
+}
+
+const packageRoot=resolveOfficialPluginPackageRoot();
 const registryPath=join(packageRoot,'assets','plugin-registry.v1.json');
 const trustPolicyPath=join(packageRoot,'assets','plugin-trust-policy.v1.json');
 
