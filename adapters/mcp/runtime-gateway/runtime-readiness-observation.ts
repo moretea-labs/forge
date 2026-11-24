@@ -1,14 +1,12 @@
 import type { MultiRepositoryMcpToolContext } from "../multi-repository";
-import { listExecutionJobs } from "../../../src/runtime/execution/jobs/store";
 import { readForgeRuntimeStatus } from "../../../src/runtime/control-plane/runtime-status-client";
 import { readSchedulerHealthSnapshot } from "../../../src/runtime/control-plane/global-scheduler/scheduler";
 import { evaluateActiveRuntimeSourceDrift, type RuntimeSourceIdentity } from "../../../src/runtime/control-plane/runtime-generation";
 import { projectionObservation, readRepositoryProjectionSnapshot } from "../../../src/runtime/projections/materialized-view";
-import { buildRuntimeOperationalView, classifyRuntimeReadinessSemantics, evaluateRuntimeHealth, RUNTIME_HEALTH_THRESHOLDS, type RuntimeOperationalView, type GradedObservation } from "../../../src/runtime/health";
+import { classifyRuntimeReadinessSemantics, evaluateRuntimeHealth, RUNTIME_HEALTH_THRESHOLDS, type GradedObservation } from "../../../src/runtime/health";
 import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION } from "../../../src/runtime/shared/runtime-config";
 import { inspectRepositoryRuntimeStorage } from "../../../src/runtime/repositories/runtime-storage";
 import { resolveLocalBridgeSurface } from "../../../src/runtime/shared/local-bridge-surface";
-import { listHandoffItems } from "../../../src/runtime/control-plane/facade";
 
 export function ageMs(value: string | undefined): number | undefined {
   if (!value) return undefined;
@@ -62,7 +60,6 @@ export async function controllerReadinessEvidence(
   repository = ctx.explicitRepository,
   signals: ControllerReadinessSignals = {},
   precomputed: ControllerReadinessPrecomputed = {},
-  options: { includeOperationalView?: boolean } = {},
 ) {
   const daemon = readForgeRuntimeStatus(ctx.controllerHome);
   const scheduler = readSchedulerHealthSnapshot(ctx.controllerHome);
@@ -141,15 +138,6 @@ export async function controllerReadinessEvidence(
       : { readable: true, ready: true },
     ...signals,
   });
-  const operationalView: RuntimeOperationalView | undefined = options.includeOperationalView
-    ? buildRuntimeOperationalView({
-        health: runtimeHealth,
-        handoffs: repository
-          ? listHandoffItems({ controllerHome: ctx.controllerHome, repoId: repository.repoId, status: 'all', limit: 100 })
-          : [],
-        jobs: repository ? listExecutionJobs(ctx.controllerHome, repository.repoId, 100) : [],
-      })
-    : undefined;
   const reasons: Array<{ code: string; message: string }> = runtimeHealth.activeBlockers.map((item) => ({
     code: item.code === 'SCHEDULER_NOT_PROGRESSING'
       ? 'DISPATCH_LOOP_STALLED'
@@ -174,7 +162,6 @@ export async function controllerReadinessEvidence(
     reasons,
     warnings: runtimeHealth.warnings.map((item) => ({ code: item.code, message: item.message })),
     health: runtimeHealth,
-    ...(operationalView ? { operationalView } : {}),
     daemon,
     durableScheduler: {
       status: runtimeHealth.components.scheduler.ready ? 'ready' : daemon.status === 'ready' ? 'degraded' : 'not_ready',

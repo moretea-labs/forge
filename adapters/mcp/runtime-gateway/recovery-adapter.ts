@@ -9,6 +9,8 @@ import {
 import { cachedGitIdentity } from '../../../src/runtime/repositories/inspector';
 import { inferLocalControllerProcess } from '../../../src/runtime/diagnostics/performance';
 import { listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
+import { buildRuntimeOperationalView } from '../../../src/runtime/health';
+import { listHandoffItems } from '../../../src/runtime/control-plane/facade';
 import { listLocalBridgeJobSnapshots } from '../../../src/runtime/local-bridge/read-model';
 import { listAssistantPluginManifests } from '../../../src/runtime/plugins/store';
 import { readRepositoryProjectionSnapshot } from '../../../src/runtime/projections/materialized-view';
@@ -40,7 +42,7 @@ async function capabilityRecoveryInput(
   repository: ReturnType<typeof selected> | undefined,
   args: Record<string, unknown>,
 ) {
-  const readiness = await controllerReadinessEvidence(ctx, repository, {}, {}, { includeOperationalView: true });
+  const readiness = await controllerReadinessEvidence(ctx, repository);
   const runtimeSnapshot = repository
     ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId)
     : undefined;
@@ -99,6 +101,13 @@ async function capabilityRecoveryInput(
     : [];
   const localJobs = repository ? listLocalBridgeJobSnapshots(repository.canonicalRoot, 30) : [];
   const executionJobs = repository ? listExecutionJobs(ctx.controllerHome, repository.repoId, 30) : [];
+  const runtimeOperationalView = buildRuntimeOperationalView({
+    health: readiness.health,
+    handoffs: repository
+      ? listHandoffItems({ controllerHome: ctx.controllerHome, repoId: repository.repoId, status: 'all', limit: 100 })
+      : [],
+    jobs: executionJobs,
+  });
   return {
     generatedAt: new Date().toISOString(),
     daemonStatus: readiness.daemon.status,
@@ -112,7 +121,7 @@ async function capabilityRecoveryInput(
     localBridgeRunning: localBridge?.running ?? inferredLocalBridge?.running,
     localBridgeError: localBridge?.error,
     runtimeHealth: readiness.health,
-    runtimeOperationalView: readiness.operationalView,
+    runtimeOperationalView,
     connectorHealthy: undefined,
     ...(runtimeSnapshot
       ? { runtimeProjectionStale: runtimeSnapshot.stale, runtimeProjectionPersisted: runtimeSnapshot.persisted }
