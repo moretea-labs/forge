@@ -156,11 +156,12 @@ struct AgentPane: View {
             HStack(spacing:5) {
                 Circle().fill(agentWorkspaceStatusColor).frame(width:5,height:5)
                 Text(model.agentWorkspaceStatusLabel)
-                    .font(.system(size:10.5))
-                    .foregroundStyle(ForgePalette.secondary)
+                    .font(.system(size:10))
+                    .foregroundStyle(ForgePalette.secondary.opacity(0.86))
                     .lineLimit(1)
             }
-            .contentShape(Rectangle())
+            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+            .forgeHoverFill(cornerRadius:8)
         }
         .buttonStyle(.plain)
         .help("\(agentScopeLabel.isEmpty ? model.agentWorkspaceStatusDetail : agentScopeLabel)\n\(model.agentWorkspaceStatusDetail)\n点击刷新")
@@ -248,10 +249,10 @@ struct AgentPane: View {
             }
             .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
             .frame(width:44,height:ForgeClientDesign.Shell.destinationRowHeight)
-            .background(selected ? ForgePalette.selectionStrong : .clear,
-                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
-            .contentShape(RoundedRectangle(cornerRadius:11,style:.continuous))
-            .forgeHoverFill(cornerRadius:11)
+            .background(selected ? ForgePalette.selection : .clear,
+                        in:RoundedRectangle(cornerRadius:10,style:.continuous))
+            .contentShape(RoundedRectangle(cornerRadius:10,style:.continuous))
+            .forgeHoverFill(cornerRadius:10)
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -409,8 +410,8 @@ struct AgentPane: View {
                                             }
                                         }
                                         Text(message.text)
-                                            .font(.system(size:13))
-                                            .lineSpacing(4)
+                                            .font(.system(size:12.75))
+                                            .lineSpacing(3)
                                             .lineLimit(isLongInstruction && !instructionExpanded ? 4 : nil)
                                             .textSelection(.enabled)
                                         if let contextPaths = message.contextPaths, !contextPaths.isEmpty {
@@ -472,9 +473,9 @@ struct AgentPane: View {
                                         }
                                     }
                                     .frame(maxWidth:isLongInstruction ? 740 : 880,alignment:.leading)
-                                    .padding(.horizontal,15).padding(.vertical,10)
+                                    .padding(.horizontal,14).padding(.vertical,9)
                                     .background(ForgePalette.userBubble,
-                                                in:RoundedRectangle(cornerRadius:16,style:.continuous))
+                                                in:RoundedRectangle(cornerRadius:14,style:.continuous))
                                     .contextMenu {
                                         Button { copyAgentText(message.text) } label: {
                                             Label("复制",systemImage:"doc.on.doc")
@@ -512,7 +513,7 @@ struct AgentPane: View {
                                                 composerFocused = true
                                             }
                                         )
-                                        HStack(spacing:10) {
+                                        HStack(spacing:8) {
                                             if message.activityEvents?.isEmpty == false {
                                                 Button {
                                                     if expandedMessageActivities.contains(message.id) {
@@ -544,13 +545,15 @@ struct AgentPane: View {
                                             Button {
                                                 copyAgentText(message.text)
                                             } label: {
-                                                Label("复制",systemImage:"doc.on.doc")
+                                                Image(systemName:"doc.on.doc")
+                                                    .forgeChromeIcon()
                                             }
                                             .buttonStyle(.plain)
                                             .help("复制完整回复")
+                                            .accessibilityLabel("复制完整回复")
                                         }
-                                        .font(.system(size:10.5,weight:.medium))
-                                        .foregroundStyle(ForgePalette.secondary)
+                                        .font(.system(size:10,weight:.medium))
+                                        .foregroundStyle(ForgePalette.secondary.opacity(0.78))
                                         if message.incomplete == true,
                                            message.id == model.thread?.messages.last?.id {
                                             let requiresReview = NativeWorkspace.incompleteTurnRequiresReview(message)
@@ -821,6 +824,7 @@ struct AgentPane: View {
                         .focused($composerFocused)
                         .font(.system(size:12.75))
                         .foregroundStyle(ForgePalette.ink)
+                        .tint(ForgePalette.ink)
                         .scrollContentBackground(.hidden)
                         .frame(height:composerInputHeight)
                         .padding(.horizontal,12).padding(.top,8)

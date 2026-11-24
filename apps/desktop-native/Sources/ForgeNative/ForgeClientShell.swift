@@ -1194,30 +1194,32 @@ struct ForgeWorkspaceView: View {
         } label: {
             HStack(spacing:5) {
                 Image(systemName:"folder")
-                    .font(ForgeClientDesign.Icon.font)
+                    .font(.system(size:11.5,weight:.medium))
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(ForgePalette.secondary)
+                    .foregroundStyle(ForgePalette.secondary.opacity(0.82))
                 Text(model.project?.label ?? "选择代码工作区")
-                    .font(.system(size:12,weight:.medium))
+                    .font(.system(size:11.75,weight:.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .layoutPriority(1)
                 if let branch = model.checkoutBranch, model.project != nil {
                     Text(branch)
-                        .font(.system(size:11))
-                        .foregroundStyle(ForgePalette.secondary)
+                        .font(.system(size:10.25,weight:.regular,design:.monospaced))
+                        .foregroundStyle(ForgePalette.secondary.opacity(0.66))
                         .lineLimit(1)
                         .layoutPriority(0)
                 }
                 Spacer(minLength:4)
-                Image(systemName:"chevron.up.chevron.down")
-                    .font(.system(size:9,weight:.semibold))
-                    .foregroundStyle(.tertiary)
+                Image(systemName:"chevron.down")
+                    .font(.system(size:7.5,weight:.semibold))
+                    .foregroundStyle(ForgePalette.secondary.opacity(0.48))
             }
-            .padding(.horizontal,5)
-            .frame(height:26)
-            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
-            .forgeHoverFill(cornerRadius:8)
+            .padding(.horizontal,9)
+            .frame(height:30)
+            .background(ForgePalette.inputFill,
+                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
+            .forgeFloatingGlass(cornerRadius:11)
+            .contentShape(RoundedRectangle(cornerRadius:11,style:.continuous))
         }
         .buttonStyle(.plain)
         .help(model.project == nil
