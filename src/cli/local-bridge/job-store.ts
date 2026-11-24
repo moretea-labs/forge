@@ -13,8 +13,6 @@ import {
   normalizeAgentTimeoutMs,
 } from '../../runtime/shared/runtime-config';
 import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
-import type { ControllerTask } from '../controller/types';
-import { taskExecutionPolicy } from '../controller/execution-policy';
 import { tryAppendControllerWorklogEvent } from '../../runtime/evidence/controller-worklog';
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { findExecutionJob } from '../../runtime/execution/jobs/store';
@@ -257,10 +255,6 @@ function resolvedJobTimeout(repoRoot: string, value: unknown): number {
     defaultMs: policy.defaultTimeoutMs,
     maxMs: policy.maxTimeoutMs,
   });
-}
-
-function taskApproval(task: ControllerTask): LocalBridgeApproval {
-  return taskExecutionPolicy(task).approval;
 }
 
 function cleanupEphemeralJob(repoRoot: string, job: LocalBridgeJob): void {
