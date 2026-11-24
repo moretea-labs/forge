@@ -47,55 +47,28 @@ enum AgentConversationToolbarContract {
 }
 
 /// The split is available only when both real pane minima and native divider
-/// clearance fit. Width changes affect presentation, never selected-pane state.
+/// Inspector presentation is intentionally independent of conversation layout.
+/// Opening the Inspector overlays it on the trailing edge; only explicit maximize
+/// replaces the conversation.
 enum AgentWorkSurfaceLayout {
     static let conversationMinimumWidth: CGFloat = 420
     static let workSurfaceMinimumWidth: CGFloat = 360
-    static let splitDividerAndSpacingAllowance: CGFloat = 60
-    static let presentationHysteresis: CGFloat = 24
-    static var minimumSideBySideWidth: CGFloat {
-        conversationMinimumWidth + workSurfaceMinimumWidth + splitDividerAndSpacingAllowance
-    }
-    static var enterSideBySideWidth: CGFloat { minimumSideBySideWidth + presentationHysteresis }
-    static var exitSideBySideWidth: CGFloat { minimumSideBySideWidth - presentationHysteresis }
+    static let workSurfaceMaximumWidth: CGFloat = 460
 
     enum Presentation: Equatable {
         case conversationOnly
-        case sideBySide
+        case overlay
         case replacement
     }
 
-    static func supportsSideBySide(availableWidth: CGFloat) -> Bool {
-        availableWidth >= minimumSideBySideWidth
+    static func presentation(isVisible: Bool, isMaximized: Bool) -> Presentation {
+        guard isVisible else { return .conversationOnly }
+        return isMaximized ? .replacement : .overlay
     }
 
-    static func presentation(
-        availableWidth: CGFloat,
-        isVisible: Bool,
-        isMaximized: Bool
-    ) -> Presentation {
-        guard isVisible else { return .conversationOnly }
-        guard !isMaximized, supportsSideBySide(availableWidth: availableWidth) else {
-            return .replacement
-        }
-        return .sideBySide
-    }
-
-    /// Avoid mode flapping while a window is being resized near the split threshold.
-    static func stabilizedPresentation(
-        availableWidth: CGFloat,
-        isVisible: Bool,
-        isMaximized: Bool,
-        current: Presentation
-    ) -> Presentation {
-        guard isVisible else { return .conversationOnly }
-        guard !isMaximized else { return .replacement }
-        switch current {
-        case .sideBySide:
-            return availableWidth >= exitSideBySideWidth ? .sideBySide : .replacement
-        case .conversationOnly, .replacement:
-            return availableWidth >= enterSideBySideWidth ? .sideBySide : .replacement
-        }
+    static func overlayWidth(availableWidth: CGFloat) -> CGFloat {
+        min(workSurfaceMaximumWidth,
+            max(workSurfaceMinimumWidth, availableWidth * 0.42))
     }
 }
 
@@ -132,7 +105,6 @@ struct AgentPane: View {
     @State private var conversationScrollMetrics: AgentScrollMetrics?
     @State private var conversationViewportHeight: CGFloat = 0
     @State private var followsLatestConversation = true
-    @State private var stableWorkSurfacePresentation: AgentWorkSurfaceLayout.Presentation = .conversationOnly
     @StateObject private var voiceDictation = AgentVoiceDictation()
     @State private var voiceBaseDraft = ""
     @State private var restoreComposerFocusAfterWorkSurface = false
@@ -182,7 +154,7 @@ struct AgentPane: View {
                 .accessibilityIdentifier("agent.conversation.title")
             Spacer(minLength:8)
             agentWorkspaceStatusChip
-                .fixedSize(horizontal:true,vertical:false)
+                .frame(width:ForgeClientDesign.Shell.workspaceStatusSlotWidth,alignment:.trailing)
             inspectorToggle
         }
         .padding(.horizontal,16)
@@ -214,6 +186,7 @@ struct AgentPane: View {
                     .font(.system(size:10))
                     .foregroundStyle(ForgePalette.secondary.opacity(0.86))
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .padding(.horizontal,6)
             .frame(height:24)
@@ -306,16 +279,12 @@ struct AgentPane: View {
         .accessibilityIdentifier("agent.inspector.tabs")
     }
 
-    private var composerInputHeight: CGFloat {
-        let lines = model.draft.split(separator:"\n",omittingEmptySubsequences:false).count
-        let wrapped = max(lines, (model.draft.count + 69) / 70)
-        return min(112,max(38,CGFloat(wrapped) * 19 + 19))
-    }
-
     private func agentContent(availableWidth:CGFloat) -> some View {
         let splitWidth = max(0, availableWidth - 16)
-        let workSurfacePresentation = stableWorkSurfacePresentation
-        return HSplitView {
+        let workSurfacePresentation = AgentWorkSurfaceLayout.presentation(
+            isVisible:workSurfaceVisible,
+            isMaximized:workSurfaceMaximized)
+        return ZStack(alignment:.trailing) {
                 ZStack {
                     // Keep the composer and transcript mounted during review.
                     // The compact workspace header owns context and the single inspector toggle.
@@ -838,7 +807,7 @@ struct AgentPane: View {
                         .foregroundStyle(ForgePalette.ink)
                         .tint(ForgePalette.ink)
                         .scrollContentBackground(.hidden)
-                        .frame(height:composerInputHeight)
+                        .frame(height:ForgeClientDesign.Shell.composerTextHeight)
                         .padding(.horizontal,12).padding(.top,8)
                         .disabled(voiceDictation.isRecording || voiceDictation.isStarting || model.zenRefinementActive)
                         .accessibilityLabel("Agent 消息")
@@ -1075,38 +1044,25 @@ struct AgentPane: View {
             }
             .frame(minWidth:AgentWorkSurfaceLayout.conversationMinimumWidth)
             .frame(maxWidth:.infinity,maxHeight:.infinity)
-            .padding(.trailing,workSurfacePresentation == .sideBySide ? 6 : 0)
 
-            if workSurfacePresentation == .sideBySide {
+            if workSurfacePresentation == .overlay {
                 workSurfaceContent()
-                    .frame(minWidth:AgentWorkSurfaceLayout.workSurfaceMinimumWidth,
-                           idealWidth:max(390,splitWidth * 0.43),
-                           maxWidth:max(480,splitWidth * 0.60))
+                    .frame(width:AgentWorkSurfaceLayout.overlayWidth(availableWidth:splitWidth))
+                    .frame(maxHeight:.infinity)
                     .forgeFloatingGlass(cornerRadius:18)
-                    .padding(.leading,6)
+                    .transition(reduceMotion
+                                ? .identity
+                                : .move(edge:.trailing).combined(with:.opacity))
+                    .zIndex(2)
             }
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .padding(8)
         .background(ForgePalette.canvas)
-        .onAppear {
-            stableWorkSurfacePresentation = AgentWorkSurfaceLayout.stabilizedPresentation(
-                availableWidth:splitWidth,
-                isVisible:workSurfaceVisible,
-                isMaximized:workSurfaceMaximized,
-                current:stableWorkSurfacePresentation)
-        }
+        .animation(reduceMotion ? nil : .easeOut(duration:0.16),
+                   value:workSurfacePresentation)
         .onChange(of:workSurfaceVisible) { visible in
-            let nextPresentation = AgentWorkSurfaceLayout.stabilizedPresentation(
-                availableWidth:splitWidth,
-                isVisible:visible,
-                isMaximized:workSurfaceMaximized,
-                current:stableWorkSurfacePresentation)
-            stableWorkSurfacePresentation = nextPresentation
-            if visible && nextPresentation == .replacement {
-                restoreComposerFocusAfterWorkSurface = composerFocused
-                composerFocused = false
-            } else if !visible && restoreComposerFocusAfterWorkSurface {
+            if !visible && restoreComposerFocusAfterWorkSurface {
                 restoreComposerFocusAfterWorkSurface = false
                 if !model.busy && !model.zenRefinementActive && !voiceDictation.blocksSend {
                     composerFocused = true
@@ -1114,33 +1070,8 @@ struct AgentPane: View {
             }
         }
         .onChange(of:workSurfaceMaximized) { maximized in
-            let nextPresentation = AgentWorkSurfaceLayout.stabilizedPresentation(
-                availableWidth:splitWidth,
-                isVisible:workSurfaceVisible,
-                isMaximized:maximized,
-                current:stableWorkSurfacePresentation)
-            stableWorkSurfacePresentation = nextPresentation
             guard workSurfaceVisible else { return }
             if maximized {
-                restoreComposerFocusAfterWorkSurface = composerFocused
-                composerFocused = false
-            } else if nextPresentation == .sideBySide && restoreComposerFocusAfterWorkSurface {
-                restoreComposerFocusAfterWorkSurface = false
-                if !model.busy && !voiceDictation.blocksSend { composerFocused = true }
-            }
-        }
-        .onChange(of:splitWidth) { width in
-            let previous = stableWorkSurfacePresentation
-            let next = AgentWorkSurfaceLayout.stabilizedPresentation(
-                availableWidth:width,
-                isVisible:workSurfaceVisible,
-                isMaximized:workSurfaceMaximized,
-                current:previous)
-            guard next != previous else { return }
-            stableWorkSurfacePresentation = next
-            // Only crossing a hysteresis boundary changes focus/presentation.
-            guard workSurfaceVisible && !workSurfaceMaximized else { return }
-            if next == .replacement {
                 restoreComposerFocusAfterWorkSurface = composerFocused
                 composerFocused = false
             } else if restoreComposerFocusAfterWorkSurface {
@@ -1170,10 +1101,8 @@ struct AgentPane: View {
             Text("这会把命令发送给当前 Agent，可能修改项目文件。请先确认命令内容。")
         }
         .onAppear {
-            // A restored selected surface remains selected at compact widths;
-            // the layout presents it in place until side-by-side space returns.
             if !model.busy && !model.zenRefinementActive
-                && !(workSurfaceVisible && (!AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: splitWidth) || workSurfaceMaximized)) {
+                && !(workSurfaceVisible && workSurfaceMaximized) {
                 composerFocused = true
             }
         }

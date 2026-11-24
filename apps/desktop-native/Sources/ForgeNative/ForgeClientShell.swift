@@ -1201,23 +1201,20 @@ struct ForgeWorkspaceView: View {
                     .font(.system(size:11.5,weight:.medium))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(ForgePalette.secondary.opacity(0.82))
-                ViewThatFits(in:.horizontal) {
-                    HStack(spacing:5) {
-                        Text(model.project?.label ?? "选择代码工作区")
-                            .font(.system(size:11.75,weight:.medium))
-                            .lineLimit(1)
-                        if let branch = model.checkoutBranch, model.project != nil {
-                            Text(branch)
-                                .font(.system(size:10.25,weight:.regular,design:.monospaced))
-                                .foregroundStyle(ForgePalette.secondary.opacity(0.66))
-                                .lineLimit(1)
-                        }
-                    }
-                    .fixedSize(horizontal:true,vertical:false)
+                HStack(spacing:5) {
                     Text(model.project?.label ?? "选择代码工作区")
                         .font(.system(size:11.75,weight:.medium))
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .layoutPriority(2)
+                    if let branch = model.checkoutBranch, model.project != nil {
+                        Text(branch)
+                            .font(.system(size:10.25,weight:.regular,design:.monospaced))
+                            .foregroundStyle(ForgePalette.secondary.opacity(0.66))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .layoutPriority(0)
+                    }
                 }
                 .layoutPriority(1)
                 Spacer(minLength:4)

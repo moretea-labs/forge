@@ -10,7 +10,7 @@ Scope: native macOS Client window architecture, layout, navigation, typography, 
 - **2B dual primary surfaces.** 会话 and 看板 remain peer destinations via the icon rail; Zen is not merged into the Agent right pane. 项目 is a first-class list-column mode for repository/project selection.
 - **Browser deferred.** Never show Browser as an active enabled control until a separate authorized pane exists.
 - **Cursor density.** Prefer quieter chrome: denser thread rows, icon-first conversation tools, flatter composer, list-header New Chat (`sidebar.thread.new`), and a single on-demand inspector toggle instead of a persistent tool rail.
-- **No duplicate chrome.** A compact 32pt header at the top of the main glass pane hosts the conversation title, truthful workspace status, and one trailing inspector toggle; the native toolbar remains transparent and compact. Do not repeat status as an overlay in the transcript.
+- **No duplicate chrome.** A compact 36pt header at the top of the main glass pane hosts the conversation title, truthful workspace status, and one trailing inspector toggle; the native toolbar remains transparent and compact. Do not repeat status as an overlay in the transcript.
 - **App-owned Floating Dark Glass.** Forge owns a Dark appearance independent of the macOS global theme: SwiftUI uses a dark root color scheme and the NSWindow uses `darkAqua`, while remaining non-opaque with shared behind-window material. The outer shell is a custom divider-free `HStack`, not `NavigationSplitView`: left navigation glass and main glass are separate rounded panels with an 8pt air gap, never a black/system splitter. The left panel uses only a slightly stronger tonal wash; the inspector occupies no space until opened. Search/input/composer/work-surface controls are nested translucent glass with near-invisible rims; the composer shows a stronger edge only while focused.
 - **Icon optical contract.** Chrome glyphs use `ForgeClientDesign.Icon`: 13pt / 28pt hit for toolbar·sidebar·composer, 15pt rail glyphs + 9pt labels; hierarchical rendering, medium weight.
 
@@ -18,7 +18,7 @@ Scope: native macOS Client window architecture, layout, navigation, typography, 
 
 ~~~text
 macOS compact unified toolbar: traffic lights
-Main pane header (32pt): conversation title | status | inspector toggle
+Main pane header (36pt): conversation title | fixed status slot | inspector toggle
 +------+--------------+------------------------------------------+
 | Icons| List         | Main board                              |
 | 52pt | 236pt        | Chat OR Zen board                        |
@@ -29,14 +29,14 @@ Main pane header (32pt): conversation title | status | inspector toggle
 +------+--------------+------------------------------------------+
 ~~~
 
-Default visible columns: icon rail + list + main. The left glass is responsive: 228pt compact minimum (52 + 176), grows with window width, and caps at the existing 288pt desktop ideal (52 + 236). The left and main glass share an 8pt transparent gap. No outer native split divider. Closed inspector consumes zero width; opened inspector splits the main workspace when at least 840pt is available after the 16pt outer inset, otherwise replaces the conversation presentation without unmounting it. Preserve draft, attachments, scroll, selected tab and running tasks. The transcript starts at 8pt top inset and 24pt horizontal inset; empty state uses only its intrinsic height plus 20pt top spacing.
+Default visible columns: icon rail + list + main. The left glass is responsive: 228pt compact minimum (52 + 176), grows with window width, and caps at the existing 288pt desktop ideal (52 + 236). The left and main glass share an 8pt transparent gap. No outer native split divider. Closed inspector consumes zero width. A normal open floats over the trailing edge and never changes transcript/composer bounds at any supported window width; only explicit Inspector maximize replaces the conversation presentation without unmounting it. Preserve draft, attachments, scroll, selected tab and running tasks. The transcript starts at 8pt top inset and 20pt horizontal gutter; empty state uses only its intrinsic height plus 20pt top spacing.
 
 ## 2. Toolbar ownership
 
 - **No titlebar content band.** `.toolbarBackground(.hidden)` — traffic lights sit on the same surface as content. Do not host breadcrumb/status in a filled toolbar strip.
 - **Main pane header:** `agent.inspector.toggle` is the sole Agent tool opener, pinned to the trailing edge. The same compact header displays the conversation title and honest workspace status; no centered native toolbar items.
 - **Transcript and composer geometry:** both use one centered reading-column rule (760pt cap, 20pt horizontal gutter). Their left/right edges stay aligned at compact and desktop widths.
-- **Layout stability contract:** responsive sidebar width is continuous (no integer rounding steps). Passive conversation auto-follow during streaming/new-message/busy growth is non-animated; explicit user jumps may animate. Inspector presentation uses hysteresis: enter side-by-side at 864pt available width and leave it below 816pt, so resize near the 840pt nominal split threshold cannot flap.
+- **Layout stability contract:** responsive sidebar width is continuous (no integer rounding steps), and sidebar headers must compress/truncate within one view tree rather than swap layouts via `ViewThatFits`. Passive conversation auto-follow during streaming/new-message/busy growth is non-animated; explicit user jumps may animate. Header status owns a fixed-width slot, and the Composer text viewport stays at a fixed 38pt height with internal scrolling, so status/draft changes cannot push surrounding layout. Inspector open/close never inserts or removes a split column: it is a trailing overlay with a clamped 360–460pt width, so clicking the top-right toggle cannot reflow or horizontally jump the conversation.
 - **Inspector:** tabs 改动 / 附件 / 规划 / 知识 are available only when opened. Maximize and close live in its header. Unavailable tabs remain disabled; reopening restores the last available tab or falls back to 附件. Browser remains deferred.
 - **List header (会话):** New Chat, Search, Inbox — New Chat uses `sidebar.thread.new`; icons share `ForgeClientDesign.Icon`.
 - **Composer:** provider/model/attachments/voice/send; chrome icons share the same 13/28 optical size; focus ring only while focused.
@@ -70,7 +70,7 @@ NO decorative card/capsule/softFill wrapping every toolbar, rail, tab, commit fo
 1. Cold start shows Agent with right pane closed.
 2. Icon rail switches 会话 / 项目 / 看板 without losing draft or return context.
 3. The Agent header exposes a single trailing inspector opener (`agent.inspector.toggle`); no permanent right rail or hidden panel tabs in the closed state. List header exposes New Chat (`sidebar.thread.new`).
-4. Open inspector, switch 改动/附件/规划/知识, close/reopen the same available tab, resize wide → compact → wide, maximize/restore/close without losing chat state. Verify header context, continuous responsive sidebar width (228pt minimum, 264.6pt @ 1260, 288pt cap), aligned transcript/composer edges, non-animated passive streaming follow, Inspector hysteresis (864 enter / 816 exit), and reduced top whitespace in both empty and populated conversations.
+4. Open inspector, switch 改动/附件/规划/知识, close/reopen the same available tab, resize wide → compact → wide, maximize/restore/close without losing chat state. Verify the Composer/transcript AX bounds are identical immediately before and after normal Inspector open/close; only maximize may replace the conversation. Also verify header context, continuous responsive sidebar width (228pt minimum, 264.6pt @ 1260, 288pt cap), aligned transcript/composer edges, fixed header-status/composer geometry, non-animated passive streaming follow, and reduced top whitespace.
 5. `swift test` / `swift build`; GUI/AX at 860 / 1100 / 1260 / 1440 / 1800+ when authorized. The app remains Dark Glass under either macOS Light or Dark system appearance; system appearance is never changed. At 860 and 1260 the outer left/main glass panels must remain divider-free and readable; a high-contrast/purple backdrop must visibly sample through the shell rather than reveal an opaque gray canvas.
 
 Do not replace the installed App or activate Runtime without separate authorization.

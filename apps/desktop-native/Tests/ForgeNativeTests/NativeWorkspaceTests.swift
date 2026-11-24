@@ -4,11 +4,16 @@ import XCTest
 @testable import ForgeNative
 
 final class NativeWorkspaceTests: XCTestCase {
-  func testAgentWorkSurfaceSideBySideThresholdFitsFourColumnWindow() {
-    XCTAssertTrue(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 958))
-    XCTAssertTrue(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 840))
-    XCTAssertFalse(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 839))
-    XCTAssertFalse(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 780))
+  func testAgentWorkSurfaceNormalOpenUsesOverlayWithoutConversationReflow() {
+    XCTAssertEqual(
+      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: false),
+      .overlay)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 560), 360)
+    XCTAssertEqual(
+      AgentWorkSurfaceLayout.overlayWidth(availableWidth: 958),
+      402.36,
+      accuracy: 0.001)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 1400), 460)
   }
 
   @MainActor

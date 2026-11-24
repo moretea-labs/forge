@@ -3,65 +3,30 @@ import XCTest
 @testable import ForgeNative
 
 final class AgentWorkSurfaceLayoutTests: XCTestCase {
-  func testSideBySideThresholdUsesDeclaredPaneMinimumsAndDividerAllowance() {
-    XCTAssertEqual(AgentWorkSurfaceLayout.minimumSideBySideWidth, 840)
-    XCTAssertTrue(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 958))
-    XCTAssertTrue(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 840))
-    XCTAssertFalse(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 839))
-    XCTAssertFalse(AgentWorkSurfaceLayout.supportsSideBySide(availableWidth: 780))
-  }
-
-  func testInspectorPresentationUsesHysteresisNearThreshold() {
-    XCTAssertEqual(AgentWorkSurfaceLayout.enterSideBySideWidth, 864)
-    XCTAssertEqual(AgentWorkSurfaceLayout.exitSideBySideWidth, 816)
-
-    var current: AgentWorkSurfaceLayout.Presentation = .replacement
-    current = AgentWorkSurfaceLayout.stabilizedPresentation(
-      availableWidth: 850, isVisible: true, isMaximized: false, current: current)
-    XCTAssertEqual(current, .replacement)
-    current = AgentWorkSurfaceLayout.stabilizedPresentation(
-      availableWidth: 865, isVisible: true, isMaximized: false, current: current)
-    XCTAssertEqual(current, .sideBySide)
-    current = AgentWorkSurfaceLayout.stabilizedPresentation(
-      availableWidth: 830, isVisible: true, isMaximized: false, current: current)
-    XCTAssertEqual(current, .sideBySide)
-    current = AgentWorkSurfaceLayout.stabilizedPresentation(
-      availableWidth: 815, isVisible: true, isMaximized: false, current: current)
-    XCTAssertEqual(current, .replacement)
-  }
-
-  func testSelectedSurfaceSurvivesWideCompactWidePresentationChanges() {
-    let selectedSurface: AgentWorkSurface = .files
-    let isVisible = true
-    let widths: [CGFloat] = [958, 780, 958]
-    let presentations = widths.map {
-      AgentWorkSurfaceLayout.presentation(
-        availableWidth: $0,
-        isVisible: isVisible,
-        isMaximized: false
-      )
+  func testInspectorOpeningUsesOverlayAndNeverWidthDependentReplacement() {
+    let widths: [CGFloat] = [560, 840, 958, 1400]
+    let presentations = widths.map { _ in
+      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: false)
     }
+    XCTAssertEqual(presentations, [.overlay, .overlay, .overlay, .overlay])
+  }
 
-    XCTAssertEqual(presentations, [.sideBySide, .replacement, .sideBySide])
-    XCTAssertTrue(isVisible)
-    XCTAssertEqual(selectedSurface, .files)
+  func testInspectorOverlayWidthIsClampedWithoutChangingConversationGeometry() {
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 560), 360)
+    XCTAssertEqual(
+      AgentWorkSurfaceLayout.overlayWidth(availableWidth: 958),
+      402.36,
+      accuracy: 0.001)
+    XCTAssertEqual(AgentWorkSurfaceLayout.overlayWidth(availableWidth: 1400), 460)
   }
 
   func testClosedAndMaximizedWorkSurfacePresentationIsExplicit() {
     XCTAssertEqual(
-      AgentWorkSurfaceLayout.presentation(
-        availableWidth: 958,
-        isVisible: false,
-        isMaximized: false
-      ),
+      AgentWorkSurfaceLayout.presentation(isVisible: false, isMaximized: false),
       .conversationOnly
     )
     XCTAssertEqual(
-      AgentWorkSurfaceLayout.presentation(
-        availableWidth: 958,
-        isVisible: true,
-        isMaximized: true
-      ),
+      AgentWorkSurfaceLayout.presentation(isVisible: true, isMaximized: true),
       .replacement
     )
   }

@@ -29,6 +29,8 @@ final class ForgeClientLayoutTests: XCTestCase {
 
   func testHeaderAndReadingGutterHaveSharedMetrics() {
     XCTAssertEqual(ForgeClientDesign.Shell.workspaceHeaderHeight, 36)
+    XCTAssertEqual(ForgeClientDesign.Shell.workspaceStatusSlotWidth, 112)
+    XCTAssertEqual(ForgeClientDesign.Shell.composerTextHeight, 38)
     XCTAssertEqual(ForgeClientDesign.Shell.readingGutter, 20)
     XCTAssertEqual(ForgeClientDesign.Shell.compactSidebarMin, 228)
   }
