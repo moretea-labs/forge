@@ -33,6 +33,7 @@ import {
 } from '../root/computer-chatgpt-target';
 import { runtimeComputerInteractionTargetAuthority } from '../root/computer-target-composition';
 import { currentComputerPlatform } from '../platform/computer-platform';
+import { probeWindowsComputerObservation } from '../platform/windows-computer-observation';
 import { isProcessAlive } from '../shared/process-tree';
 import {
   buildBrowserPluginManifest,
@@ -1739,7 +1740,7 @@ function desktopTargetSummary(target: ComputerApplicationTarget): Record<string,
   };
 }
 
-function listDesktopTargets(input: AssistantPluginActionExecutionInput): Record<string, unknown> {
+async function listDesktopTargets(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
   const requestedLimit =
     typeof input.args.limit === 'number' && Number.isInteger(input.args.limit) ? input.args.limit : 50;
   const limit = Math.min(100, Math.max(1, requestedLimit));
@@ -1769,12 +1770,17 @@ function listDesktopTargets(input: AssistantPluginActionExecutionInput): Record<
     );
   const targets = all.slice(offset, offset + limit).map(desktopTargetSummary);
   const nextOffset = offset + targets.length < all.length ? offset + targets.length : undefined;
+  // WSL may observe the Windows host without claiming any durable application
+  // target. Exact target binding remains a separate, explicitly fenced step.
+  const windowsHost =
+    currentComputerPlatform() === 'linux' ? await probeWindowsComputerObservation() : undefined;
   return {
     targets,
     total: all.length,
     returned: targets.length,
     truncated: nextOffset !== undefined,
     ...(nextOffset !== undefined ? { nextOffset } : {}),
+    ...(windowsHost ? { windowsHost } : {}),
   };
 }
 
