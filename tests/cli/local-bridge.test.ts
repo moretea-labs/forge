@@ -23,8 +23,6 @@ import {
 import {
   cancelAgentJob,
   getAgentJob,
-  getAgentJobEvents,
-  getAgentJobLog,
   listAgentJobs,
 } from '../../src/cli/agent-jobs/job-manager';
 import {
@@ -45,7 +43,6 @@ import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import {
   cancelLocalBridgeJob,
   dispatchLocalBridgeJob,
-  getLocalBridgeJob,
   getLocalBridgeJobEvents,
   listLocalBridgeJobs,
   reconcileLocalBridgeJobs,
@@ -61,14 +58,11 @@ import {
 } from '../../src/runtime/local-bridge/lifecycle';
 import type { LocalBridgeJob } from '../../src/runtime/local-bridge/types';
 import {
-  addRepositoryCheckout,
   loadRepositoryRegistry,
   registerRepository,
   resolveRepositorySelection,
 } from '../../src/runtime/repositories/registry';
 import { acquireControllerLock, releaseControllerLock } from '../../src/effects/controller-locks';
-import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
-import { createMcpToolContext, callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { createSchedule, saveOccurrence, saveSchedule } from '../../src/runtime/workflow/schedules/store';
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from '../runtime/process-hygiene';
 
@@ -131,54 +125,6 @@ function repo(): string {
   process.env.FORGE_CONTROLLER_HOME = controllerHome;
   registerRepository({ path: root, controllerHome });
   return root;
-}
-
-function fakeCodex(): { binRoot: string; restore(): void } {
-  const binRoot = mkdtempSync(join(tmpdir(), 'forge-local-bridge-bin-'));
-  roots.push(binRoot);
-  const originalPath = process.env.PATH;
-  const executable = join(binRoot, 'codex');
-  writeFakeCodexExecutable(executable, 'echo "local-bridge-codex-ok"\n');
-  process.env.PATH = `${binRoot}:${originalPath ?? ''}`;
-  return {
-    binRoot,
-    restore: () => {
-      process.env.PATH = originalPath;
-    },
-  };
-}
-
-function writeFakeCodexExecutable(executable: string, body: string): void {
-  writeFileSync(
-    executable,
-    `#!/usr/bin/env bash
-if [[ "$1" == "--version" ]]; then
-  echo "codex-cli 0.0.0-test"
-  exit 0
-fi
-if [[ "$1" == "login" && "$2" == "status" ]]; then
-  echo "Logged in as test@example.com"
-  exit 0
-fi
-${body}
-`,
-  );
-  chmodSync(executable, 0o755);
-}
-
-async function waitForRun(
-  root: string,
-  runId: string,
-  predicate: (run: ReturnType<typeof getAgentJob>) => boolean,
-  attempts = 120,
-  delayMs = 25,
-) {
-  let run = getAgentJob(root, runId);
-  for (let attempt = 0; attempt < attempts && !predicate(run); attempt += 1) {
-    await Bun.sleep(delayMs);
-    run = getAgentJob(root, runId);
-  }
-  return run;
 }
 
 describe('Local Execution Bridge', () => {
@@ -328,17 +274,17 @@ describe('Local Execution Bridge', () => {
     expect(released).toBe(true);
   });
 
-  test('uses the injected Runtime clock for LocalBridge execution deadlines', () => {
-    const root = repo();
+  test('uses the injected Runtime clock for repository-command execution deadlines', () => {
+    const root = '/repo';
     const actualNow = Date.now();
     const injectedNow = new Date(actualNow + 60_000).toISOString();
     const deadlineAt = new Date(actualNow + 30_000).toISOString();
     const startedAt = new Date(actualNow - 60_000).toISOString();
     const job: LocalBridgeJob = {
       schemaVersion: 1,
-      jobId: 'timed-out-verify',
-      action: 'verify-edit-session',
-      payload: { sessionId: 'session-1', revision: 1 },
+      jobId: 'timed-out-repository-command',
+      action: 'repository-command',
+      payload: { controllerHome: root, repoId: 'repo-test', command: {} as never },
       requestedBy: 'test',
       approval: 'auto',
       status: 'running',
@@ -347,25 +293,28 @@ describe('Local Execution Bridge', () => {
       startedAt,
       deadlineAt,
       ownerPid: process.pid,
+      workerPid: 12345,
     };
     const events: Array<{ type: string; message?: string; data?: Record<string, unknown> }> = [];
     let saved = false;
-    let released = false;
+    let signalled = false;
     const refreshed = refreshLocalBridgeJobInRuntime(root, job, undefined, {
       currentPid: process.pid,
       now: () => injectedNow,
       resolveJobTimeout: () => 60_000,
       currentCheckRevision: () => {
-        throw new Error('check revision should not be read for a verify job');
+        throw new Error('check revision should not be read for a repository-command job');
       },
       isPidAlive: () => true,
-      signalWorker: () => {},
+      signalWorker: () => {
+        signalled = true;
+      },
       releaseCheckSubscription: () => {
-        released = true;
+        throw new Error('repository-command must not release a check subscription');
       },
       syncProjectedExecutionJob: (_root, current) => current,
       getAgentRun: () => {
-        throw new Error('Agent Run lookup is not expected for a verify job');
+        throw new Error('Agent Run lookup is not expected for a repository-command job');
       },
       cleanupEphemeralJob: () => {},
       appendEvent: (_root, _jobId, event) => {
@@ -379,10 +328,10 @@ describe('Local Execution Bridge', () => {
 
     expect(refreshed.status).toBe('timed_out');
     expect(refreshed.finishedAt).toBe(injectedNow);
-    expect(refreshed.error).toContain('verify-edit-session exceeded');
+    expect(refreshed.error).toContain('repository-command exceeded');
     expect(events).toMatchObject([{ type: 'job_failed', data: { timedOut: true } }]);
     expect(saved).toBe(true);
-    expect(released).toBe(true);
+    expect(signalled).toBe(true);
   });
 
   test('projects Agent Run states through the Runtime-owned LocalBridge vocabulary', () => {
@@ -1549,444 +1498,45 @@ describe('Local Execution Bridge', () => {
     expect(oversized.body.error).toContain('MOBILE_INTENT_EVENT_ID_INVALID');
   });
 
-  test('shows direct edits as first-class file changes and completes them through the local API', async () => {
+  test('Local Bridge no longer exposes EditSession lifecycle routes or snapshot projection', async () => {
     const root = repo();
-    const session = beginEditSession(root, {
-      purpose: 'Update local example',
-      allowedPaths: ['src/**'],
-      maxFiles: 1,
-      maxChangedLines: 5,
-    });
-    const current = readFileSync(join(root, 'src/example.ts'), 'utf-8');
-    const hash = new Bun.CryptoHasher('sha256').update(current).digest('hex');
-    applyEditOperations(root, getToolPolicy('controller', { repoRoot: root }), session.sessionId, [
-      {
-        type: 'replace',
-        path: 'src/example.ts',
-        expectedSha256: hash,
-        replacements: [{ oldText: 'value = 1', newText: 'value = 4' }],
-      },
-    ]);
     const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
     servers.push(handle);
     const headers = { 'x-forge-local-token': handle.token };
-    const snapshot = await fetch(new URL('/api/snapshot', handle.url), { headers }).then((response) => response.json());
-    expect(snapshot.editSessions[0]).toMatchObject({ sessionId: session.sessionId, status: 'dirty', changedFiles: 1 });
-    const diff = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/diff`, handle.url), { headers }).then(
-      (response) => response.json(),
-    );
-    expect(diff.patch).toContain('+export const value = 4;');
-    const verified = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/verify`, handle.url), {
+    const snapshotResponse = await fetch(new URL('/api/snapshot', handle.url), { headers });
+    expect(snapshotResponse.status).toBe(200);
+    const snapshot = await snapshotResponse.json();
+    expect(snapshot).not.toHaveProperty('editSessions');
+
+    const retiredRoutes = [
+      { method: 'GET', path: '/api/edit-sessions' },
+      { method: 'GET', path: '/api/edit-sessions/session-1' },
+      { method: 'GET', path: '/api/edit-sessions/session-1/diff' },
+      { method: 'POST', path: '/api/edit-sessions/session-1/savepoints' },
+      { method: 'POST', path: '/api/edit-sessions/session-1/verify' },
+      { method: 'POST', path: '/api/edit-sessions/session-1/finalize' },
+      { method: 'POST', path: '/api/edit-sessions/session-1/finish' },
+      { method: 'POST', path: '/api/edit-sessions/session-1/rollback' },
+    ] as const;
+    for (const route of retiredRoutes) {
+      const response = await fetch(new URL(route.path, handle.url), {
+        method: route.method,
+        headers: route.method === 'GET' ? headers : { ...headers, 'content-type': 'application/json' },
+        ...(route.method === 'GET' ? {} : { body: JSON.stringify({}) }),
+      });
+      expect(response.status).toBe(404);
+    }
+
+    const retiredInput = await fetch(new URL('/api/console/edit/apply', handle.url), {
       method: 'POST',
       headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({ reviewer: 'local-test' }),
-    }).then((response) => response.json());
-    expect(verified.accepted).toBe(true);
-    expect(verified.status).toBe('succeeded');
-    expect(verified.sessionId).toBe(session.sessionId);
-    // Direct verification no longer creates a Local Bridge Job.
-    // Workspace-wide Process claims and the old repository-writer mutex must
-    // not veto EditSession metadata operations or direct-edit entrypoints.
-    const legacyContext = createMcpToolContext({
-      repo: root,
-      controllerHome: process.env.FORGE_CONTROLLER_HOME!,
-      profile: 'controller',
+      body: JSON.stringify({ operations: [], sessionId: 'legacy-session', sessionless: false }),
     });
-    const controllerHome = legacyContext.controllerHome;
-    const repository = legacyContext.explicitRepository!;
-    expect(repository.activeCheckoutId).toBeTruthy();
-    const lockKey = { scope: 'repository' as const, repoId: repository.repoId };
-    const lock = acquireControllerLock(controllerHome, lockKey, 'test:competing-editor');
-    const workspaceLease = acquireExecutionLeases(
-      controllerHome,
-      repository.repoId,
-      'test:process-during-editor',
-      [{ resourceKey: `workspace:${repository.activeCheckoutId}`, mode: 'write' }],
-      { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
-    );
-    expect(workspaceLease.acquired).toBe(true);
-    let reservedSessionId = '';
-    try {
-      const savepointResponse = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/savepoints`, handle.url), {
-        method: 'POST',
-        headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'workspace-lease-savepoint' }),
-      });
-      expect(savepointResponse.status).toBe(200);
-      const savepoint = await savepointResponse.json();
-      expect(savepoint.savepoints.some((item: { name: string }) => item.name === 'workspace-lease-savepoint')).toBe(
-        true,
-      );
-
-      // The original session was verified before acquiring these leases; avoid
-      // re-running a terminal verification transition.
-
-      const reserved = await callMultiRepositoryTool(legacyContext, 'begin_edit_session', {
-        purpose: 'metadata reservation during a checkout-wide Process lease',
-        allowed_paths: ['src/example.ts'],
-      });
-      expect(reserved.isError).not.toBe(true);
-      reservedSessionId = (reserved.structuredContent as { sessionId: string }).sessionId;
-
-      const originalFinalization = fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize`, handle.url), {
-        method: 'POST',
-        headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify({ reviewer: 'workspace-lease-reviewer' }),
-      });
-      const concurrentRead = await fetch(new URL('/api/snapshot', handle.url), { headers });
-      expect(concurrentRead.status).toBe(200);
-      const finalized = await originalFinalization.then((response) => response.json());
-      expect(finalized.status).toBe('finalized');
-
-      const sourceBeforeWorkspaceEdit = readFileSync(join(root, 'src/example.ts'), 'utf8');
-      const workspaceEdit = await callMultiRepositoryTool(legacyContext, 'apply_patch', {
-        session_id: reservedSessionId,
-        expected_revision: 0,
-        operations: [
-          {
-            type: 'replace',
-            path: 'src/example.ts',
-            expected_sha256: new Bun.CryptoHasher('sha256').update(sourceBeforeWorkspaceEdit).digest('hex'),
-            replacements: [{ old_text: 'value = 4', new_text: 'value = 5' }],
-          },
-        ],
-      });
-      expect(workspaceEdit.isError).not.toBe(true);
-      expect(readFileSync(join(root, 'src/example.ts'), 'utf8')).toContain('value = 5');
-    } finally {
-      releaseExecutionLeases(controllerHome, repository.repoId, 'test:process-during-editor', workspaceLease.leases, {
-        visibility: 'ephemeral',
-        notifyScheduler: false,
-        invalidateProjection: false,
-        emitRuntimeEvent: false,
-      });
-      releaseControllerLock(controllerHome, lockKey, lock.lockId);
-    }
-
-    // A Process claim fences only the exact source path. It must not turn a
-    // checkout-wide lease into a blanket editor veto.
-    const running = acquireExecutionLeases(
-      controllerHome,
-      repository.repoId,
-      'test:managed-writer',
-      [{ resourceKey: `path:${repository.activeCheckoutId}:src/example.ts`, mode: 'write' }],
-      { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
-    );
-    expect(running.acquired).toBe(true);
-    try {
-      const originalSource = readFileSync(join(root, 'src/example.ts'), 'utf8');
-      const overlappingEdit = await callMultiRepositoryTool(legacyContext, 'apply_patch', {
-        session_id: reservedSessionId,
-        expected_revision: 1,
-        operations: [
-          {
-            type: 'replace',
-            path: 'src/example.ts',
-            expected_sha256: new Bun.CryptoHasher('sha256').update(originalSource).digest('hex'),
-            replacements: [{ old_text: 'value = 6', new_text: 'value = 7' }],
-          },
-        ],
-      });
-      expect(overlappingEdit.isError).toBe(true);
-      expect(JSON.stringify(overlappingEdit.structuredContent)).toContain('REPOSITORY_PROCESS_LEASE_HELD');
-      expect(readFileSync(join(root, 'src/example.ts'), 'utf8')).toBe(originalSource);
-    } finally {
-      releaseExecutionLeases(controllerHome, repository.repoId, 'test:managed-writer', running.leases, {
-        visibility: 'ephemeral',
-        notifyScheduler: false,
-        invalidateProjection: false,
-        emitRuntimeEvent: false,
-      });
-    }
-
-    const originalSourceAfterRelease = readFileSync(join(root, 'src/example.ts'), 'utf8');
-    const releasedEdit = await callMultiRepositoryTool(legacyContext, 'apply_patch', {
-      session_id: reservedSessionId,
-      expected_revision: 1,
-      operations: [
-        {
-          type: 'replace',
-          path: 'src/example.ts',
-          expected_sha256: new Bun.CryptoHasher('sha256').update(originalSourceAfterRelease).digest('hex'),
-          replacements: [{ old_text: 'value = 5', new_text: 'value = 6' }],
-        },
-      ],
-    });
-    expect(releasedEdit.isError).not.toBe(true);
-    expect(readFileSync(join(root, 'src/example.ts'), 'utf8')).toContain('value = 7');
-
-    const reservedSavepoint = await fetch(new URL(`/api/edit-sessions/${reservedSessionId}/savepoints`, handle.url), {
-      method: 'POST',
-      headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'after-path-lease-release' }),
-    });
-    expect(reservedSavepoint.status).toBe(200);
-    const reservedVerified = await fetch(new URL(`/api/edit-sessions/${reservedSessionId}/verify`, handle.url), {
-      method: 'POST',
-      headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({ reviewer: 'path-lease-release-reviewer' }),
-    });
-    expect(reservedVerified.status).toBe(200);
-    expect((await reservedVerified.json()).status).toBe('succeeded');
-    const reservedFinalized = await fetch(new URL(`/api/edit-sessions/${reservedSessionId}/finalize`, handle.url), {
-      method: 'POST',
-      headers: { ...headers, 'content-type': 'application/json' },
-      body: JSON.stringify({ reviewer: 'path-lease-release-reviewer' }),
-    });
-    expect(reservedFinalized.status).toBe(200);
-    expect((await reservedFinalized.json()).status).toBe('finalized');
-    // The original EditSession was finalized while the workspace lease remained active above.
-    // Independent checkout and unrelated source scope are not global vetoes
-    // for the direct MCP editor; the same-checkout path collision above still fails.
-    const independent = acquireExecutionLeases(
-      controllerHome,
-      repository.repoId,
-      'test:foreign-desktop-writer',
-      [{ resourceKey: 'path:checkout-foreign:apps/desktop-native', mode: 'write' }],
-      { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
-    );
-    expect(independent.acquired).toBe(true);
-    try {
-      const legacyContext = createMcpToolContext({ repo: root, controllerHome, profile: 'controller' });
-      const opened = await callMultiRepositoryTool(legacyContext, 'begin_edit_session', {
-        purpose: 'scoped direct MCP edit',
-        allowed_paths: ['src/example.ts'],
-      });
-      expect(opened.isError).not.toBe(true);
-      const originalSource = readFileSync(join(root, 'src/example.ts'), 'utf8');
-      const patched = await callMultiRepositoryTool(legacyContext, 'apply_patch', {
-        session_id: (opened.structuredContent as { sessionId: string }).sessionId,
-        expected_revision: 0,
-        operations: [
-          {
-            type: 'replace',
-            path: 'src/example.ts',
-            expected_sha256: new Bun.CryptoHasher('sha256').update(originalSource).digest('hex'),
-            replacements: [{ old_text: 'value = 5', new_text: 'value = 6' }],
-          },
-        ],
-      });
-      expect(patched.isError).not.toBe(true);
-      expect(readFileSync(join(root, 'src/example.ts'), 'utf8')).toContain('value = 6');
-    } finally {
-      releaseExecutionLeases(controllerHome, repository.repoId, 'test:foreign-desktop-writer', independent.leases, {
-        visibility: 'ephemeral',
-        notifyScheduler: false,
-        invalidateProjection: false,
-        emitRuntimeEvent: false,
-      });
-    }
-  });
-  test('EditSession operations use exact checkout/path claims rather than workspace-wide leases', async () => {
-    const root = repo();
-    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
-    const runGit = (args: string[]) => {
-      const result = spawnSync('git', args, { cwd: root, encoding: 'utf-8' });
-      if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(' ')} failed`);
-      return result.stdout.trim();
-    };
-    runGit(['config', 'user.name', 'Forge Test']);
-    runGit(['config', 'user.email', 'forge-test@example.com']);
-    runGit(['add', '--all']);
-    runGit(['commit', '-m', 'base']);
-
-    const worktreePath = mkdtempSync(join(tmpdir(), 'forge-local-bridge-checkout-'));
-    roots.push(worktreePath);
-    const addedWorktree = spawnSync('git', ['worktree', 'add', '-b', 'test/checkout-b', worktreePath, 'HEAD'], {
-      cwd: root,
-      encoding: 'utf-8',
-    });
-    expect(addedWorktree.status).toBe(0);
-    repoRoots.push(worktreePath);
-
-    const repository = resolveRepositorySelection({ explicitPath: root, controllerHome });
-    const updatedRepository = addRepositoryCheckout({ repoId: repository.repoId, path: worktreePath, controllerHome });
-    const checkoutB = updatedRepository.checkouts.find((entry) => entry.checkoutId !== repository.activeCheckoutId);
-    expect(checkoutB).toBeDefined();
-    const checkoutRoot = checkoutB!.canonicalRoot;
-    const session = beginEditSession(checkoutRoot, {
-      purpose: 'Verify checkout-scoped legacy EditSession mutation fencing',
-      allowedPaths: ['src/**'],
-      maxFiles: 1,
-      maxChangedLines: 5,
-    });
-    const current = readFileSync(join(checkoutRoot, 'src/example.ts'), 'utf-8');
-    const hash = new Bun.CryptoHasher('sha256').update(current).digest('hex');
-    applyEditOperations(checkoutRoot, getToolPolicy('controller', { repoRoot: checkoutRoot }), session.sessionId, [
-      {
-        type: 'replace',
-        path: 'src/example.ts',
-        expectedSha256: hash,
-        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
-      },
-    ]);
-
-    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
-    servers.push(handle);
-    const headers = { 'x-forge-local-token': handle.token };
-    const query = `?checkoutId=${encodeURIComponent(checkoutB!.checkoutId)}`;
-    const leaseOptions = {
-      visibility: 'ephemeral' as const,
-      notifyScheduler: false,
-      invalidateProjection: false,
-      emitRuntimeEvent: false,
-    };
-    const foreignCheckoutLease = acquireExecutionLeases(
-      controllerHome,
-      repository.repoId,
-      'test:checkout-a-writer',
-      [{ resourceKey: `path:${repository.activeCheckoutId}:src/example.ts`, mode: 'write' }],
-      leaseOptions,
-    );
-    expect(foreignCheckoutLease.acquired).toBe(true);
-    try {
-      const savepoint = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/savepoints${query}`, handle.url), {
-        method: 'POST',
-        headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'foreign-checkout-savepoint' }),
-      });
-      expect(savepoint.status).toBe(200);
-
-      // The legacy completion wrapper must derive the exact checkout from repoRoot too.
-      // This session has no Issue/Task binding, so reaching that validation proves the
-      // unrelated checkout's lease was not treated as a repository-wide source fence.
-      const finish = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finish${query}`, handle.url), {
-        method: 'POST',
-        headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify({ decision: 'auto' }),
-      });
-      expect(finish.status).toBe(400);
-      expect((await finish.json()).error).toContain(
-        'Direct Edit completion requires a session bound to an Issue and Task.',
-      );
-
-      const verified = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/verify${query}`, handle.url), {
-        method: 'POST',
-        headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify({ reviewer: 'checkout-isolation-test' }),
-      });
-      expect(verified.status).toBe(200);
-      expect((await verified.json()).status).toBe('succeeded');
-
-      const finalized = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize${query}`, handle.url), {
-        method: 'POST',
-        headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify({ reviewer: 'checkout-isolation-test' }),
-      });
-      expect(finalized.status).toBe(200);
-      expect((await finalized.json()).status).toBe('finalized');
-    } finally {
-      releaseExecutionLeases(
-        controllerHome,
-        repository.repoId,
-        'test:checkout-a-writer',
-        foreignCheckoutLease.leases,
-        leaseOptions,
-      );
-    }
-
-    const sameCheckoutSession = beginEditSession(checkoutRoot, {
-      purpose: 'Preserve exact same-path Process fencing within a checkout',
-      allowedPaths: ['src/**'],
-      maxFiles: 1,
-      maxChangedLines: 5,
-    });
-    const sameCurrent = readFileSync(join(checkoutRoot, 'src/example.ts'), 'utf-8');
-    const sameHash = new Bun.CryptoHasher('sha256').update(sameCurrent).digest('hex');
-    applyEditOperations(
-      checkoutRoot,
-      getToolPolicy('controller', { repoRoot: checkoutRoot }),
-      sameCheckoutSession.sessionId,
-      [
-        {
-          type: 'replace',
-          path: 'src/example.ts',
-          expectedSha256: sameHash,
-          replacements: [{ oldText: 'value = 2', newText: 'value = 3' }],
-        },
-      ],
-    );
-    const checkoutContext = createMcpToolContext({ repo: checkoutRoot, controllerHome, profile: 'controller' });
-    const sameCheckoutLease = acquireExecutionLeases(
-      controllerHome,
-      repository.repoId,
-      'test:checkout-b-writer',
-      [{ resourceKey: `path:${checkoutB!.checkoutId}:src/example.ts`, mode: 'write' }],
-      leaseOptions,
-    );
-    expect(sameCheckoutLease.acquired).toBe(true);
-    try {
-      const beforeBlockedEdit = readFileSync(join(checkoutRoot, 'src/example.ts'), 'utf-8');
-      const blockedEdit = await callMultiRepositoryTool(checkoutContext, 'apply_patch', {
-        session_id: sameCheckoutSession.sessionId,
-        expected_revision: 1,
-        operations: [
-          {
-            type: 'replace',
-            path: 'src/example.ts',
-            expected_sha256: new Bun.CryptoHasher('sha256').update(beforeBlockedEdit).digest('hex'),
-            replacements: [{ old_text: 'value = 3', new_text: 'value = 4' }],
-          },
-        ],
-      });
-      expect(blockedEdit.isError).toBe(true);
-      expect(JSON.stringify(blockedEdit.structuredContent)).toContain('REPOSITORY_PROCESS_LEASE_HELD');
-      expect(readFileSync(join(checkoutRoot, 'src/example.ts'), 'utf-8')).toBe(beforeBlockedEdit);
-    } finally {
-      releaseExecutionLeases(
-        controllerHome,
-        repository.repoId,
-        'test:checkout-b-writer',
-        sameCheckoutLease.leases,
-        leaseOptions,
-      );
-    }
-
-    const afterRelease = readFileSync(join(checkoutRoot, 'src/example.ts'), 'utf-8');
-    const releasedEdit = await callMultiRepositoryTool(checkoutContext, 'apply_patch', {
-      session_id: sameCheckoutSession.sessionId,
-      expected_revision: 1,
-      operations: [
-        {
-          type: 'replace',
-          path: 'src/example.ts',
-          expected_sha256: new Bun.CryptoHasher('sha256').update(afterRelease).digest('hex'),
-          replacements: [{ old_text: 'value = 3', new_text: 'value = 4' }],
-        },
-      ],
-    });
-    expect(releasedEdit.isError).not.toBe(true);
-    expect(readFileSync(join(checkoutRoot, 'src/example.ts'), 'utf-8')).toContain('value = 4');
-
-    const sameSavepoint = await fetch(
-      new URL(`/api/edit-sessions/${sameCheckoutSession.sessionId}/savepoints${query}`, handle.url),
-      {
-        method: 'POST',
-        headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'same-checkout-after-path-release' }),
-      },
-    );
-    expect(sameSavepoint.status).toBe(200);
-    const sameVerified = await fetch(
-      new URL(`/api/edit-sessions/${sameCheckoutSession.sessionId}/verify${query}`, handle.url),
-      {
-        method: 'POST',
-        headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify({ reviewer: 'same-checkout-path-test' }),
-      },
-    );
-    expect(sameVerified.status).toBe(200);
-    expect((await sameVerified.json()).status).toBe('succeeded');
-    const sameFinalized = await fetch(
-      new URL(`/api/edit-sessions/${sameCheckoutSession.sessionId}/finalize${query}`, handle.url),
-      {
-        method: 'POST',
-        headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify({ reviewer: 'same-checkout-path-test' }),
-      },
-    );
-    expect(sameFinalized.status).toBe(200);
-    expect((await sameFinalized.json()).status).toBe('finalized');
+    expect(retiredInput.status).toBe(400);
+    const retiredInputBody = await retiredInput.json();
+    expect(retiredInputBody.error).toContain('unsupported console edit fields');
+    expect(retiredInputBody.error).toContain('sessionId');
+    expect(retiredInputBody.error).toContain('sessionless');
   });
 
   test('preserves executable mode when an Edit Session replaces a shebang file', () => {

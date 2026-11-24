@@ -1,12 +1,10 @@
 import { createHash, randomBytes } from 'crypto';
-import { readFileSync } from 'fs';
 import { createServer, type Server } from 'http';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { describeFailure } from '../../../packages/protocols/failure';
 import {
   ControllerLockContentionError,
   withControllerLock,
-  withControllerLockAsync,
 } from '../../effects/controller-locks';
 import {
   cancelAgentJob,
@@ -45,13 +43,6 @@ import {
   reconcileLocalBridgeJobs,
 } from './job-store';
 import {
-  createEditSavepoint,
-  getEditSession,
-  getEditSessionDiff,
-  listEditSessions,
-  verifyEditSession,
-} from '../../runtime/editing/edit-session';
-import {
   applyConsoleAutomationAction,
   listConsoleAutomations,
   summarizeConsoleAutomations,
@@ -68,7 +59,6 @@ import {
   getConsoleAccessPolicy,
   getConsolePlugin,
   listConsolePlugins,
-  toConsoleOperationFeedback,
   dismissConsoleHandoff,
   getConsoleHandoff,
   listConsoleHandoffs,
@@ -81,10 +71,8 @@ import {
   FORGE_MCP_SCHEMA_VERSION,
   FORGE_TOOL_SURFACE,
   FORGE_VERSION,
-  forgeToolSurfaceFingerprint,
   defaultLocalAgentRunners,
 } from '../../runtime/shared/runtime-config';
-import { finishEditSession } from '../controller/completion-orchestrator';
 import { getToolPolicy } from '../../runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
 import { createMcpToolContext as createControllerMcpToolContext } from '../../../adapters/mcp/server';
@@ -100,11 +88,6 @@ import {
   removeRepository,
   resolveRepositorySelection,
 } from '../../runtime/repositories/registry';
-import {
-  withRepositoryMutationExclusion,
-  withRepositoryMutationExclusionAsync,
-} from '../../runtime/resources/leases/store';
-import { runEditSessionMutationInWorker } from './edit-session-worker';
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { ensureRepositoryRuntimeStorage } from '../../runtime/repositories/runtime-storage';
 import { readForgeRuntimeStatus } from '../../runtime/control-plane/runtime-status-client';
@@ -279,14 +262,6 @@ function controllerStateSignature(repoRoot: string): string {
     jobs: snapshot.localJobs.map((job) => [job.jobId, job.status, job.updatedAt, job.runId]),
     worklog: latestWorklog?.id,
     projectState: snapshot.projectState,
-    edits: snapshot.editSessions.map((edit) => [
-      edit.sessionId,
-      edit.status,
-      edit.updatedAt,
-      edit.changedFiles,
-      edit.checksPassed,
-      edit.checksTotal,
-    ]),
   });
 }
 
@@ -337,7 +312,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
       })
     : undefined;
   const runs = listAgentJobs(repoRoot, 30);
-  const editSessions = listEditSessions(repoRoot, 30);
   const localJobs = listLocalBridgeJobs(repoRoot, 30);
   const legacyBoard = retiredLegacyControlPlane ? undefined : projectBoard(repoRoot);
   const board = legacyBoard
@@ -420,15 +394,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
           status: run.status,
           updatedAt: run.lastHeartbeatAt,
         })),
-      ...editSessions
-        .filter((session) => session.status === 'check_failed')
-        .map((session) => ({
-          kind: 'edit',
-          id: session.sessionId,
-          title: session.purpose,
-          status: session.status,
-          updatedAt: session.updatedAt,
-        })),
       ...executionJobs
         .filter((job) => ['human_attention_required', 'failed', 'orphaned', 'stale'].includes(job.status))
         .map((job) => ({
@@ -448,15 +413,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
           title: run.progress?.currentActivity ?? run.runId,
           status: run.status,
           updatedAt: run.lastHeartbeatAt,
-        })),
-      ...editSessions
-        .filter((session) => !['finalized', 'rolled_back', 'check_failed'].includes(session.status))
-        .map((session) => ({
-          kind: 'edit',
-          id: session.sessionId,
-          title: session.purpose,
-          status: session.status,
-          updatedAt: session.updatedAt,
         })),
       ...activeExecutionJobs
         .filter((job) =>
@@ -508,15 +464,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
           title: run.progress?.currentActivity ?? run.runId,
           status: run.status,
           updatedAt: run.finishedAt ?? run.lastHeartbeatAt,
-        })),
-      ...editSessions
-        .filter((session) => ['finalized', 'rolled_back'].includes(session.status))
-        .map((session) => ({
-          kind: 'edit',
-          id: session.sessionId,
-          title: session.purpose,
-          status: session.status,
-          updatedAt: session.updatedAt,
         })),
       ...recentExecutionJobs
         .filter((job) => ['succeeded', 'cancelled', 'timed_out'].includes(job.status))
@@ -652,7 +599,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
       return counts;
     }, {}),
     localJobs,
-    editSessions,
     checks: listControllerChecks(repoRoot),
   };
 }
@@ -1893,12 +1839,24 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
         request.body && typeof request.body === 'object' && !Array.isArray(request.body)
           ? (request.body as Record<string, unknown>)
           : {};
+      const unsupportedFields = Object.keys(body).filter(
+        (key) => !['operations', 'purpose', 'allowedPaths'].includes(key),
+      );
+      if (unsupportedFields.length > 0) {
+        response.status(400).json({
+          error: 'unsupported console edit fields: ' + unsupportedFields.join(', '),
+          errorClass: 'invalid_request',
+          summary: 'Only operations, purpose, and allowedPaths are accepted.',
+          phase: 'failed',
+          statusLabel: '失败',
+          terminal: true,
+        });
+        return;
+      }
       const applied = applyConsoleSafePatch(consoleCtx(request), {
         operations: body.operations,
         purpose: queryString(body.purpose),
         allowedPaths: Array.isArray(body.allowedPaths) ? body.allowedPaths.map(String) : undefined,
-        sessionId: queryString(body.sessionId),
-        sessionless: typeof body.sessionless === 'boolean' ? body.sessionless : undefined,
       });
       response.status(applied.phase === 'failed' ? 409 : 200).json(applied);
     } catch (error) {
@@ -2220,7 +2178,6 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
           issueId: queryString(request.query.issueId),
           taskId: queryString(request.query.taskId),
           runId: queryString(request.query.runId),
-          editSessionId: queryString(request.query.editSessionId),
           since: queryString(request.query.since),
           until: queryString(request.query.until),
           limit: request.query.limit ? Number(request.query.limit) : 300,
@@ -2240,157 +2197,8 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
             issueId: queryString(request.body?.issueId),
             taskId: queryString(request.body?.taskId),
             runId: queryString(request.body?.runId),
-            editSessionId: queryString(request.body?.editSessionId),
           },
         }),
-      );
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get('/api/edit-sessions', (request, response) => {
-    try {
-      const limit = request.query.limit ? Number(request.query.limit) : 200;
-      response.json({ sessions: listEditSessions(requestRepositoryRoot(request, options, controllerHome), limit) });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get('/api/edit-sessions/:sessionId', (request, response) => {
-    try {
-      response.json(getEditSession(requestRepositoryRoot(request, options, controllerHome), request.params.sessionId));
-    } catch (error) {
-      response.status(404).json({ error: errorMessage(error) });
-    }
-  });
-  app.get('/api/edit-sessions/:sessionId/diff', (request, response) => {
-    try {
-      response.json(
-        getEditSessionDiff(requestRepositoryRoot(request, options, controllerHome), request.params.sessionId),
-      );
-    } catch (error) {
-      response.status(404).json({ error: errorMessage(error) });
-    }
-  });
-  app.post('/api/edit-sessions/:sessionId/savepoints', (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(
-        withRepositoryMutationExclusion(
-          controllerHome,
-          repository.repoId,
-          'local_bridge:create_edit_savepoint',
-          () =>
-            createEditSavepoint(repository.canonicalRoot, request.params.sessionId, String(request.body?.name ?? '')),
-          undefined,
-          [],
-        ),
-      );
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post('/api/edit-sessions/:sessionId/verify', async (request, response) => {
-    try {
-      // Verification persists EditSession evidence and may run blocking checks.
-      // The existing worker keeps those checks off the Local Bridge event loop.
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      // Verification persists session evidence, but it must not hold a checkout-wide
-      // ControllerLock while checks run. Serialize only transitions for this session;
-      // source drift is detected by the EditSession's own before/after fingerprints.
-      const sessionId = request.params.sessionId;
-      const verified = await withControllerLockAsync(
-        controllerHome,
-        { scope: 'run', repoId: repository.repoId, runId: `edit-session-${sessionId}` },
-        `local_bridge:verify_edit_session:${sessionId}`,
-        () =>
-          runEditSessionMutationInWorker({
-            kind: 'verify',
-            repoRoot: repository.canonicalRoot,
-            sessionId,
-            checkIds: Array.isArray(request.body?.checkIds) ? request.body.checkIds.map(String) : undefined,
-            reviewer: queryString(request.body?.reviewer) ?? 'local-controller-human',
-            note: queryString(request.body?.note),
-          }),
-        undefined,
-        0,
-      );
-      response.status(200).json({
-        accepted: true,
-        status: 'succeeded',
-        sessionId: verified.sessionId,
-        revision: verified.currentRevision,
-        checkResults: verified.checkResults ?? [],
-        verifiedAt: verified.verifiedAt ?? null,
-      });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post('/api/edit-sessions/:sessionId/finalize', async (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      // Finalization is a metadata transition after exact session hashes are
-      // revalidated. It needs same-session serialization, not checkout ownership.
-      const sessionId = request.params.sessionId;
-      response.json(
-        await withControllerLockAsync(
-          controllerHome,
-          { scope: 'run', repoId: repository.repoId, runId: `edit-session-${sessionId}` },
-          `local_bridge:finalize_edit_session:${sessionId}`,
-          () =>
-            runEditSessionMutationInWorker({
-              kind: 'finalize',
-              repoRoot: repository.canonicalRoot,
-              sessionId,
-              reviewer: queryString(request.body?.reviewer) ?? 'local-controller-human',
-              note: queryString(request.body?.note),
-            }),
-          undefined,
-          0,
-        ),
-      );
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post('/api/edit-sessions/:sessionId/finish', (request, response) => {
-    try {
-      const repoRoot = requestRepositoryRoot(request, options, controllerHome);
-      const result = finishEditSession(repoRoot, {
-        sessionId: request.params.sessionId,
-        decision: String(request.body?.decision ?? 'auto').replace(/-/g, '_') as never,
-        reviewer: queryString(request.body?.reviewer) ?? 'local-bridge-direct-edit',
-        note: queryString(request.body?.note),
-        checkIds: Array.isArray(request.body?.checkIds) ? request.body.checkIds.map(String) : undefined,
-        commit: request.body?.commit !== false,
-      });
-      localSnapshotCache.delete(repoRoot);
-      response.json(result);
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post('/api/edit-sessions/:sessionId/rollback', async (request, response) => {
-    try {
-      const repository = requestRepositorySelection(request, options, controllerHome);
-      response.json(
-        await withRepositoryMutationExclusionAsync(
-          controllerHome,
-          repository.repoId,
-          'local_bridge:rollback_edit_session',
-          () =>
-            runEditSessionMutationInWorker({
-              kind: 'rollback',
-              repoRoot: repository.canonicalRoot,
-              sessionId: request.params.sessionId,
-              toRevision:
-                typeof request.body?.toRevision === 'number' ? Math.trunc(request.body.toRevision) : undefined,
-              savepoint: queryString(request.body?.savepoint),
-            }),
-          undefined,
-          [],
-        ),
       );
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });

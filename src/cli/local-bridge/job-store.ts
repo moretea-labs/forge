@@ -20,10 +20,7 @@ import {
   LOCAL_BRIDGE_JOB_ROOT,
   allStoredJobPaths,
   eventsPath,
-  getLocalBridgeJobSnapshot,
-  jobDir,
   metaPath,
-  normalizeLocalJobId,
   readJson,
   readLocalBridgeJob,
   readStoredJobs,
@@ -34,12 +31,9 @@ import {
   refreshLocalBridgeJob as refreshLocalBridgeJobInRuntime,
 } from '../../runtime/local-bridge/lifecycle';
 import type {
-  LocalBridgeApproval,
   LocalBridgeJob,
   LocalBridgeJobEvent,
   RepositoryCommandPayload,
-  RunCheckPayload,
-  VerifyEditSessionPayload,
 } from '../../runtime/local-bridge/types';
 
 const ACTIVE_INDEX_PATH = `${LOCAL_BRIDGE_JOB_ROOT}/active-index.json`;
@@ -181,11 +175,6 @@ function writeJson(path: string, value: unknown): void {
   } finally {
     rmSync(temporaryPath, { force: true });
   }
-}
-
-function normalizeStringList(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return Array.from(new Set(value.map((entry) => String(entry).trim()).filter(Boolean)));
 }
 
 function appendEvent(repoRoot: string, jobId: string, event: Omit<LocalBridgeJobEvent, 'at'>): void {
@@ -477,7 +466,7 @@ export function cancelLocalBridgeJob(repoRoot: string, jobId: string): LocalBrid
       /* remote sessions may require provider UI */
     }
   }
-  if (job.action === 'run-check' || job.action === 'verify-edit-session') {
+  if (job.action === 'run-check') {
     releaseControllerCheckSubscription(checkSubscriberId(job.jobId));
   } else if (job.workerPid) {
     signalWorker(job.workerPid, 'SIGTERM');

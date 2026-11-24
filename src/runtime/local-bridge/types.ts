@@ -22,7 +22,6 @@ export type LocalBridgeJobAction =
   | 'launch-task'
   | 'quick-agent-session'
   | 'run-check'
-  | 'verify-edit-session'
   | 'repository-command';
 
 export interface LaunchTaskPayload {
@@ -66,15 +65,6 @@ export interface RunCheckPayload {
   checkSnapshot?: ControllerCheckSnapshot;
 }
 
-export interface VerifyEditSessionPayload {
-  sessionId: string;
-  revision: number;
-  requestId?: string;
-  checkIds?: string[];
-  reviewer?: string;
-  note?: string;
-}
-
 export interface RepositoryCommandPayload {
   controllerHome: string;
   repoId: string;
@@ -92,7 +82,6 @@ export type LocalBridgeJobPayload =
   | LaunchTaskPayload
   | QuickAgentSessionPayload
   | RunCheckPayload
-  | VerifyEditSessionPayload
   | RepositoryCommandPayload;
 
 export interface LocalBridgeJobEvent {

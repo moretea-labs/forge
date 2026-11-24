@@ -1,4 +1,4 @@
-import type { LocalBridgeJob, LocalBridgeJobEvent, LocalBridgeJobStatus, RepositoryCommandPayload, RunCheckPayload, VerifyEditSessionPayload } from "./types";
+import type { LocalBridgeJob, LocalBridgeJobEvent, LocalBridgeJobStatus, RepositoryCommandPayload, RunCheckPayload } from "./types";
 
 type AgentRunLifecycleStatus =
   | "queued" | "starting" | "running" | "waiting_for_user"
@@ -212,12 +212,11 @@ export function refreshLocalBridgeJob(
     return job;
   }
 
-  if ((job.action === "verify-edit-session" || job.action === "repository-command") && job.status === "running") {
-    const payload = job.payload as VerifyEditSessionPayload | RepositoryCommandPayload;
-    const configuredTimeout = port.resolveJobTimeout(repoRoot, "timeoutMs" in payload ? payload.timeoutMs : undefined);
+  if (job.action === "repository-command" && job.status === "running") {
+    const payload = job.payload as RepositoryCommandPayload;
+    const configuredTimeout = port.resolveJobTimeout(repoRoot, payload.timeoutMs);
     if (runningJobTimedOut(job, configuredTimeout, nowMs)) {
-      if (job.action === "verify-edit-session") port.releaseCheckSubscription("local-job:" + job.jobId);
-      else port.signalWorker(job.workerPid, "SIGTERM");
+      port.signalWorker(job.workerPid, "SIGTERM");
       return markRefreshTerminal(repoRoot, job, "timed_out", job.action + " exceeded its persisted execution deadline.", { timedOut: true }, port);
     }
     const reattached = reattachLiveDetachedWorker(repoRoot, job, port);
