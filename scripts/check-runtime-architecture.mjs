@@ -2399,6 +2399,11 @@ requireText('src/runtime/resources/claims/conflicts.ts', "'repo-content:*'");
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'normalizeSchedulerConfig');
 requireText('src/runtime/control-plane/global-scheduler/config.ts', 'normalizeSchedulerConfig');
 forbid(
+  'src/runtime/control-plane/global-scheduler/config.ts',
+  /maxWorkers|maxConcurrentRepositories|idleBackoffMaxMs|maxHeavyChecks|maxAgentProcesses|maxCodexProcesses|maxClaudeProcesses|maxGitHubProcesses|FORGE_MAX_WORKERS|FORGE_MAX_ACTIVE_REPOS|FORGE_IDLE_BACKOFF_MAX_MS|FORGE_MAX_HEAVY_CHECKS|FORGE_MAX_AGENT_PROCESSES|FORGE_MAX_CODEX_PROCESSES|FORGE_MAX_CLAUDE_PROCESSES|FORGE_MAX_GITHUB_PROCESSES/,
+  'retired Scheduler worker/admission limit config must stay physically absent',
+);
+forbid(
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   /parseDarwinAvailableMemoryMb|sampleDarwinAvailableMemoryMb|isSchedulerResourcePressured|FORGE_MIN_FREE_MEMORY_MB|FORGE_MAX_LOAD_PER_CPU/,
   'retired Scheduler resource-pressure admission must stay physically absent',

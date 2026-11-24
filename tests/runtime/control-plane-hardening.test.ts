@@ -206,18 +206,14 @@ describe('control-plane hardening', () => {
     expect(
       normalizeSchedulerConfig(
         {
-          maxWorkers: 0,
           pollIntervalMs: 1,
-          idleBackoffMaxMs: 100,
           heartbeatIntervalMs: 10,
           heartbeatTimeoutMs: 500,
         },
         {},
       ),
     ).toMatchObject({
-      maxWorkers: 1,
       pollIntervalMs: 50,
-      idleBackoffMaxMs: 250,
       heartbeatIntervalMs: 25,
       heartbeatTimeoutMs: 1_000,
     });
@@ -226,17 +222,13 @@ describe('control-plane hardening', () => {
       normalizeSchedulerConfig(
         {},
         {
-          FORGE_MAX_WORKERS: '7',
-          FORGE_IDLE_BACKOFF_MAX_MS: '3000',
           FORGE_SCHEDULER_HEARTBEAT_INTERVAL_MS: '2000',
           FORGE_SCHEDULER_HEARTBEAT_TIMEOUT_MS: '4000',
         },
       ),
     ).toMatchObject({
-      maxWorkers: 7,
-      idleBackoffMaxMs: 3_000,
       heartbeatIntervalMs: 2_000,
-      heartbeatTimeoutMs: 12_000,
+      heartbeatTimeoutMs: 8_000,
     });
   });
 
