@@ -2289,8 +2289,8 @@ describe('browser session compatibility on Computer target authority', () => {
       '--profile-directory=Default',
       '--enable-unsafe-extension-debugging',
     ]);
-    expect((launchOptions?.args as string[]).some((arg) => arg.startsWith('--disable-extensions-except='))).toBe(false);
-    expect((launchOptions?.args as string[]).some((arg) => arg.startsWith('--load-extension='))).toBe(false);
+    expect(((launchOptions?.args ?? []) as string[]).some((arg) => arg.startsWith('--disable-extensions-except='))).toBe(false);
+    expect(((launchOptions?.args ?? []) as string[]).some((arg) => arg.startsWith('--load-extension='))).toBe(false);
     expect(result).toMatchObject({
       provider: 'playwright-persistent-context',
       extension: { id: SUPERVISOR_EXTENSION_ID, path: canonicalExtensionPath, enabled: true },
@@ -2430,7 +2430,7 @@ describe('browser session compatibility on Computer target authority', () => {
       '--password-store=basic',
     ]);
     expect(launchOptions?.args).toEqual(['--profile-directory=Default']);
-    expect((launchOptions?.args as string[]).includes('--enable-unsafe-extension-debugging')).toBe(false);
+    expect(((launchOptions?.args ?? []) as string[]).includes('--enable-unsafe-extension-debugging')).toBe(false);
   });
 
   test('rejects managed native messaging declarations whose allowed origin does not match the stable extension id', async () => {

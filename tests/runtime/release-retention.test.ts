@@ -701,10 +701,16 @@ describe('runtime cleanup release integration', () => {
     const referencedBackup = join(backups, 'referenced.sqlite');
     const staleBackups = ['a', 'b', 'c'].map((suffix) => join(backups, `stale-${suffix}.sqlite`));
     writeFileSync(referencedBackup, 'referenced', 'utf8');
-    staleBackups.forEach((path) => writeFileSync(path, 'stale', 'utf8'));
+    staleBackups.forEach((path) => {
+      writeFileSync(path, 'stale', 'utf8');
+    });
     writeRuntimeAuthority(home, 'active-release', 'previous-release', referencedBackup);
-    staleReleases.forEach((path) => age(path));
-    staleBackups.forEach((path) => age(path));
+    staleReleases.forEach((path) => {
+      age(path);
+    });
+    staleBackups.forEach((path) => {
+      age(path);
+    });
     const daemon = join(home, 'daemon');
     mkdirSync(daemon, { recursive: true });
     const staleTemp = join(daemon, 'always-stale.tmp');
