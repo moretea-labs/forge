@@ -276,3 +276,54 @@ final class AgentMessageBlockCache {
         return parsed
     }
 }
+
+
+/// Caches the expensive Foundation Markdown conversion for one stable inline
+/// text snapshot. SwiftUI can re-evaluate a row's body many times while other
+/// transcript rows update; only a changed source needs reparsing.
+final class AgentInlineMarkdownCache {
+    private let parser: (String) -> AttributedString?
+    private var source: String?
+    private var cachedValue: AttributedString?
+
+    init(
+        parser: @escaping (String) -> AttributedString? = { source in
+            try? AttributedString(
+                markdown: source,
+                options: AttributedString.MarkdownParsingOptions(
+                    interpretedSyntax: .inlineOnlyPreservingWhitespace
+                )
+            )
+        }
+    ) {
+        self.parser = parser
+    }
+
+    func attributedString(for source: String) -> AttributedString? {
+        guard self.source != source else { return cachedValue }
+        let parsed = parser(source)
+        self.source = source
+        cachedValue = parsed
+        return parsed
+    }
+}
+
+/// Code rows are immutable for completed transcript messages. Cache the split
+/// so unrelated SwiftUI invalidations do not repeatedly allocate line arrays.
+final class AgentCodeBlockLineCache {
+    private let splitter: (String) -> [String]
+    private var source: String?
+    private var cachedLines: [String] = []
+
+    init(splitter: @escaping (String) -> [String] = { $0.components(separatedBy: "\n") }) {
+        self.splitter = splitter
+    }
+
+    func lines(for source: String) -> [String] {
+        guard self.source != source else { return cachedLines }
+        let parsed = splitter(source)
+        self.source = source
+        cachedLines = parsed
+        return parsed
+    }
+}

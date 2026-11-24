@@ -83,10 +83,10 @@ struct AgentAssistantMessageBody: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: ForgeClientDesign.Transcript.blockSpacing) {
-      ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-        content(block, blockIndex: index)
+      ForEach(blocks.indices, id: \.self) { index in
+        content(blocks[index], blockIndex: index)
       }
-      if !selectedTasks.isEmpty, onReplySelection != nil {
+      if onReplySelection != nil, !selectedTasks.isEmpty {
         Button {
           onReplySelection?("我选择：\n" + selectedTasks.map { "- " + $0 }.joined(separator: "\n"))
         } label: {
@@ -156,7 +156,8 @@ struct AgentAssistantMessageBody: View {
       .fixedSize(horizontal: false, vertical: true)
     case .list(let items):
       VStack(alignment: .leading, spacing: ForgeClientDesign.Transcript.listSpacing) {
-        ForEach(Array(items.enumerated()), id: \.offset) { itemIndex, item in
+        ForEach(items.indices, id: \.self) { itemIndex in
+          let item = items[itemIndex]
           HStack(alignment: .firstTextBaseline, spacing: 8) {
             Color.clear.frame(width: CGFloat(item.indent * 14), height: 1)
             if let original = item.checked {
@@ -244,15 +245,11 @@ private struct AgentInlineMarkdown: View {
   let text: String
   var font: Font = ForgeClientDesign.Transcript.body
   var color: Color = .primary
+  @State private var markdownCache = AgentInlineMarkdownCache()
 
   var body: some View {
     Group {
-      if let attributed = try? AttributedString(
-        markdown: text,
-        options: AttributedString.MarkdownParsingOptions(
-          interpretedSyntax: .inlineOnlyPreservingWhitespace
-        )
-      ) {
+      if let attributed = markdownCache.attributedString(for: text) {
         Text(attributed)
       } else {
         Text(text)
@@ -272,7 +269,8 @@ private struct FlowChoiceButtons: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      ForEach(Array(options.enumerated()), id: \.offset) { index, option in
+      ForEach(options.indices, id: \.self) { index in
+        let option = options[index]
         Button {
           onSelect?(option.value)
         } label: {
@@ -300,7 +298,8 @@ struct AgentCodeBlockView: View {
   var accessibilityIdentifierPrefix: String = "agent.code"
 
   private var isCommand: Bool { AgentMessageBlock.isShellLanguage(language) }
-  private var rows: [String] { code.components(separatedBy: "\n") }
+  @State private var lineCache = AgentCodeBlockLineCache()
+  private var rows: [String] { lineCache.lines(for: code) }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -340,7 +339,8 @@ struct AgentCodeBlockView: View {
 
       ScrollView(.horizontal) {
         VStack(alignment: .leading, spacing: 2) {
-          ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+          ForEach(rows.indices, id: \.self) { index in
+            let row = rows[index]
             Text(row.isEmpty ? " " : row)
               .font(ForgeClientDesign.Transcript.code)
               .foregroundStyle(diffColor(row))
