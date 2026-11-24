@@ -16,6 +16,8 @@
   const TURN = '[data-testid^="conversation-turn-"], [data-talvt-turn-state]';
   const PROVIDER_ACTIVITY_CHARS = 64 * 1024;
   const PROVIDER_FAILURE_CHARS = 250_000;
+  const CHATGPT_MODEL_LOCK_CAPABILITY = 'gpt-5.6-sol-high-v1';
+  const CHATGPT_MODEL_LOCK_NAME = 'GPT-5.6 Sol';
   const absoluteChatgptUrl = (href) => {
     try { const url = new URL(String(href ?? ''), location.href); return url.protocol === 'https:' && url.hostname === 'chatgpt.com' ? url.toString() : undefined; }
     catch { return undefined; }
@@ -236,6 +238,7 @@
       ...(editor ? { composerText: composerText(editor) } : {}),
       composerSelectorVersion: 'visible-single-v2',
       composerReplacementContract: 'exact-backed-up-project-draft-v1',
+      modelLockCapability: CHATGPT_MODEL_LOCK_CAPABILITY,
       // Read-only hydration attestation for a NEW Project bootstrap tab.
       // URL/DOM shell visibility alone cannot prove that the React model
       // picker has mounted or that the provider editor is send-ready.
@@ -247,6 +250,116 @@
       isGenerating: hasLiveGenerationSignal(),
     };
   };
+  const modelLockWait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const modelLockPicker = () => {
+    const buttons = Array.from(document.querySelectorAll('button'))
+      .filter((node) => visible(node)
+        && /选择 ChatGPT 模型|Select ChatGPT model/i.test(String(node.getAttribute?.('aria-label') ?? '')));
+    return buttons.length === 1 ? buttons[0] : undefined;
+  };
+  const modelLockMenu = () => {
+    const menus = Array.from(document.querySelectorAll('[role="menu"]')).filter(visible);
+    const matches = menus.filter((menu) => {
+      const options = Array.from(menu.querySelectorAll?.('[role="menuitemradio"]') ?? []);
+      return options.some((option) => String(option.innerText ?? option.textContent ?? '').trim() === CHATGPT_MODEL_LOCK_NAME)
+        && Boolean(menu.querySelector?.('[data-reasoning-slider="true"] [role="slider"]'));
+    });
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+  const closeModelLockMenu = async () => {
+    const picker = modelLockPicker();
+    if (!picker || picker.getAttribute?.('aria-expanded') !== 'true') return;
+    const active = document.activeElement ?? document.body;
+    const init = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
+    active?.dispatchEvent?.(new KeyboardEvent('keydown', init));
+    active?.dispatchEvent?.(new KeyboardEvent('keyup', init));
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await modelLockWait(80);
+      const current = modelLockPicker();
+      if (current && current.getAttribute?.('aria-expanded') !== 'true') return;
+    }
+  };
+  const openModelLockMenu = async () => {
+    const picker = modelLockPicker();
+    if (!picker) return { ready: false, reason: 'provider_model_lock_picker_ambiguous' };
+    if (picker.getAttribute?.('aria-expanded') !== 'true') {
+      picker.click?.();
+      await modelLockWait(180);
+    }
+    return modelLockMenu()
+      ? { ready: true }
+      : { ready: false, reason: 'provider_model_lock_menu_unavailable' };
+  };
+  const ensureGpt56High = async () => {
+    const opened = await openModelLockMenu();
+    if (!opened.ready) return opened;
+    try {
+      let menu = modelLockMenu();
+      if (!menu) return { ready: false, reason: 'provider_model_lock_menu_unavailable' };
+      let options = Array.from(menu.querySelectorAll?.('[role="menuitemradio"]') ?? [])
+        .filter((option) => visible(option)
+          && String(option.innerText ?? option.textContent ?? '').trim() === CHATGPT_MODEL_LOCK_NAME);
+      if (options.length !== 1) return { ready: false, reason: 'provider_model_lock_model_ambiguous' };
+      if (options[0].getAttribute?.('aria-checked') !== 'true') {
+        options[0].click?.();
+        await modelLockWait(250);
+        const reopened = await openModelLockMenu();
+        if (!reopened.ready) return reopened;
+        menu = modelLockMenu();
+        if (!menu) return { ready: false, reason: 'provider_model_lock_menu_unavailable' };
+        options = Array.from(menu.querySelectorAll?.('[role="menuitemradio"]') ?? [])
+          .filter((option) => visible(option)
+            && String(option.innerText ?? option.textContent ?? '').trim() === CHATGPT_MODEL_LOCK_NAME);
+      }
+      if (options.length !== 1 || options[0].getAttribute?.('aria-checked') !== 'true') {
+        return { ready: false, reason: 'provider_model_lock_model_unconfirmed' };
+      }
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        menu = modelLockMenu();
+        const row = menu?.querySelector?.('[data-reasoning-slider="true"]');
+        const slider = row?.querySelector?.('[role="slider"]');
+        if (!row || !slider) return { ready: false, reason: 'provider_model_lock_reasoning_unavailable' };
+        const now = Number(slider.getAttribute?.('aria-valuenow'));
+        const maximum = Number(slider.getAttribute?.('aria-valuemax'));
+        if (!Number.isFinite(now) || !Number.isFinite(maximum)) {
+          return { ready: false, reason: 'provider_model_lock_reasoning_invalid' };
+        }
+        if (now === maximum) break;
+        if (now > maximum) return { ready: false, reason: 'provider_model_lock_reasoning_invalid' };
+        row.focus?.();
+        const init = { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true };
+        row.dispatchEvent?.(new KeyboardEvent('keydown', init));
+        row.dispatchEvent?.(new KeyboardEvent('keyup', init));
+        await modelLockWait(120);
+      }
+      menu = modelLockMenu();
+      const finalOption = Array.from(menu?.querySelectorAll?.('[role="menuitemradio"]') ?? [])
+        .filter((option) => visible(option)
+          && String(option.innerText ?? option.textContent ?? '').trim() === CHATGPT_MODEL_LOCK_NAME);
+      const finalSlider = menu?.querySelector?.('[data-reasoning-slider="true"] [role="slider"]');
+      const finalNow = Number(finalSlider?.getAttribute?.('aria-valuenow'));
+      const finalMax = Number(finalSlider?.getAttribute?.('aria-valuemax'));
+      if (finalOption.length !== 1 || finalOption[0].getAttribute?.('aria-checked') !== 'true'
+          || !Number.isFinite(finalNow) || !Number.isFinite(finalMax) || finalNow !== finalMax) {
+        return { ready: false, reason: 'provider_model_lock_final_proof_failed' };
+      }
+    } finally {
+      await closeModelLockMenu();
+    }
+    const picker = modelLockPicker();
+    const label = String(picker?.innerText ?? picker?.textContent ?? '').trim();
+    if (!picker || picker.getAttribute?.('aria-expanded') === 'true'
+        || !/(?:^|\s)5\.6(?:\s|$)/i.test(label) || !/(?:高|High)/i.test(label)) {
+      return { ready: false, reason: 'provider_model_lock_picker_confirmation_failed' };
+    }
+    return {
+      ready: true,
+      model: CHATGPT_MODEL_LOCK_NAME,
+      reasoning: 'high',
+      capability: CHATGPT_MODEL_LOCK_CAPABILITY,
+    };
+  };
+
   const writeComposer = (node, prompt) => {
     node.focus();
     if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
@@ -306,6 +419,15 @@
     } else if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
     const node = composer();
     if (!node) return { dispatched: false, reason: 'composer_missing' };
+    // Lock only unattended Forge effects. Generic/manual Computer dispatch keeps
+    // its existing provider-selection semantics.
+    const automaticDispatch = /^\[forge-supervisor(?:\s|\])/i.test(actualPrompt)
+      || /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>/.test(actualPrompt);
+    if (!prepareOnly && automaticDispatch) {
+      const modelLock = await ensureGpt56High();
+      if (!modelLock.ready) return { dispatched: false, reason: modelLock.reason };
+      if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
+    }
     // Project instructions select tools. No @forge UI mention is needed.
     const managedEffect = /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>/.test(actualPrompt);
     if (managedEffect && !expectedConversationId && !expectedProjectId) return { dispatched: false, reason: 'target_identity_unavailable' };
@@ -445,7 +567,8 @@
     if (message.type === 'forge-computer-chatgpt-capabilities') {
       sendResponse({ bootstrapTargetGuard: 'project-checked-before-send-v1',
         composerReplacementContract: 'exact-backed-up-project-draft-v1',
-        recoveryCapability: 'recover-no-stop-prewrite-v1' });
+        recoveryCapability: 'recover-no-stop-prewrite-v1',
+        modelLockCapability: CHATGPT_MODEL_LOCK_CAPABILITY });
       return false;
     }
     if (message.type === 'forge-computer-chatgpt-prepare') {
