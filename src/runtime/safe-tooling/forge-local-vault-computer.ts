@@ -60,7 +60,9 @@ export class ForgeLocalVaultBridgeError extends Error {
     super('Local Forge vault browser handoff rejected.');
   }
 }
-const deny = (code: string): never => { throw new ForgeLocalVaultBridgeError(code); };
+const deny = (code: string): never => {
+  throw new ForgeLocalVaultBridgeError(code);
+};
 
 /**
  * Composition-only API, deliberately not exported as a tool, plugin action,
@@ -68,7 +70,8 @@ const deny = (code: string): never => { throw new ForgeLocalVaultBridgeError(cod
  * release-owned service; this function never unlocks or reads the keychain.
  */
 export function attachForgeLocalVaultNativeOwner(
-  controllerHome: string, owner: ForgeLocalVaultNativeOwner,
+  controllerHome: string,
+  owner: ForgeLocalVaultNativeOwner,
 ): () => void {
   const identity = resolve(controllerHome);
   const previous = nativeOwners.get(identity);
@@ -87,7 +90,9 @@ function requireUnlockedOwner(controllerHome: string): ForgeLocalVaultNativeOwne
   if (!owner) return deny('FORGE_VAULT_LOCAL_OWNER_UNAVAILABLE');
   try {
     if (owner.isUnlocked() === true) return owner;
-  } catch { /* An unavailable local service is never an unlock. */ }
+  } catch {
+    /* An unavailable local service is never an unlock. */
+  }
   return deny('FORGE_VAULT_LOCAL_UNLOCK_REQUIRED');
 }
 
@@ -111,12 +116,16 @@ export async function fillForgeVaultPasswordInComputer(input: VaultFillInput): P
         provider: PROVIDER,
         account: input.account,
       });
-      if (grant.constraints?.account !== input.account
-        || grant.constraints?.endpoint !== input.origin
-        || grant.constraints?.provider !== PROVIDER) {
+      if (
+        grant.constraints?.account !== input.account ||
+        grant.constraints?.endpoint !== input.origin ||
+        grant.constraints?.provider !== PROVIDER
+      ) {
         return deny('FORGE_VAULT_CREDENTIAL_NOT_AUTHORIZED');
       }
-    } catch { return deny('FORGE_VAULT_CREDENTIAL_NOT_AUTHORIZED'); }
+    } catch {
+      return deny('FORGE_VAULT_CREDENTIAL_NOT_AUTHORIZED');
+    }
   };
   canonicalGrant();
   const owner = requireUnlockedOwner(input.controllerHome);
@@ -133,9 +142,12 @@ export async function fillForgeVaultPasswordInComputer(input: VaultFillInput): P
       usernameSelector: input.usernameSelector,
       page: input.page,
       verifyCanonicalGrant: (request) => {
-        if (request.credentialRef !== input.credentialRef
-          || request.endpoint !== input.origin || request.account !== input.account
-          || request.provider !== PROVIDER) {
+        if (
+          request.credentialRef !== input.credentialRef ||
+          request.endpoint !== input.origin ||
+          request.account !== input.account ||
+          request.provider !== PROVIDER
+        ) {
           return deny('FORGE_VAULT_CREDENTIAL_NOT_AUTHORIZED');
         }
         canonicalGrant();
@@ -146,20 +158,31 @@ export async function fillForgeVaultPasswordInComputer(input: VaultFillInput): P
           return deny('FORGE_VAULT_BROWSER_ORIGIN_MISMATCH');
         }
         return {
-          authorized: true, credentialRef: input.credentialRef,
-          endpoint: input.origin, account: input.account, provider: PROVIDER,
+          authorized: true,
+          credentialRef: input.credentialRef,
+          endpoint: input.origin,
+          account: input.account,
+          provider: PROVIDER,
         };
       },
     });
-    if (result.fillDispatched !== true || result.passwordFieldFilled !== true
-      || result.formSubmitted !== false || typeof result.accountFieldFilled !== 'boolean') {
+    if (
+      result.fillDispatched !== true ||
+      result.passwordFieldFilled !== true ||
+      result.formSubmitted !== false ||
+      typeof result.accountFieldFilled !== 'boolean'
+    ) {
       return deny('FORGE_VAULT_FILL_REJECTED_OR_UNKNOWN');
     }
     // Explicit allowlist: do not spread provider receipts or arbitrary values.
     return {
-      fillDispatched: true, accountFieldFilled: result.accountFieldFilled,
-      passwordFieldFilled: true, formSubmitted: false, loginVerified: false,
-      source: 'forge-local-vault', credentialMaterialReturned: false,
+      fillDispatched: true,
+      accountFieldFilled: result.accountFieldFilled,
+      passwordFieldFilled: true,
+      formSubmitted: false,
+      loginVerified: false,
+      source: 'forge-local-vault',
+      credentialMaterialReturned: false,
     };
   } catch {
     // A provider error may contain secret material. Never serialize it.
@@ -172,6 +195,10 @@ export function lockAllForgeVaultComputerSessions(): void {
   const owners = Array.from(nativeOwners.values());
   nativeOwners.clear();
   for (const owner of owners) {
-    try { owner.lock(); } catch { /* Continue revoking all owners. */ }
+    try {
+      owner.lock();
+    } catch {
+      /* Continue revoking all owners. */
+    }
   }
 }

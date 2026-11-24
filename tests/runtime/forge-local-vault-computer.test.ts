@@ -2,7 +2,10 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { authorizeCredentialUse, revokeCredentialUse } from '../../src/runtime/safe-tooling/managed-credential-authorization';
+import {
+  authorizeCredentialUse,
+  revokeCredentialUse,
+} from '../../src/runtime/safe-tooling/managed-credential-authorization';
 import {
   attachForgeLocalVaultNativeOwner,
   assertForgeLocalVaultUnlocked,
@@ -23,18 +26,32 @@ function fixture() {
   const account = 'synthetic@example.test';
   const credentialRef = 'credref:v1:fixture-only-not-a-secret';
   const input = {
-    controllerHome, origin, account, credentialRef,
-    selector: '#password', usernameSelector: '#username',
+    controllerHome,
+    origin,
+    account,
+    credentialRef,
+    selector: '#password',
+    usernameSelector: '#username',
     page: {
       url: () => origin + '/login',
-      evaluate: async <T>() => { throw new Error('unexpected DOM read'); return undefined as T; },
-      fill: async () => { throw new Error('unexpected mutation'); },
+      evaluate: async <T>(): Promise<T> => {
+        throw new Error('unexpected DOM read');
+      },
+      fill: async () => {
+        throw new Error('unexpected mutation');
+      },
     },
     browserProvider: 'playwright',
   };
   const authorize = (provider: 'forge_local_vault' | 'browser_password_manager' = 'forge_local_vault') =>
-    authorizeCredentialUse({ controllerHome, credentialRef, endpoint: origin,
-      provider, account, confirmAuthorization: true });
+    authorizeCredentialUse({
+      controllerHome,
+      credentialRef,
+      endpoint: origin,
+      provider,
+      account,
+      confirmAuthorization: true,
+    });
   return { input, authorize };
 }
 function mockOwner(unlocked: boolean) {
@@ -42,16 +59,25 @@ function mockOwner(unlocked: boolean) {
   let calls = 0;
   const owner: ForgeLocalVaultNativeOwner = {
     isUnlocked: () => ready,
-    lock: () => { ready = false; },
+    lock: () => {
+      ready = false;
+    },
     fillAuthorizedForm: async (input) => {
       calls++;
       const proof = input.verifyCanonicalGrant({
-        credentialRef: input.credentialRef, endpoint: input.origin,
-        account: input.account, provider: 'forge_local_vault',
+        credentialRef: input.credentialRef,
+        endpoint: input.origin,
+        account: input.account,
+        provider: 'forge_local_vault',
       });
       expect(proof.provider).toBe('forge_local_vault');
-      return { fillDispatched: true, accountFieldFilled: false,
-        passwordFieldFilled: true, formSubmitted: false, unexpectedPrivateValue: 'fixture-canary' };
+      return {
+        fillDispatched: true,
+        accountFieldFilled: false,
+        passwordFieldFilled: true,
+        formSubmitted: false,
+        unexpectedPrivateValue: 'fixture-canary',
+      };
     },
   };
   return { owner, calls: () => calls, ready: () => ready };
@@ -60,20 +86,23 @@ function mockOwner(unlocked: boolean) {
 describe('Forge Computer local-vault secret boundary', () => {
   test('native Apple Events is denied without any registration, grant or Keychain access', async () => {
     const { input } = fixture();
-    await expect(fillForgeVaultPasswordInComputer({ ...input, browserProvider: 'macos-apple-events' }))
-      .rejects.toMatchObject({ code: 'FORGE_VAULT_NATIVE_BROWSER_UNSAFE' });
+    await expect(
+      fillForgeVaultPasswordInComputer({ ...input, browserProvider: 'macos-apple-events' }),
+    ).rejects.toMatchObject({ code: 'FORGE_VAULT_NATIVE_BROWSER_UNSAFE' });
   });
   test('unsupported host refuses before any browser mutation', async () => {
     if (process.platform === 'darwin') return;
     const { input } = fixture();
-    await expect(fillForgeVaultPasswordInComputer(input))
-      .rejects.toMatchObject({ code: 'FORGE_VAULT_DEVICE_PLATFORM_UNSUPPORTED' });
+    await expect(fillForgeVaultPasswordInComputer(input)).rejects.toMatchObject({
+      code: 'FORGE_VAULT_DEVICE_PLATFORM_UNSUPPORTED',
+    });
   });
   test('preflight rejects missing and locked native owners without authorizing unlock', () => {
     const { input, authorize } = fixture();
     authorize();
-    expect(() => assertForgeLocalVaultUnlocked(input.controllerHome))
-      .toThrow( 'Local Forge vault browser handoff rejected.');
+    expect(() => assertForgeLocalVaultUnlocked(input.controllerHome)).toThrow(
+      'Local Forge vault browser handoff rejected.',
+    );
     const mock = mockOwner(false);
     attachForgeLocalVaultNativeOwner(input.controllerHome, mock.owner);
     expect(() => assertForgeLocalVaultUnlocked(input.controllerHome)).toThrow();
@@ -84,12 +113,14 @@ describe('Forge Computer local-vault secret boundary', () => {
     if (process.platform !== 'darwin') return;
     const { input, authorize } = fixture();
     authorize();
-    await expect(fillForgeVaultPasswordInComputer(input))
-      .rejects.toMatchObject({ code: 'FORGE_VAULT_LOCAL_OWNER_UNAVAILABLE' });
+    await expect(fillForgeVaultPasswordInComputer(input)).rejects.toMatchObject({
+      code: 'FORGE_VAULT_LOCAL_OWNER_UNAVAILABLE',
+    });
     const mock = mockOwner(false);
     attachForgeLocalVaultNativeOwner(input.controllerHome, mock.owner);
-    await expect(fillForgeVaultPasswordInComputer(input))
-      .rejects.toMatchObject({ code: 'FORGE_VAULT_LOCAL_UNLOCK_REQUIRED' });
+    await expect(fillForgeVaultPasswordInComputer(input)).rejects.toMatchObject({
+      code: 'FORGE_VAULT_LOCAL_UNLOCK_REQUIRED',
+    });
     expect(mock.calls()).toBe(0);
     expect(mock.ready()).toBe(false);
   });
@@ -99,8 +130,9 @@ describe('Forge Computer local-vault secret boundary', () => {
     authorize('browser_password_manager');
     const mock = mockOwner(true);
     attachForgeLocalVaultNativeOwner(input.controllerHome, mock.owner);
-    await expect(fillForgeVaultPasswordInComputer(input))
-      .rejects.toMatchObject({ code: 'FORGE_VAULT_CREDENTIAL_NOT_AUTHORIZED' });
+    await expect(fillForgeVaultPasswordInComputer(input)).rejects.toMatchObject({
+      code: 'FORGE_VAULT_CREDENTIAL_NOT_AUTHORIZED',
+    });
     expect(mock.calls()).toBe(0);
   });
   test('only an independently unlocked local owner receives exact grant and whitelisted receipt', async () => {
@@ -112,9 +144,13 @@ describe('Forge Computer local-vault secret boundary', () => {
     const receipt = await fillForgeVaultPasswordInComputer(input);
     expect(mock.calls()).toBe(1);
     expect(receipt).toEqual({
-      fillDispatched: true, accountFieldFilled: false, passwordFieldFilled: true,
-      formSubmitted: false, loginVerified: false,
-      source: 'forge-local-vault', credentialMaterialReturned: false,
+      fillDispatched: true,
+      accountFieldFilled: false,
+      passwordFieldFilled: true,
+      formSubmitted: false,
+      loginVerified: false,
+      source: 'forge-local-vault',
+      credentialMaterialReturned: false,
     });
     expect(JSON.stringify(receipt)).not.toContain('fixture-canary');
     detach();
