@@ -3102,11 +3102,14 @@ struct ZenProjectDirectorySheet: View {
                             .accessibilityIdentifier("zen.projects.open.\(project.projectId)")
                             .accessibilityLabel(isSelected ? "\(project.displayName)，当前项目" : project.displayName)
                             .accessibilityValue(isSelected ? selectedPlacement ?? "项目级" : "")
+                            if isSelected {
+                                Text("当前 · \(selectedPlacement ?? "项目级")")
+                                    .font(.system(size:11))
+                                    .foregroundStyle(Color.accentColor)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
                             HStack(spacing:8) {
-                                if isSelected {
-                                    Text("当前 · \(selectedPlacement ?? "项目级")")
-                                        .foregroundStyle(Color.accentColor)
-                                }
                                 if project.status == "archived" {
                                     Text("已归档")
                                 }
