@@ -1153,7 +1153,7 @@ export function recordTaskVerification(
     status: verificationStatus,
     verification,
     note: successful
-      ? `Required verification evidence passed; a completion receipt remains required before completion.${invalidCheckNote}`
+      ? `Required verification evidence passed; final delivery/cleanup facts must come from the owning execution or edit surface before legacy Task completion.${invalidCheckNote}`
       : outcome.status === 'failed'
         ? `Verification evidence failed: ${outcome.reasons.join(' ')}${invalidCheckNote}`
         : `Verification evidence is incomplete: ${outcome.reasons.join(' ')}${invalidCheckNote}`,
