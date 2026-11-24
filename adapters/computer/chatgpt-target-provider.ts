@@ -481,20 +481,34 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     // extension. Recover only when exactly one exact tab has that proof and it
     // is from the same pinned provider/profile (or the sole live provider when
     // no durable binding exists). Never use focus/current-tab as authority.
+    const ownedExact = exact.filter(({ entry }) => Boolean(entry.providerBinding?.ownerToken));
     if (exact.length > 1 && !binding?.ownerToken) {
-      const owned = exact.filter(({ entry }) => Boolean(entry.providerBinding?.ownerToken));
-      const candidate = owned.length === 1 ? owned[0] : undefined;
+      const candidate = ownedExact.length === 1 ? ownedExact[0] : undefined;
       const samePinnedProvider = Boolean(candidate && binding?.providerId === PROVIDER_ID
         && binding.providerSessionId === candidate.instanceId
         && (!binding.browserProduct || binding.browserProduct === candidate.entry.providerBinding?.browserProduct));
       const soleProviderWithoutBinding = Boolean(candidate && !binding && fresh.length === 1);
       if (candidate && (samePinnedProvider || soleProviderWithoutBinding)) {
-        candidates = owned;
+        candidates = ownedExact;
         recoverOwnedHeartbeat = true;
       }
     }
+    // Multiple pre-existing exact URLs are page identity, not physical ownership.
+    // For a first Ensure only, one sole live provider may allocate a NEW
+    // extension-owned exact tab when NONE of those existing tabs carries a Forge
+    // owner token. The extension's resolveTarget intentionally ignores all such
+    // unbound tabs and creates/attests a dedicated tab before returning. Read-only
+    // Observe, multiple providers, or any competing owned tab remain fail-closed.
+    const allowFreshOwnedAllocation = exact.length > 1
+      && candidates.length !== 1
+      && !binding
+      && ownedExact.length === 0
+      && fresh.length === 1
+      && options.createIfMissing !== false;
     // A stale binding must not turn two observed exact tabs into a third tab.
-    if (exact.length > 1 && candidates.length !== 1) return failure('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS', { failoverSafe: false });
+    if (exact.length > 1 && candidates.length !== 1 && !allowFreshOwnedAllocation) {
+      return failure('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS', { failoverSafe: false });
+    }
     // A unique heartbeat owner token is browser-session ownership evidence, not
     // Send authority. Rebind it under Surface CAS, then immediately Observe the
     // exact physical tab; the provider re-attests the token before any later

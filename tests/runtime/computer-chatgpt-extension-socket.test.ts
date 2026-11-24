@@ -279,6 +279,77 @@ test('legacy ownerless exact Surface recovers only the unique heartbeat-owned du
   });
 });
 
+test('first Ensure allocates a dedicated owned tab when duplicate exact URLs are all unowned', async () => {
+  const controllerHome = home();
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  const canonicalUrl = 'https://chatgpt.com/c/unowned-duplicates';
+  const identity = { namespace: 'chatgpt.conversation' as const, conversationId: 'unowned-duplicates', canonicalUrl };
+  const base = {
+    providerId: 'browser.chrome-extension', observedAt: new Date().toISOString(),
+    providerSessionId: 'centbrowser-unowned', browserProduct: 'chrome', windowId: '12',
+  };
+  await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension', providerInstanceId: 'centbrowser-unowned', observedAt: new Date().toISOString(),
+    conversations: [
+      { conversationId: identity.conversationId, canonicalUrl, providerBinding: { ...base, tabId: '71' } },
+      { conversationId: identity.conversationId, canonicalUrl, providerBinding: { ...base, tabId: '72' }, isCurrent: true },
+    ],
+  });
+
+  const ensurePromise = runtime.port.ensureExact(identity);
+  let claim: Record<string, unknown> | undefined;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    claim = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', { provider_instance_id: 'centbrowser-unowned' });
+    if ((claim.result as { command?: unknown } | undefined)?.command) break;
+    await Bun.sleep(10);
+  }
+  const ensureCommand = (claim!.result as { command: Record<string, unknown> }).command;
+  expect(ensureCommand).toMatchObject({ kind: 'ensure', identity });
+  expect(ensureCommand).not.toHaveProperty('providerBinding');
+  const dedicatedProof = ['proof', 'dedicated', 'unowned-duplicates'].join('-');
+  const dedicatedBinding = {
+    ...base, observedAt: new Date().toISOString(), tabId: '73', ownerToken: dedicatedProof,
+  };
+  const observation = {
+    url: canonicalUrl, title: 'Dedicated owned target', latestUserText: '', latestAssistantResponse: '',
+    composerText: '', providerActivityText: '', providerFailureText: '', isGenerating: false,
+    modelLockCapability: 'gpt-5.6-sol-high-v1' as const,
+  };
+  await jsonlRpc(runtime.socketPath, 'computer_extension_complete', {
+    provider_instance_id: 'centbrowser-unowned', command_id: ensureCommand.commandId,
+    result: { kind: 'ensured', providerBinding: dedicatedBinding, observation },
+  });
+  expect(await ensurePromise).toMatchObject({
+    state: 'ready', observation: { modelLockCapability: 'gpt-5.6-sol-high-v1' },
+  });
+});
+
+test('read-only exact lookup never allocates through duplicate unowned URLs', async () => {
+  const controllerHome = home();
+  const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
+  const canonicalUrl = 'https://chatgpt.com/c/unowned-duplicates-readonly';
+  const base = {
+    providerId: 'browser.chrome-extension', observedAt: new Date().toISOString(),
+    providerSessionId: 'centbrowser-unowned-readonly', browserProduct: 'chrome', windowId: '13',
+  };
+  await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
+    providerId: 'browser.chrome-extension', providerInstanceId: 'centbrowser-unowned-readonly', observedAt: new Date().toISOString(),
+    conversations: [
+      { conversationId: 'unowned-duplicates-readonly', canonicalUrl, providerBinding: { ...base, tabId: '81' } },
+      { conversationId: 'unowned-duplicates-readonly', canonicalUrl, providerBinding: { ...base, tabId: '82' } },
+    ],
+  });
+  expect(await runtime.port.ensureExact({
+    namespace: 'chatgpt.conversation', conversationId: 'unowned-duplicates-readonly', canonicalUrl,
+  }, { createIfMissing: false })).toMatchObject({
+    state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS' },
+  });
+  const claimed = await jsonlRpc(runtime.socketPath, 'computer_extension_claim', {
+    provider_instance_id: 'centbrowser-unowned-readonly',
+  });
+  expect((claimed.result as { command?: unknown }).command ?? null).toBeNull();
+});
+
 test('multiple heartbeat-owned duplicates remain ambiguous', async () => {
   const controllerHome = home();
   const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
