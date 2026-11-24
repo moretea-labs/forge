@@ -1,5 +1,4 @@
-export const ENGINEERING_RISK_CLASSES = ['low', 'normal', 'high', 'critical'] as const;
-export type EngineeringRiskClass = (typeof ENGINEERING_RISK_CLASSES)[number];
+export type EngineeringRiskClass = 'low' | 'normal' | 'high' | 'critical';
 
 /** Exact source-bound reference for a loaded project engineering contract; the project file remains authority. */
 export interface ProjectEngineeringContractReceipt {
@@ -15,10 +14,6 @@ export interface ProjectEngineeringContractReceipt {
     loadedAt: string;
   };
 }
-
-export type ContextClosureReadinessStatus = 'ready' | 'degraded' | 'insufficient';
-export type ContextClosureSkillStatus = 'ready' | 'degraded' | 'unavailable' | 'not_required';
-export type ContextClosureSemanticStatus = 'ready' | 'degraded' | 'unavailable' | 'not_required';
 
 export interface ContextClosureSkillResolution {
   id: string;
@@ -51,14 +46,14 @@ export interface ContextClosureReceipt {
   guidance: { status: 'none' | 'ready' | 'degraded'; paths: string[] };
   detected: { languages: string[]; platforms: string[] };
   skills: {
-    status: ContextClosureSkillStatus;
+    status: 'ready' | 'degraded' | 'unavailable' | 'not_required';
     requiredKinds: string[];
     resolved: ContextClosureSkillResolution[];
     unresolvedKinds: string[];
   };
   semanticTools: {
     required: boolean;
-    status: ContextClosureSemanticStatus;
+    status: 'ready' | 'degraded' | 'unavailable' | 'not_required';
     providers: ContextClosureSemanticToolResolution[];
     reasonCodes: string[];
     compilerEvidenceRequired: boolean;
@@ -70,6 +65,6 @@ export interface ContextClosureReceipt {
     rawSourceStatus: 'current' | 'partial' | 'unavailable';
     structuralStatus: 'disabled' | 'ready' | 'stale' | 'unavailable' | 'degraded';
   };
-  readiness: { status: ContextClosureReadinessStatus; reasonCodes: string[] };
+  readiness: { status: 'ready' | 'degraded' | 'insufficient'; reasonCodes: string[] };
   provenance: { source: 'rh_context'; contextGeneratedAt: string };
 }
