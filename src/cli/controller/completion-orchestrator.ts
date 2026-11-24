@@ -591,15 +591,6 @@ function finishEditSessionUnlocked(repoRoot: string, options: FinishEditSessionO
     kind: commitSha ? ('commit' as const) : ('no_change' as const),
     targetBranch: after.branch,
     targetRevision,
-    sourceRevision: targetRevision,
-    baseRevision: session.baseRevision,
-    strategy:
-      commitSha && !reusedHead
-        ? ('edit_session_commit' as const)
-        : changedPaths.length === 0
-          ? ('no_change' as const)
-          : ('already_integrated' as const),
-    editSessionId: session.sessionId,
     reachable: revisionReachable(repoRoot, targetRevision, after.branch),
     recordedAt: nowIso(),
   };

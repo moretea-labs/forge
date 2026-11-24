@@ -75,10 +75,6 @@ export interface IntegrationEvidence {
   kind: 'commit' | 'no_change' | 'superseded';
   targetBranch: string;
   targetRevision: string;
-  sourceRevision?: string;
-  baseRevision?: string;
-  strategy: 'edit_session_commit' | 'already_integrated' | 'no_change' | 'superseded';
-  editSessionId?: string;
   reachable: boolean;
   recordedAt: string;
 }
