@@ -8,6 +8,7 @@ import { registerRepository } from '../../src/runtime/repositories/registry';
 import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { applyConsoleSafePatch } from '../../src/cli/local-bridge/facade-api';
 import { executeFast } from '../../src/runtime/execution/thin-harness';
+import { normalizeEditOperation } from '../../src/runtime/editing/edit-operation-contract';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -155,6 +156,21 @@ test('unversioned exact patch rejects ambiguous or changed targets without writi
   expect(fx.sessions()).toHaveLength(0);
 });
 
+test('exact local edits omit whole-file CAS while full-file mutations require it (#716)', () => {
+  const local = normalizeEditOperation({
+    type: 'replace',
+    path: 'source.ts',
+    replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
+  });
+  expect(local).not.toHaveProperty('expectedSha256');
+  expect(() => normalizeEditOperation({ type: 'write', path: 'source.ts', content: 'replacement\n' })).toThrow(
+    'write requires expected_sha256',
+  );
+  expect(() => normalizeEditOperation({ type: 'delete', path: 'source.ts' })).toThrow(
+    'delete requires expected_sha256',
+  );
+});
+
 test('sessionless Safe Patch refuses symlink targets and multi-file batches without source mutation', async () => {
   const fx = fixture();
   symlinkSync('source.ts', join(fx.repoRoot, 'alias.ts'));
@@ -189,7 +205,6 @@ test('canonical MCP Safe Patch defaults ordinary single-file edits to sessionles
       {
         type: 'replace',
         path: 'source.ts',
-        expected_sha256: hash(fx.initial),
         replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
       },
     ],
@@ -263,7 +278,6 @@ test('Local Bridge Console defaults single-file edits to CAS; explicit legacy re
       {
         type: 'replace',
         path: 'source.ts',
-        expected_sha256: hash(fx.initial),
         replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
       },
     ],
@@ -320,7 +334,6 @@ test('Fast Executor uses CAS without EditSession or Workspace Savepoint and retu
         {
           type: 'replace',
           path: 'source.ts',
-          expected_sha256: hash(fx.initial),
           replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
         },
       ],
