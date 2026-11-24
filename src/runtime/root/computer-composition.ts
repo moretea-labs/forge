@@ -17,9 +17,14 @@ import {
   type ComputerRuntimeProviderExecutionRequest,
 } from '../../../packages/protocols/computer/index';
 import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from '../../../adapters/computer/desktop-operator-contract';
-import { createDesktopOperatorComputerProvider, type DesktopOperatorComputerProvider } from '../../../adapters/computer/index';
+import {
+  createDesktopOperatorComputerProvider,
+  type DesktopOperatorComputerProvider,
+} from '../../../adapters/computer/index';
 import { resolveControllerHome } from '../../effects/controller-home';
 import { currentComputerPlatform } from '../platform/computer-platform';
+import { resolveWindowsComputerPowerShell } from '../platform/windows-computer-observation';
+import { createWindowsComputerProvider } from '../platform/windows-computer-target';
 import { getExternalPluginAdapter } from '../plugins/external-adapter';
 import { getExternalPluginRegistration } from '../plugins/external-registration';
 import { AssistantPluginError } from '../plugins/errors';
@@ -41,7 +46,11 @@ function computerCompositionKey(controllerHome: string): string {
   const fingerprint = registration
     ? `${registration.revision}:${registration.registrationFingerprint}:${registration.enabled ? 'enabled' : 'disabled'}`
     : 'desktop_operator:unregistered';
-  return `${controllerHome}:${currentComputerPlatform()}:${fingerprint}`;
+  const windowsTransport =
+    currentComputerPlatform() === 'linux' && resolveWindowsComputerPowerShell()
+      ? 'windows-uia:available'
+      : 'windows-uia:absent';
+  return [controllerHome, currentComputerPlatform(), windowsTransport, fingerprint].join(':');
 }
 
 function ensureComputerComposition(controllerHome: string = resolveControllerHome()): ComputerProviderRegistry {
@@ -59,6 +68,10 @@ function ensureComputerComposition(controllerHome: string = resolveControllerHom
       },
     });
     next.register(desktopOperatorProvider);
+  } else {
+    desktopOperatorProvider = undefined;
+    if (currentComputerPlatform() === 'linux' && resolveWindowsComputerPowerShell())
+      next.register(createWindowsComputerProvider());
   }
   computerProviders = next;
   computerProviderCompositionKey = compositionKey;
@@ -110,18 +123,43 @@ export async function executeRuntimeComputerConsoleUnlock(
   timeoutMs: number,
   controllerHome: string = resolveControllerHome(),
 ): Promise<Record<string, unknown>> {
-  if (request.capability !== COMPUTER_CONSOLE_UNLOCK_CAPABILITY
-    || !['prepare_unlock_console', 'unlock_console', 'console_unlock_enroll', 'console_unlock_status', 'console_unlock_recover', 'console_unlock_revoke'].includes(request.action)) {
-    throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_REQUEST_INVALID', 'Protected console unlock accepts only declared computer.console.unlock.v1 temporary or unattended-recovery commands.', { retryable: false });
+  if (
+    request.capability !== COMPUTER_CONSOLE_UNLOCK_CAPABILITY ||
+    ![
+      'prepare_unlock_console',
+      'unlock_console',
+      'console_unlock_enroll',
+      'console_unlock_status',
+      'console_unlock_recover',
+      'console_unlock_revoke',
+    ].includes(request.action)
+  ) {
+    throw new AssistantPluginError(
+      'COMPUTER_CONSOLE_UNLOCK_REQUEST_INVALID',
+      'Protected console unlock accepts only declared computer.console.unlock.v1 temporary or unattended-recovery commands.',
+      { retryable: false },
+    );
   }
-  if (authorization.kind !== 'explicit_single_use'
-    || authorization.confirmed !== true
-    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(authorization.invocationId)) {
-    throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED', 'Protected console unlock requires one explicit single-use authorization bound to this invocation.', { retryable: false });
+  if (
+    authorization.kind !== 'explicit_single_use' ||
+    authorization.confirmed !== true ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(authorization.invocationId)
+  ) {
+    throw new AssistantPluginError(
+      'COMPUTER_CONSOLE_UNLOCK_EXPLICIT_AUTHORIZATION_REQUIRED',
+      'Protected console unlock requires one explicit single-use authorization bound to this invocation.',
+      { retryable: false },
+    );
   }
-  if (request.action === 'unlock_console'
-    && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(request.credentialHandle)) {
-    throw new AssistantPluginError('COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_HANDLE_REQUIRED', 'Protected console unlock requires one provider-local opaque credential handle.', { retryable: false });
+  if (
+    request.action === 'unlock_console' &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(request.credentialHandle)
+  ) {
+    throw new AssistantPluginError(
+      'COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_HANDLE_REQUIRED',
+      'Protected console unlock requires one provider-local opaque credential handle.',
+      { retryable: false },
+    );
   }
   const providerRequest: ComputerConsoleUnlockProviderRequest = { ...request, authorization };
   return await executeComputerProviderRequest(providerRequest, timeoutMs, controllerHome);
@@ -154,7 +192,7 @@ type BrowserTrustedInputRequest = Extract<ComputerBrowserAutomationRequest, { ac
   semanticTarget?: BrowserTrustedInputSemanticProof;
 };
 function objectValue(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 function stringValue(record: Record<string, unknown> | undefined, ...keys: string[]): string {
   for (const key of keys) {
@@ -214,54 +252,81 @@ export async function executeRuntimeComputerBrowserTrustedInput(
     throw new AssistantPluginError(
       'PLUGIN_BROWSER_TRUSTED_INPUT_UNAVAILABLE',
       'Native Browser trusted input requires the Unified Computer provider.',
-      { retryable: true, details: { browserProduct: request.product, providerId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } },
+      {
+        retryable: true,
+        details: { browserProduct: request.product, providerId: DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID },
+      },
     );
   }
   const invocationId = randomUUID();
   let interactionId = '';
   let effectCompleted = false;
   try {
-    const opened = await desktopOperator.executeAction(browserTrustedInputAction(
-      controllerHome,
-      'desktop_session_open',
-      { bundle_id: expectedBundleId, launch: false, activate: false },
-      `native-browser-trusted-input:${invocationId}:open`,
-      timeoutMs,
-    ));
+    const opened = await desktopOperator.executeAction(
+      browserTrustedInputAction(
+        controllerHome,
+        'desktop_session_open',
+        { bundle_id: expectedBundleId, launch: false, activate: false },
+        `native-browser-trusted-input:${invocationId}:open`,
+        timeoutMs,
+      ),
+    );
     interactionId = stringValue(opened, 'interactionId', 'interaction_id');
     const observedBundleId = stringValue(opened, 'bundleIdentifier', 'bundle_id');
     if (!interactionId || observedBundleId !== expectedBundleId) {
       throw new AssistantPluginError(
-        observedBundleId ? 'PLUGIN_BROWSER_TRUSTED_INPUT_IDENTITY_MISMATCH' : 'PLUGIN_BROWSER_TRUSTED_INPUT_IDENTITY_UNVERIFIED',
+        observedBundleId
+          ? 'PLUGIN_BROWSER_TRUSTED_INPUT_IDENTITY_MISMATCH'
+          : 'PLUGIN_BROWSER_TRUSTED_INPUT_IDENTITY_UNVERIFIED',
         'Unified Computer did not bind the exact requested native browser application.',
-        { retryable: false, details: { browserProduct: request.product, expectedBundleId, observedBundleId: observedBundleId || undefined } },
+        {
+          retryable: false,
+          details: {
+            browserProduct: request.product,
+            expectedBundleId,
+            observedBundleId: observedBundleId || undefined,
+          },
+        },
       );
     }
 
     if (request.input.kind === 'text') {
       if (request.input.text.length > 10_000) {
-        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Trusted Browser text input must be at most 10000 characters.', { retryable: false });
+        throw new AssistantPluginError(
+          'PLUGIN_ACTION_ARGUMENT_INVALID',
+          'Trusted Browser text input must be at most 10000 characters.',
+          { retryable: false },
+        );
       }
       const proof = request.semanticTarget;
-      if (!proof || proof.editable !== true || proof.focused !== true || !proof.accessibleName.trim() || !proof.domRole.trim()) {
+      if (
+        !proof ||
+        proof.editable !== true ||
+        proof.focused !== true ||
+        !proof.accessibleName.trim() ||
+        !proof.domRole.trim()
+      ) {
         throw new AssistantPluginError(
           'PLUGIN_BROWSER_TRUSTED_INPUT_SEMANTIC_TARGET_REQUIRED',
           'Unified Computer text input requires exact Browser-owned DOM semantic target proof.',
           { retryable: false, details: { browserProduct: request.product } },
         );
       }
-      const expectedAxRole = proof.domRole === 'textbox'
-        ? (proof.multiline ? 'AXTextArea' : 'AXTextField')
-        : proof.domRole;
-      const observed = await executeRuntimeComputer({
-        capability: COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
-        action: 'observe_elements',
-        interactionId,
-        maxDepth: 2,
-        maxNodes: 16,
-        includeValues: true,
-        rootSelector: { role: expectedAxRole },
-      }, timeoutMs, controllerHome);
+      const expectedAxRole =
+        proof.domRole === 'textbox' ? (proof.multiline ? 'AXTextArea' : 'AXTextField') : proof.domRole;
+      const observed = await executeRuntimeComputer(
+        {
+          capability: COMPUTER_ELEMENT_OBSERVE_CAPABILITY,
+          action: 'observe_elements',
+          interactionId,
+          maxDepth: 2,
+          maxNodes: 16,
+          includeValues: true,
+          rootSelector: { role: expectedAxRole },
+        },
+        timeoutMs,
+        controllerHome,
+      );
       const root = objectValue(observed.root);
       const target = objectValue(root?.target);
       const ref = stringValue(root, 'ref');
@@ -269,60 +334,83 @@ export async function executeRuntimeComputerBrowserTrustedInput(
       const targetBundleId = stringValue(target, 'bundleIdentifier');
       const axAccessibleNames = [stringValue(root, 'description'), stringValue(root, 'name')].filter(Boolean);
       const semanticIdentityMatches = axAccessibleNames.includes(proof.accessibleName.trim());
-      if (stringValue(root, 'role') !== expectedAxRole
-        || !semanticIdentityMatches
-        || !ref
-        || targetInteractionId !== interactionId
-        || targetBundleId !== expectedBundleId
-        || typeof target?.pid !== 'number'
-        || !Number.isInteger(target.pid)
-        || typeof target?.appName !== 'string'
-        || typeof target?.snapshotRevision !== 'number'
-        || !Number.isInteger(target.snapshotRevision)) {
+      if (
+        stringValue(root, 'role') !== expectedAxRole ||
+        !semanticIdentityMatches ||
+        !ref ||
+        targetInteractionId !== interactionId ||
+        targetBundleId !== expectedBundleId ||
+        typeof target?.pid !== 'number' ||
+        !Number.isInteger(target.pid) ||
+        typeof target?.appName !== 'string' ||
+        typeof target?.snapshotRevision !== 'number' ||
+        !Number.isInteger(target.snapshotRevision)
+      ) {
         throw new AssistantPluginError(
           'PLUGIN_BROWSER_TRUSTED_INPUT_SEMANTIC_TARGET_MISMATCH',
           'Unified Computer element identity no longer matches the Browser-owned active DOM target.',
-          { retryable: true, details: { browserProduct: request.product, interactionId, expectedAxRole, accessibleName: proof.accessibleName, observedRole: root?.role, observedNames: axAccessibleNames, ref: ref || undefined } },
+          {
+            retryable: true,
+            details: {
+              browserProduct: request.product,
+              interactionId,
+              expectedAxRole,
+              accessibleName: proof.accessibleName,
+              observedRole: root?.role,
+              observedNames: axAccessibleNames,
+              ref: ref || undefined,
+            },
+          },
         );
       }
       // AX set_value can report success for Chromium contenteditable controls while
       // React immediately restores the DOM value. Keep element.observe.v2 as the
       // exact identity fence, then perform the actual text mutation through the
       // Unified Computer input capability bound to that exact observed AX ref.
-      await executeRuntimeComputer({
-        capability: COMPUTER_INPUT_CAPABILITY,
-        action: 'type_text',
-        interactionId: targetInteractionId,
-        selector: { ref },
-        text: request.input.text,
-        replace: true,
-      }, timeoutMs, controllerHome);
-    } else {
-      await desktopOperator.executeAction(browserTrustedInputAction(
-        controllerHome,
-        'desktop_key',
-        { interaction_id: interactionId, keys: [request.input.key] },
-        `native-browser-trusted-input:${invocationId}:key`,
+      await executeRuntimeComputer(
+        {
+          capability: COMPUTER_INPUT_CAPABILITY,
+          action: 'type_text',
+          interactionId: targetInteractionId,
+          selector: { ref },
+          text: request.input.text,
+          replace: true,
+        },
         timeoutMs,
-      ));
+        controllerHome,
+      );
+    } else {
+      await desktopOperator.executeAction(
+        browserTrustedInputAction(
+          controllerHome,
+          'desktop_key',
+          { interaction_id: interactionId, keys: [request.input.key] },
+          `native-browser-trusted-input:${invocationId}:key`,
+          timeoutMs,
+        ),
+      );
     }
     effectCompleted = true;
     return { performed: true, transport: 'computer', inputKind: request.input.kind };
   } finally {
     if (interactionId) {
       try {
-        await desktopOperator.executeAction(browserTrustedInputAction(
-          controllerHome,
-          'desktop_session_close',
-          { interaction_id: interactionId },
-          `native-browser-trusted-input:${invocationId}:close`,
-          timeoutMs,
-        ));
+        await desktopOperator.executeAction(
+          browserTrustedInputAction(
+            controllerHome,
+            'desktop_session_close',
+            { interaction_id: interactionId },
+            `native-browser-trusted-input:${invocationId}:close`,
+            timeoutMs,
+          ),
+        );
       } catch (error) {
         // Provider-session cleanup is transport hygiene, never external-effect
         // outcome authority. In particular, do not convert a confirmed text/key
         // mutation into a replayable failure because session retirement failed.
-        process.stderr.write(`[computer-browser-trusted-input] cleanup_failed effect_completed=${effectCompleted} ${error instanceof Error ? error.message : String(error)}\n`);
+        process.stderr.write(
+          `[computer-browser-trusted-input] cleanup_failed effect_completed=${effectCompleted} ${error instanceof Error ? error.message : String(error)}\n`,
+        );
       }
     }
   }
@@ -364,7 +452,9 @@ export async function activateRuntimeComputerBrowserApplication(
   });
 }
 
-export function runtimeComputerProviderSnapshot(controllerHome: string = resolveControllerHome()): Array<{ providerId: string; capabilities: string[] }> {
+export function runtimeComputerProviderSnapshot(
+  controllerHome: string = resolveControllerHome(),
+): Array<{ providerId: string; capabilities: string[] }> {
   return ensureComputerComposition(controllerHome).snapshot();
 }
 

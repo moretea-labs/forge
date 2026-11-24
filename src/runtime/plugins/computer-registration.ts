@@ -33,7 +33,11 @@ import {
 } from '../root/computer-chatgpt-target';
 import { runtimeComputerInteractionTargetAuthority } from '../root/computer-target-composition';
 import { currentComputerPlatform } from '../platform/computer-platform';
-import { probeWindowsComputerObservation } from '../platform/windows-computer-observation';
+import {
+  probeWindowsComputerObservation,
+  resolveWindowsComputerPowerShell,
+} from '../platform/windows-computer-observation';
+import { createWindowsDesktopSessionProvider, WINDOWS_COMPUTER_PROVIDER_ID } from '../platform/windows-computer-target';
 import { isProcessAlive } from '../shared/process-tree';
 import {
   buildBrowserPluginManifest,
@@ -83,6 +87,10 @@ const COMPUTER_CHATGPT_TARGET_ACTION_IDS = new Set([
 ]);
 
 const DESKTOP_PROVIDER_ID = 'desktop_operator';
+function activeDesktopProviderId(): string {
+  return currentComputerPlatform() === 'linux' ? WINDOWS_COMPUTER_PROVIDER_ID : DESKTOP_PROVIDER_ID;
+}
+type DesktopSessionProvider = Pick<AssistantPluginAdapter, 'executeAction' | 'resolveAuthorizationContext'>;
 const computerTargetAuthority = runtimeComputerInteractionTargetAuthority();
 const DESKTOP_TARGET_LIST_ACTION = 'desktop_target_list';
 const DESKTOP_TARGET_OPEN_ACTION = 'desktop_target_open';
@@ -979,20 +987,20 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
   ];
 }
 
-function desktopProductPermissions(ready: boolean): AssistantPluginPermissionScope[] {
+function desktopProductPermissions(ready: boolean, windowsObservation = false): AssistantPluginPermissionScope[] {
   return [
     {
       scope: 'desktop.session',
       mode: 'write',
       description: 'Bind a desktop application target for Computer interaction.',
-      granted: ready,
+      granted: ready || windowsObservation,
       required: false,
     },
     {
       scope: 'desktop.observe',
       mode: 'read',
       description: 'Observe bounded desktop accessibility state.',
-      granted: ready,
+      granted: ready || windowsObservation,
       required: false,
     },
     {
@@ -1124,6 +1132,7 @@ function buildComputerManifest(
   const desktop = desktopProviderManifest(context);
   const platform = currentComputerPlatform();
   const desktopSupported = platform === 'darwin';
+  const windowsObservationTransport = platform === 'linux' && Boolean(resolveWindowsComputerPowerShell());
   const browserReady = browser.enabled && browser.health.ready;
   const chatgptProvider = context
     ? runtimeComputerChatgptLiveProviderStatus(context.controllerHome)
@@ -1136,7 +1145,7 @@ function buildComputerManifest(
   const hidStatus = physicalReady && context ? remoteXpcHidCachedStatus(context.controllerHome) : undefined;
   const physicalInputReady = physicalReady && hidStatus?.available === true;
   const ready = browserReady && desktopReady;
-  const partial = browserReady || chatgptProvider.ready || desktopReady || physicalReady;
+  const partial = browserReady || chatgptProvider.ready || desktopReady || windowsObservationTransport || physicalReady;
   const checkedAt = new Date().toISOString();
   return {
     ...browser,
@@ -1155,7 +1164,12 @@ function buildComputerManifest(
         'controller-home:repository ios-device interactions and Controller-global UDID lock',
       ],
     },
-    enabled: browser.enabled || chatgptProvider.ready || desktop?.enabled === true || physicalReady,
+    enabled:
+      browser.enabled ||
+      chatgptProvider.ready ||
+      desktop?.enabled === true ||
+      windowsObservationTransport ||
+      physicalReady,
     lifecycle: {
       state: ready ? 'enabled' : partial ? 'degraded' : 'error',
       reason: ready
@@ -1163,8 +1177,12 @@ function buildComputerManifest(
         : desktopSupported
           ? 'Computer is only partially ready; inspect Browser and native Desktop capability health.'
           : chatgptProvider.ready
-            ? 'Exact ChatGPT targets are available through the Chrome extension; native Browser/Desktop are unavailable on ' + platform + '.'
-            : 'Computer native Browser/Desktop providers are unavailable on ' + platform + '; inspect exact ChatGPT provider heartbeat separately.',
+            ? 'Exact ChatGPT targets are available through the Chrome extension; native Browser/Desktop are unavailable on ' +
+              platform +
+              '.'
+            : 'Computer native Browser/Desktop providers are unavailable on ' +
+              platform +
+              '; inspect exact ChatGPT provider heartbeat separately.',
     },
     health: {
       state: ready ? 'ready' : partial ? 'degraded' : 'error',
@@ -1217,6 +1235,17 @@ function buildComputerManifest(
           ready: desktopReady,
           state: desktop?.health.state ?? (desktopSupported ? 'not_installed' : 'unsupported'),
         },
+        ...(windowsObservationTransport
+          ? {
+              windowsDesktop: {
+                provider: WINDOWS_COMPUTER_PROVIDER_ID,
+                transportDetected: true,
+                observationOnly: true,
+                ready: false,
+                state: 'live_target_probe_required',
+              },
+            }
+          : {}),
         iphone: {
           supported: desktopSupported,
           ready: physicalInputReady,
@@ -1235,7 +1264,7 @@ function buildComputerManifest(
             ? { ...permission, description: 'Bind and persist exact existing native browser tab identities.' }
             : permission,
         ),
-      ...desktopProductPermissions(desktopReady),
+      ...desktopProductPermissions(desktopReady, windowsObservationTransport),
       ...(physicalRepository
         ? [
             {
@@ -1281,13 +1310,16 @@ function isDesktopProductAction(actionId: string): boolean {
   return DESKTOP_PRODUCT_ACTION_IDS.has(actionId);
 }
 
-function optionalDesktopProvider(input: AssistantPluginActionExecutionInput): AssistantPluginAdapter | undefined {
+function optionalDesktopProvider(input: AssistantPluginActionExecutionInput): DesktopSessionProvider | undefined {
+  if (currentComputerPlatform() === 'linux') {
+    return resolveWindowsComputerPowerShell() ? createWindowsDesktopSessionProvider() : undefined;
+  }
   return getExternalPluginAdapter(input.controllerHome, DESKTOP_PROVIDER_ID);
 }
 
-function desktopProvider(input: AssistantPluginActionExecutionInput): AssistantPluginAdapter {
+function desktopProvider(input: AssistantPluginActionExecutionInput): DesktopSessionProvider {
   const platform = currentComputerPlatform();
-  if (platform !== 'darwin') {
+  if (platform !== 'darwin' && !(platform === 'linux' && resolveWindowsComputerPowerShell())) {
     throw new AssistantPluginError(
       'PLUGIN_COMPUTER_DESKTOP_PLATFORM_UNSUPPORTED',
       `Computer native Desktop capabilities are unavailable on ${platform} until a platform provider is installed.`,
@@ -1299,7 +1331,7 @@ function desktopProvider(input: AssistantPluginActionExecutionInput): AssistantP
     throw new AssistantPluginError(
       'PLUGIN_COMPUTER_DESKTOP_PROVIDER_UNAVAILABLE',
       'Computer native Desktop capabilities require the registered platform provider.',
-      { retryable: true, details: { providerId: DESKTOP_PROVIDER_ID, actionId: input.actionId } },
+      { retryable: true, details: { providerId: activeDesktopProviderId(), actionId: input.actionId } },
     );
   }
   return provider;
@@ -1392,7 +1424,7 @@ function providerInput(
   args: Record<string, unknown>,
   suffix = actionId,
 ): AssistantPluginActionExecutionInput {
-  return { ...input, pluginId: DESKTOP_PROVIDER_ID, actionId, args, requestId: `${input.requestId}:${suffix}` };
+  return { ...input, pluginId: activeDesktopProviderId(), actionId, args, requestId: `${input.requestId}:${suffix}` };
 }
 
 function providerSessionId(result: Record<string, unknown>): string {
@@ -1570,7 +1602,7 @@ function isRecoverableStaleDesktopProcessBinding(error: unknown): error is Assis
 async function rebindProviderSession(
   input: AssistantPluginActionExecutionInput,
   lease: ComputerApplicationTargetLease,
-  provider: AssistantPluginAdapter,
+  provider: DesktopSessionProvider,
 ): Promise<string> {
   const target = lease.current();
   const rebound = await provider.executeAction(
@@ -1630,7 +1662,7 @@ async function rebindProviderSession(
       : reportedProvenance;
   lease.bind(
     {
-      providerId: DESKTOP_PROVIDER_ID,
+      providerId: activeDesktopProviderId(),
       providerSessionId: interactionId,
       observedAt: new Date().toISOString(),
       ...(processId !== undefined ? { processId } : {}),
@@ -1732,7 +1764,7 @@ function desktopTargetSummary(target: ComputerApplicationTarget): Record<string,
     targetId: target.targetId,
     kind: target.kind,
     stableIdentity: target.stableIdentity,
-    providerBound: target.providerBinding?.providerId === DESKTOP_PROVIDER_ID,
+    providerBound: target.providerBinding?.providerId === activeDesktopProviderId(),
     ...(target.providerBinding?.processId !== undefined ? { processId: target.providerBinding.processId } : {}),
     launchOwnership: target.launchProvenance?.kind ?? 'unknown',
     createdAt: target.createdAt,
@@ -1772,8 +1804,7 @@ async function listDesktopTargets(input: AssistantPluginActionExecutionInput): P
   const nextOffset = offset + targets.length < all.length ? offset + targets.length : undefined;
   // WSL may observe the Windows host without claiming any durable application
   // target. Exact target binding remains a separate, explicitly fenced step.
-  const windowsHost =
-    currentComputerPlatform() === 'linux' ? await probeWindowsComputerObservation() : undefined;
+  const windowsHost = currentComputerPlatform() === 'linux' ? await probeWindowsComputerObservation() : undefined;
   return {
     targets,
     total: all.length,
@@ -1897,10 +1928,17 @@ function staleProviderBinding(targetId: string, providerBound: boolean): Assista
 
 async function openDesktopTarget(
   input: AssistantPluginActionExecutionInput,
-  provider: AssistantPluginAdapter,
+  provider: DesktopSessionProvider,
 ): Promise<Record<string, unknown>> {
   const requestedTargetId = explicitTargetIdFromArgs(input.args);
   const expectedProcessId = exactDesktopProcessId(input.args);
+  if (currentComputerPlatform() === 'linux' && !requestedTargetId && expectedProcessId === undefined) {
+    throw new AssistantPluginError(
+      'WINDOWS_UIA_EXACT_TARGET_REQUIRED',
+      'Windows observation requires an exact process_id when creating a new target.',
+      { retryable: false },
+    );
+  }
   let current: ComputerApplicationTarget | undefined;
   if (requestedTargetId) {
     current = computerTargetAuthority.require(input.controllerHome, requestedTargetId);
@@ -1961,12 +1999,45 @@ async function openDesktopTarget(
             },
           );
         }
-        if (binding && binding.providerId !== DESKTOP_PROVIDER_ID) {
+        if (binding && binding.providerId !== activeDesktopProviderId()) {
           throw new AssistantPluginError(
             'PLUGIN_COMPUTER_TARGET_PROVIDER_MISMATCH',
-            'Computer target is bound to a different provider and cannot be reattached through Desktop Operator.',
+            'Computer target is bound to a different provider and cannot be reattached through the active Desktop provider.',
             { retryable: false, details: { targetId: target.targetId, providerId: binding.providerId } },
           );
+        }
+        if (binding?.providerId === WINDOWS_COMPUTER_PROVIDER_ID) {
+          if (input.args.launch === true || input.args.activate === true || input.args.bundle_path !== undefined) {
+            throw new AssistantPluginError(
+              'WINDOWS_UIA_EXACT_TARGET_REQUIRED',
+              'Windows observation never launches or activates a target.',
+              { retryable: false },
+            );
+          }
+          const observed = await executeRuntimeComputer(
+            {
+              capability: COMPUTER_OBSERVE_CAPABILITY,
+              action: 'observe',
+              interactionId: binding.providerSessionId,
+              maxDepth: 1,
+              maxNodes: 1,
+              includeValues: false,
+            },
+            input.timeoutMs ?? 10_000,
+            input.controllerHome,
+          );
+          if (
+            observed.pid !== binding.processId ||
+            observed.appName !== target.stableIdentity.appName ||
+            observed.interactionId !== binding.providerSessionId
+          ) {
+            throw new AssistantPluginError(
+              'WINDOWS_UIA_BINDING_STALE',
+              'Windows target identity changed; retire the stale target before opening another.',
+              { retryable: false },
+            );
+          }
+          return desktopTargetSummary(target);
         }
         // A durable target can represent one of several copies of the same bundle,
         // even when reopened by bundle_id. Never trust a provider session to keep
@@ -2140,7 +2211,7 @@ async function openDesktopTarget(
       stableIdentity,
       ...(launchProvenance ? { launchProvenance } : {}),
       providerBinding: {
-        providerId: DESKTOP_PROVIDER_ID,
+        providerId: activeDesktopProviderId(),
         providerSessionId: interactionId,
         observedAt: new Date().toISOString(),
         ...(processId !== undefined ? { processId } : {}),
@@ -2171,7 +2242,7 @@ async function openDesktopTarget(
 
 async function closeDesktopTarget(
   input: AssistantPluginActionExecutionInput,
-  provider: AssistantPluginAdapter | undefined,
+  provider: DesktopSessionProvider | undefined,
 ): Promise<Record<string, unknown>> {
   const targetId = typeof input.args.target_id === 'string' ? input.args.target_id.trim() : '';
   if (!targetId)
@@ -2181,7 +2252,7 @@ async function closeDesktopTarget(
   return computerTargetAuthority.withLease(input.controllerHome, targetId, async (lease) => {
     const target = lease.current();
     if (target.providerBinding) {
-      if (target.providerBinding.providerId !== DESKTOP_PROVIDER_ID) {
+      if (target.providerBinding.providerId !== activeDesktopProviderId()) {
         throw new AssistantPluginError(
           'PLUGIN_COMPUTER_TARGET_PROVIDER_MISMATCH',
           'Computer target is bound to a different provider and cannot be retired through the current Desktop provider.',
@@ -2190,7 +2261,7 @@ async function closeDesktopTarget(
             details: {
               targetId,
               providerId: target.providerBinding.providerId,
-              expectedProviderId: DESKTOP_PROVIDER_ID,
+              expectedProviderId: activeDesktopProviderId(),
             },
           },
         );
@@ -2296,7 +2367,7 @@ function selectorMutationPostconditionConfirmed(
 
 async function executeDesktopSemanticAction(
   input: AssistantPluginActionExecutionInput,
-  _provider: AssistantPluginAdapter,
+  _provider: DesktopSessionProvider,
 ): Promise<Record<string, unknown>> {
   if (input.actionId === 'desktop_open_url') {
     return executeRetainedDesktopAction(input, input.args);
@@ -2471,7 +2542,11 @@ async function executeDesktopSemanticAction(
   }
   return computerTargetAuthority.withLease(input.controllerHome, targetId, async (lease) => {
     const binding = lease.current().providerBinding;
-    if (!binding || binding.providerId !== DESKTOP_PROVIDER_ID) throw staleProviderBinding(targetId, Boolean(binding));
+    const windowsReadOnly =
+      input.actionId === 'desktop_observe' && binding?.providerId === WINDOWS_COMPUTER_PROVIDER_ID;
+    if (!binding || (binding.providerId !== DESKTOP_PROVIDER_ID && !windowsReadOnly)) {
+      throw staleProviderBinding(targetId, Boolean(binding));
+    }
     const { target_id: _targetId, ...rest } = input.args;
     try {
       const result = await executeRetainedDesktopAction(input, rest, binding.providerSessionId);
