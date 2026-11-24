@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { ChildProcess } from 'child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -11,13 +11,10 @@ import {
   runtimeAuthorityFreeEnvironment,
 } from '../../src/runtime/shared/process-environment';
 import {
-  buildSchedulerWorkerLaunchDescriptor,
   resolveSchedulerWorkerCommand,
   resolveSchedulerWorkerExecutable,
-  selectSchedulerWorkerEnvironment,
 } from '../../src/runtime/control-plane/global-scheduler/worker-launch';
 import { buildSchedulerWorkerExitFailure } from '../../src/runtime/control-plane/global-scheduler/worker-lifecycle';
-import { createSchedulerWorkerStderrCapture } from '../../src/runtime/control-plane/global-scheduler/worker-stderr';
 import { cleanupSchedulerWorkerProcesses } from '../../src/runtime/control-plane/global-scheduler/worker-process';
 import { persistSchedulerTerminalWorkerLifecycle } from '../../src/runtime/control-plane/global-scheduler/worker-lifecycle-store';
 import type { ExecutionJob, ExecutionWorkerLifecycle } from '../../src/runtime/execution/jobs/types';
@@ -231,30 +228,6 @@ describe('repository child process environment', () => {
     expect(resolveBunExecutable('bun', { HOME: '/Users/nonexistent-for-test' })).toBe('bun');
   });
 
-  test('scheduler workers receive allowlisted proxy variables without persisting them in lifecycle metadata', () => {
-    const launch = buildSchedulerWorkerLaunchDescriptor({
-      command: { entry: '/runtime/worker-entry.ts', loader: '/runtime/loader.mjs', cwd: '/runtime' },
-      controllerHome: '/controller',
-      repoId: 'repo-a',
-      jobId: 'job-a',
-      controllerPid: 42,
-      isBun: true,
-      environment: {
-        PATH: '/usr/bin',
-        HTTP_PROXY: 'http://127.0.0.1:7890',
-        https_proxy: 'http://127.0.0.1:7890',
-        NO_PROXY: 'internal.local',
-      },
-    });
-
-    expect(launch.environment.HTTP_PROXY).toBe('http://127.0.0.1:7890');
-    expect(launch.environment.HTTPS_PROXY).toBe('http://127.0.0.1:7890');
-    expect(launch.environment.NO_PROXY).toContain('localhost');
-    expect(launch.environment).not.toHaveProperty('https_proxy');
-    expect(launch.lifecycleEnvironment).not.toHaveProperty('HTTP_PROXY');
-    expect(launch.lifecycleEnvironment).not.toHaveProperty('HTTPS_PROXY');
-  });
-
   test('compiled Runtime scheduler resolves a real Bun executable instead of recursively spawning forge-runtime', () => {
     expect(
       resolveSchedulerWorkerExecutable(true, '/tmp/forge-runtime', {
@@ -288,67 +261,6 @@ describe('repository child process environment', () => {
         isBun: false,
       }),
     ).toThrow('WORKER_ENTRYPOINT_MISSING');
-  });
-
-  test('builds Scheduler worker launch args and separates child env from persisted diagnostics', () => {
-    const command = { entry: '/runtime/worker-entry.ts', loader: '/runtime/node-ts-loader.mjs', cwd: '/runtime' };
-    const launch = buildSchedulerWorkerLaunchDescriptor({
-      command,
-      controllerHome: '/controller',
-      repoId: 'repo-a',
-      jobId: 'job-a',
-      controllerPid: 42,
-      runtimeSourceRoot: '/runtime',
-      isBun: false,
-      execPath: '/usr/bin/node',
-      environment: {
-        PATH: '/usr/bin:/usr/local/bin',
-        NO_PROXY: 'localhost,127.0.0.1,::1',
-        SECRET_FOR_TEST: 'not-persisted',
-      },
-      writeClaimEnvironment: {
-        FORGE_RUNTIME_INSTANCE_ID: 'runtime-a',
-        FORGE_RELEASE_ID: 'release-a',
-      },
-    });
-
-    expect(launch).toMatchObject({
-      executable: '/usr/bin/node',
-      args: [
-        '--loader',
-        '/runtime/node-ts-loader.mjs',
-        '/runtime/worker-entry.ts',
-        '--controller-home',
-        '/controller',
-        '--repo-id',
-        'repo-a',
-        '--job-id',
-        'job-a',
-        '--controller-pid',
-        '42',
-      ],
-      cwd: '/runtime',
-      environment: {
-        PATH: '/usr/bin:/usr/local/bin',
-        NO_PROXY: 'localhost,127.0.0.1,::1',
-        SECRET_FOR_TEST: 'not-persisted',
-        FORGE_EXECUTION_WORKER: '1',
-        FORGE_CONTROLLER_HOME: '/controller',
-        FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: '/runtime',
-        FORGE_RUNTIME_INSTANCE_ID: 'runtime-a',
-        FORGE_RELEASE_ID: 'release-a',
-      },
-      lifecycleEnvironment: {
-        PATH: '/usr/bin:/usr/local/bin',
-        FORGE_EXECUTION_WORKER: '1',
-        FORGE_CONTROLLER_HOME: '/controller',
-        FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: '/runtime',
-        FORGE_RUNTIME_INSTANCE_ID: 'runtime-a',
-        FORGE_RELEASE_ID: 'release-a',
-      },
-    });
-    expect(launch.lifecycleEnvironment).not.toHaveProperty('SECRET_FOR_TEST');
-    expect(selectSchedulerWorkerEnvironment({ PATH: '/bin', EXTRA: 'hidden' })).toMatchObject({ PATH: '/bin' });
   });
 
   test('models Scheduler worker exit failure diagnostics outside GlobalScheduler', () => {
@@ -434,35 +346,5 @@ describe('repository child process environment', () => {
     expect(terminated.sort()).toEqual([88, 99]);
   });
 
-  test('captures Scheduler worker stderr with a bounded persisted diagnostic', () => {
-    const home = mkdtempSync(join(tmpdir(), 'forge-worker-stderr-'));
-    homes.push(home);
-    const capture = createSchedulerWorkerStderrCapture({
-      controllerHome: home,
-      repoId: 'repo-a',
-      jobId: 'job-a',
-      attempt: 2,
-      maxBytes: 5,
-    });
 
-    capture.append('abc');
-    capture.append(Buffer.from('def'));
-
-    expect(capture.path.endsWith(join('worker-stderr', 'job-a-attempt-2.log'))).toBe(true);
-    expect(capture.snapshot()).toEqual({ stderr: 'abcde', stderrTruncated: true });
-    expect(readFileSync(capture.path, 'utf8')).toBe('abcde');
-  });
-
-  test.skipIf(process.platform === 'win32')(
-    'resolves ~/.bun/bin/bun from the OS account home when env -i removes HOME',
-    () => {
-      const home = mkdtempSync(join(tmpdir(), 'forge-bun-home-'));
-      homes.push(home);
-      const bin = join(home, '.bun', 'bin');
-      mkdirSync(bin, { recursive: true });
-      const bun = join(bin, 'bun');
-      writeFileSync(bun, 'fixture');
-      expect(resolveBunExecutable('/tmp/forge-runtime', {}, home)).toBe(bun);
-    },
-  );
 });

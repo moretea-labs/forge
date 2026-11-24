@@ -867,7 +867,6 @@ const required = [
   'src/runtime/control-plane/global-scheduler/worker-launch.ts',
   'src/runtime/control-plane/global-scheduler/projection-refresh.ts',
   'src/runtime/control-plane/global-scheduler/worker-lifecycle.ts',
-  'src/runtime/control-plane/global-scheduler/worker-stderr.ts',
   'src/runtime/control-plane/global-scheduler/worker-lifecycle-store.ts',
   'src/runtime/control-plane/global-scheduler/maintenance.ts',
   'src/runtime/control-plane/global-scheduler/worker-exit-decision.ts',
@@ -2193,6 +2192,7 @@ forbid(
   'tests-only ExecutionJob index rebuild API must stay physically absent',
 );
 requireMissing('src/runtime/control-plane/global-scheduler/worker-attachment.ts');
+requireMissing('src/runtime/control-plane/global-scheduler/worker-stderr.ts');
 requireMissing('src/runtime/execution/jobs/legacy-adapter.ts');
 requireMissing('src/cli/controller/migrated-issue-decision.ts');
 requireMissing('src/cli/mcp/oauth-client-retirement.ts');
@@ -2390,14 +2390,12 @@ requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'normaliz
 requireText('src/runtime/control-plane/global-scheduler/config.ts', 'normalizeSchedulerConfig');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeSchedulerHealthSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/state.ts', 'writeSchedulerHealthSnapshot');
-requireText('src/runtime/control-plane/global-scheduler/worker-launch.ts', 'buildSchedulerWorkerLaunchDescriptor');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'refreshSchedulerRepositoryProjections');
 requireText(
   'src/runtime/control-plane/global-scheduler/projection-refresh.ts',
   'refreshRepositoryProjectionForRepository',
 );
 requireText('src/runtime/control-plane/global-scheduler/worker-lifecycle.ts', 'buildSchedulerWorkerExitFailure');
-requireText('src/runtime/control-plane/global-scheduler/worker-stderr.ts', 'MAX_SCHEDULER_WORKER_STDERR_BYTES');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'runSchedulerPeriodicCleanup');
 requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'runSchedulerValidationReconciliation');
 requireMatch(
@@ -2436,6 +2434,11 @@ requireText(
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-decision.ts', 'TERMINAL_JOB_STATUSES');
 requireText('src/runtime/control-plane/global-scheduler/worker-exit-reconciler.ts', 'releaseExecutionLeases');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'cleanupSchedulerWorkerProcesses');
+forbid(
+  'src/runtime/control-plane/global-scheduler/worker-launch.ts',
+  /buildSchedulerWorkerLaunchDescriptor|selectSchedulerWorkerEnvironment/,
+  'retired generic Scheduler worker launch descriptor must stay physically absent',
+);
 requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', 'cleanupSchedulerWorkerProcesses');
 forbid(
   'src/runtime/control-plane/global-scheduler/worker-process.ts',

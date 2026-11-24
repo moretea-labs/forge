@@ -1,23 +1,7 @@
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
-import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../shared/process-environment';
-
-const WORKER_ENVIRONMENT_KEYS = [
-  'PATH',
-  'HOME',
-  'BUN_INSTALL',
-  'NODE_OPTIONS',
-  'FORGE_CONTROLLER_HOME',
-  'FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT',
-  'FORGE_EXECUTION_WORKER',
-  'FORGE_RUNTIME_INSTANCE_ID',
-  'FORGE_RUNTIME_OWNER_PID',
-  'FORGE_RELEASE_AUTHORITY_REVISION',
-  'FORGE_RELEASE_ID',
-  'FORGE_ARTIFACT_IDENTITY',
-  'FORGE_WORKER_PROTOCOL_VERSION',
-] as const;
+import { resolveBunExecutable } from '../../shared/process-environment';
 
 export function resolveSchedulerWorkerExecutable(
   isBun: boolean = Boolean(process.versions.bun),
@@ -64,66 +48,4 @@ export function resolveSchedulerWorkerCommand(
   if (!pathExists(entry)) throw new Error(`WORKER_ENTRYPOINT_MISSING: ${entry}`);
   if (!isBun && !pathExists(loader)) throw new Error(`WORKER_LOADER_MISSING: ${loader}`);
   return { entry, loader, cwd };
-}
-
-export function selectSchedulerWorkerEnvironment(
-  env: NodeJS.ProcessEnv = process.env,
-): Record<string, string | undefined> {
-  return Object.fromEntries(WORKER_ENVIRONMENT_KEYS.map((key) => [key, env[key]]));
-}
-
-export interface SchedulerWorkerLaunchDescriptor {
-  executable: string;
-  args: string[];
-  cwd: string;
-  environment: NodeJS.ProcessEnv;
-  lifecycleEnvironment: Record<string, string | undefined>;
-}
-
-export function buildSchedulerWorkerLaunchDescriptor(input: {
-  command: SchedulerWorkerCommand;
-  controllerHome: string;
-  repoId: string;
-  jobId: string;
-  controllerPid: number;
-  runtimeSourceRoot?: string;
-  isBun?: boolean;
-  execPath?: string;
-  environment?: NodeJS.ProcessEnv;
-  writeClaimEnvironment?: NodeJS.ProcessEnv;
-}): SchedulerWorkerLaunchDescriptor {
-  const isBun = input.isBun ?? Boolean(process.versions.bun);
-  const environmentSource = input.environment ?? process.env;
-  const executable = input.command.directExecutable
-    ? input.command.entry
-    : resolveSchedulerWorkerExecutable(isBun, input.execPath ?? process.execPath, environmentSource);
-  const workerArgs = [
-    '--controller-home',
-    input.controllerHome,
-    '--repo-id',
-    input.repoId,
-    '--job-id',
-    input.jobId,
-    '--controller-pid',
-    String(input.controllerPid),
-  ];
-  const args = input.command.directExecutable
-    ? workerArgs
-    : isBun
-      ? [input.command.entry, ...workerArgs]
-      : ['--loader', input.command.loader, input.command.entry, ...workerArgs];
-  const environment: NodeJS.ProcessEnv = {
-    ...repositoryChildProcessEnvironment(environmentSource),
-    FORGE_EXECUTION_WORKER: '1',
-    FORGE_CONTROLLER_HOME: input.controllerHome,
-    ...(input.runtimeSourceRoot ? { FORGE_CONTROLLER_RUNTIME_SOURCE_ROOT: input.runtimeSourceRoot } : {}),
-    ...(input.writeClaimEnvironment ?? {}),
-  };
-  return {
-    executable,
-    args,
-    cwd: input.command.cwd,
-    environment,
-    lifecycleEnvironment: selectSchedulerWorkerEnvironment(environment),
-  };
 }
