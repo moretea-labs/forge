@@ -5,9 +5,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { registerRepository } from '../../src/runtime/repositories/registry';
-import { getIssueReadView, updateTask, inspectTaskReadiness } from '../../src/cli/controller/issue-store';
+import { updateTask, inspectTaskReadiness } from '../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../../src/cli/controller/task-ledger';
 import { inspectProjectGovernance } from '../../src/cli/controller/governance';
+import { frozenLegacyIssueProjection } from '../../src/cli/controller/legacy-issue-cutover';
 import {
   clearCurrentIssue,
   loadControllerProjectState,
@@ -145,7 +146,7 @@ function withRepo(run: (repoRoot: string, controllerHome: string, issuePath: str
 describe('legacy control-plane cutover', () => {
   test('late Issue/Task and project-state writes cannot change the SQLite-derived compatibility projection', () => {
     withRepo((repoRoot, _controllerHome, issuePath) => {
-      const before = getIssueReadView(repoRoot, ISSUE_ID, 'full');
+      const before = frozenLegacyIssueProjection(repoRoot, ISSUE_ID, 'full');
       expect(before).toMatchObject({
         projection: 'deprecated_frozen_legacy_issue',
         authority: 'controller-home-sqlite',
@@ -169,7 +170,7 @@ describe('legacy control-plane cutover', () => {
         `${JSON.stringify({ schemaVersion: 1, currentIssueId: 'ISS-LATE', issueCreationMode: 'open', updatedAt: '2099-01-01T00:00:00.000Z' })}\n`,
       );
 
-      expect(getIssueReadView(repoRoot, ISSUE_ID, 'full')).toEqual(before);
+      expect(frozenLegacyIssueProjection(repoRoot, ISSUE_ID, 'full')).toEqual(before);
       const frozenState = loadControllerProjectState(repoRoot);
       expect(frozenState).toMatchObject({
         issueCreationMode: 'paused',
@@ -241,7 +242,7 @@ describe('legacy control-plane cutover', () => {
         expect(() => updateTask(repoRoot, ISSUE_ID, 'T6', { status: 'cancelled' })).toThrow(
           'LEGACY_ISSUE_WRITES_RETIRED',
         );
-        expect(getIssueReadView(repoRoot, ISSUE_ID)).toMatchObject({
+        expect(frozenLegacyIssueProjection(repoRoot, ISSUE_ID)).toMatchObject({
           authority: 'controller-home-sqlite',
           frozen: true,
         });

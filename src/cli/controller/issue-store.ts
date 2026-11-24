@@ -35,9 +35,7 @@ import { markControllerContextProjectionDirty } from '../../runtime/projections/
 import {
   assertLegacyIssueWritesAllowed,
   assertLegacyProjectBoardAvailable,
-  frozenLegacyIssueProjection,
   legacyIssueAuthorityRetired,
-  listFrozenLegacyIssueProjections,
   migratedIssueReadinessProjection,
 } from './legacy-issue-cutover';
 
@@ -327,19 +325,6 @@ function summarizeEffectiveTaskView(task: ReturnType<typeof projectIssueEffectiv
     runIdCount: runIds.length,
     verification: summarizeVerification(verification),
     historicalRunOutcomeCount: historicalRunOutcomes.length,
-  };
-}
-
-export function getIssueReadView(repoRoot: string, id: string, detailLevel: 'summary' | 'full' = 'summary') {
-  const frozen = frozenLegacyIssueProjection(repoRoot, id, detailLevel);
-  if (frozen) return frozen;
-  const full = projectIssueEffectiveView(repoRoot, getIssue(repoRoot, id));
-  if (detailLevel === 'full') return { ...full, detailLevel };
-  return {
-    ...full,
-    detailLevel,
-    tasks: full.tasks.map(summarizeEffectiveTaskView),
-    next: 'Call get_issue with detail_level=full only when full notes, verification evidence, or run history is required.',
   };
 }
 
