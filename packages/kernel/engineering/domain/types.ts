@@ -36,9 +36,6 @@ export interface PolicyDecision {
   suggestedNextActions: SuggestedNextAction[];
 }
 
-export const ENGINEERING_RISKS = ['readonly', 'low', 'medium', 'high', 'destructive'] as const;
-export type EngineeringRisk = (typeof ENGINEERING_RISKS)[number];
-
 export const VERIFICATION_OUTCOMES = [
   'valid_pass',
   'valid_fail',

@@ -85,10 +85,9 @@ export {
 } from '../../../../packages/protocols/handoff/index';
 import type { HandoffStatus } from '../../../../packages/protocols/handoff/index';
 
-// Shared Facade/check types; the historical Work schema is test-only.
-export { ENGINEERING_RISKS, VERIFICATION_OUTCOMES } from '../../../../packages/kernel/engineering/domain/types';
+// Shared Facade/check types.
+export { VERIFICATION_OUTCOMES } from '../../../../packages/kernel/engineering/domain/types';
 export type {
-  EngineeringRisk,
   VerificationOutcome,
   VerificationRecord,
 } from '../../../../packages/kernel/engineering/domain/types';
