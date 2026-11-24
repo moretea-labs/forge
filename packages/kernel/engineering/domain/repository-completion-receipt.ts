@@ -28,7 +28,6 @@ export interface CompletionResourceBlocker {
 
 /** Kernel-owned repository delivery receipt derived from native execution, Git, and resource facts. */
 export interface RepositoryCompletionReceipt {
-  schemaVersion: 1;
   receiptId: string;
   editSessionId: string;
   targetBranch: string;

@@ -850,7 +850,6 @@ function buildDirectEditCompletionReceipt(input: {
   ];
   const recordedAt = nowIso();
   return {
-    schemaVersion: 1,
     receiptId: directEditReceiptId(input.editSessionId, input.integrationEvidence.targetRevision),
     editSessionId: input.editSessionId,
     targetBranch: input.integrationEvidence.targetBranch,

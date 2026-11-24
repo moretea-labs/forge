@@ -27,7 +27,6 @@ const NOW = '2026-08-03T12:00:00.000Z';
 
 function completionReceipt(issueId: string, taskId: string) {
   return {
-    schemaVersion: 1 as const,
     receiptId: `REC-${issueId}-${taskId}`,
     editSessionId: `EDIT-${issueId}-${taskId}`,
     targetBranch: 'main',

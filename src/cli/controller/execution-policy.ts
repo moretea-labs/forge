@@ -26,7 +26,6 @@ export function completionReceiptComplete(
   expected: CompletionReceiptExpectation = {},
 ): receipt is RepositoryCompletionReceipt {
   return Boolean(receipt
-    && receipt.schemaVersion === 1
     && receipt.receiptId.trim()
     && receipt.targetBranch.trim()
     && receipt.targetRevision.trim()

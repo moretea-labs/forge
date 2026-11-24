@@ -34,7 +34,6 @@ function home(): string {
 
 function completionReceipt(receiptKey: string, targetRevision: string) {
   return {
-    schemaVersion: 1 as const,
     receiptId: `receipt-${receiptKey}`,
     editSessionId: `EDIT-${receiptKey}`,
     targetBranch: 'main',
