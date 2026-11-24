@@ -43,7 +43,7 @@ struct AgentUsageDashboard: View {
         let partiallyReported: Int
     }
 
-    private struct DayTotal: Identifiable {
+    struct DayTotal: Identifiable {
         let date: Date
         let count: Int
         var id: Date { date }
@@ -173,27 +173,67 @@ struct AgentUsageDashboard: View {
         )
     }
 
-    private func makeTimeline(from entries: [Entry], today: Date) -> [DayTotal] {
-        let calendar = Calendar.current
-        let totals = Dictionary(grouping: entries, by: { calendar.startOfDay(for: $0.date) })
-            .mapValues { values in values.reduce(0) { $0 + $1.usage.totalTokens } }
-        return (0..<days).reversed().compactMap { offset in
-            calendar.date(byAdding: .day, value: -offset, to: today)
-        }.map { DayTotal(date: $0, count: totals[$0] ?? 0) }
-    }
-
-    private func makeModelDistribution(from entries: [Entry]) -> [(String, Int)] {
-        let grouped = Dictionary(grouping: entries, by: { ModelKey(provider: $0.provider, model: $0.model) })
-        return grouped.map { group in
-            ("\(providerLabel(group.key.provider)) · \(group.key.model)",
-             group.value.reduce(0) { $0 + $1.usage.totalTokens })
-        }
-            .sorted { $0.1 == $1.1 ? $0.0 < $1.0 : $0.1 > $1.1 }
-    }
-
     private struct ModelKey: Hashable {
         let provider: String
         let model: String
+    }
+
+    struct UsageBreakdown {
+        let timeline: [DayTotal]
+        let byModel: [(String, Int)]
+        let byProject: [(String, Int)]
+    }
+
+    static func makeUsageBreakdown(
+        from entries: [Entry],
+        days: Int,
+        today: Date,
+        calendar: Calendar = .current,
+        providerNames: [String: String] = [:]
+    ) -> UsageBreakdown {
+        var dailyTotals: [Date: Int] = [:]
+        var modelTotals: [ModelKey: Int] = [:]
+        var projectTotals: [String: (label: String, total: Int)] = [:]
+
+        for entry in entries {
+            let tokens = entry.usage.totalTokens
+            let day = calendar.startOfDay(for: entry.date)
+            dailyTotals[day, default: 0] += tokens
+            let modelKey = ModelKey(provider: entry.provider, model: entry.model)
+            modelTotals[modelKey, default: 0] += tokens
+            var project = projectTotals[entry.projectGroupId] ?? (label: entry.project, total: 0)
+            project.total += tokens
+            projectTotals[entry.projectGroupId] = project
+        }
+
+        let timeline = (0..<max(0, days)).reversed().compactMap { offset in
+            calendar.date(byAdding: .day, value: -offset, to: today)
+        }.map { DayTotal(date: $0, count: dailyTotals[$0] ?? 0) }
+
+        var modelRows: [(String, Int)] = []
+        modelRows.reserveCapacity(modelTotals.count)
+        for (key, total) in modelTotals {
+            let providerName = providerNames[key.provider] ?? key.provider
+            let label = providerName + " · " + key.model
+            modelRows.append((label, total))
+        }
+        modelRows.sort {
+            if $0.1 != $1.1 { return $0.1 > $1.1 }
+            return $0.0 < $1.0
+        }
+        let byModel = modelRows
+
+        var projectRows: [(String, Int, String)] = []
+        projectRows.reserveCapacity(projectTotals.count)
+        for (projectID, value) in projectTotals {
+            projectRows.append((value.label, value.total, projectID))
+        }
+        projectRows.sort {
+            if $0.1 != $1.1 { return $0.1 > $1.1 }
+            return $0.2 < $1.2
+        }
+        let byProject = projectRows.map { ($0.0, $0.1) }
+        return UsageBreakdown(timeline: timeline, byModel: byModel, byProject: byProject)
     }
 
     static func distributionRows(
@@ -225,19 +265,6 @@ struct AgentUsageDashboard: View {
         }
     }
 
-    private func makeProjectDistribution(from entries: [Entry]) -> [(String, Int)] {
-        let grouped = Dictionary(grouping: entries, by: \.projectGroupId)
-        return grouped.map { groupId, values in
-            (values.first?.project ?? "未关联项目",
-             values.reduce(0) { $0 + $1.usage.totalTokens }, groupId)
-        }
-        .sorted {
-            if $0.1 != $1.1 { return $0.1 > $1.1 }
-            return $0.2 < $1.2
-        }
-        .map { ($0.0, $0.1) }
-    }
-
     var body: some View {
         let threads = model.threads
         let today = Calendar.current.startOfDay(for: Date())
@@ -262,9 +289,16 @@ struct AgentUsageDashboard: View {
         let outputTotal = usageSnapshot.outputTotal
         let total = usageSnapshot.total
         let partiallyReported = usageSnapshot.partiallyReported
-        let timeline = makeTimeline(from: usageEntries, today: today)
-        let byModel = makeModelDistribution(from: usageEntries)
-        let byProject = makeProjectDistribution(from: usageEntries)
+        let providerNames = Dictionary(
+            usageSnapshot.providerIds.map { ($0, providerLabel($0)) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        let breakdown = Self.makeUsageBreakdown(
+            from: usageEntries, days: days, today: today, providerNames: providerNames
+        )
+        let timeline = breakdown.timeline
+        let byModel = breakdown.byModel
+        let byProject = breakdown.byProject
         ScrollViewReader { proxy in
             ScrollView {
             VStack(alignment: .leading, spacing: 22) {
