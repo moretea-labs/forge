@@ -51,7 +51,7 @@ export function boundUtf8(value: string, maxBytes: number): { text: string; trun
 }
 
 /**
- * Forge errors carry a stable `CODE: human-readable message` convention. This
+ * Forge errors carry a stable `CODE[: human-readable message]` convention. This
  * extracts the leading code for structured error envelopes without re-scanning
  * the human-readable tail at each tool surface.
  */

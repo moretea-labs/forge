@@ -284,18 +284,20 @@ export function pathAllowed(path: string, allowedPaths: string[]): boolean {
 
 export function extractPatchPaths(operations: unknown): string[] {
   if (!Array.isArray(operations)) return [];
-  return [
-    ...new Set(
-      operations
-        .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
-        .map((entry) =>
-          String(entry.path ?? '')
-            .trim()
-            .replace(/\\/g, '/'),
-        )
-        .filter(Boolean),
-    ),
-  ];
+  const paths = new Set<string>();
+  for (const entry of operations) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue;
+    const operation = entry as Record<string, unknown>;
+    const candidates = [
+      operation.path,
+      ...(operation.type === 'move' ? [operation.to_path ?? operation.toPath] : []),
+    ];
+    for (const candidate of candidates) {
+      const path = String(candidate ?? '').trim().replace(/\\/g, '/');
+      if (path) paths.add(path);
+    }
+  }
+  return [...paths];
 }
 
 /**
