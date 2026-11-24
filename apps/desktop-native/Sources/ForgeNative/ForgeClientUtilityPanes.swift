@@ -2032,7 +2032,9 @@ struct SchedulePane: View {
     @State private var pendingAction: (item: ProjectScheduleDetail, action: ProjectScheduleAction)?
 
     var body: some View {
+        GeometryReader { geometry in
         ScrollView {
+            let emptyStateHeight=max(220,geometry.size.height - 52)
             VStack(alignment:.leading,spacing:18) {
                 if let error = model.error, model.repoId != nil {
                     HStack(alignment:.firstTextBaseline,spacing:9) {
@@ -2049,11 +2051,11 @@ struct SchedulePane: View {
                     .accessibilityIdentifier("schedule.error")
                 }
                 if model.repoId == nil {
-                    emptyState("先选择项目","选择项目以查看计划任务。")
+                    emptyState("先选择项目","选择项目以查看计划任务。",minHeight:emptyStateHeight)
                 } else if model.schedulesLoading && model.schedules.isEmpty {
                     ProgressView("正在读取计划任务…").controlSize(.small)
                 } else if model.schedules.isEmpty && model.error == nil {
-                    emptyState("暂无计划任务","当前项目尚未配置定时或条件触发任务。")
+                    emptyState("暂无计划任务","当前项目尚未配置定时或条件触发任务。",minHeight:emptyStateHeight)
                 } else if !model.schedules.isEmpty {
                     VStack(alignment:.leading,spacing:0) {
                         ForEach(Array(model.schedules.enumerated()),id:\.element.id) { index,item in
@@ -2066,6 +2068,7 @@ struct SchedulePane: View {
             .padding(26)
             .frame(maxWidth:960,alignment:.leading)
             .frame(maxWidth:.infinity,alignment:.center)
+        }
         }
         .confirmationDialog("立即运行任务？",isPresented:Binding(
             get:{ pendingAction != nil },
@@ -2178,11 +2181,19 @@ struct SchedulePane: View {
             .fixedSize(horizontal:false,vertical:true)
     }
 
-    private func emptyState(_ title:String,_ detail:String) -> some View {
-        VStack(alignment:.leading,spacing:5) {
+    private func emptyState(_ title:String,_ detail:String,minHeight:CGFloat) -> some View {
+        VStack(spacing:8) {
+            Image(systemName:"calendar.badge.clock")
+                .font(.system(size:22,weight:.light))
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
             Text(title).font(.system(size:13,weight:.medium))
-            Text(detail).font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
-        }.padding(.vertical,16)
+            Text(detail)
+                .font(.system(size:11.5))
+                .foregroundStyle(ForgePalette.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth:.infinity,minHeight:minHeight,alignment:.center)
     }
 }
 
