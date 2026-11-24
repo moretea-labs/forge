@@ -40,14 +40,11 @@ function completionReceipt(receiptKey: string, targetRevision: string) {
     targetBranch: 'main',
     targetRevision,
     changedPaths: ['src/example.ts'],
-    delivery: {
-      reachable: true,
-    },
+    reachable: true,
     cleanup: {
       warnings: [],
       blockers: [],
     },
-    verifiedAt: '2026-09-05T00:00:00.000Z',
     recordedAt: '2026-09-05T00:00:00.000Z',
   };
 }

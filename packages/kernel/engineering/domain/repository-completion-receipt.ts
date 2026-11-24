@@ -33,16 +33,11 @@ export interface RepositoryCompletionReceipt {
   editSessionId: string;
   targetBranch: string;
   targetRevision: string;
-  sourceRevision?: string;
-  baseRevision?: string;
   changedPaths: string[];
-  delivery: {
-    reachable: boolean;
-  };
+  reachable: boolean;
   cleanup: {
     warnings: CompletionMaintenanceWarning[];
     blockers: CompletionResourceBlocker[];
   };
-  verifiedAt: string;
   recordedAt: string;
 }

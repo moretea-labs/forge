@@ -830,7 +830,6 @@ function buildDirectEditCompletionReceipt(input: {
   changedPaths: readonly string[];
   cleanupWarnings?: CompletionMaintenanceWarning[];
   cleanupBlockers?: CompletionResourceBlocker[];
-  verifiedAt?: string;
 }): RepositoryCompletionReceipt {
   const warnings = [...(input.cleanupWarnings ?? [])];
   const blockers = [
@@ -856,17 +855,12 @@ function buildDirectEditCompletionReceipt(input: {
     editSessionId: input.editSessionId,
     targetBranch: input.integrationEvidence.targetBranch,
     targetRevision: input.integrationEvidence.targetRevision,
-    sourceRevision: input.integrationEvidence.sourceRevision,
-    baseRevision: input.integrationEvidence.baseRevision,
     changedPaths: Array.from(new Set(input.changedPaths)).sort((left, right) => left.localeCompare(right)),
-    delivery: {
-      reachable: input.integrationEvidence.reachable,
-    },
+    reachable: input.integrationEvidence.reachable,
     cleanup: {
       warnings,
       blockers,
     },
-    verifiedAt: input.verifiedAt ?? recordedAt,
     recordedAt,
   };
 }
