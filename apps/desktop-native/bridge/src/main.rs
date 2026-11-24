@@ -1658,6 +1658,18 @@ async fn read_plugin_management() -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn read_tool_surface(repo_id: Option<String>, checkout_id: Option<String>) -> Result<Value, String> {
+    let mut request = json!({});
+    if let Some(repo_id) = repo_id.filter(|value| !value.trim().is_empty()) {
+        request["repo_id"] = Value::String(repo_id);
+    }
+    if let Some(checkout_id) = checkout_id.filter(|value| !value.trim().is_empty()) {
+        request["checkout_id"] = Value::String(checkout_id);
+    }
+    call_runtime_tool("controller_capabilities", request).await
+}
+
+#[tauri::command]
 async fn install_official_plugin(plugin_id: String) -> Result<Value, String> {
     if plugin_id.is_empty() || plugin_id.len() > 64
         || !plugin_id.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_') {
@@ -4534,6 +4546,7 @@ fn main() {
             configure_initial_connection,
             repair_connection,
             read_plugin_management,
+            read_tool_surface,
             install_official_plugin
         ])
         .run(tauri::generate_context!())

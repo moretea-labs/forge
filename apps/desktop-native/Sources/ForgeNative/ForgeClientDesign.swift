@@ -330,6 +330,36 @@ enum ForgeClientDesign {
 }
 
 /// Use type and spacing instead of cards and separator lines.
+/// Standard trigger for dropdown menus: no bezel, no persistent fill, only quiet hover feedback.
+/// The popup menu remains native macOS; only the trigger chrome is owned by Forge.
+struct ForgeMenuTriggerLabel: View {
+  let title: String
+  var systemImage: String? = nil
+
+  var body: some View {
+    HStack(spacing: 5) {
+      if let systemImage {
+        Image(systemName: systemImage)
+          .font(.system(size: 10.5, weight: .regular))
+          .symbolRenderingMode(.monochrome)
+          .foregroundStyle(ForgePalette.secondary.opacity(0.76))
+      }
+      Text(title)
+        .font(ForgeClientDesign.Shell.control)
+        .foregroundStyle(ForgePalette.secondary.opacity(0.92))
+        .lineLimit(1)
+        .truncationMode(.middle)
+      Image(systemName: "chevron.down")
+        .font(.system(size: 6.5, weight: .semibold))
+        .foregroundStyle(ForgePalette.secondary.opacity(0.42))
+    }
+    .padding(.horizontal, 7)
+    .frame(height: 28)
+    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .forgeHoverFill(cornerRadius: 8)
+  }
+}
+
 struct ForgeInspectorEmptyState: View {
   let title: String
   let symbol: String

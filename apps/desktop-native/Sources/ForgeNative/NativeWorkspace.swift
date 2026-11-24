@@ -542,6 +542,15 @@ struct PluginManagementItem: Identifiable {
   var id: String { pluginId }
 }
 
+struct ToolSurfaceDetail: Equatable {
+  let toolSurface: String
+  let version: String
+  let fingerprint: String?
+  let capabilityCount: Int
+  let exposedToolCount: Int
+  let staleConnector: Bool
+}
+
 struct PluginAuthorizationItem: Identifiable, Equatable {
   let grantId: String
   let pluginId: String
@@ -1015,6 +1024,9 @@ final class NativeWorkspace: ObservableObject {
   @Published var pluginManagement: [PluginManagementItem] = []
   @Published var pluginManagementLoading = false
   @Published var pluginManagementError: String?
+  @Published var toolSurface: ToolSurfaceDetail?
+  @Published var toolSurfaceLoading = false
+  @Published var toolSurfaceError: String?
   @Published var pluginAuthorizationSnapshot: PluginAuthorizationSnapshot?
   @Published var pluginAuthorizationRequestedPluginId: String?
   @Published var pluginAuthorizationLoading = false
@@ -3398,6 +3410,49 @@ final class NativeWorkspace: ObservableObject {
 
   nonisolated static func pluginManagementLoadErrorMessage(_ message: String) -> String {
     message == "ENOENT" ? "插件列表无法加载，请重试。" : message
+  }
+
+  nonisolated static func toolSurfaceDetail(_ result: [String: Any]) -> ToolSurfaceDetail? {
+    guard let toolSurface = result["toolSurface"] as? String, !toolSurface.isEmpty,
+      let version = result["version"] as? String, !version.isEmpty
+    else { return nil }
+    let architecture = result["toolArchitecture"] as? [String: Any] ?? [:]
+    let exposure = result["toolExposure"] as? [String: Any] ?? [:]
+    return ToolSurfaceDetail(
+      toolSurface: toolSurface,
+      version: version,
+      fingerprint: result["toolSurfaceFingerprint"] as? String,
+      capabilityCount: (architecture["capabilityDescriptorCount"] as? NSNumber)?.intValue ?? 0,
+      exposedToolCount: (exposure["exposedToolCount"] as? NSNumber)?.intValue ?? 0,
+      staleConnector: result["staleConnector"] as? Bool == true
+    )
+  }
+
+  func loadToolSurface() async {
+    guard !toolSurfaceLoading else { return }
+    toolSurfaceLoading = true
+    defer { toolSurfaceLoading = false }
+    do {
+      var arguments: [String: Any] = [:]
+      if let repoId { arguments["repoId"] = repoId }
+      if let checkoutId { arguments["checkoutId"] = checkoutId }
+      let value = try await ForgeBridge.request("read_tool_surface", arguments)
+      guard let detail = Self.toolSurfaceDetail(value) else {
+        toolSurfaceError = "Controller 工具面回执无效。"
+        return
+      }
+      toolSurface = detail
+      toolSurfaceError = nil
+    } catch {
+      // Keep the last confirmed snapshot if a refresh fails.
+      toolSurfaceError = error.localizedDescription
+    }
+  }
+
+  func loadAgentCapabilities() async {
+    async let pluginRefresh: Void = loadPluginManagement()
+    async let toolRefresh: Void = loadToolSurface()
+    _ = await (pluginRefresh, toolRefresh)
   }
 
   func loadPluginManagement() async {

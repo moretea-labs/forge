@@ -173,7 +173,7 @@ struct ForgeWorkspaceView: View {
 
     @ViewBuilder
     private var unifiedWindowToolbarActions: some View {
-        if model.canNavigateBack {
+        if model.canNavigateBack && !(model.page == .agent && workSurfaceVisible) {
             Button { model.goBack() } label: {
                 ForgeGlyph(.back)
                     .forgeChromeSurface(cornerRadius:8)
@@ -1211,12 +1211,10 @@ struct ForgeWorkspaceView: View {
                     .font(.system(size:7.5,weight:.semibold))
                     .foregroundStyle(ForgePalette.secondary.opacity(0.48))
             }
-            .padding(.horizontal,9)
-            .frame(height:30)
-            .background(ForgePalette.inputFill,
-                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
-            .forgeFloatingGlass(cornerRadius:11)
-            .contentShape(RoundedRectangle(cornerRadius:11,style:.continuous))
+            .padding(.horizontal,7)
+            .frame(height:28)
+            .contentShape(RoundedRectangle(cornerRadius:8,style:.continuous))
+            .forgeHoverFill(cornerRadius:8)
         }
         .buttonStyle(.plain)
         .help(model.project == nil

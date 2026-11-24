@@ -368,6 +368,10 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             ).await,
         "repair_connection" => repair_connection().await,
         "read_plugin_management" => read_plugin_management().await,
+        "read_tool_surface" => read_tool_surface(
+            args.get("repoId").and_then(Value::as_str).map(str::to_owned),
+            args.get("checkoutId").and_then(Value::as_str).map(str::to_owned),
+        ).await,
         "install_official_plugin" =>
             install_official_plugin(required(args, "pluginId")?).await,
         "read_plugin_authorizations" =>

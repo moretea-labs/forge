@@ -262,21 +262,77 @@ struct AgentUsageDashboard: View {
             VStack(alignment: .leading, spacing: 22) {
                 HStack {
                     Spacer()
-                    Picker("服务", selection: $selectedProviderId) {
-                        Text("全部服务").tag("")
-                        ForEach(Self.availableProviderIds(from: model.threads), id: \.self) { provider in
-                            Text(providerLabel(provider)).tag(provider)
+                    Menu {
+                        Button {
+                            selectedProviderId = ""
+                        } label: {
+                            if selectedProviderId.isEmpty {
+                                Label("全部服务", systemImage: "checkmark")
+                            } else {
+                                Text("全部服务")
+                            }
                         }
+                        ForEach(Self.availableProviderIds(from: model.threads), id: \.self) { provider in
+                            Button {
+                                selectedProviderId = provider
+                            } label: {
+                                if selectedProviderId == provider {
+                                    Label(providerLabel(provider), systemImage: "checkmark")
+                                } else {
+                                    Text(providerLabel(provider))
+                                }
+                            }
+                        }
+                    } label: {
+                        ForgeMenuTriggerLabel(
+                            title: selectedProviderId.isEmpty ? "全部服务" : providerLabel(selectedProviderId),
+                            systemImage: "server.rack"
+                        )
                     }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                     .frame(maxWidth: 150)
                     .accessibilityIdentifier("agent.usage.provider-filter")
-                    Picker("项目", selection: $selectedProjectId) {
-                        Text("全部项目").tag("")
-                        Text("未绑定项目").tag(Self.unassignedProjectFilter)
-                        ForEach(projectOptions) { project in
-                            Text(project.label).tag(project.id)
+
+                    Menu {
+                        Button {
+                            selectedProjectId = ""
+                        } label: {
+                            if selectedProjectId.isEmpty {
+                                Label("全部项目", systemImage: "checkmark")
+                            } else {
+                                Text("全部项目")
+                            }
                         }
+                        Button {
+                            selectedProjectId = Self.unassignedProjectFilter
+                        } label: {
+                            if selectedProjectId == Self.unassignedProjectFilter {
+                                Label("未绑定项目", systemImage: "checkmark")
+                            } else {
+                                Text("未绑定项目")
+                            }
+                        }
+                        ForEach(projectOptions) { project in
+                            Button {
+                                selectedProjectId = project.id
+                            } label: {
+                                if selectedProjectId == project.id {
+                                    Label(project.label, systemImage: "checkmark")
+                                } else {
+                                    Text(project.label)
+                                }
+                            }
+                        }
+                    } label: {
+                        let selectedProjectTitle =
+                            selectedProjectId.isEmpty ? "全部项目" :
+                            (selectedProjectId == Self.unassignedProjectFilter ? "未绑定项目" :
+                             (projectOptions.first(where: { $0.id == selectedProjectId })?.label ?? "项目"))
+                        ForgeMenuTriggerLabel(title: selectedProjectTitle, systemImage: "folder")
                     }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                     .frame(maxWidth: 190)
                     .accessibilityIdentifier("agent.usage.project-filter")
                     Picker("时间", selection: $days) {

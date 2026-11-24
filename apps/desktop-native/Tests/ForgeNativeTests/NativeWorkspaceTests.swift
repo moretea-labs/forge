@@ -202,6 +202,7 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertTrue(ForgeBridge.allowed.contains("read_local_conversation_activity"))
     XCTAssertTrue(ForgeBridge.allowed.contains("verify_recovery_runtime"))
     XCTAssertTrue(ForgeBridge.allowed.contains("repair_connection"))
+    XCTAssertTrue(ForgeBridge.allowed.contains("read_tool_surface"))
     XCTAssertTrue(ForgeBridge.allowed.contains("read_local_api_settings"))
     XCTAssertTrue(ForgeBridge.allowed.contains("save_local_api_settings"))
     XCTAssertTrue(ForgeBridge.allowed.contains("read_project_requirement_list"))
@@ -4442,6 +4443,24 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(
       NativeWorkspace.pluginManagementLoadErrorMessage("network unavailable"), "network unavailable"
     )
+  }
+
+  func testToolSurfaceDetailDecodesCanonicalControllerCapabilitiesProjection() {
+    let detail = NativeWorkspace.toolSurfaceDetail([
+      "toolSurface": "forge",
+      "version": "1.8.2",
+      "toolSurfaceFingerprint": "a49ea0cf84a8d20c",
+      "staleConnector": false,
+      "toolArchitecture": ["capabilityDescriptorCount": 13],
+      "toolExposure": ["exposedToolCount": 123],
+    ])
+    XCTAssertEqual(detail?.toolSurface, "forge")
+    XCTAssertEqual(detail?.version, "1.8.2")
+    XCTAssertEqual(detail?.fingerprint, "a49ea0cf84a8d20c")
+    XCTAssertEqual(detail?.capabilityCount, 13)
+    XCTAssertEqual(detail?.exposedToolCount, 123)
+    XCTAssertFalse(detail?.staleConnector ?? true)
+    XCTAssertNil(NativeWorkspace.toolSurfaceDetail(["version": "1.8.2"]))
   }
 
   func testPluginAuthorizationSnapshotDecodesOnlyRequestedPluginRows() {

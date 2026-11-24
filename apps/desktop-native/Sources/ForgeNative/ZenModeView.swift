@@ -1666,28 +1666,54 @@ struct ZenWorkspacePane: View {
                 }
                 HStack(alignment:.top,spacing:ForgeClientDesign.Spacing.row) {
                     ForgeClientFormField(label:"状态") {
-                        Picker("",selection:Binding(
-                            get:{ editTaskStatus ?? "unset" },
-                            set:{ editTaskStatus=$0 == "unset" ? nil : $0 }
-                        )) {
+                        Menu {
                             ForEach(editTaskStatusOptions,id:\.self) { status in
-                                Text(status == "unset" ? "未设置" : Self.taskStatusLabel(status) ?? status)
-                                    .tag(status)
+                                Button {
+                                    editTaskStatus = status == "unset" ? nil : status
+                                } label: {
+                                    let title = status == "unset" ? "未设置" : (Self.taskStatusLabel(status) ?? status)
+                                    if (editTaskStatus ?? "unset") == status {
+                                        Label(title,systemImage:"checkmark")
+                                    } else {
+                                        Text(title)
+                                    }
+                                }
                             }
+                        } label: {
+                            ForgeMenuTriggerLabel(
+                                title:editTaskStatus.map { Self.taskStatusLabel($0) ?? $0 } ?? "未设置",
+                                systemImage:"circle.dashed"
+                            )
                         }
-                        .labelsHidden()
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
                         .accessibilityLabel("状态")
                         .accessibilityIdentifier("zen.record.edit.status")
                     }
                     ForgeClientFormField(label:"优先级") {
-                        Picker("",selection:$editPriority) {
-                            if editPriority == "unset" { Text("未设置").tag("unset") }
-                            Text("低").tag("low")
-                            Text("普通").tag("normal")
-                            Text("高").tag("high")
-                            Text("紧急").tag("urgent")
+                        Menu {
+                            if editPriority == "unset" {
+                                Button("未设置") { editPriority = "unset" }
+                            }
+                            ForEach(["low","normal","high","urgent"] as [String],id:\.self) { priority in
+                                Button {
+                                    editPriority = priority
+                                } label: {
+                                    if editPriority == priority {
+                                        Label(Self.priorityLabel(priority) ?? priority,systemImage:"checkmark")
+                                    } else {
+                                        Text(Self.priorityLabel(priority) ?? priority)
+                                    }
+                                }
+                            }
+                        } label: {
+                            ForgeMenuTriggerLabel(
+                                title:editPriority == "unset" ? "未设置" : (Self.priorityLabel(editPriority) ?? editPriority),
+                                systemImage:"flag"
+                            )
                         }
-                        .labelsHidden()
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
                         .accessibilityLabel("优先级")
                         .accessibilityIdentifier("zen.record.edit.priority")
                     }
@@ -2061,23 +2087,48 @@ struct ZenWorkspacePane: View {
                 }
                 HStack(alignment:.top,spacing:ForgeClientDesign.Spacing.row) {
                     ForgeClientFormField(label:"状态") {
-                        Picker("",selection:$newTaskStatus) {
-                            Text("待开始").tag("planned")
-                            Text("进行中").tag("active")
-                            Text("待你处理").tag("waiting_for_user")
+                        Menu {
+                            ForEach(["planned","active","waiting_for_user"],id:\.self) { status in
+                                Button {
+                                    newTaskStatus = status
+                                } label: {
+                                    let title=Self.taskStatusLabel(status) ?? status
+                                    if newTaskStatus == status {
+                                        Label(title,systemImage:"checkmark")
+                                    } else {
+                                        Text(title)
+                                    }
+                                }
+                            }
+                        } label: {
+                            ForgeMenuTriggerLabel(
+                                title:Self.taskStatusLabel(newTaskStatus) ?? newTaskStatus,
+                                systemImage:"circle.dashed"
+                            )
                         }
-                        .labelsHidden()
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
                         .accessibilityLabel("状态")
                         .accessibilityIdentifier("zen.requirement.create.status")
                     }
                     ForgeClientFormField(label:"优先级") {
-                        Picker("",selection:$newPriority) {
-                            Text("低").tag("low")
-                            Text("普通").tag("normal")
-                            Text("高").tag("high")
-                            Text("紧急").tag("urgent")
+                        Menu {
+                            ForEach(["low","normal","high","urgent"] as [String],id:\.self) { priority in
+                                Button {
+                                    newPriority = priority
+                                } label: {
+                                    if newPriority == priority {
+                                        Label(Self.priorityLabel(priority) ?? priority,systemImage:"checkmark")
+                                    } else {
+                                        Text(Self.priorityLabel(priority) ?? priority)
+                                    }
+                                }
+                            }
+                        } label: {
+                            ForgeMenuTriggerLabel(title:Self.priorityLabel(newPriority) ?? newPriority,systemImage:"flag")
                         }
-                        .labelsHidden()
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
                         .accessibilityLabel("优先级")
                         .accessibilityIdentifier("zen.requirement.create.priority")
                     }
@@ -2792,35 +2843,72 @@ private struct ZenReviewSheet: View {
                     )
                 }
             } else {
-            Picker("审查角色",selection:$role) {
+            Menu {
                 ForEach(ZenReviewRole.allCases) { item in
-                    Text(item.rawValue).tag(item)
+                    Button {
+                        role = item
+                    } label: {
+                        if role == item {
+                            Label(item.rawValue,systemImage:"checkmark")
+                        } else {
+                            Text(item.rawValue)
+                        }
+                    }
                 }
+            } label: {
+                ForgeMenuTriggerLabel(title:role.rawValue,systemImage:"person.text.rectangle")
             }
-            .pickerStyle(.menu)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             Text(role.focus).font(.system(size:11)).foregroundStyle(.secondary)
-            Picker("只读 Provider / Model",selection:$provider) {
-                Text("默认只读 Provider").tag("")
+            Menu {
+                Button("默认只读 Provider") { provider = "" }
                 if model.localApiSettings?.joyCodeReady == true {
-                    Text("JoyCode · \(model.localApiSettings?.joyCodeModel ?? "JoyCode")").tag("joycode")
+                    Button("JoyCode · \(model.localApiSettings?.joyCodeModel ?? "JoyCode")") {
+                        provider = "joycode"
+                    }
                 }
                 ForEach(model.localApiSettings?.profiles.filter(\.endpointReady) ?? []) { profile in
-                    Text("\(profile.label) · \(profile.model)").tag(profile.providerId)
+                    Button("\(profile.label) · \(profile.model)") {
+                        provider = profile.providerId
+                    }
                 }
+            } label: {
+                let providerTitle: String = {
+                    if provider.isEmpty { return "默认只读 Provider" }
+                    if provider == "joycode" {
+                        return "JoyCode · \(model.localApiSettings?.joyCodeModel ?? "JoyCode")"
+                    }
+                    return model.localApiSettings?.profiles.first(where:{ $0.providerId == provider })
+                        .map { "\($0.label) · \($0.model)" } ?? "只读 Provider"
+                }()
+                ForgeMenuTriggerLabel(title:providerTitle,systemImage:"eye")
             }
-            .pickerStyle(.menu)
-            Picker("第二模型（可选）",selection:$secondProvider) {
-                Text("不启用").tag("")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            Menu {
+                Button("不启用") { secondProvider = "" }
                 if model.localApiSettings?.joyCodeReady == true,effectiveReviewProvider != "joycode" {
-                    Text("JoyCode").tag("joycode")
+                    Button("JoyCode") { secondProvider = "joycode" }
                 }
                 ForEach(model.localApiSettings?.profiles.filter({
                     $0.endpointReady && $0.providerId != effectiveReviewProvider
                 }) ?? []) { profile in
-                    Text("\(profile.label) · \(profile.model)").tag(profile.providerId)
+                    Button("\(profile.label) · \(profile.model)") {
+                        secondProvider = profile.providerId
+                    }
                 }
+            } label: {
+                let secondProviderTitle: String = {
+                    if secondProvider.isEmpty { return "不启用" }
+                    if secondProvider == "joycode" { return "JoyCode" }
+                    return model.localApiSettings?.profiles.first(where:{ $0.providerId == secondProvider })
+                        .map { "\($0.label) · \($0.model)" } ?? "第二模型"
+                }()
+                ForgeMenuTriggerLabel(title:secondProviderTitle,systemImage:"square.stack.3d.up")
             }
-            .pickerStyle(.menu)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
             .disabled(model.zenRefinementActive)
             Text("Agent Review 使用已配置的 API Provider / JoyCode，并以只读会话运行；需要执行修改时，请在普通 Agent 中单独发起。Zen 不自动应用审查建议。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
@@ -3059,13 +3147,35 @@ struct ZenProjectDirectorySheet: View {
                             .onSubmit { save() }
                     }
                     if creating {
-                        Picker("关联仓库",selection:$newProjectRepositoryId) {
-                            Text("仅项目").tag(Optional<String>.none)
-                            ForEach(availableRepositories) { repository in
-                                Text(repository.label).tag(Optional(repository.repoId))
+                        Menu {
+                            Button {
+                                newProjectRepositoryId = nil
+                            } label: {
+                                if newProjectRepositoryId == nil {
+                                    Label("仅项目",systemImage:"checkmark")
+                                } else {
+                                    Text("仅项目")
+                                }
                             }
+                            ForEach(availableRepositories) { repository in
+                                Button {
+                                    newProjectRepositoryId = repository.repoId
+                                } label: {
+                                    if newProjectRepositoryId == repository.repoId {
+                                        Label(repository.label,systemImage:"checkmark")
+                                    } else {
+                                        Text(repository.label)
+                                    }
+                                }
+                            }
+                        } label: {
+                            let repositoryTitle = newProjectRepositoryId.flatMap { repositoryId in
+                                availableRepositories.first(where:{ $0.repoId == repositoryId })?.label
+                            } ?? "仅项目"
+                            ForgeMenuTriggerLabel(title:repositoryTitle,systemImage:"folder")
                         }
-                        .pickerStyle(.menu)
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
                         .disabled(model.projectsLoading || model.semanticProjectsLoading
                                   || model.projectsError != nil || model.semanticProjectsError != nil)
                         .accessibilityIdentifier("zen.projects.repository")

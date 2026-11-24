@@ -288,15 +288,8 @@ struct AgentAssetsDashboard: View {
   }
 
   private var resourceRepositoryPicker: some View {
-    Picker("代码仓库", selection: $selectedRepoId) {
-      Text("全部仓库").tag("")
-      ForEach(model.projects) { project in
-        Text(project.label).tag(project.repoId)
-      }
-    }
-    .labelsHidden()
-    .frame(maxWidth: 160)
-    .accessibilityIdentifier("agent.assets.project-filter")
+    resourceRepositoryMenu
+      .frame(maxWidth: 160)
   }
 
   private var resourceRepositoryMenu: some View {
@@ -314,12 +307,10 @@ struct AgentAssetsDashboard: View {
         }
       }
     } label: {
-      Label(
-        model.projects.first(where: { $0.repoId == selectedRepoId })?.label ?? "全部仓库",
+      ForgeMenuTriggerLabel(
+        title: model.projects.first(where: { $0.repoId == selectedRepoId })?.label ?? "全部仓库",
         systemImage: "folder"
       )
-      .font(.system(size: 11))
-      .lineLimit(1)
     }
     .menuStyle(.borderlessButton).menuIndicator(.hidden)
     .frame(maxWidth: 155)

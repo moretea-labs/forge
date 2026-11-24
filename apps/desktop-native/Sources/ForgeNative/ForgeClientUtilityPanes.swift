@@ -2812,13 +2812,19 @@ struct RuntimeSettingsSection: View {
                     VStack(alignment:.leading,spacing:8) {
                         Text("首次连接").font(.system(size:11.5,weight:.semibold))
                         HStack(spacing:10) {
-                            Picker("客户端",selection:$setupController) {
-                                Text("ChatGPT").tag("chatgpt")
-                                Text("Codex").tag("codex")
-                                Text("Claude Code").tag("claude")
-                                Text("MCP 客户端").tag("mcp")
+                            Menu {
+                                Button("ChatGPT") { setupController = "chatgpt" }
+                                Button("Codex") { setupController = "codex" }
+                                Button("Claude Code") { setupController = "claude" }
+                                Button("MCP 客户端") { setupController = "mcp" }
+                            } label: {
+                                let title = setupController == "codex" ? "Codex"
+                                    : (setupController == "claude" ? "Claude Code"
+                                       : (setupController == "mcp" ? "MCP 客户端" : "ChatGPT"))
+                                ForgeMenuTriggerLabel(title:title,systemImage:"macwindow")
                             }
-                            .pickerStyle(.menu)
+                            .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
                             .frame(width:220,alignment:.leading)
                             .accessibilityIdentifier("connection.setup.controller")
                             Spacer()
@@ -3466,14 +3472,42 @@ struct SettingsPane: View {
                     HStack(spacing:12) {
                         Text("新会话默认").font(.system(size:10.5,weight:.medium))
                             .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
-                        Picker("新会话默认",selection:$defaultProvider) {
-                            Text("Codex").tag("codex")
-                            ForEach(profiles) { profile in
-                                Text(profile.label).tag(profile.providerId)
+                        Menu {
+                            Button {
+                                defaultProvider = "codex"
+                            } label: {
+                                if defaultProvider == "codex" {
+                                    Label("Codex",systemImage:"checkmark")
+                                } else {
+                                    Text("Codex")
+                                }
                             }
-                            Text("JoyCode").tag("joycode")
+                            ForEach(profiles) { profile in
+                                Button {
+                                    defaultProvider = profile.providerId
+                                } label: {
+                                    if defaultProvider == profile.providerId {
+                                        Label(profile.label,systemImage:"checkmark")
+                                    } else {
+                                        Text(profile.label)
+                                    }
+                                }
+                            }
+                            Button {
+                                defaultProvider = "joycode"
+                            } label: {
+                                if defaultProvider == "joycode" {
+                                    Label("JoyCode",systemImage:"checkmark")
+                                } else {
+                                    Text("JoyCode")
+                                }
+                            }
+                        } label: {
+                            ForgeMenuTriggerLabel(title:defaultProviderLabel,systemImage:"cpu")
                         }
-                        .labelsHidden().pickerStyle(.menu).frame(maxWidth:300,alignment:.leading)
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .frame(maxWidth:300,alignment:.leading)
                         .accessibilityIdentifier("settings.default-provider")
                     }
 
@@ -3630,12 +3664,19 @@ struct SettingsPane: View {
             HStack(spacing:12) {
                 Text("API 协议").font(.system(size:10.5,weight:.medium))
                     .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
-                Picker("API 协议",selection:$profiles[index].apiProtocol) {
-                    Text("OpenAI Chat").tag("openai")
-                    Text("OpenAI Responses").tag("responses")
-                    Text("Anthropic").tag("anthropic")
+                Menu {
+                    Button("OpenAI Chat") { profiles[index].apiProtocol = "openai" }
+                    Button("OpenAI Responses") { profiles[index].apiProtocol = "responses" }
+                    Button("Anthropic") { profiles[index].apiProtocol = "anthropic" }
+                } label: {
+                    ForgeMenuTriggerLabel(
+                        title:apiProtocolLabel(profiles[index].apiProtocol),
+                        systemImage:"point.3.connected.trianglepath.dotted"
+                    )
                 }
-                .labelsHidden().pickerStyle(.menu).frame(maxWidth:300,alignment:.leading)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(maxWidth:300,alignment:.leading)
                 .accessibilityIdentifier("settings.api-protocol")
             }
 
@@ -3649,14 +3690,36 @@ struct SettingsPane: View {
                     .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
             } else {
                 settingsField("API Key") {
-                    Picker("API Key",selection:$profiles[index].credentialRef) {
-                        Text("未选择").tag(nil as String?)
-                        ForEach(model.managedApiCredentials.filter { $0.endpoint == endpoint }) { credential in
-                            Text("\(credential.label) · \(credential.authorized ? "已授权" : "未授权")")
-                                .tag(Optional(credential.credentialRef))
+                    Menu {
+                        Button {
+                            profiles[index].credentialRef = nil
+                        } label: {
+                            if profiles[index].credentialRef == nil {
+                                Label("未选择",systemImage:"checkmark")
+                            } else {
+                                Text("未选择")
+                            }
                         }
+                        ForEach(model.managedApiCredentials.filter { $0.endpoint == endpoint }) { credential in
+                            Button {
+                                profiles[index].credentialRef = credential.credentialRef
+                            } label: {
+                                let label="\(credential.label) · \(credential.authorized ? "已授权" : "未授权")"
+                                if profiles[index].credentialRef == credential.credentialRef {
+                                    Label(label,systemImage:"checkmark")
+                                } else {
+                                    Text(label)
+                                }
+                            }
+                        }
+                    } label: {
+                        ForgeMenuTriggerLabel(
+                            title:credentialMenuLabel(profiles[index].credentialRef),
+                            systemImage:"key"
+                        )
                     }
-                    .labelsHidden().pickerStyle(.menu)
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                     .accessibilityIdentifier("settings.credential")
                 }
                 HStack(spacing:10) {
@@ -3711,6 +3774,25 @@ struct SettingsPane: View {
 
     private var selectedProfileIndex:Int? {
         profiles.firstIndex { $0.id == selectedProfileId }
+    }
+
+    private func apiProtocolLabel(_ value:String) -> String {
+        switch value {
+        case "responses": return "OpenAI Responses"
+        case "anthropic": return "Anthropic"
+        default: return "OpenAI Chat"
+        }
+    }
+
+    private func credentialMenuLabel(_ credentialRef:String?) -> String {
+        guard let credentialRef else { return "未选择" }
+        return model.managedApiCredentials.first(where:{ $0.credentialRef == credentialRef })?.label ?? "API Key"
+    }
+
+    private var defaultProviderLabel:String {
+        if defaultProvider == "codex" { return "Codex" }
+        if defaultProvider == "joycode" { return "JoyCode" }
+        return profiles.first(where:{ $0.providerId == defaultProvider })?.label ?? "选择服务"
     }
 
     private var selectedProviderLabel:String {

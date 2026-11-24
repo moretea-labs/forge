@@ -208,7 +208,7 @@ struct AgentPane: View {
             agentWorkspaceStatusChip
                 .frame(width:ForgeClientDesign.Shell.workspaceStatusSlotWidth,alignment:.trailing)
             if !workSurfaceVisible {
-                inspectorToggle
+                inspectorOpenButton
             }
         }
         .padding(.horizontal,16)
@@ -263,22 +263,19 @@ struct AgentPane: View {
         )
     }
 
-    private var inspectorToggle: some View {
+    /// The conversation header only opens the work surface.
+    /// Once open, the inspector header owns the sole close action.
+    private var inspectorOpenButton: some View {
         Button {
-            if workSurfaceVisible {
-                closeWorkSurface()
-            } else {
-                openWorkSurface(AgentWorkSurface.preferredTab(
-                    selected: selectedWorkSurface, available: availableWorkSurfaces))
-            }
+            openWorkSurface(AgentWorkSurface.preferredTab(
+                selected:selectedWorkSurface, available:availableWorkSurfaces))
         } label: {
-            ForgeGlyph(.inspector, active:workSurfaceVisible)
-                .forgeChromeSurface(selected:workSurfaceVisible,cornerRadius:8)
+            ForgeGlyph(.inspector)
+                .forgeChromeSurface(cornerRadius:8)
         }
         .buttonStyle(.plain)
-        .help(workSurfaceVisible ? "隐藏工作面板" : "显示工作面板")
-        .accessibilityLabel(workSurfaceVisible ? "隐藏工作面板" : "显示工作面板")
-        .accessibilityAddTraits(workSurfaceVisible ? [.isSelected] : [])
+        .help("显示工作面板")
+        .accessibilityLabel("显示工作面板")
         .accessibilityIdentifier(AgentConversationToolbarContract.inspectorIdentifier)
     }
 
@@ -1270,7 +1267,7 @@ struct AgentPane: View {
             Task { await model.refreshAgentChanges() }
         }
         if newlyOpened && surface == .capabilities {
-            Task { await model.loadPluginManagement() }
+            Task { await model.loadAgentCapabilities() }
         }
     }
 
@@ -1964,9 +1961,6 @@ struct AgentCapabilitiesInspector: View {
                         .font(.system(size:10.5,weight:.semibold))
                         .foregroundStyle(ForgePalette.secondary)
                     Spacer(minLength:8)
-                    Text("待接入")
-                        .font(.system(size:9.25,weight:.medium))
-                        .foregroundStyle(.tertiary)
                 }
                 .padding(.top,4)
 
@@ -1974,9 +1968,11 @@ struct AgentCapabilitiesInspector: View {
                     capabilityRow(
                         icon:extensionPoint.symbol,
                         title:extensionPoint.title,
-                        detail:extensionPoint.summary,
+                        detail:extensionDetail(extensionPoint),
                         identifier:extensionPoint.accessibilityIdentifier,
-                        muted:true
+                        status:extensionStatus(extensionPoint),
+                        active:extensionActive(extensionPoint),
+                        muted:!extensionActive(extensionPoint)
                     )
                 }
             }
@@ -1984,11 +1980,34 @@ struct AgentCapabilitiesInspector: View {
             .frame(maxWidth:.infinity,alignment:.leading)
         }
         .task {
-            if model.pluginManagement.isEmpty && !model.pluginManagementLoading {
-                await model.loadPluginManagement()
+            if (model.pluginManagement.isEmpty && !model.pluginManagementLoading)
+                || (model.toolSurface == nil && !model.toolSurfaceLoading) {
+                await model.loadAgentCapabilities()
             }
         }
         .accessibilityIdentifier(AgentCapabilitiesContract.panelIdentifier)
+    }
+
+    private func extensionDetail(_ extensionPoint: AgentCapabilityExtension) -> String {
+        guard extensionPoint == .mcp else { return extensionPoint.summary }
+        if let surface = model.toolSurface {
+            return "\(surface.toolSurface) \(surface.version) · \(surface.exposedToolCount) 个工具 · \(surface.capabilityCount) 项能力"
+        }
+        if model.toolSurfaceLoading { return "正在读取 Controller 工具面…" }
+        if model.toolSurfaceError != nil { return "Controller 工具面状态暂未确认。" }
+        return "等待读取 Controller 工具面。"
+    }
+
+    private func extensionStatus(_ extensionPoint: AgentCapabilityExtension) -> String {
+        guard extensionPoint == .mcp else { return "待接入" }
+        if let surface = model.toolSurface { return surface.staleConnector ? "需刷新" : "可用" }
+        if model.toolSurfaceLoading { return "读取中" }
+        return model.toolSurfaceError == nil ? "待读取" : "未知"
+    }
+
+    private func extensionActive(_ extensionPoint: AgentCapabilityExtension) -> Bool {
+        guard extensionPoint == .mcp, let surface = model.toolSurface else { return false }
+        return !surface.staleConnector
     }
 
     private var pluginStatus: String {
