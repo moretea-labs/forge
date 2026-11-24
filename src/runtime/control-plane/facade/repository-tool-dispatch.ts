@@ -58,8 +58,6 @@ import {
   executeLightweightLanes,
   executeRepositoryBatch,
   integratePatchProposals,
-  listFastReceipts,
-  readFastReceipt,
   routeExecution,
   extractPatchPaths,
 } from '../../execution/thin-harness';
@@ -642,8 +640,6 @@ export async function callRepositoryTool(
           batch_execute: 'repository_batch_execute',
           lanes_execute: 'repository_lanes_execute',
           lanes_integrate: 'repository_lanes_integrate',
-          fast_receipt_get: 'repository_fast_receipt_get',
-          fast_receipt_list: 'repository_fast_receipt_list',
           execution_route: 'repository_execution_route',
         }[operation];
         if (!internalTool) {
@@ -1497,27 +1493,6 @@ export async function callRepositoryTool(
         });
         const payload = integrated as unknown as Record<string, unknown>;
         return integrated.ok ? result(payload) : { ...result(payload), isError: true };
-      }
-      case 'repository_fast_receipt_get': {
-        const repository = resolveRepositorySelection({
-          repoId: repoIdValue || undefined,
-          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
-          controllerHome,
-          allowSoleRepository: true,
-        });
-        const receipt = readFastReceipt(controllerHome, repository.repoId, String(args.execution_id ?? ''));
-        if (!receipt) return failure(new Error(`FAST_RECEIPT_NOT_FOUND: ${String(args.execution_id ?? '')}`));
-        return result({ receipt });
-      }
-      case 'repository_fast_receipt_list': {
-        const repository = resolveRepositorySelection({
-          repoId: repoIdValue || undefined,
-          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
-          controllerHome,
-          allowSoleRepository: true,
-        });
-        const limit = typeof args.limit === 'number' ? args.limit : undefined;
-        return result({ receipts: listFastReceipts(controllerHome, repository.repoId, limit) });
       }
       case 'repository_execution_route': {
         const repository = resolveRepositorySelection({

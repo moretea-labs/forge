@@ -91,7 +91,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     include_removed: { type: 'boolean' },
     operation: {
       type: 'string',
-      enum: ['summary', 'batch_execute', 'lanes_execute', 'lanes_integrate', 'fast_receipt_get', 'fast_receipt_list', 'execution_route'],
+      enum: ['summary', 'batch_execute', 'lanes_execute', 'lanes_integrate', 'execution_route'],
       description: 'Defaults to summary. Use batch_execute for multi-step repository capability execution and lanes_execute for limited parallel reads. Workflow/mode selection belongs to the model/user, not Workbench.',
     },
     payload: {

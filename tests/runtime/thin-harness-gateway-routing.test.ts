@@ -13,7 +13,7 @@ import { executeGatewayRoutedOperation } from '../../adapters/mcp/runtime-gatewa
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { createMcpToolContext } from '../../adapters/mcp/server';
 import { callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
-import { ensureControllerHome } from '../../src/effects/controller-home';
+import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
 import {
   addRepositoryCheckout,
   getRepository,
@@ -42,7 +42,6 @@ import {
   isFastEligibleTool,
   executeFast,
   executeLightweightLanes,
-  listFastReceipts,
 } from '../../src/runtime/execution/thin-harness';
 import { getProcessRecord, listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
@@ -149,6 +148,11 @@ function fixture() {
     repo: repoRoot,
   });
   return { root, controllerHome, repoRoot, originRoot, repository, ctx };
+}
+
+function fastReceiptFiles(controllerHome: string, repoId: string): string[] {
+  const dir = join(repositoryControllerRoot(controllerHome, repoId), 'fast-receipts');
+  return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.json')) : [];
 }
 
 const roots: string[] = [];
@@ -2211,6 +2215,19 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(git(fx.repoRoot, ['status', '--porcelain'])).toBe('');
   });
 
+  test('workbench rejects retired Fast receipt browsing operations', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    for (const operation of ['fast_receipt_get', 'fast_receipt_list']) {
+      const response = await callRepositoryTool(fx.controllerHome, 'repository_workbench', {
+        repo_id: fx.repository.repoId,
+        operation,
+      });
+      expect(response?.isError).toBe(true);
+      expect(JSON.stringify(response?.structuredContent ?? {})).toContain('REPOSITORY_WORKBENCH_OPERATION_INVALID');
+    }
+  });
+
   test('single read Fast Path has no durable receipt; explicit opt-in is still available', async () => {
     const fx = fixture();
     roots.push(fx.root);
@@ -2221,7 +2238,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(plain.ok).toBe(true);
     expect(plain.receipt).toBeUndefined();
     expect(plain.receiptPersisted).toBeUndefined();
-    expect(listFastReceipts(fx.controllerHome, fx.repository.repoId)).toEqual([]);
+    expect(fastReceiptFiles(fx.controllerHome, fx.repository.repoId)).toEqual([]);
 
     const explicit = await executeFast(
       { controllerHome: fx.controllerHome, repository: fx.repository },
@@ -2229,7 +2246,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     );
     expect(explicit.ok).toBe(true);
     expect(explicit.receiptPersisted).toBe(true);
-    expect(listFastReceipts(fx.controllerHome, fx.repository.repoId)).toHaveLength(1);
+    expect(fastReceiptFiles(fx.controllerHome, fx.repository.repoId)).toHaveLength(1);
   });
 
   test('read-only lanes return results without creating durable evidence', async () => {
@@ -2248,7 +2265,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(result.ok).toBe(true);
     expect(result.readLanes).toHaveLength(2);
     expect(result.receipt).toBeUndefined();
-    expect(listFastReceipts(fx.controllerHome, fx.repository.repoId)).toEqual([]);
+    expect(fastReceiptFiles(fx.controllerHome, fx.repository.repoId)).toEqual([]);
   });
 
   test('workbench read-only batch returns results without a durable receipt', async () => {
@@ -2275,7 +2292,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(Array.isArray(payload.steps) && (payload.steps as unknown[]).length).toBe(4);
     expect(payload.receipt).toBeUndefined();
     expect(payload.receiptPersisted).toBeUndefined();
-    expect(listFastReceipts(fx.controllerHome, fx.repository.repoId)).toEqual([]);
+    expect(fastReceiptFiles(fx.controllerHome, fx.repository.repoId)).toEqual([]);
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
   });
 });

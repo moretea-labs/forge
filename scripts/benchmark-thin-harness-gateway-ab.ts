@@ -21,7 +21,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readdirSync, existsSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { controllerSystemRoot, ensureControllerHome } from '../src/effects/controller-home';
+import { controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../src/effects/controller-home';
 import { registerRepository } from '../src/runtime/repositories/registry';
 import {
   executeFast,
@@ -34,13 +34,17 @@ import { getLeaseSideEffectMetrics, resetLeaseSideEffectMetrics } from '../src/r
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import { listProcessRecords } from '../src/runtime/execution/process-runtime/store';
 import { listLocalBridgeJobSnapshots } from '../src/runtime/local-bridge/read-model';
-import { listFastReceipts } from '../src/runtime/execution/thin-harness/fast-receipt';
 import { callRepositoryTool } from '../src/runtime/control-plane/facade/repository-tool-dispatch';
 
 const BASELINE_REV = 'e1582c573b738c29ff41eda6884685488654e5b9';
 // Write cases may emit lease lifecycle events and mutation receipts legitimately.
 // An unclassified future case remains subject to the strict read-only checks.
 const MUTATING_BENCHMARK_CASES = new Set(['bounded_patch', 'fast_mutation_ownership']);
+
+function countFastReceipts(controllerHome: string, repoId: string): number {
+  const dir = join(repositoryControllerRoot(controllerHome, repoId), 'fast-receipts');
+  return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.json')).length : 0;
+}
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -219,7 +223,7 @@ async function sampleOnce(
   resetLeaseSideEffectMetrics();
   const sideBefore = getLeaseSideEffectMetrics();
   const effectsBefore = observeEffects(fixture);
-  const receiptsBefore = listFastReceipts(fixture.controllerHome, fixture.repository.repoId, 200).length;
+  const receiptsBefore = countFastReceipts(fixture.controllerHome, fixture.repository.repoId);
   const leasesBefore = countLeaseFiles(fixture.controllerHome);
 
   let result: Awaited<ReturnType<typeof fn>> | undefined;
@@ -254,7 +258,7 @@ async function sampleOnce(
   const operationMs = Math.max(executionMs, snapshotMs);
   const observedReceiptDelta = Math.max(
     0,
-    listFastReceipts(fixture.controllerHome, fixture.repository.repoId, 200).length - receiptsBefore,
+    countFastReceipts(fixture.controllerHome, fixture.repository.repoId) - receiptsBefore,
   );
 
   return {

@@ -18,7 +18,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { ensureControllerHome, controllerSystemRoot } from '../src/effects/controller-home';
+import { ensureControllerHome, controllerSystemRoot, repositoryControllerRoot } from '../src/effects/controller-home';
 import { registerRepository } from '../src/runtime/repositories/registry';
 import { createMcpToolContext } from '../adapters/mcp/server';
 import { callRepositoryTool } from '../src/runtime/control-plane/facade/repository-tool-dispatch';
@@ -29,7 +29,6 @@ import {
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import { listProcessRecords } from '../src/runtime/execution/process-runtime/store';
 import { listLocalBridgeJobSnapshots } from '../src/runtime/local-bridge/read-model';
-import { listFastReceipts } from '../src/runtime/execution/thin-harness/fast-receipt';
 import {
   getLeaseSideEffectMetrics,
   resetLeaseSideEffectMetrics,
@@ -37,6 +36,11 @@ import {
 import type { MultiRepositoryMcpToolContext } from '../adapters/mcp/multi-repository';
 import { waitForProcess } from '../src/runtime/execution/process-runtime/runtime';
 import { isLightweightProcessId, waitForLightweightProcess } from '../src/runtime/execution/process-runtime/lightweight-managed';
+
+function countFastReceipts(controllerHome: string, repoId: string): number {
+  const dir = join(repositoryControllerRoot(controllerHome, repoId), 'fast-receipts');
+  return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.json')).length : 0;
+}
 
 function git(root: string, args: string[]): void {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf-8' });
@@ -218,7 +222,7 @@ async function sampleCase(
   resetLeaseSideEffectMetrics();
   const sideBefore = getLeaseSideEffectMetrics();
   const effectsBefore = observeEffects(fixture);
-  const receiptsBefore = listFastReceipts(fixture.controllerHome, fixture.repository.repoId, 200).length;
+  const receiptsBefore = countFastReceipts(fixture.controllerHome, fixture.repository.repoId);
 
   const { phases, payload } = await dispatchMcpLike(fixture, tool, args);
   const side = (payload.durableSideEffects ?? {}) as {
@@ -269,7 +273,7 @@ async function sampleCase(
     ),
     receiptCount: Math.max(
       0,
-      listFastReceipts(fixture.controllerHome, fixture.repository.repoId, 200).length - receiptsBefore,
+      countFastReceipts(fixture.controllerHome, fixture.repository.repoId) - receiptsBefore,
     ),
   };
 }

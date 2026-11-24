@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { repositoryControllerRoot } from '../../../effects/controller-home';
@@ -130,43 +130,6 @@ export function writeFastReceipt(controllerHome: string, input: CreateFastReceip
       warning: error instanceof Error ? error.message : String(error),
     };
   }
-}
-
-export function readFastReceipt(
-  controllerHome: string,
-  repoId: string,
-  executionId: string,
-): FastExecutionReceipt | undefined {
-  const path = receiptPath(controllerHome, repoId, executionId);
-  if (!existsSync(path)) return undefined;
-  try {
-    return JSON.parse(readFileSync(path, 'utf8')) as FastExecutionReceipt;
-  } catch {
-    return undefined;
-  }
-}
-
-export function listFastReceipts(
-  controllerHome: string,
-  repoId: string,
-  limit = 20,
-): FastExecutionReceipt[] {
-  const dir = receiptsDir(controllerHome, repoId);
-  if (!existsSync(dir)) return [];
-  const files = readdirSync(dir)
-    .filter((name) => name.endsWith('.json'))
-    .map((name) => {
-      const path = join(dir, name);
-      try {
-        const receipt = JSON.parse(readFileSync(path, 'utf8')) as FastExecutionReceipt;
-        return { path, receipt, mtime: receipt.finishedAt ?? '' };
-      } catch {
-        return undefined;
-      }
-    })
-    .filter((entry): entry is { path: string; receipt: FastExecutionReceipt; mtime: string } => Boolean(entry))
-    .sort((left, right) => right.mtime.localeCompare(left.mtime));
-  return files.slice(0, Math.max(1, Math.min(limit, 100))).map((entry) => entry.receipt);
 }
 
 function pruneFastReceipts(controllerHome: string, repoId: string): void {
