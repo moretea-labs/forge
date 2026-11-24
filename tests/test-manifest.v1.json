@@ -121,6 +121,46 @@
     }
   ],
   "tests": {
+    "tests/cli/repository-cli-command-claims.test.ts": {
+      "module": "repository",
+      "resource": "git-worktree"
+    },
+    "tests/runtime/browser-password-target-policy.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
+    "tests/runtime/computer-chatgpt-extension-projection.test.ts": {
+      "module": "browser",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/computer-cross-platform-manifest.test.ts": {
+      "module": "browser",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/forge-local-vault-computer.test.ts": {
+      "module": "browser",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/host-build-admission.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/ios-pdf-eof-framing.test.ts": {
+      "module": "ios",
+      "resource": "pure"
+    },
+    "tests/runtime/mcp-gateway-json-response.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/result-store-retention.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/sessionless-safe-patch.test.ts": {
+      "module": "repository",
+      "resource": "git-worktree"
+    },
     "tests/cli/github-issue-sync.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"

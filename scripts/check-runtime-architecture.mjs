@@ -16,6 +16,12 @@ function text(path) {
 function requireText(path, needle) {
   if (!text(path).includes(needle)) failures.push(`${path} must contain ${JSON.stringify(needle)}`);
 }
+function requireTextIgnoringWhitespace(path, needle) {
+  const normalizeWhitespace = (value) => value.replace(/\s+/g, ' ').trim();
+  if (!normalizeWhitespace(text(path)).includes(normalizeWhitespace(needle))) {
+    failures.push(`${path} must contain ${JSON.stringify(needle)} (ignoring formatting whitespace)`);
+  }
+}
 function hasFilesystemContent(path) {
   const absolute = resolve(root, path);
   if (!existsSync(absolute)) return false;
@@ -3305,10 +3311,13 @@ requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_SCREENSHO
 requireText('src/runtime/plugins/ios-physical-device.ts', 'chmodSync(path, 0o700);');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'if (file.isFile()) chmodSync(path, 0o600);');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'state.lastScreenshot = undefined;');
-requireText('src/runtime/plugins/ios-physical-device.ts', 'try { unlinkSync(path); } catch');
+requireTextIgnoringWhitespace('src/runtime/plugins/ios-physical-device.ts', 'try { unlinkSync(path); } catch');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'PNG_CRC_TABLE');
 requireText('src/runtime/plugins/ios-physical-device.ts', 'sawImageData && length === 0 && end + 4 === image.length');
-requireText('src/runtime/plugins/ios-physical-device.ts', 'screenshotSha256, screenshotBytes: image.length');
+requireTextIgnoringWhitespace(
+  'src/runtime/plugins/ios-physical-device.ts',
+  'screenshotSha256, screenshotBytes: image.length',
+);
 requireText('src/runtime/plugins/ios-physical-device.ts', "requiredConfirmationText: 'list-iphone-app-documents'");
 requireText('src/runtime/plugins/ios-physical-device.ts', "'IOS_DEVICE_DOCUMENT_LIST_UNVERIFIED'");
 requireText(
@@ -3322,23 +3331,27 @@ requireText(
   'src/runtime/plugins/ios-physical-device.ts',
   'indexFile.size <= 0 || indexFile.size > MAX_DOCUMENT_INDEX_BYTES',
 );
-requireText(
+requireTextIgnoringWhitespace(
   'src/runtime/plugins/ios-physical-device.ts',
   'index.interactionId !== record.interactionId || !validEntries',
 );
 requireText('src/runtime/plugins/ios-physical-device.ts', 'pngDisplayGeometry(bytes) !== undefined');
 requireText('src/runtime/plugins/ios-physical-device.ts', "bytes.subarray(-2).toString('hex') === 'ffd9'");
-requireText(
+requireTextIgnoringWhitespace(
   'src/runtime/plugins/ios-physical-device.ts',
   'bytes.readUInt32BE(0) >= 16 && bytes.readUInt32BE(0) <= bytes.length',
 );
-requireText('src/runtime/plugins/ios-physical-device.ts', 'entries: [...entries, entry] }, { mode: 0o600 });');
+requireMatch(
+  'src/runtime/plugins/ios-physical-device.ts',
+  /entries:\s*\[\.\.\.entries,\s*entry\],?\s*\},\s*\{\s*mode:\s*0o600\s*\},?\s*\);/,
+  'append the index entry with restrictive mode 0o600',
+);
 requireText(
   'src/runtime/plugins/ios-physical-device.ts',
   'organizedIndex: { localArtifact: indexPath, entryCount: entries.length + 1 }',
 );
 requireText('src/runtime/plugins/ios-physical-device.ts', 'requireBundleId(input.args.bundle_id) !== state.bundleId');
-requireText(
+requireTextIgnoringWhitespace(
   'src/runtime/plugins/ios-physical-device.ts',
   "'--domain-type', 'appDataContainer', '--domain-identifier', state.bundleId",
 );
@@ -3603,7 +3616,10 @@ requireText(
   'buildBrowserPluginManifest(previousRevision, previousUpdatedAt, repoRoot, context, true)',
 );
 requireText('src/runtime/plugins/computer-registration.ts', '__forge_computer_native_only: true');
-requireText('src/runtime/plugins/browser-adapter.ts', 'if (computerNativeOnly) return normalizeConfig({');
+requireTextIgnoringWhitespace(
+  'src/runtime/plugins/browser-adapter.ts',
+  'if (computerNativeOnly) return normalizeConfig({',
+);
 requireText('src/runtime/plugins/browser-adapter.ts', 'if (computerNativeOnly) {');
 requireText('src/runtime/plugins/browser-registration.ts', 'export const browserPluginAdapter');
 requireText('src/runtime/plugins/first-party-registry.ts', "from './browser-registration'");
