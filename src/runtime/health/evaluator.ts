@@ -56,15 +56,6 @@ export interface ProjectionObservation {
   lastBuildError?: string;
   contentRevision?: number;
   generatedFromRevision?: string;
-  sourceReconciliation?: ProjectionSourceReconciliation;
-}
-
-export interface ProjectionSourceReconciliation {
-  status: 'consistent' | 'mismatch' | 'unknown';
-  projectionRunningWorkers?: number;
-  ledgerRunningTasks?: number;
-  ledgerRunningTaskIds?: string[];
-  detail?: string;
 }
 
 export type LocalBridgeMode = 'standalone' | 'embedded' | 'remote' | 'disabled' | 'unknown';
@@ -343,12 +334,6 @@ function evaluateProjection(observation: ProjectionObservation): ComponentHealth
         producerHeartbeatAgeMs: observation.producerHeartbeatAgeMs,
       }));
     }
-  }
-  if (observation.sourceReconciliation?.status === 'mismatch') {
-    const mismatch = reason('projection', 'PROJECTION_SOURCE_MISMATCH', 'Task workflow progress and runtime worker ownership differ.', {
-      ...observation.sourceReconciliation,
-    });
-    warnings.push(mismatch);
   }
   return classifyComponent(blockers, warnings);
 }

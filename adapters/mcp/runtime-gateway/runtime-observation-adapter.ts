@@ -49,7 +49,6 @@ import {
   rebuildRepositoryProjection,
   projectionObservation,
   readRepositoryProjectionSnapshot,
-  reconcileProjectionWithTaskLedger,
 } from '../../../src/runtime/projections/materialized-view';
 import {
   buildRuntimeOperationalView,
@@ -131,7 +130,6 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
     taskLedgerStatus: fullPayload.taskLedgerStatus,
     taskLedgerCounts: fullPayload.taskLedgerCounts,
     gateway: fullPayload.gateway,
-    projectionReconciliation: fullPayload.projectionReconciliation,
     health: {
       state: health.state,
       ready: health.ready,
@@ -920,9 +918,6 @@ export async function callRuntimeObservationAdapter(
             {},
             {
               projectionSnapshot: runtimeSnapshot,
-              // Preserve the retired-ledger readiness contract. Active legacy
-              // boards reuse the exact ledger that readiness would otherwise rebuild.
-              ...(legacyIssuesRetired ? {} : { taskLedger }),
               runtimeStorageInspection: storageInspection,
             },
           );

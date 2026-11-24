@@ -1,18 +1,14 @@
 import type { MultiRepositoryMcpToolContext } from "../multi-repository";
-import { reconcileReadinessProjectionSource } from "../readiness-projection";
 import { listExecutionJobs } from "../../../src/runtime/execution/jobs/store";
 import { readForgeRuntimeStatus } from "../../../src/runtime/control-plane/runtime-status-client";
 import { readSchedulerHealthSnapshot } from "../../../src/runtime/control-plane/global-scheduler/scheduler";
 import { evaluateActiveRuntimeSourceDrift, type RuntimeSourceIdentity } from "../../../src/runtime/control-plane/runtime-generation";
 import { projectionObservation, readRepositoryProjectionSnapshot } from "../../../src/runtime/projections/materialized-view";
 import { buildRuntimeOperationalView, classifyRuntimeReadinessSemantics, evaluateRuntimeHealth, RUNTIME_HEALTH_THRESHOLDS, type RuntimeOperationalView, type GradedObservation } from "../../../src/runtime/health";
-import { buildControllerTaskLedgerProjection } from "../../../src/cli/controller/task-ledger";
-import { legacyIssueAuthorityRetired } from "../../../src/cli/controller/legacy-issue-cutover";
 import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION } from "../../../src/runtime/shared/runtime-config";
 import { inspectRepositoryRuntimeStorage } from "../../../src/runtime/repositories/runtime-storage";
 import { resolveLocalBridgeSurface } from "../../../src/runtime/shared/local-bridge-surface";
 import { listHandoffItems } from "../../../src/runtime/control-plane/facade";
-import type { TaskLedgerProjection } from "../../../src/runtime/projections/task-ledger-types";
 
 export function ageMs(value: string | undefined): number | undefined {
   if (!value) return undefined;
@@ -58,7 +54,6 @@ export interface ControllerReadinessSignals {
 
 export interface ControllerReadinessPrecomputed {
   projectionSnapshot?: ReturnType<typeof readRepositoryProjectionSnapshot>;
-  taskLedger?: TaskLedgerProjection;
   runtimeStorageInspection?: ReturnType<typeof inspectRepositoryRuntimeStorage>;
 }
 
@@ -73,13 +68,6 @@ export async function controllerReadinessEvidence(
   const projectionSnapshot = precomputed.projectionSnapshot
     ?? (repository ? readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId) : undefined);
   const projection = projectionSnapshot?.projection;
-  const taskLedger = precomputed.taskLedger
-    ?? (repository && !legacyIssueAuthorityRetired(repository.canonicalRoot)
-      ? buildControllerTaskLedgerProjection(repository.canonicalRoot)
-      : undefined);
-  const projectionReconciliation = projectionSnapshot
-    ? reconcileReadinessProjectionSource(projectionSnapshot, taskLedger)
-    : undefined;
   const localBridgeSurface = repository
     ? resolveLocalBridgeSurface({
       controllerHome: ctx.controllerHome,
@@ -135,7 +123,7 @@ export async function controllerReadinessEvidence(
       activeLeases: projection?.activeLeases,
       activeAttentionCount: projection?.currentAttention.length,
     },
-    projection: projectionSnapshot ? projectionObservation(projectionSnapshot, projectionReconciliation) : {
+    projection: projectionSnapshot ? projectionObservation(projectionSnapshot) : {
       readable: true,
       persisted: true,
     },
@@ -214,8 +202,6 @@ export async function controllerReadinessEvidence(
     } : undefined,
     projection,
     projectionSnapshot,
-    taskLedger,
-    projectionReconciliation,
     semantics: classifyRuntimeReadinessSemantics(runtimeHealth),
   };
 }

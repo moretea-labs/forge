@@ -323,10 +323,6 @@
       "module": "core",
       "resource": "pure"
     },
-    "tests/cli/readiness-projection.test.ts": {
-      "module": "controller",
-      "resource": "pure"
-    },
     "tests/cli/hook-runtime.test.ts": {
       "module": "workflow",
       "resource": "temp-isolated"

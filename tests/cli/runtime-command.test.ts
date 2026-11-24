@@ -281,6 +281,9 @@ describe('runtime command surface', () => {
     expect(httpTransport).not.toContain('ensureControllerDaemon');
     expect(httpTransport).not.toContain('readForgeRuntimeStatus');
     expect(httpObservation).toContain('readForgeRuntimeStatus');
+    expect(httpObservation).not.toContain('buildControllerTaskLedgerProjection');
+    expect(runtimeReadinessObservation).not.toContain('buildControllerTaskLedgerProjection');
+    expect(runtimeReadinessObservation).not.toContain('reconcileReadinessProjectionSource');
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
     expect(runtimeTools).not.toContain('cli/mcp/keepalive');
     expect(runtimeObservation).not.toContain('cli/local-bridge/job-store');

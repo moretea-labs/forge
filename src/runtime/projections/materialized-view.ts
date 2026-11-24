@@ -23,10 +23,9 @@ import {
 } from './invalidation';
 import { readRepositoryGitStatusSample } from './git-status-sampler';
 import { listAssistantPluginManifests } from '../plugins/store';
-import type { ProjectionObservation, ProjectionSourceReconciliation } from '../health';
+import type { ProjectionObservation } from '../health';
 import { RUNTIME_HEALTH_THRESHOLDS } from '../health/evaluator';
 import { isProcessAlive } from '../shared/process-tree';
-import type { TaskLedgerProjection } from './task-ledger-types';
 import {
   collectRepositoryLifecycleAttention,
   repositoryLifecycleAttentionBlocksReadiness,
@@ -328,34 +327,6 @@ export interface RepositoryProjectionRefreshResult {
   skippedReason?: 'clean' | 'running' | 'retry_deferred' | 'superseded' | 'passive_runtime';
   projection?: RepositoryRuntimeProjection;
   marker?: ProjectionDirtyMarker;
-}
-
-/**
- * Compare the projection's active worker count with the controller Task Ledger.
- * Task status describes workflow progress, not live process ownership, so every
- * mismatch is repository-scoped diagnostic evidence and never a runtime gate.
- */
-export function reconcileProjectionWithTaskLedger(
-  snapshot: RepositoryRuntimeProjectionSnapshot,
-  ledger: TaskLedgerProjection,
-): ProjectionSourceReconciliation {
-  const runningTasks = ledger.issues
-    .flatMap((issue) => issue.tasks)
-    .filter((task) => task.effectiveStatus === 'running' || task.activeRunStatus === 'running');
-  const projectionRunningWorkers = Math.max(0, snapshot.projection.runningWorkers);
-  const ledgerRunningTasks = runningTasks.length;
-  const status = projectionRunningWorkers === ledgerRunningTasks ? 'consistent' : 'mismatch';
-  return {
-    status,
-    projectionRunningWorkers,
-    ledgerRunningTasks,
-    ...(runningTasks.length > 0
-      ? { ledgerRunningTaskIds: runningTasks.map((task) => `${task.issueId}/${task.taskId}`) }
-      : {}),
-    ...(status === 'mismatch'
-      ? { detail: `projection runningWorkers=${projectionRunningWorkers}, ledger runningTasks=${ledgerRunningTasks}` }
-      : {}),
-  };
 }
 
 export interface RepositoryProjectionRefreshOptions {
@@ -663,7 +634,6 @@ export function projectionBlocksReadiness(snapshot: RepositoryRuntimeProjectionS
 
 export function projectionObservation(
   snapshot: RepositoryRuntimeProjectionSnapshot,
-  sourceReconciliation?: ProjectionSourceReconciliation,
 ): ProjectionObservation {
   const dirtyAgeMs = snapshot.dirtySinceAt ? Math.max(0, Date.now() - Date.parse(snapshot.dirtySinceAt)) : undefined;
   const activeInvariantAtRisk =
@@ -700,7 +670,6 @@ export function projectionObservation(
     contentRevision: snapshot.projection.metadata?.contentRevision ?? snapshot.projection.revision,
     generatedFromRevision:
       snapshot.projection.metadata?.generatedFromRevision ?? snapshot.dirtySourceRevision ?? snapshot.dirtyReason,
-    ...(sourceReconciliation ? { sourceReconciliation } : {}),
   };
 }
 

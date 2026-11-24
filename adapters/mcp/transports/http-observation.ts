@@ -10,9 +10,6 @@ import { projectionBlocksReadiness, readRepositoryProjectionSnapshot } from '../
 import { readRuntimeGeneration } from '../../../src/runtime/control-plane/runtime-generation';
 import { readRecentMcpTransportEvents, type McpTransportEvent } from '../../../src/runtime/diagnostics/mcp-timing';
 import { getRepository, listRepositories } from '../../../src/runtime/repositories/registry';
-import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
-import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
-import { reconcileReadinessProjectionSource } from '../readiness-projection';
 import {
   FORGE_MCP_SCHEMA_VERSION,
   FORGE_TOOL_SURFACE,
@@ -355,19 +352,10 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     const repositories = listRepositories(runtimeControllerHome).filter((repository) => repository.enabled && !repository.removedAt);
     const projectionSnapshots = repositories.map((repository) => {
       const snapshot = readRepositoryProjectionSnapshot(runtimeControllerHome, repository.repoId);
-      const reconciliation = reconcileReadinessProjectionSource(
-        snapshot,
-        legacyIssueAuthorityRetired(repository.canonicalRoot)
-          ? undefined
-          : buildControllerTaskLedgerProjection(repository.canonicalRoot),
-      );
-      return { repoId: repository.repoId, snapshot, reconciliation };
+      return { repoId: repository.repoId, snapshot };
     });
     const staleRepositories = projectionSnapshots.filter(({ snapshot }) => snapshot.stale).map(({ repoId: id }) => id);
     const blockingStaleRepositories = projectionSnapshots.filter(({ snapshot }) => projectionBlocksReadiness(snapshot)).map(({ repoId: id }) => id);
-    const sourceMismatches = projectionSnapshots
-      .filter(({ reconciliation }) => reconciliation.status === 'mismatch')
-      .map(({ repoId: id, reconciliation }) => ({ repoId: id, ...reconciliation }));
     const localBridgeHealth = localController.enabled
       ? await jsonHealth(localControllerHealthUrl(localController.host, localController.port))
       : null;
@@ -395,7 +383,6 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
         repositoryCount: repositories.length,
         staleRepositories,
         blockingStaleRepositories,
-        sourceMismatches,
       },
       publicReadiness: {
         configured: publicConfigured,

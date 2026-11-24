@@ -15,12 +15,10 @@ import {
   projectionObservation,
   readRepositoryProjectionSnapshot,
   rebuildRepositoryProjection,
-  reconcileProjectionWithTaskLedger,
   type RepositoryRuntimeProjectionSnapshot,
 } from '../../src/runtime/projections/materialized-view';
 import { executionJobRoot } from '../../src/runtime/execution/jobs/store';
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
-import type { TaskLedgerProjection } from '../../src/runtime/projections/task-ledger-types';
 import { flushMcpDiagnostics, recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
 import {
   classifyForgeIncidentForRepair,
@@ -95,60 +93,6 @@ function projectionSnapshot(): RepositoryRuntimeProjectionSnapshot {
     },
     stale: false,
     persisted: true,
-  };
-}
-
-function ledgerWithRunningTask(): TaskLedgerProjection {
-  return {
-    schemaVersion: 2,
-    generatedAt: new Date(0).toISOString(),
-    source: 'controller-task-ledger',
-    counts: { running: 1 },
-    declaredCounts: { running: 1 },
-    archivedCounts: {},
-    issueCount: 1,
-    archivedIssueCount: 0,
-    status: {
-      kind: 'active_run',
-      severity: 'info',
-      label: 'Run in progress',
-      reason: 'fixture',
-      nextAction: 'fixture',
-    },
-    issues: [
-      {
-        id: 'I1',
-        title: 'Fixture',
-        isCurrent: true,
-        taskCounts: { running: 1 },
-        tasks: [
-          {
-            issueId: 'I1',
-            taskId: 'T3',
-            title: 'Running task',
-            effectiveStatus: 'running',
-            retryable: false,
-            requiresExplicitRetry: false,
-            dispatchable: false,
-            queueable: false,
-            multipleActiveRuns: false,
-            allowedPaths: [],
-            checks: [],
-            runIds: [],
-          },
-        ],
-      },
-    ],
-    attention: [],
-    readyTasks: [],
-    queueableTasks: [],
-    recentEvents: [],
-    suggestedNextActions: [],
-    contextContract: {
-      strategy: 'fixture',
-      rawCodeRequiredForImplementation: true,
-      notes: [],
-    },
   };
 }
 
@@ -637,65 +581,14 @@ describe('runtime observability', () => {
     }
   });
 
-  test('reports a running Task Ledger task without treating it as live worker ownership', () => {
+  test('readiness accepts fresh native projections independently of worker count', () => {
     const snapshot = projectionSnapshot();
-    const reconciliation = reconcileProjectionWithTaskLedger(snapshot, ledgerWithRunningTask());
-    expect(reconciliation).toMatchObject({
-      status: 'mismatch',
-      projectionRunningWorkers: 0,
-      ledgerRunningTasks: 1,
-    });
-    expect('blocking' in reconciliation).toBe(false);
-    expect(projectionBlocksReadiness(snapshot)).toBe(false);
-    const observation = projectionObservation(snapshot, reconciliation);
-    expect(observation.sourceReconciliation?.status).toBe('mismatch');
-    const health = evaluateRuntimeHealth(observations({ projection: observation }));
-    expect(health.ready).toBe(true);
-    expect(health.warnings.map((item) => item.code)).toContain('PROJECTION_SOURCE_MISMATCH');
-    expect(health.activeBlockers.map((item) => item.code)).not.toContain('PROJECTION_SOURCE_MISMATCH');
-  });
-
-  test('keeps a non-blocking ledger contradiction diagnostic without changing projectionBlocksReadiness', () => {
-    const snapshot = projectionSnapshot();
-    const contradictory = { ...snapshot, projection: { ...snapshot.projection, runningWorkers: 2 } };
-    const reconciliation = reconcileProjectionWithTaskLedger(contradictory, ledgerWithRunningTask());
-    expect(reconciliation).toMatchObject({
-      status: 'mismatch',
-      projectionRunningWorkers: 2,
-      ledgerRunningTasks: 1,
-    });
-    expect(reconciliation.detail).toContain('runningWorkers=2');
-    const observation = projectionObservation(contradictory, reconciliation);
-    expect(observation.sourceReconciliation?.status).toBe('mismatch');
-    expect(observation.sourceReconciliation?.detail).toBeTruthy();
-    // The contradiction is diagnostic evidence; the readiness decision keeps its
-    // original value (a fresh, non-stale snapshot is not blocking).
-    expect(projectionBlocksReadiness(contradictory)).toBe(projectionBlocksReadiness(contradictory));
-    expect(projectionBlocksReadiness(contradictory)).toBe(false);
-    const health = evaluateRuntimeHealth(observations({ projection: observation }));
-    expect(health.ready).toBe(true);
-    expect(health.warnings.map((item) => item.code)).toContain('PROJECTION_SOURCE_MISMATCH');
-    expect(health.activeBlockers.map((item) => item.code)).not.toContain('PROJECTION_SOURCE_MISMATCH');
-  });
-
-  test('keeps global readiness available when one repository has workflow-only running state', () => {
-    const healthy = projectionSnapshot();
-    const workflowOnly = {
-      ...projectionSnapshot(),
-      projection: { ...projectionSnapshot().projection, repoId: 'repo-workflow-only' },
-    };
-    const reconciliation = reconcileProjectionWithTaskLedger(workflowOnly, ledgerWithRunningTask());
-    const repositories = [
-      { repoId: 'repo-healthy', snapshot: healthy },
-      { repoId: 'repo-workflow-only', snapshot: workflowOnly },
-    ];
-
-    expect(reconciliation).toMatchObject({
-      status: 'mismatch',
-      projectionRunningWorkers: 0,
-      ledgerRunningTasks: 1,
-    });
-    expect(repositories.filter(({ snapshot }) => projectionBlocksReadiness(snapshot))).toEqual([]);
+    for (const runningWorkers of [0, 2]) {
+      const native = { ...snapshot, projection: { ...snapshot.projection, runningWorkers } };
+      expect(projectionBlocksReadiness(native)).toBe(false);
+      const health = evaluateRuntimeHealth(observations({ projection: projectionObservation(native) }));
+      expect(health.ready).toBe(true);
+    }
   });
 
   test('still blocks a stale projection when live execution invariants are at risk', () => {
