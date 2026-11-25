@@ -47,7 +47,7 @@ describe('public package release contract', () => {
       'README.en.md',
       'README.zh-CN.md',
       'docs/README.md',
-      'docs/operations/',
+      'docs/README.zh-CN.md',
       'docs/wiki/',
     ]) {
       expect(pkg.files).toContain(path);
@@ -112,7 +112,7 @@ describe('public package release contract', () => {
     expect(existsSync(join(ROOT, '.github/workflows/release-rc.yml'))).toBe(false);
   });
 
-  test('documents source fallback and npm/Bun/Homebrew channels honestly', () => {
+  test('documents source fallback and npm release channels honestly', () => {
     const pkg = JSON.parse(read('package.json')) as { version: string };
     const installSpec = pkg.version.includes('-rc.') ? '@moretea-labs/forge@next' : '@moretea-labs/forge';
     for (const path of ['README.md', 'README.zh-CN.md', 'docs/wiki/Installation.md', 'docs/wiki/Quick-Start.md']) {
@@ -120,9 +120,9 @@ describe('public package release contract', () => {
       expect(content).toContain('npm install -g .');
       expect(content).toContain(installSpec);
     }
-    expect(read('docs/operations/releasing.md')).toContain('`next`');
-    expect(read('docs/operations/releasing.md')).toContain('`latest`');
-    expect(read('docs/operations/releasing.md')).toContain('Bun');
-    expect(read('docs/operations/homebrew.md')).toContain(`@moretea-labs/forge@${pkg.version}`);
+    const releaseGuide = read('docs/wiki/Releases-and-Upgrades.md');
+    expect(releaseGuide).toContain('`next`');
+    expect(releaseGuide).toContain('`latest`');
+    expect(releaseGuide).toContain('GitHub Release');
   });
 });

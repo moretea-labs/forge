@@ -54,20 +54,20 @@ For a reviewed source checkout: `git clone https://github.com/moretea-labs/forge
 
 ## Built in, and extensible
 
-Forge ships typed local/browser/desktop/iOS/GitHub/Gmail/Calendar/Tasks/App Store Connect/Resend capabilities. On macOS, manage the native **Computer** capability with `forge computer setup|status|doctor|update|uninstall`; Forge Desktop Operator remains the independently released native provider behind that product surface. The generic provider catalog also includes **Forge Design** and **Personal Knowledge Assistant** and remains available through `forge plugin catalog` / `forge plugin install <id>`. Run `forge computer doctor` to verify readiness; updating the Forge CLI does **not** automatically update pinned native providers. See [Computer and Plugins](docs/wiki/Computer-and-Plugins.md), [Features](docs/operations/features.md), and [Plugin Management](docs/forge-plugin-management.md).
+Forge ships typed local/browser/desktop/iOS/GitHub/Gmail/Calendar/Tasks/App Store Connect/Resend capabilities. On macOS, manage the native **Computer** capability with `forge computer setup|status|doctor|update|uninstall`; Forge Desktop Operator remains the independently released native provider behind that product surface. The generic provider catalog also includes **Forge Design** and **Personal Knowledge Assistant** and remains available through `forge plugin catalog` / `forge plugin install <id>`. Run `forge computer doctor` to verify readiness; updating the Forge CLI does **not** automatically update pinned native providers. See [Computer and Plugins](https://moretea-labs.github.io/forge/Computer-and-Plugins.html) and [Core Concepts](https://moretea-labs.github.io/forge/Core-Concepts.html).
 
 ## Controlled by design
 
 Local read/write grants are explicit and expiring; remote or destructive effects are distinguished from ordinary local work; high-impact actions require stronger confirmation. Full Access reduces repetitive prompts for normal work without removing the hard boundaries around secrets, destructive actions, and outside-workspace access. See [Security](SECURITY.md) and the [Security Model](docs/wiki/Security-Model.md).
 
-**Docs:** [GitHub Wiki](https://github.com/moretea-labs/forge/wiki) · [Wiki source](docs/wiki/Home.md) · [Support](SUPPORT.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md). Current stable release: [`v1.8.2`](https://github.com/moretea-labs/forge/releases/tag/v1.8.2); stable installs use npm `latest`.
+**Docs:** [GitHub Pages](https://moretea-labs.github.io/forge/) · [Wiki](docs/wiki/Home.md) · [Support](SUPPORT.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md). Current stable release: [`v1.8.2`](https://github.com/moretea-labs/forge/releases/tag/v1.8.2); stable installs use npm `latest`.
 
 ---
 <a id="zh-cn"></a>
 
 <p align="center"><img src="docs/images/forge-banner-cn.svg" alt="Forge——ChatGPT 决策，Forge 执行" width="1280"></p>
 <p align="center"><strong>让 ChatGPT 真正、安全地操作你的电脑、代码、浏览器和外部服务。</strong></p>
-<p align="center"><a href="#english">English</a> · <a href="#zh-cn">简体中文</a> · <a href="https://moretea-labs.github.io/forge/Computer-and-Plugins.zh-CN.html">中文 Computer 教程</a> · <a href="docs/README.zh-CN.md">中文文档</a> · <a href="docs/operations/features.zh-CN.md">功能</a> · <a href="docs/forge-plugin-management.md">插件</a></p>
+<p align="center"><a href="#english">English</a> · <a href="#zh-cn">简体中文</a> · <a href="https://moretea-labs.github.io/forge/">文档</a> · <a href="https://moretea-labs.github.io/forge/Computer-and-Plugins.zh-CN.html">Computer 教程</a> · <a href="https://moretea-labs.github.io/forge/Core-Concepts.html">功能</a></p>
 
 **Forge 是一个本地优先的 ChatGPT MCP 执行运行时**，将 AI 对话连接到有权限边界的电脑操作、代码开发、浏览器自动化和外部服务，而不是额外的在线 AI 模型。
 
@@ -109,8 +109,8 @@ forge setup next     # 按每次显示的 Next 动作继续
 
 继续阅读[安装与启动](https://moretea-labs.github.io/forge/Installation.html)和[连接 ChatGPT](https://moretea-labs.github.io/forge/Connecting-ChatGPT.zh-CN.html)。仓库不是首次 setup 的前置条件，需要开发能力时再运行 `forge adopt --repo /path/to/your-project`。已安装用户升级：`npm install -g @moretea-labs/forge@latest`，确认 `forge --version` 后运行 `forge setup next` 让新版 setup 自动补齐 Runtime/connector 配置。源码安装：`git clone https://github.com/moretea-labs/forge.git && cd forge && bun install --frozen-lockfile && npm install -g . --omit=optional --no-audit --no-fund`。
 
-Forge 内置本机、Browser、Desktop、iOS、GitHub、Gmail、Calendar、Tasks、App Store Connect、Resend 等类型化能力。macOS 原生 **Computer** 能力统一通过 `forge computer setup|status|doctor|update|uninstall` 管理；Forge Desktop Operator 仍作为其独立发布的原生 Provider 保持稳定身份。通用 Provider 目录还包含 **Forge Design / Personal Knowledge Assistant**，继续使用 `forge plugin catalog` / `forge plugin install <id>` 管理。升级 Forge CLI 不会自动升级独立 Provider；Computer 用户须运行 `forge computer update`，并用 `forge computer doctor` 检查状态。详见 [Computer 与插件安装指南](docs/wiki/Computer-and-Plugins.md)、[功能清单](docs/operations/features.zh-CN.md)与[插件管理](docs/forge-plugin-management.md)。
+Forge 内置本机、Browser、Desktop、iOS、GitHub、Gmail、Calendar、Tasks、App Store Connect、Resend 等类型化能力。macOS 原生 **Computer** 能力统一通过 `forge computer setup|status|doctor|update|uninstall` 管理；Forge Desktop Operator 仍作为其独立发布的原生 Provider 保持稳定身份。通用 Provider 目录还包含 **Forge Design / Personal Knowledge Assistant**，继续使用 `forge plugin catalog` / `forge plugin install <id>` 管理。升级 Forge CLI 不会自动升级独立 Provider；Computer 用户须运行 `forge computer update`，并用 `forge computer doctor` 检查状态。详见 [Computer 与插件安装指南](https://moretea-labs.github.io/forge/Computer-and-Plugins.zh-CN.html)与[核心能力](https://moretea-labs.github.io/forge/Core-Concepts.html)。
 
 安全上，普通本地修改、远程影响、破坏性操作、密钥和工作区外访问是不同边界；Full Access 不会取消高风险确认。详见[安全说明](SECURITY.md)和[安全模型](docs/wiki/Security-Model.md)。
 
-**文档：** [GitHub Wiki](https://github.com/moretea-labs/forge/wiki) · [Wiki source](docs/wiki/Home.md) · [支持](SUPPORT.md) · [贡献](CONTRIBUTING.md) · [更新日志](CHANGELOG.md)。当前稳定版为 [`v1.8.2`](https://github.com/moretea-labs/forge/releases/tag/v1.8.2)，稳定安装使用 npm `latest`。
+**文档：** [GitHub Pages](https://moretea-labs.github.io/forge/) · [Wiki](docs/wiki/Home.md) · [支持](SUPPORT.md) · [贡献](CONTRIBUTING.md) · [更新日志](CHANGELOG.md)。当前稳定版为 [`v1.8.2`](https://github.com/moretea-labs/forge/releases/tag/v1.8.2)，稳定安装使用 npm `latest`。

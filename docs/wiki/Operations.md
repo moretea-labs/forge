@@ -19,8 +19,6 @@ Use this page to choose the right operational path. Avoid replaying writes merel
 
 ## Detailed runbooks
 
-- [Controller reliability](https://github.com/moretea-labs/forge/blob/main/docs/operations/controller-reliability-runbook.md)
-- [Standalone recovery](https://github.com/moretea-labs/forge/blob/main/docs/operations/standalone-disaster-recovery.md)
-- [502 and performance](https://github.com/moretea-labs/forge/blob/main/docs/operations/controller-performance-and-502.md)
+Operational incidents, recovery evidence, and unresolved defects are tracked on the relevant GitHub Issue/Project. This page keeps only stable operator-facing behavior.
 - [Troubleshooting](Troubleshooting)
 - [Release process](Releases-and-Upgrades)

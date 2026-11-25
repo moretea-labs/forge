@@ -47,4 +47,4 @@ Standalone Recovery is independent from the primary MCP endpoint. It verifies Ru
 
 Cloudflare or Tailscale terminates outside the Runtime and points at the configured loopback endpoint. Tunnel health and local Runtime health are separate evidence classes. A tunnel outage alone cannot authorize Runtime rollback.
 
-Detailed code boundaries are in [Implementation](Implementation); normative contracts live in the [current architecture set](https://github.com/moretea-labs/forge/tree/main/docs/architecture/current).
+Detailed code boundaries are in [Implementation](Implementation). Normative behavior lives in current source, public APIs, static architecture checks, and focused tests; architecture decisions and acceptance evidence are tracked in GitHub Issues/Project.

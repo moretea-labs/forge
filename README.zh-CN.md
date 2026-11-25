@@ -2,7 +2,7 @@
 
 <p align="center"><img src="docs/images/forge-banner-cn.svg" alt="Forge——ChatGPT 决策，Forge 执行" width="1280"></p>
 <p align="center"><strong>让 ChatGPT 真正、安全地操作你的电脑、代码、浏览器和外部服务。</strong></p>
-<p align="center"><a href="https://github.com/moretea-labs/forge#english">English</a> · <a href="https://github.com/moretea-labs/forge#zh-cn">仓库首页中文</a> · <a href="docs/README.zh-CN.md">中文文档</a> · <a href="docs/operations/features.zh-CN.md">功能清单</a> · <a href="https://github.com/moretea-labs/forge/releases">版本发布</a></p>
+<p align="center"><a href="https://github.com/moretea-labs/forge#english">English</a> · <a href="https://github.com/moretea-labs/forge#zh-cn">仓库首页中文</a> · <a href="https://moretea-labs.github.io/forge/">文档</a> · <a href="https://moretea-labs.github.io/forge/Core-Concepts.html">功能</a> · <a href="https://github.com/moretea-labs/forge/releases">版本发布</a></p>
 <p align="center"><img alt="CI" src="https://github.com/moretea-labs/forge/actions/workflows/ci.yml/badge.svg"> <img alt="Release" src="https://img.shields.io/github/v/release/moretea-labs/forge?include_prereleases&sort=semver"> <img alt="npm latest" src="https://img.shields.io/npm/v/%40moretea-labs%2Fforge?tag=latest&label=npm%20latest"> <img alt="License" src="https://img.shields.io/github/license/moretea-labs/forge"></p>
 
 **Forge 是本地优先的 ChatGPT MCP 执行工具**：通过权限受控的 Runtime，让 ChatGPT 操作电脑、Git 仓库、浏览器和已授权服务；也支持选择其他外部主控。
@@ -70,7 +70,7 @@ npm install -g . --omit=optional --no-audit --no-fund
 
 ## 插件与能力
 
-Forge 内置本机、Browser、Desktop、iOS、GitHub、Gmail、Calendar、Tasks、App Store Connect、Resend 等类型化插件；公开 Provider 目录还提供 **Forge Desktop Operator**、**Forge Design**、**Personal Knowledge Assistant**。运行 `forge plugin catalog` 查看当前固定版本目录，CLI 升级不会自动更新这些 Provider。macOS Computer 使用 `forge computer update` 和 `forge computer doctor` 更新并检查，其他 Provider 需按官方 pin 重新安装。详见 [Computer 与插件安装指南](docs/wiki/Computer-and-Plugins.md)、[插件管理](docs/forge-plugin-management.md)和[功能清单](docs/operations/features.zh-CN.md)。
+Forge 内置本机、Browser、Desktop、iOS、GitHub、Gmail、Calendar、Tasks、App Store Connect、Resend 等类型化插件；公开 Provider 目录还提供 **Forge Desktop Operator**、**Forge Design**、**Personal Knowledge Assistant**。运行 `forge plugin catalog` 查看当前固定版本目录，CLI 升级不会自动更新这些 Provider。macOS Computer 使用 `forge computer update` 和 `forge computer doctor` 更新并检查，其他 Provider 需按官方 pin 重新安装。详见 [Computer 与插件安装指南](https://moretea-labs.github.io/forge/Computer-and-Plugins.zh-CN.html)和[核心能力](https://moretea-labs.github.io/forge/Core-Concepts.html)。
 
 ## 安全不是宣传词
 
@@ -78,6 +78,6 @@ Forge 把读取、普通本地写入、远程操作、破坏性操作、工作�
 
 ## 文档与项目
 
-[Computer 中文教程](https://moretea-labs.github.io/forge/Computer-and-Plugins.zh-CN.html) · [中文文档中心](docs/README.zh-CN.md) · [GitHub Wiki](https://github.com/moretea-labs/forge/wiki) · [Wiki 源码](docs/wiki/Home.md) · [SUPPORT.md](SUPPORT.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md)
+[GitHub Pages](https://moretea-labs.github.io/forge/) · [Wiki](docs/wiki/Home.md) · [Computer 中文教程](https://moretea-labs.github.io/forge/Computer-and-Plugins.zh-CN.html) · [SUPPORT.md](SUPPORT.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md)
 
 当前稳定版本为 [`v1.8.1`](https://github.com/moretea-labs/forge/releases/tag/v1.8.1)，稳定安装使用 npm `latest`。

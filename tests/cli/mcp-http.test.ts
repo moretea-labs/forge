@@ -5,6 +5,7 @@ import { mcpToolDefinitionToSdk } from '../../packages/protocols/mcp/tool-contra
 import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
 import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
 import {
+  canonicalRuntimeReleaseHandoffFromStoredState,
   createCanonicalRuntimeProxy,
   createMcpToolContext,
   deriveCanonicalForwardingTiming,
@@ -3438,6 +3439,87 @@ test('retired Runtime sockets cannot initialize sessions after same-endpoint rep
     rmSync(root, { recursive: true, force: true });
   }
 }, 10_000);
+
+test('Gateway release-handoff observation avoids process identity probes on the hot path', () => {
+  const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
+  const readiness = {
+    ready: true,
+    reasonCodes: [],
+    observedAt: now,
+    diagnostics: {
+      database: { outcome: 'pass' as const },
+      scheduler: { outcome: 'pass' as const },
+      releaseCoherence: { outcome: 'pass' as const },
+      mcpEndToEnd: { outcome: 'pass' as const },
+    },
+  };
+  const snapshot = {
+    schemaVersion: 1 as const,
+    runtimeInstanceId: 'runtime-a',
+    pid: 12345,
+    releaseId: 'release-a',
+    artifactIdentity: 'artifact-a',
+    endpoint: 'http://127.0.0.1:7777/mcp',
+    readiness,
+    startedAt: now,
+    updatedAt: now,
+  };
+  const owner = {
+    schemaVersion: 2 as const,
+    runtimeInstanceId: 'runtime-a',
+    pid: 12345,
+    acquiredAt: now,
+    fencingGeneration: 1,
+  };
+
+  let processProbes = 0;
+  expect(canonicalRuntimeReleaseHandoffFromStoredState({
+    snapshot,
+    owner,
+    authorityReleaseId: 'release-a',
+    authorityCommittedAt: now,
+    nowMs,
+    processExists: () => {
+      processProbes += 1;
+      return true;
+    },
+  })).toBe(false);
+  expect(processProbes).toBe(1);
+
+  processProbes = 0;
+  expect(canonicalRuntimeReleaseHandoffFromStoredState({
+    snapshot,
+    owner,
+    authorityReleaseId: 'release-b',
+    authorityCommittedAt: now,
+    nowMs,
+    processExists: () => {
+      processProbes += 1;
+      return true;
+    },
+  })).toBe(true);
+  expect(processProbes).toBe(0);
+
+  expect(canonicalRuntimeReleaseHandoffFromStoredState({
+    snapshot: { ...snapshot, readiness: { ...readiness, ready: false } },
+    owner,
+    authorityReleaseId: 'release-a',
+    authorityCommittedAt: now,
+    nowMs,
+    processExists: () => true,
+  })).toBe(true);
+
+  expect(canonicalRuntimeReleaseHandoffFromStoredState({
+    snapshot,
+    owner,
+    authorityReleaseId: 'release-a',
+    authorityCommittedAt: now,
+    recoveryActivationInProgress: true,
+    nowMs,
+    processExists: () => false,
+  })).toBe(true);
+});
 
 test('Gateway transport failures cannot authorize replay of an admitted mutation', () => {
   for (const reason of [

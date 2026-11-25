@@ -40,12 +40,12 @@ Plugin capability completeness is deliberately separate from the core Runtime ba
 
 ## What belongs where
 
-The Wiki explains stable concepts, architecture, implementation boundaries, and common operator decisions. Exact source contracts, compatibility matrices, tests, and incident procedures remain versioned in the [repository documentation](https://github.com/moretea-labs/forge/tree/main/docs). When Wiki content and repository source disagree, the versioned repository source is authoritative.
+The Pages site explains stable user concepts and operator decisions. Exact behavior is defined by current source and tests; product requirements, architecture decisions, progress, and acceptance evidence are maintained in GitHub Issues/Project instead of a second internal documentation tree.
 
 ## Project links
 
 - [Repository](https://github.com/moretea-labs/forge)
-- [Documentation hub](https://github.com/moretea-labs/forge/blob/main/docs/README.md)
+- [Documentation site](https://moretea-labs.github.io/forge/)
 - [Issues](https://github.com/moretea-labs/forge/issues)
 - [Support](https://github.com/moretea-labs/forge/blob/main/SUPPORT.md)
 - [Security policy](https://github.com/moretea-labs/forge/blob/main/SECURITY.md)

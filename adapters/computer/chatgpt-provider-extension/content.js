@@ -423,9 +423,15 @@
     // its existing provider-selection semantics.
     const automaticDispatch = /^\[forge-supervisor(?:\s|\])/i.test(actualPrompt)
       || /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>/.test(actualPrompt);
+    let modelLockFallbackReason = '';
     if (!prepareOnly && automaticDispatch) {
       const modelLock = await ensureGpt56High();
-      if (!modelLock.ready) return { dispatched: false, reason: modelLock.reason };
+      if (!modelLock.ready) {
+        modelLockFallbackReason = String(modelLock.reason ?? 'provider_model_lock_unavailable');
+        // Model selection is an optimization, not a dispatch authority fence.
+        // ChatGPT UI changes must not stall unattended product delivery.
+        await closeModelLockMenu();
+      }
       if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     }
     // Project instructions select tools. No @forge UI mention is needed.
@@ -547,9 +553,18 @@
         timer = setTimeout(() => finish(false), 2_000);
         check();
       });
-      return { dispatched: true, confirmed, ...(mode === 'recover' ? { recoveryCapability: 'recover-no-stop-prewrite-v1' } : {}) };
+      return {
+        dispatched: true,
+        confirmed,
+        ...(modelLockFallbackReason ? { modelLockFallbackReason } : {}),
+        ...(mode === 'recover' ? { recoveryCapability: 'recover-no-stop-prewrite-v1' } : {}),
+      };
     } catch {
-      return { dispatched: true, confirmed: false };
+      return {
+        dispatched: true,
+        confirmed: false,
+        ...(modelLockFallbackReason ? { modelLockFallbackReason } : {}),
+      };
     }
   };
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

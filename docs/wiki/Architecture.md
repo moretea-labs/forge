@@ -73,13 +73,6 @@ One Canonical Runtime owns the active local execution authority and one whole-re
 - Integration and Git-ref mutation stay exclusive even when worktree implementation is parallel.
 - Shared checks can single-flight and reuse evidence rather than repeat physical execution for each session.
 
-## Authoritative documents
+## Authority
 
-- [System overview](https://github.com/moretea-labs/forge/blob/main/docs/architecture/../architecture/CURRENT.md)
-- [Architecture invariants](https://github.com/moretea-labs/forge/blob/main/docs/architecture/../architecture/CURRENT.md)
-- [Multi-repository execution](https://github.com/moretea-labs/forge/blob/main/docs/architecture/../architecture/CURRENT.md)
-- [Verification and release gates](https://github.com/moretea-labs/forge/blob/main/docs/architecture/../architecture/CURRENT.md)
-- [Implementation status](https://github.com/moretea-labs/forge/blob/main/docs/architecture/../architecture/CURRENT.md)
-- [Runtime directory map](https://github.com/moretea-labs/forge/blob/main/docs/architecture/../architecture/CURRENT.md)
-
-Historical snapshots explain previous designs but are not current Runtime contracts.
+Current source, public Kernel/domain APIs, static architecture checks, and focused tests define executable behavior. Product requirements, architecture decisions, progress, and acceptance evidence live in GitHub Issues/Project. Git history is the archive; this public page is explanatory, not a second engineering authority.

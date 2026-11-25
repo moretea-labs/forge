@@ -75,4 +75,4 @@ forge doctor
 
 If Browser readiness mentions Playwright, ensure the selected Browser attach mode and its browser dependencies are configured; native Chrome/Vivaldi attachment and managed Playwright browsing have different requirements. If Computer is not ready, resolve the reported macOS permissions/native provider state; if Figma reports a missing socket, start/configure the Figma bridge rather than repeatedly reinstalling Forge.
 
-More detail: [Plugin Management](https://github.com/moretea-labs/forge/blob/main/docs/forge-plugin-management.md), [Browser runbook](https://github.com/moretea-labs/forge/blob/main/docs/operations/controller-browser-plugin.md), and [Security Model](Security-Model).
+More detail: [Integrations](Integrations), [Operations](Operations), and [Security Model](Security-Model).

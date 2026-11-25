@@ -2,11 +2,7 @@ import type { ChildProcess } from 'child_process';
 import { resolve } from 'path';
 import { listRepositories } from '../../repositories/registry';
 import { writeAgentExecutableReadinessSnapshot } from '../../agents/executable-resolver';
-import {
-  assertRuntimeMayWrite,
-  getRuntimeWriteClaim,
-  runtimeWriteClaimEnvironment,
-} from '../../root/write-fence';
+import { assertRuntimeMayWrite, getRuntimeWriteClaim, runtimeWriteClaimEnvironment } from '../../root/write-fence';
 import { isProcessAlive } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
@@ -23,15 +19,9 @@ import {
   selectSchedulerDirtyProjectionRepositories,
 } from './projection-refresh';
 import { cleanupSchedulerWorkerProcesses } from './worker-process';
-import {
-  spawnSchedulerPeriodicCleanup,
-  type SchedulerPeriodicCleanupSpawnResult,
-} from './periodic-cleanup-process';
+import { spawnSchedulerPeriodicCleanup, type SchedulerPeriodicCleanupSpawnResult } from './periodic-cleanup-process';
 import { normalizeSchedulerConfig, type SchedulerConfig } from './config';
-import {
-  readSchedulerHealthSnapshot,
-  writeSchedulerHealthSnapshot,
-} from './state';
+import { readSchedulerHealthSnapshot, writeSchedulerHealthSnapshot } from './state';
 export { normalizeSchedulerConfig } from './config';
 export type { SchedulerConfig } from './config';
 export {
@@ -53,33 +43,19 @@ function remainingRecurringDeadlineMs(nowMs: number, lastRanAt: number, interval
   return elapsed < intervalMs ? intervalMs - elapsed : intervalMs;
 }
 
-export function schedulerIdleWaitDelayMs(input: {
-  nowMs: number;
-  lastScheduleTickAt: number;
-}): number {
+export function schedulerIdleWaitDelayMs(input: { nowMs: number; lastScheduleTickAt: number }): number {
   // Idle execution is event-driven. ExecutionJob/lease/policy mutations and
   // check Process terminal persistence wake the scheduler immediately through
   // the existing notification revision. The 30-second schedule cadence is the
   // bounded idle lost-event safety deadline.
-  return remainingRecurringDeadlineMs(
-    input.nowMs,
-    input.lastScheduleTickAt,
-    SCHEDULE_TICK_INTERVAL_MS,
-  );
+  return remainingRecurringDeadlineMs(input.nowMs, input.lastScheduleTickAt, SCHEDULE_TICK_INTERVAL_MS);
 }
 
-export function schedulerActiveWaitDelayMs(input: {
-  nowMs: number;
-  lastReconcileAt: number;
-}): number {
+export function schedulerActiveWaitDelayMs(input: { nowMs: number; lastReconcileAt: number }): number {
   // Active execution uses the same canonical wake notifications as idle
   // execution. A full scheduler tick is only the lost-event safety net, bounded
   // by the existing reconciliation cadence instead of the legacy 250ms poll.
-  return remainingRecurringDeadlineMs(
-    input.nowMs,
-    input.lastReconcileAt,
-    SCHEDULER_RECONCILIATION_INTERVAL_MS,
-  );
+  return remainingRecurringDeadlineMs(input.nowMs, input.lastReconcileAt, SCHEDULER_RECONCILIATION_INTERVAL_MS);
 }
 export interface SchedulerRuntimeBinding {
   controllerPid?: number;
@@ -120,16 +96,14 @@ export class GlobalScheduler {
   private periodicCleanupSpawn = spawnSchedulerPeriodicCleanup;
   private repositoryList = listRepositories;
 
-  constructor(
-    controllerHome: string,
-    config: Partial<SchedulerConfig> = {},
-    runtime: SchedulerRuntimeBinding = {},
-  ) {
+  constructor(controllerHome: string, config: Partial<SchedulerConfig> = {}, runtime: SchedulerRuntimeBinding = {}) {
     this.controllerHome = controllerHome;
     this.controllerPid = runtime.controllerPid ?? process.pid;
     this.config = normalizeSchedulerConfig(config);
     this.runtimeSourceRoot = runtime.runtimeSourceRoot ? resolve(runtime.runtimeSourceRoot) : undefined;
-    this.periodicCleanupExecutable = runtime.periodicCleanupExecutable ? resolve(runtime.periodicCleanupExecutable) : undefined;
+    this.periodicCleanupExecutable = runtime.periodicCleanupExecutable
+      ? resolve(runtime.periodicCleanupExecutable)
+      : undefined;
     this.isolatePeriodicCleanup = runtime.isolatePeriodicCleanup === true;
     this.fatalOnTickError = runtime.fatalOnTickError === true;
     this.requirementDispatch = runtime.requirementDispatch ?? dispatchAuthorizedCrossProjectRequirements;
@@ -139,14 +113,18 @@ export class GlobalScheduler {
     const now = Date.now();
     if (!force && now - this.lastPersistedAt < 1_000) return;
     this.lastPersistedAt = now;
-    writeSchedulerHealthSnapshot(this.controllerHome, {
-      loopStartedAt: this.loopStartedAt,
-      lastHeartbeatAt: this.lastHeartbeatAt,
-      heartbeatTimeoutMs: this.config.heartbeatTimeoutMs,
-      lastTickAt: this.lastTickAt,
-      lastDispatchAt: this.lastDispatchAt,
-      lastReconcileAt: this.lastReconcileAt,
-    }, now);
+    writeSchedulerHealthSnapshot(
+      this.controllerHome,
+      {
+        loopStartedAt: this.loopStartedAt,
+        lastHeartbeatAt: this.lastHeartbeatAt,
+        heartbeatTimeoutMs: this.config.heartbeatTimeoutMs,
+        lastTickAt: this.lastTickAt,
+        lastDispatchAt: this.lastDispatchAt,
+        lastReconcileAt: this.lastReconcileAt,
+      },
+      now,
+    );
   }
 
   private pidAlive(pid: number | undefined): boolean {
@@ -266,7 +244,10 @@ export class GlobalScheduler {
     // continuation writer. Schedules still drive explicit Supervisor wakes.
     // ExecutionJob creation is retired. Work and Process own live execution.
     if (now - this.lastScheduleTick >= SCHEDULE_TICK_INTERVAL_MS) {
-      await tickSchedules(this.controllerHome, repositories.map((repo) => repo.repoId));
+      await tickSchedules(
+        this.controllerHome,
+        repositories.map((repo) => repo.repoId),
+      );
       this.lastScheduleTick = now;
     }
     refreshSchedulerRepositoryProjections({
@@ -320,13 +301,13 @@ export class GlobalScheduler {
           ? this.config.pollIntervalMs
           : activeJobs > 0
             ? schedulerActiveWaitDelayMs({
-              nowMs: now,
-              lastReconcileAt: this.lastReconcile,
-            })
+                nowMs: now,
+                lastReconcileAt: this.lastReconcile,
+              })
             : schedulerIdleWaitDelayMs({
-              nowMs: now,
-              lastScheduleTickAt: this.lastScheduleTick,
-            });
+                nowMs: now,
+                lastScheduleTickAt: this.lastScheduleTick,
+              });
         const wakeRevision = readSchedulerWakeSignal(this.controllerHome).revision;
         const waitResult = await waitForSchedulerWakeSignal(this.controllerHome, wakeRevision, delayMs, signal, {
           // fs.watch is authoritative for ordinary wakeups. Polling is only a

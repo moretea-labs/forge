@@ -21,6 +21,6 @@ Supported hosts: macOS and modern Linux; use WSL2 for the recommended Windows pa
 - See [README.md](README.md) for the maintained English product overview, capability descriptions, and security model.
 - [Installation and setup](https://moretea-labs.github.io/forge/Installation.html)
 - [Connect ChatGPT over MCP](https://moretea-labs.github.io/forge/Connecting-ChatGPT.html)
-- [Features and providers](docs/operations/features.md)
+- [Features and providers](https://moretea-labs.github.io/forge/Core-Concepts.html)
 - [Documentation](https://moretea-labs.github.io/forge/)
 - [Latest stable release (v1.8.1)](https://github.com/moretea-labs/forge/releases/tag/v1.8.1) · [npm package](https://www.npmjs.com/package/@moretea-labs/forge)

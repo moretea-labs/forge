@@ -1,6 +1,6 @@
 # 执行与验证生命周期
 
-Forge 的 **Work / WorkHandle / WorkContract 一等执行生命周期已经退役**（含历史与只读兼容）。当前开发与自动运行不应创建、恢复、完成、读取或借用旧 Work 获得权限。残余 Controller Home 中的 Work 字节属于离线物理 purge 待删 backlog，不是可查询审计 API。当前架构依据以 [CURRENT.md](https://github.com/moretea-labs/forge/blob/main/docs/architecture/CURRENT.md) 为准。
+Forge 的 **Work / WorkHandle / WorkContract 一等执行生命周期已经退役**（含历史与只读兼容）。当前开发与自动运行不应创建、恢复、完成、读取或借用旧 Work 获得权限。残余 Controller Home 中的 Work 字节属于离线物理 purge 待删 backlog，不是可查询审计 API。当前行为以源码、公开 API、静态检查和测试为准；需求与架构决定统一记录在 GitHub Issue/Project。
 
 ## 当前事实所有者
 

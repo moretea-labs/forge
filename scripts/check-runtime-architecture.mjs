@@ -830,29 +830,6 @@ function requireAcyclicProductionTypeScript() {
   }
 }
 
-const allowedArchitectureRootMarkdown = new Set(['CURRENT.md', 'EVOLUTION.md', 'history.md', 'index.md']);
-const architectureRootMarkdown = readdirSync(resolve(root, 'docs/architecture'), { withFileTypes: true })
-  .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
-  .map((entry) => entry.name)
-  .sort();
-for (const name of architectureRootMarkdown) {
-  if (!allowedArchitectureRootMarkdown.has(name)) {
-    failures.push(
-      `docs/architecture/${name} must be merged into CURRENT.md/EVOLUTION.md or deleted instead of acting as parallel root architecture authority; Git history is the archive`,
-    );
-  }
-}
-
-for (const path of ['README.md', 'docs/ROADMAP.md', 'docs/architecture/CURRENT.md', 'docs/architecture/index.md']) {
-  forbid(path, /\/Users\//, 'maintained documentation must not contain personal absolute macOS paths');
-  forbid(path, /\bRepo Harness\b/i, 'maintained documentation must use the current Forge product identity');
-  forbid(
-    path,
-    /(?:^|\n)\s*(?:>\s*)?(?:\*\*)?Status(?:\*\*)?\s*:\s*[^\n]*(?:implementation in progress|Phase\s+\d+)/i,
-    'maintained documentation must not carry transient execution status; use Plan/Work/evidence or history',
-  );
-}
-
 const required = [
   'adapters/mcp/runtime-gateway/router.ts',
   'src/runtime/agents/types.ts',
@@ -915,7 +892,6 @@ const required = [
   'adapters/mcp/transports/http.ts',
   'adapters/mcp/transports/stdio.ts',
   'adapters/mcp/transports/session-registry.ts',
-  'docs/architecture/CURRENT.md',
   'src/runtime/resources/leases/store.ts',
   'src/runtime/evidence/event-ledger.ts',
   'src/runtime/evidence/artifact-store.ts',
@@ -1344,14 +1320,6 @@ requireText('src/runtime/control-plane/persistence/requirement-store.ts', 'packa
 requireText('src/runtime/control-plane/facade/types.ts', 'packages/kernel/goal/api/index');
 requireText('src/runtime/control-plane/persistence/requirement-store.ts', 'reviseRequirementSemantic');
 requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'revisePlanSemanticContext');
-requireText(
-  'docs/architecture/decisions/20260924-thin-semantic-working-context.md',
-  'only three cross-domain model-authored semantic records',
-);
-requireText(
-  'docs/architecture/decisions/20260924-thin-semantic-working-context.md',
-  'semantic revision must be applied to the latest persisted aggregate inside the same storage transaction',
-);
 forbid(
   'src/runtime/control-plane/facade/requirement-authority.ts',
   /continueRequirement|acceptRequirementOutcome|completeRequirementGoal|requirement_semantic_acceptance|requirement_semantic_continue/,
@@ -1433,15 +1401,6 @@ requireMissing('scripts/migrate-chatgpt-automation-schedules.ts');
 requireMissing('tests/runtime/controller-progression-continuation.test.ts');
 requireMissing('adapters/controller-process/controller-host.ts');
 requireMissing('adapters/controller-process/binding-store.ts');
-requireText(
-  'docs/architecture/CURRENT.md',
-  'Work / WorkHandle / WorkContract are fully retired, including historical records and read-only compatibility.',
-);
-forbid(
-  'docs/architecture/CURRENT.md',
-  /Historical Work records are read-only compatibility|Historical Work is compatibility evidence only|remain queryable so migrations/,
-  'architecture authority must not advertise deleted historical Work readers',
-);
 requireMissing('packages/kernel/work/domain/implementation-review.ts');
 requireMissing('packages/kernel/work/index.ts');
 requireMissing('packages/kernel/work/api/index.ts');
@@ -1750,33 +1709,8 @@ requireText(
   'src/runtime/plugins/browser-adapter.ts',
   "nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto'",
 );
-requireText(
-  'docs/architecture/CURRENT.md',
-  'A STOPPED bootstrap draft may be replaced only from the canonical Supervisor ledger',
-);
-
-requireMissing('docs/architecture/current/stable-external-runtime-supervisor.md');
-requireMissing('docs/architecture/modules/controller-runtime/stable-supervisor.md');
-requireMissing('docs/operations/stable-external-runtime-supervisor.md');
-requireMissing('docs/operations/stable-state-and-process-runtime.md');
 requireMissing('ARCHITECTURE_MIGRATION_REPORT.md');
 requireMissing('OPTIMIZATION_REPORT.md');
-requireMissing('docs/architecture/RELIABILITY-PROGRAM.md');
-requireMissing('docs/architecture/p0-canonical-single-runtime-plan.md');
-requireMissing('docs/architecture/transactional-adoption-planner.md');
-requireMissing('docs/architecture/global-hook-runtime.md');
-requireMissing('docs/architecture/ios-semantic-automation-provider-v2.md');
-requireMissing('docs/architecture/chatgpt-handoff-facade.md');
-requireMissing('docs/architecture/history/global-hook-runtime.md');
-requireMissing('docs/architecture/history/ios-semantic-automation-provider-v2.md');
-requireMissing('docs/architecture/history/chatgpt-handoff-facade.md');
-requireMissing('docs/architecture/history/README.md');
-requireMissing('docs/operations/20260802-requirement-portfolio-migration.md');
-requireMissing('docs/runbooks/RELIABILITY-SESSION-PROTOCOL.md');
-requireMissing('docs/architecture/decisions/20260718-mcp-session-lifecycle-and-ingress-isolation.md');
-requireMissing('docs/architecture/decisions/20260802-requirement-centered-control-plane.md');
-requireMissing('docs/researches/20260801-control-plane-state-store-inventory.md');
-requireMissing('docs/architecture/snapshots/2026-05-25-agentic-dev-plugin-review.md');
 requireMissing('bin/repo-harness.mjs');
 requireMissing('bin/repo-harness-hook.mjs');
 requireMissing('bin/repo-harness-runtime.mjs');
@@ -1854,7 +1788,6 @@ forbid(
   'persist only non-secret Canonical Runtime/release identity in OperationReceipt ownership evidence',
 );
 
-requireText('docs/architecture/CURRENT.md', 'Canonical Runtime is activated as one immutable whole release');
 requireText('src/runtime/root/release-execution-canary.ts', 'releaseScriptRequiresBun');
 forbid(
   'src/runtime/root/package-runtime-release.ts',
@@ -1864,11 +1797,6 @@ forbid(
 requireText(
   'scripts/migrate-windows-wsl-controller-home.ts',
   'assertRuntimeReleaseExecutionCanaries(stagedRelease.manifestPath, destination);',
-);
-requireText('docs/architecture/CURRENT.md', 'Runtime availability/recovery keeps Forge itself healthy');
-requireText(
-  'docs/architecture/CURRENT.md',
-  'Historical Issue/Task/Local Job and compatibility projections must not become second mutable authorities.',
 );
 requireText('src/runtime/root/runtime.ts', 'export class CanonicalForgeRuntime');
 forbid(
@@ -2425,7 +2353,6 @@ requireText('src/runtime/execution/jobs/store.ts', 'transitionExecutionJobFromWo
 requireText('src/runtime/execution/jobs/receipt-store.ts', "state: 'started' | 'completed'");
 requireText('src/runtime/execution/thin-harness/execution-router.ts', "mode: 'fast'");
 requireText('src/runtime/execution/thin-harness/execution-router.ts', 'routeExecution');
-requireText('docs/architecture/CURRENT.md', '### Ephemeral Direct — default');
 requireText('src/runtime/resources/leases/types.ts', 'fencingToken: number');
 requireText('src/runtime/resources/leases/store.ts', 'assertFencingToken');
 requireText('src/runtime/resources/leases/store.ts', 'expectedLeaseMap');
@@ -2665,9 +2592,6 @@ for (const path of [
 
 requireText('scripts/run-governed-gate.ts', "label: 'source duplication'");
 requireText('scripts/run-governed-gate.ts', "args: ['scripts/check-source-duplication.mjs']");
-requireText('docs/architecture/CURRENT.md', '## State ownership');
-requireText('docs/architecture/CURRENT.md', '## Runtime and MCP boundary');
-requireText('docs/architecture/CURRENT.md', '## Testing and verification');
 requireText('plans/README.md', 'not the runtime execution queue');
 // Compatibility-facade thinness is enforced by ownership/consumer boundaries, not source line counts.
 const b7ProductionFiles = productionTypeScriptFiles();

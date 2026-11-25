@@ -27,16 +27,15 @@ required=(
   .github/ISSUE_TEMPLATE/documentation.yml
   .github/ISSUE_TEMPLATE/support.yml
   .github/workflows/release.yml
-  docs/README.md
+  docs/README.md docs/README.zh-CN.md
+  docs/site/build-pages.py
   docs/wiki/Quick-Start.md docs/wiki/Installation.md
   docs/wiki/Connecting-ChatGPT.md docs/wiki/Connecting-ChatGPT.zh-CN.md
-  docs/wiki/Execution-Lifecycle.md
-  docs/operations/releasing.md docs/operations/releasing.zh-CN.md
-  docs/operations/github-repository.md docs/operations/homebrew.md
-  docs/operations/platform-support.md docs/operations/platform-support.zh-CN.md
-  docs/operations/features.md docs/operations/features.zh-CN.md
-  docs/operations/troubleshooting.md docs/operations/troubleshooting.zh-CN.md
-  docs/wiki/Home.md docs/wiki/Architecture.md docs/wiki/Operations.md
+  docs/wiki/Execution-Lifecycle.md docs/wiki/Core-Concepts.md
+  docs/wiki/Home.md docs/wiki/Architecture.md docs/wiki/Implementation.md docs/wiki/Operations.md
+  docs/wiki/Computer-and-Plugins.md docs/wiki/Computer-and-Plugins.zh-CN.md
+  docs/wiki/Integrations.md docs/wiki/Runtime-Architecture.md
+  docs/wiki/Security-Model.md docs/wiki/Troubleshooting.md docs/wiki/Releases-and-Upgrades.md
 )
 for path in "${required[@]}"; do
   [[ -f "$path" ]] || {
@@ -142,65 +141,12 @@ for path in docs/wiki/Quick-Start.md docs/wiki/Installation.md; do
   }
 done
 
-for path in docs/operations/releasing.md docs/operations/releasing.zh-CN.md; do
-  grep -q '@moretea-labs/forge' "$path" || {
-    echo "[public-docs] missing package identity: $path" >&2
-    exit 1
-  }
-  grep -q 'forge-hook' "$path" || {
-    echo "[public-docs] missing Forge hook identity: $path" >&2
-    exit 1
-  }
-  if grep -qE '(^|[^A-Za-z0-9_-])(matea|repo-harness)([^A-Za-z0-9_-]|$)' "$path"; then
-    echo "[public-docs] forbidden legacy product identity remains: $path" >&2
-    exit 1
-  fi
-  grep -q 'package.json' "$path" || {
-    echo "[public-docs] release version must be derived from package.json: $path" >&2
-    exit 1
-  }
-  grep -q 'next' "$path" || {
-    echo "[public-docs] missing RC channel: $path" >&2
-    exit 1
-  }
-  grep -q 'latest' "$path" || {
-    echo "[public-docs] missing stable channel: $path" >&2
-    exit 1
-  }
-  grep -q 'Bun' "$path" || {
-    echo "[public-docs] missing Bun distribution role: $path" >&2
-    exit 1
-  }
-  grep -q 'Homebrew' "$path" || {
-    echo "[public-docs] missing Homebrew distribution role: $path" >&2
+for token in '@moretea-labs/forge' 'next' 'latest' 'GitHub Release'; do
+  grep -q "$token" docs/wiki/Releases-and-Upgrades.md || {
+    echo "[public-docs] release page missing: $token" >&2
     exit 1
   }
 done
-
-grep -q 'npm.*primary package registry' docs/operations/releasing.md || {
-  echo "[public-docs] npm primary registry role is unclear" >&2
-  exit 1
-}
-grep -q 'GitHub Releases' docs/operations/releasing.md || {
-  echo "[public-docs] GitHub Release role is unclear" >&2
-  exit 1
-}
-grep -q 'publishConfig.provenance' docs/versioning.md || {
-  echo "[public-docs] provenance contract is undocumented" >&2
-  exit 1
-}
-grep -q 'stable npm/GitHub release' docs/operations/homebrew.md || {
-  echo "[public-docs] Homebrew stable-only gate is unclear" >&2
-  exit 1
-}
-grep -q 'WSL2' docs/operations/platform-support.md || {
-  echo "[public-docs] platform matrix missing WSL2" >&2
-  exit 1
-}
-grep -q 'Windows 原生' docs/operations/platform-support.zh-CN.md || {
-  echo "[public-docs] Chinese platform matrix missing native Windows scope" >&2
-  exit 1
-}
 grep -q 'rh_status' docs/wiki/Connecting-ChatGPT.md || {
   echo "[public-docs] connector tutorial missing facade verification" >&2
   exit 1

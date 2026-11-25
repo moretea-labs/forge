@@ -6,10 +6,10 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
 const ts = createRequire(import.meta.url)('typescript');
-const debtFile = 'docs/architecture/kernel-legacy-edge-debt.json';
+const debtFile = 'scripts/testing/kernel-legacy-edge-debt.json';
 const debt = JSON.parse(readFileSync(join(root, debtFile), 'utf8'));
 if (debt.version !== 1 || !Array.isArray(debt.edges)) throw new Error('invalid kernel legacy debt ledger');
-const runtimeCliDebtFile = 'docs/architecture/runtime-cli-edge-debt.json';
+const runtimeCliDebtFile = 'scripts/testing/runtime-cli-edge-debt.json';
 const runtimeCliDebt = JSON.parse(readFileSync(join(root, runtimeCliDebtFile), 'utf8'));
 if (runtimeCliDebt.version !== 1 || !Array.isArray(runtimeCliDebt.edges)) throw new Error('invalid runtime->cli debt ledger');
 const sorted = [...debt.edges].sort();

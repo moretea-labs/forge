@@ -48,20 +48,10 @@ for (const path of ['install.sh', 'install.ps1']) {
 }
 requireText('install.sh', 'npm install -g');
 requireText('install.ps1', 'npm install -g');
-requireText('docs/operations/platform-support.md', 'Native Windows');
-requireText('docs/operations/platform-support.md', 'WSL2');
-requireText('docs/operations/features.md', 'Core features');
 requireText('docs/wiki/Installation.md', 'Node.js 20.10');
 requireText('docs/wiki/Quick-Start.md', 'Node.js 20.10');
 requireText('.github/workflows/windows-smoke.yml', 'windows-latest');
 requireText('.github/workflows/windows-smoke.yml', '-DryRun');
-requireText(
-  'docs/operations/platform-support.md',
-  '| Platform | Runtime | Controller / MCP | Browser | Native Desktop / Computer | Recovery | Service persistence |',
-);
-requireText('docs/operations/platform-support.md', 'non-persistent portable');
-requireText('docs/operations/platform-support.md', 'Windows-host Recovery binding');
-
 requireText('scripts/check-tarball-install-smoke.sh', 'FORGE_CONTROLLER_HOME');
 requireText('scripts/check-tarball-install-smoke.sh', 'CLEAN_HOME');
 requireText('scripts/check-tarball-install-smoke.sh', 'npm pack --silent');

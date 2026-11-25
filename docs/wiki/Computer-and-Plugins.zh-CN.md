@@ -85,4 +85,4 @@ forge plugin list --refresh
 forge doctor
 ~~~
 
-[English Computer Guide](Computer-and-Plugins) · [插件管理](https://github.com/moretea-labs/forge/blob/main/docs/forge-plugin-management.md) · [平台支持说明](https://github.com/moretea-labs/forge/blob/main/docs/operations/platform-support.zh-CN.md)
+[English Computer Guide](Computer-and-Plugins) · [集成](Integrations) · [运维](Operations) · [安全模型](Security-Model)

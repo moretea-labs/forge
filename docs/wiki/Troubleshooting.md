@@ -33,6 +33,4 @@ A previous release must have exact path, release ID, artifact identity, manifest
 
 Detailed guides:
 
-- [General troubleshooting](https://github.com/moretea-labs/forge/blob/main/docs/operations/troubleshooting.md)
-- [Controller reliability](https://github.com/moretea-labs/forge/blob/main/docs/operations/controller-reliability-runbook.md)
-- [502 and performance](https://github.com/moretea-labs/forge/blob/main/docs/operations/controller-performance-and-502.md)
+For unresolved product defects or incident-specific evidence, use the relevant GitHub Issue so diagnosis and acceptance stay with the tracked requirement instead of a second runbook tree.

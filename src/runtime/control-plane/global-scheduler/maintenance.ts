@@ -1,12 +1,21 @@
 import type { RepositoryRecord } from '../../../core/repository/types';
 import { cleanupRuntimeComputerInteractionTargets } from '../../root/computer-target-composition';
-import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCheckoutCaches, cleanupIdleXCTestDevices, cleanupReleasableIosTestEvidence } from '../generated-cache-retention';
+import {
+  cleanupControllerHomeBrowserArtifacts,
+  cleanupGeneratedRepositoryCheckoutCaches,
+  cleanupIdleXCTestDevices,
+  cleanupReleasableIosTestEvidence,
+} from '../generated-cache-retention';
 import type { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { assertRuntimeMayWrite } from '../../root/write-fence';
 import { cleanupPersistedCheckResults } from '../../execution/process-runtime/check-result-retention';
 import { cleanupRetiredExecutionJobs } from '../../execution/jobs/store';
-import { deriveForgeActionableFailureCode, maybeRegisterFailedReleaseSessionRepairs, maybeRegisterForgeActionableFailureRepair } from '../../diagnostics/incident-repair';
+import {
+  deriveForgeActionableFailureCode,
+  maybeRegisterFailedReleaseSessionRepairs,
+  maybeRegisterForgeActionableFailureRepair,
+} from '../../diagnostics/incident-repair';
 
 const GENERATED_CACHE_SWEEP_INTERVAL_MS = 60_000;
 const PERIODIC_RETENTION_INTERVAL_MS = 5 * 60_000;
@@ -63,21 +72,27 @@ export function planSchedulerPeriodicMaintenance(input: {
   const periodicSequence = Math.floor(input.nowMs / cleanupIntervalMs);
   const cacheEvery = Math.max(1, Math.ceil(GENERATED_CACHE_SWEEP_INTERVAL_MS / cleanupIntervalMs));
   const retentionEvery = Math.max(1, Math.ceil(PERIODIC_RETENTION_INTERVAL_MS / cleanupIntervalMs));
-  const deepRetentionEvery = Math.max(retentionEvery, Math.ceil(PERIODIC_DEEP_RETENTION_INTERVAL_MS / cleanupIntervalMs));
+  const deepRetentionEvery = Math.max(
+    retentionEvery,
+    Math.ceil(PERIODIC_DEEP_RETENTION_INTERVAL_MS / cleanupIntervalMs),
+  );
   const repositoryCount = Math.max(0, Math.trunc(input.repositoryCount));
   const deepRetentionSequence = Math.floor(periodicSequence / deepRetentionEvery);
   return {
     periodicSequence,
     deepRetentionSequence,
-    generatedCacheRepositoryIndex: repositoryCount > 0 && periodicSequence % cacheEvery === 0
-      ? Math.floor(periodicSequence / cacheEvery) % repositoryCount : undefined,
+    generatedCacheRepositoryIndex:
+      repositoryCount > 0 && periodicSequence % cacheEvery === 0
+        ? Math.floor(periodicSequence / cacheEvery) % repositoryCount
+        : undefined,
     generatedCacheRootStartIndex: repositoryCount > 0 ? Math.floor(periodicSequence / cacheEvery / repositoryCount) : 0,
     runRetention: periodicSequence % retentionEvery === 0,
     runDeepRetention: periodicSequence % deepRetentionEvery === 0,
     processGcRepositoryIndex: repositoryCount > 0 ? periodicSequence % repositoryCount : undefined,
-    deepRetentionRepositoryIndex: repositoryCount > 0 && periodicSequence % deepRetentionEvery === 0
-      ? deepRetentionSequence % repositoryCount
-      : undefined,
+    deepRetentionRepositoryIndex:
+      repositoryCount > 0 && periodicSequence % deepRetentionEvery === 0
+        ? deepRetentionSequence % repositoryCount
+        : undefined,
   };
 }
 
@@ -134,7 +149,9 @@ export async function runSchedulerPeriodicCleanup(input: {
   if (plan.runRetention) {
     if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
     try {
-      const computerTargets = await cleanupRuntimeComputerInteractionTargets(input.controllerHome, { nowMs: input.nowMs });
+      const computerTargets = await cleanupRuntimeComputerInteractionTargets(input.controllerHome, {
+        nowMs: input.nowMs,
+      });
       if (computerTargets.blockers.length > 0 || computerTargets.overCapacity || computerTargets.budgetExhausted) {
         console.error('[forge cleanup] Computer interaction-target retention reported bounded blockers');
       }
@@ -176,36 +193,45 @@ export async function runSchedulerPeriodicCleanup(input: {
     try {
       const generated = cleanupGeneratedRepositoryCheckoutCaches(cacheRepo, {
         controllerHome: input.controllerHome,
-        nowMs: input.nowMs, rootStartIndex: plan.generatedCacheRootStartIndex,
+        nowMs: input.nowMs,
+        rootStartIndex: plan.generatedCacheRootStartIndex,
       });
       if (Object.keys(generated.byClass).length > 0 || generated.errors.length > 0 || generated.budgetExhausted) {
-        console.info(`[forge cleanup] generated-cache report ${JSON.stringify({
-          repoId: cacheRepo.repoId,
-          rootsInspected: generated.rootsInspected,
-          byClass: generated.byClass,
-          eligible: generated.eligible,
-          removedPaths: generated.removedPaths,
-          retainedPathCount: generated.retainedPaths.length,
-          retainedPathSamples: generated.retainedPaths.slice(0, 8),
-          logicalReclaimedBytes: generated.reclaimedBytes,
-          filesystemAvailableBytesDelta: generated.filesystemAvailableBytesDelta ?? null,
-          filesystemAvailableBytesDeltaByRootCount: Object.keys(generated.filesystemAvailableBytesDeltaByRoot).length,
-          filesystemAvailableBytesDeltaByRootSample: Object.entries(generated.filesystemAvailableBytesDeltaByRoot)
-            .slice(0, 8)
-            .map(([root, delta]) => ({ root, delta })),
-          skippedByReason: generated.skippedByReason,
-          errorCount: generated.errors.length,
-          errors: generated.errors.slice(0, 8),
-          budgetExhausted: generated.budgetExhausted,
-        })}`);
+        console.info(
+          `[forge cleanup] generated-cache report ${JSON.stringify({
+            repoId: cacheRepo.repoId,
+            rootsInspected: generated.rootsInspected,
+            byClass: generated.byClass,
+            eligible: generated.eligible,
+            removedPaths: generated.removedPaths,
+            retainedPathCount: generated.retainedPaths.length,
+            retainedPathSamples: generated.retainedPaths.slice(0, 8),
+            logicalReclaimedBytes: generated.reclaimedBytes,
+            filesystemAvailableBytesDelta: generated.filesystemAvailableBytesDelta ?? null,
+            filesystemAvailableBytesDeltaByRootCount: Object.keys(generated.filesystemAvailableBytesDeltaByRoot).length,
+            filesystemAvailableBytesDeltaByRootSample: Object.entries(generated.filesystemAvailableBytesDeltaByRoot)
+              .slice(0, 8)
+              .map(([root, delta]) => ({ root, delta })),
+            skippedByReason: generated.skippedByReason,
+            errorCount: generated.errors.length,
+            errors: generated.errors.slice(0, 8),
+            budgetExhausted: generated.budgetExhausted,
+          })}`,
+        );
       }
-      if (generated.errors.length > 0) console.error(`[forge cleanup] generated-cache retention reported ${generated.errors.length} error(s) for ${cacheRepo.repoId}`);
+      if (generated.errors.length > 0)
+        console.error(
+          `[forge cleanup] generated-cache retention reported ${generated.errors.length} error(s) for ${cacheRepo.repoId}`,
+        );
       const evidence = cleanupReleasableIosTestEvidence(cacheRepo, {
         owner: { controllerHome: input.controllerHome, repoId: cacheRepo.repoId },
         nowMs: input.nowMs,
         rootStartIndex: plan.generatedCacheRootStartIndex,
       });
-      if (evidence.errors.length > 0) console.error(`[forge cleanup] iOS test-evidence retention reported ${evidence.errors.length} error(s) for ${cacheRepo.repoId}`);
+      if (evidence.errors.length > 0)
+        console.error(
+          `[forge cleanup] iOS test-evidence retention reported ${evidence.errors.length} error(s) for ${cacheRepo.repoId}`,
+        );
     } catch (error) {
       console.error(`[forge cleanup] generated-cache retention failed for ${cacheRepo.repoId}:`, error);
     }
@@ -225,8 +251,13 @@ export async function runSchedulerPeriodicCleanup(input: {
   if (plan.deepRetentionRepositoryIndex === undefined) return;
   const repo = input.repositories[plan.deepRetentionRepositoryIndex]!;
   try {
-    const browserArtifacts = cleanupControllerHomeBrowserArtifacts(input.controllerHome, repo.repoId, { nowMs: input.nowMs });
-    if (browserArtifacts.errors.length > 0 || Object.values(browserArtifacts.classes).some((item) => item.overCapacity)) {
+    const browserArtifacts = cleanupControllerHomeBrowserArtifacts(input.controllerHome, repo.repoId, {
+      nowMs: input.nowMs,
+    });
+    if (
+      browserArtifacts.errors.length > 0 ||
+      Object.values(browserArtifacts.classes).some((item) => item.overCapacity)
+    ) {
       console.error(`[forge cleanup] Browser artifact retention reported bounded blockers for ${repo.repoId}`);
     }
   } catch (error) {

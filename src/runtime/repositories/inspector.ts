@@ -821,8 +821,9 @@ function ripgrepCandidateLines(
 }
 
 /**
- * Internal Context Plane discovery: ripgrep selects matching authorized files,
- * then bounded source materialization owns line-level evidence and ranking.
+ * Optional Workbench search: the caller explicitly selects queries and authorized
+ * files; this path returns bounded literal matches for that batch action. It is not
+ * the default Agent source-discovery path.
  */
 export function searchRepositoryMany(
   repoRoot: string,
@@ -1014,7 +1015,8 @@ export function searchRepositoryMany(
 }
 
 /**
- * Async Context Pack uses the same canonical ripgrep-backed search implementation.
+ * The optional Workbench search action shares this bounded ripgrep implementation;
+ * normal source discovery is direct Shell/Read.
  * A second filesystem scanning implementation would diverge in policy, matching
  * and ranking; this short-lived sidecar does not own a separate search engine.
  */

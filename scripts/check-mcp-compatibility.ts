@@ -134,7 +134,7 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = '9ebdaeedde7cf065';
 // 2026-11-24 #714: repository.git gained the exact bounded diff contract behind
 // capability_execute while the preferred tool-name set itself remains unchanged.
 // 2026-11-25 #714-H retires rh_context source-search fields and Context Pack; Shell/Read owns source discovery while optional Cognitive/LSP reads remain.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'c7072a07c07cc54b';
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'd444a394aa2dbf5a';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

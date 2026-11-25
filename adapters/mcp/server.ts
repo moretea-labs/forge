@@ -36,6 +36,7 @@ import { randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { observeRuntimeStatus, readRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { readRuntimeOwner } from '../../src/runtime/root/ownership';
 import { readRuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
 import { getRuntimeWriteClaim } from '../../src/runtime/root/write-fence';
 import { recordMcpIncident, recordMcpTiming, type McpTimingTrace } from '../../src/runtime/diagnostics/mcp-timing';
@@ -486,18 +487,69 @@ function recoveryRuntimeReleaseActivationInProgress(controllerHome: string): boo
   }
 }
 
-function canonicalRuntimeReleaseHandoffActive(controllerHome: string): boolean {
-  const runtime = observeRuntimeStatus(controllerHome);
-  if (runtime.running && runtime.ready) return false;
-  const authority = readRuntimeReleaseAuthority(controllerHome);
+function gatewayProcessExists(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build the release-handoff observation without the full Runtime liveness
+ * identity probe. The Public Gateway uses this only to decide whether to wait
+ * briefly for a known release transition; it never grants execution authority.
+ * The subsequent loopback endpoint + Runtime token + runtimeInstanceId
+ * resolution remain the actual forwarding boundary.
+ */
+export function canonicalRuntimeReleaseHandoffFromStoredState(input: {
+  snapshot: ReturnType<typeof readRuntimeStatusSnapshot>;
+  owner: ReturnType<typeof readRuntimeOwner>;
+  authorityReleaseId?: string;
+  authorityCommittedAt?: string;
+  recoveryActivationInProgress?: boolean;
+  nowMs: number;
+  processExists?: (pid: number) => boolean;
+}): boolean {
+  const sameRelease = Boolean(
+    input.authorityReleaseId
+      && input.snapshot?.releaseId === input.authorityReleaseId
+  );
+  const ownerMatchesSnapshot = Boolean(
+    sameRelease
+      && input.owner
+      && input.snapshot
+      && input.owner.runtimeInstanceId === input.snapshot.runtimeInstanceId
+      && input.owner.pid === input.snapshot.pid
+  );
+  const runtimeRunning = Boolean(
+    ownerMatchesSnapshot
+      && (input.processExists ?? gatewayProcessExists)(input.owner!.pid)
+  );
   return canonicalRuntimeReleaseHandoffInProgress({
+    authorityReleaseId: input.authorityReleaseId,
+    authorityCommittedAt: input.authorityCommittedAt,
+    runtimeReleaseId: input.snapshot?.releaseId,
+    runtimeRunning,
+    runtimeReady: runtimeRunning && input.snapshot?.readiness.ready === true,
+    runtimeStartedAt: input.snapshot?.startedAt,
+    runtimeUpdatedAt: input.snapshot?.updatedAt,
+    recoveryActivationInProgress: input.recoveryActivationInProgress,
+    nowMs: input.nowMs,
+  });
+}
+
+function canonicalRuntimeReleaseHandoffActive(controllerHome: string): boolean {
+  const snapshot = readRuntimeStatusSnapshot(controllerHome);
+  const owner = readRuntimeOwner(controllerHome);
+  const authority = readRuntimeReleaseAuthority(controllerHome);
+  return canonicalRuntimeReleaseHandoffFromStoredState({
+    snapshot,
+    owner,
     authorityReleaseId: authority?.active.releaseId,
     authorityCommittedAt: authority?.committedAt,
-    runtimeReleaseId: runtime.snapshot?.releaseId,
-    runtimeRunning: runtime.running,
-    runtimeReady: runtime.ready,
-    runtimeStartedAt: runtime.snapshot?.startedAt,
-    runtimeUpdatedAt: runtime.snapshot?.updatedAt,
     recoveryActivationInProgress: recoveryRuntimeReleaseActivationInProgress(controllerHome),
     nowMs: Date.now(),
   });

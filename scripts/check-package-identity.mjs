@@ -25,7 +25,7 @@ const requiredFiles = [
   'install.sh',
   'install.ps1',
   'docs/README.md',
-  'docs/operations/',
+  'docs/README.zh-CN.md',
   'docs/wiki/',
 ];
 const forbiddenPackageEntries = ['ARCHITECTURE_MIGRATION_REPORT.md', 'OPTIMIZATION_REPORT.md'];

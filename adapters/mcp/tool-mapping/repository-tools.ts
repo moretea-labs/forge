@@ -166,7 +166,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'repository_workbench',
-    'Return Workbench state or invoke one bounded Thin Harness operation without adding top-level MCP tools. Prefer batch_execute for multi-step status→search→read→diff or read→patch→check flows so ChatGPT pays one routing/receipt ownership cycle.',
+    'Return Workbench state or invoke one bounded Thin Harness operation without adding top-level MCP tools. Prefer execute_command plus exact read_repository_file calls for model-directed source discovery; use batch_execute only when the model explicitly selects a coherent multi-step operation with known scope, not as a source-search router.',
     {
       repo_id: repoId,
       checkout_id: {

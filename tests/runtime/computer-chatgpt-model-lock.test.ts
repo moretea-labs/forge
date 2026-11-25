@@ -169,8 +169,11 @@ test('automatic ChatGPT lock fails closed when the exact model picker is unavail
   expect(state.menuOpen).toBe(false);
 });
 
-test('only unattended Forge prompts enter the content-script model lock gate', () => {
+test('unattended Forge prompts attempt model lock without making it a dispatch fence', () => {
   expect(content).toContain("const automaticDispatch = /^\\[forge-supervisor(?:\\s|\\])/i.test(actualPrompt)");
   expect(content).toContain("if (!prepareOnly && automaticDispatch) {");
   expect(content).toContain("const modelLock = await ensureGpt56High();");
+  expect(content).toContain("modelLockFallbackReason = String(modelLock.reason ?? 'provider_model_lock_unavailable')");
+  expect(content).toContain("await closeModelLockMenu();");
+  expect(content).not.toContain("if (!modelLock.ready) return { dispatched: false, reason: modelLock.reason };");
 });

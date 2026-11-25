@@ -98,7 +98,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       include_learning_recall: {
         type: 'boolean',
         description:
-          'For an operation=get query, include a bounded advisory Cognitive working set. Defaults to true when a query is supplied.',
+          'For operation=get with a query, include a bounded advisory Cognitive working set. This is a model-owned attention/cadence choice and defaults to true when a query is supplied.',
       },
       recall_query_variants: {
         type: 'array',

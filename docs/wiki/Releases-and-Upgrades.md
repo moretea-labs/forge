@@ -19,6 +19,6 @@ When using the packaged persistent service, `forge runtime service install-packa
 
 Source version, package identity, immutable Git tag, npm dist-tag, and GitHub Release must agree. `check:release` checks source gates, packaging, licensing/open-source hygiene, and isolated installation; `check:release-published` checks npm registry metadata and downloaded tarball integrity against the local version and tag. Publication is performed by protected GitHub Actions with npm OIDC Trusted Publishing.
 
-Release readiness and active whole-Runtime activation are different authorities; do not infer a healthy local service just from successful package publication. Follow the [maintained release process](https://github.com/moretea-labs/forge/blob/main/docs/operations/releasing.md) for contributor instructions.
+Release readiness and active whole-Runtime activation are different authorities; do not infer a healthy local service just from successful package publication. Contributor release changes are validated by repository release checks and tracked in the relevant GitHub Issue/Project; publication still uses the protected GitHub Actions workflow.
 
 For future releases, derive their version from the then-current `package.json` and update the matching immutable GitHub Release link.

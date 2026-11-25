@@ -650,10 +650,6 @@ export async function callContextAdapter(
       data: {
         operation,
         repoId: repository.repoId,
-        sourceSearch: {
-          retired: true,
-          searchWith: ['execute_command', 'read_repository_file'],
-        },
         ...(cognitionAudit ? { cognitionAudit } : {}),
         ...(learningRecall ? { learningRecall } : {}),
         ...(semanticNavigation ? { semanticNavigation } : {}),
@@ -749,10 +745,6 @@ export async function callContextAdapter(
   }
   const capabilityIntentQuery = operation === 'list' && typeof args.query === 'string' ? args.query.trim() : '';
   if (capabilityIntentQuery) {
-    const learningRecall =
-      args.include_learning_recall === false
-        ? undefined
-        : rhContextLearningRecall(ctx, repository, capabilityIntentQuery);
     // Intent-ranked capability discovery must reflect the executable plugin contract.
     // Persisted manifests are status projections and may outlive a source release that moved an action.
     const manifestOptions = { preferStored: false };
@@ -783,7 +775,6 @@ export async function callContextAdapter(
           readOnlyDiscovery: true,
           executeWith: 'capability-specific',
         },
-        ...(learningRecall ? { learningRecall } : {}),
         toolArchitecture: {
           facadeTools: [...FACADE_TOOLS],
           domainSchemaLoading: 'intent_ranked_capability_search',

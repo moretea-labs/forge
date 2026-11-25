@@ -30,4 +30,4 @@ Gmail, Calendar, Contacts, and other Workspace integrations remain connector-spe
 
 Simulator and App Store Connect workflows use dedicated capabilities and authorization. They are distinct from generic shell or repository execution.
 
-See the [documentation hub](https://github.com/moretea-labs/forge/blob/main/docs/README.md) for maintained integration guides.
+See [Home](Home) and [Computer and Plugins](Computer-and-Plugins) for the maintained public integration guidance.

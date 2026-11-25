@@ -180,7 +180,7 @@ function verificationRecord(
 }
 
 describe('connected assistant learning loops', () => {
-  test('records explicit correction with direct-read evidence and recalls it through ordinary capability context', async () => {
+  test('records explicit correction with direct-read evidence and recalls it through explicit repository context', async () => {
     const fx = fixture('direct-learning', { knowledge: false });
     const ctx = {
       controllerHome: fx.controllerHome,
@@ -269,7 +269,7 @@ describe('connected assistant learning loops', () => {
 
     const recalled = await callRuntimeTool(ctx, 'rh_context', {
       repo_id: fx.repository.repoId,
-      operation: 'list',
+      operation: 'get',
       query: 'find an authorized local filesystem file with Local System rather than Personal Knowledge',
       detail_level: 'summary',
     });
@@ -546,7 +546,7 @@ describe('connected assistant learning loops', () => {
 
     const naturalRecall = await callRuntimeTool(ctx, 'rh_context', {
       repo_id: fx.repository.repoId,
-      operation: 'list',
+      operation: 'get',
       query: 'forge cognition',
     });
     expect(naturalRecall?.isError).not.toBe(true);
