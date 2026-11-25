@@ -3606,7 +3606,8 @@ struct ZenProjectDetailPane: View {
                             Spacer()
                             Text("\(detail.requirements.count) / \(detail.requirementCount)").font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
                         }
-                        ForEach(detail.requirements) { task in
+                        ForEach(detail.taskTreeRows) { row in
+                            let task = row.task
                             Button {
                                 guard openingRequirementId == nil else { return }
                                 openError=nil
@@ -3619,6 +3620,11 @@ struct ZenProjectDetailPane: View {
                             } label: {
                                 VStack(alignment:.leading,spacing:4) {
                                 HStack {
+                                    if row.depth > 0 {
+                                        Image(systemName:"arrow.turn.down.right")
+                                            .font(.system(size:9)).foregroundStyle(.tertiary)
+                                            .accessibilityHidden(true)
+                                    }
                                     Text(task.title).font(.system(size:12.5,weight:.medium)).lineLimit(2)
                                     Spacer(minLength:8)
                                     Text(ZenWorkspacePane.taskStatusLabel(task.status) ?? task.status)
@@ -3641,6 +3647,10 @@ struct ZenProjectDetailPane: View {
                                 .font(.system(size:9))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
+                                if row.parentUnavailable, let parent = task.parentRequirementId {
+                                    Text("上级任务：\(parent)")
+                                        .font(.system(size:9)).foregroundStyle(.secondary).lineLimit(1)
+                                }
                                 if !task.progressSummary.isEmpty {
                                     Text(task.progressSummary).font(.system(size:10)).foregroundStyle(.secondary).lineLimit(2)
                                 }
@@ -3658,6 +3668,7 @@ struct ZenProjectDetailPane: View {
                             .buttonStyle(.plain)
                             .disabled(detail.project.status != "active" || openingRequirementId != nil)
                             .padding(.horizontal,10)
+                            .padding(.leading, CGFloat(min(row.depth, 5)) * 12)
                             .padding(.vertical,11)
                             .background(hoveredTaskId == task.requirementId
                                         ? Color.primary.opacity(0.045) : Color.clear,
@@ -3675,6 +3686,7 @@ struct ZenProjectDetailPane: View {
                             .id(projectTaskScrollId(task.requirementId,repositoryId:task.repoId))
                             .accessibilityIdentifier("zen.projects.detail.task.\(task.requirementId)")
                             .accessibilityLabel("打开任务 \(task.title)，\(taskScopeLabel(task))")
+                            .accessibilityValue("层级 \(row.depth + 1)" + (row.parentUnavailable ? "，上级未加载或异常" : ""))
                         }
                         if loadingMore { ProgressView("正在读取更多任务…").controlSize(.small) }
                         if detail.hasMore {

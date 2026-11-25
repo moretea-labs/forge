@@ -46,6 +46,8 @@ struct ForgeProjectRequirementSummary: Decodable, Identifiable, Equatable {
   let revision: Int
   let projectId: String
   let repoId: String?
+  let parentRequirementId: String?
+  let rootRequirementId: String?
   let title: String
   let status: String
   let priority: String?
@@ -67,6 +69,13 @@ struct ForgeProjectRevisionRecord: Decodable, Identifiable, Equatable {
   var id: Int { revision }
 }
 
+struct ForgeProjectTaskTreeRow: Identifiable, Equatable {
+  let task: ForgeProjectRequirementSummary
+  let depth: Int
+  let parentUnavailable: Bool
+  var id: String { task.id }
+}
+
 struct ForgeSemanticProjectDetail: Decodable, Equatable {
   let project: ForgeSemanticProject
   let requirementCount: Int
@@ -81,6 +90,44 @@ struct ForgeSemanticProjectDetail: Decodable, Equatable {
   let revisionHistory: [ForgeProjectRevisionRecord]
 
   var nextRequirementOffset: Int { max(0, offset) + max(0, limit) }
+
+  /// Rebuild from all loaded pages of the canonical task projection. A parent
+  /// arriving on a later page automatically reparents its already loaded child.
+  var taskTreeRows: [ForgeProjectTaskTreeRow] {
+    let ids = Set(requirements.map(\.id))
+    var children: [String: [ForgeProjectRequirementSummary]] = [:]
+    var roots: [ForgeProjectRequirementSummary] = []
+    for task in requirements {
+      if let parent = task.parentRequirementId, ids.contains(parent) {
+        children[parent, default: []].append(task)
+      } else {
+        roots.append(task)
+      }
+    }
+    var rows: [ForgeProjectTaskTreeRow] = []
+    var visited = Set<String>()
+    func appendTree(_ root: ForgeProjectRequirementSummary, parentUnavailable: Bool) {
+      var stack: [(ForgeProjectRequirementSummary, Int)] = [(root, 0)]
+      while let (task, depth) = stack.popLast() {
+        guard visited.insert(task.id).inserted else { continue }
+        rows.append(ForgeProjectTaskTreeRow(
+          task: task, depth: depth, parentUnavailable: depth == 0 && parentUnavailable
+        ))
+        for child in (children[task.id] ?? []).reversed() {
+          stack.append((child, depth + 1))
+        }
+      }
+    }
+    for root in roots {
+      appendTree(root, parentUnavailable: root.parentRequirementId != nil)
+    }
+    // A corrupt cycle must not hide tasks or cause infinite recursion.
+    for task in requirements where !visited.contains(task.id) {
+      appendTree(task, parentUnavailable: true)
+    }
+    return rows
+  }
+
 
   func appending(_ page: ForgeSemanticProjectDetail) -> ForgeSemanticProjectDetail {
     var seen = Set(requirements.map(\.requirementId))

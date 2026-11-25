@@ -1839,14 +1839,16 @@ final class NativeWorkspaceTests: XCTestCase {
         ]
       ])
     }
-    func row(_ id: String) -> [String: Any] {
-      [
+    func row(_ id: String, parent: String? = nil) -> [String: Any] {
+      var result: [String: Any] = [
         "requirementId": id, "revision": 1, "projectId": "PROJECT-a", "title": id,
         "status": "active",
         "progressSummary": "", "remainingWorkCount": 0, "acceptedEvidenceCount": 0,
         "dependencyCount": 0, "linkedPlanCount": 0, "blockingDependencyIds": [],
         "updatedAt": "2026-11-17T00:00:00Z",
       ]
+      if let parent { result["parentRequirementId"] = parent }
+      return result
     }
 
     let first = try page(0, [row("REQ-a")], hasMore: true)
@@ -1857,6 +1859,19 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(merged.offset, 100)
     XCTAssertEqual(merged.nextRequirementOffset, 200)
     XCTAssertTrue(merged.hasMore)
+
+    let childPage = try page(0, [row("child", parent: "root"), row("grandchild", parent: "child")], hasMore: true)
+    XCTAssertEqual(childPage.taskTreeRows.map(\.id), ["child", "grandchild"])
+    XCTAssertEqual(childPage.taskTreeRows.map(\.depth), [0, 1])
+    XCTAssertTrue(childPage.taskTreeRows[0].parentUnavailable)
+    let rootPage = try page(100, [row("root"), row("other", parent: "root")], hasMore: false)
+    let tree = childPage.appending(rootPage).taskTreeRows
+    XCTAssertEqual(tree.map(\.id), ["root", "child", "grandchild", "other"])
+    XCTAssertEqual(tree.map(\.depth), [0, 1, 2, 1])
+    XCTAssertFalse(tree.contains(where: \.parentUnavailable))
+    let cycle = try page(0, [row("x", parent: "y"), row("y", parent: "x")], hasMore: false)
+    XCTAssertEqual(Set(cycle.taskTreeRows.map(\.id)), Set(["x", "y"]))
+    XCTAssertEqual(cycle.taskTreeRows.count, 2)
   }
 
   func testRequirementDetailDistinguishesUnavailableAndEmptyDownstreamProjection() {
