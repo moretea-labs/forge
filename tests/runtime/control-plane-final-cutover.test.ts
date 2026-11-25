@@ -5,6 +5,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   backupControlPlaneDatabase,
+  prepareRetiredWorkReferenceSnapshot,
+  sha256ControlPlaneDatabaseFile,
   controlPlaneDatabasePath,
   disableControlPlaneReadConnectionReuse,
   deleteControlPlaneRecord,
@@ -463,6 +465,97 @@ describe('final SQLite control-plane cutover', () => {
       });
       expect(recreated.revision).toBe(6);
       expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+    });
+  });
+
+  test('offline Work-reference retirement preserves native facts, audit and backup and is idempotent', () => {
+    withHome((controllerHome) => {
+      const fixtures = [
+        [
+          'execution_session',
+          { activeWorkId: 'old', goalDelegation: { workId: 'old', goal: 'native' } },
+          { goalDelegation: { goal: 'native' } },
+        ],
+        [
+          'plan_revision',
+          { steps: [{ workId: 'old', title: 'native' }, { title: 'second' }] },
+          { steps: [{ title: 'native' }, { title: 'second' }] },
+        ],
+        [
+          'controller_round_relay',
+          { originWorkId: 'old', observationWindow: [{ workId: 'old', receiptId: 'r' }] },
+          { observationWindow: [{ receiptId: 'r' }] },
+        ],
+        ['requirement', { remainingWork: ['native user task'] }, { remainingWork: ['native user task'] }],
+      ] as const;
+      for (const [namespace, value] of fixtures) {
+        writeControlPlaneRecord(controllerHome, {
+          namespace,
+          scope: 'fixture',
+          key: 'record',
+          schemaVersion: 1,
+          value,
+          expectedRevision: null,
+        });
+      }
+      const backup = join(controllerHome, 'backup.sqlite');
+      const candidate = join(controllerHome, 'candidate.sqlite');
+      const before = backupControlPlaneDatabase(controllerHome, backup);
+      const digest = sha256ControlPlaneDatabaseFile(backup);
+      const result = prepareRetiredWorkReferenceSnapshot(backup, digest, candidate);
+      expect(result).toMatchObject({ recordCount: 3, fieldCount: 5 });
+      expect(sha256ControlPlaneDatabaseFile(backup)).toBe(digest);
+      const database = new Database(candidate, { readonly: true });
+      try {
+        for (const [namespace, , expected] of fixtures) {
+          const row = database
+            .query('SELECT payload, revision FROM control_plane_records WHERE namespace = ?')
+            .get(namespace) as { payload: string; revision: number };
+          expect(JSON.parse(row.payload)).toEqual(expected);
+          expect(row.revision).toBe(1);
+        }
+        expect(database.query('SELECT count(*) AS count FROM control_plane_audit').get()).toEqual({
+          count: before.auditEventCount,
+        });
+        expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+      } finally {
+        database.close();
+      }
+      const repeated = prepareRetiredWorkReferenceSnapshot(
+        candidate,
+        result.sha256,
+        join(controllerHome, 'again.sqlite'),
+      );
+      expect(repeated).toMatchObject({ recordCount: 0, fieldCount: 0 });
+      expect(() => prepareRetiredWorkReferenceSnapshot(backup, digest, backup)).toThrow();
+      expect(sha256ControlPlaneDatabaseFile(backup)).toBe(digest);
+    });
+  });
+
+  test('offline Work-reference retirement fails closed on an unclassified path without modifying its input', () => {
+    withHome((controllerHome) => {
+      for (const [namespace, value] of [
+        ['execution_session', { activeWorkId: 'old' }],
+        ['requirement', { unexpected: { workId: 'unknown' } }],
+      ] as const) {
+        writeControlPlaneRecord(controllerHome, {
+          namespace,
+          scope: 'fixture',
+          key: 'record',
+          schemaVersion: 1,
+          value,
+          expectedRevision: null,
+        });
+      }
+      const backup = join(controllerHome, 'backup.sqlite');
+      const candidate = join(controllerHome, 'candidate.sqlite');
+      backupControlPlaneDatabase(controllerHome, backup);
+      const digest = sha256ControlPlaneDatabaseFile(backup);
+      expect(() => prepareRetiredWorkReferenceSnapshot(backup, digest, candidate)).toThrow(
+        'WORK_REFERENCE_RETIREMENT_UNCLASSIFIED',
+      );
+      expect(sha256ControlPlaneDatabaseFile(backup)).toBe(digest);
+      expect(readdirSync(controllerHome)).not.toContain('candidate.sqlite');
     });
   });
 

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import {
+  constants,
   closeSync,
   copyFileSync,
   existsSync,
@@ -13,6 +14,7 @@ import {
 } from 'fs';
 import { dirname, join } from 'path';
 import { durableControllerHome } from '../../../effects/controller-home';
+import { removeRetiredWorkReferences } from './work-reference-retirement';
 
 /**
  * Small, dependency-free SQLite boundary for controller-owned runtime facts.
@@ -2144,6 +2146,64 @@ export function backupControlPlaneDatabase(
     return inspectControlPlaneDatabaseFile(destination);
   } catch (error) {
     if (existsSync(destination)) unlinkSync(destination);
+    throw error;
+  }
+}
+
+/**
+ * Prepare a new, verified offline migration candidate from an immutable
+ * backup. Never edit the input or active Controller Home. Recovery must still
+ * own the stopped-Runtime apply, source-generation fence and rollback.
+ */
+export function prepareRetiredWorkReferenceSnapshot(
+  backupPath: string,
+  expectedSha256: string,
+  destinationPath: string,
+): { recordCount: number; fieldCount: number; sha256: string } {
+  for (const path of [backupPath, destinationPath]) {
+    if (['-wal', '-shm', '-journal'].some((suffix) => existsSync(path + suffix))) {
+      throw new Error('WORK_REFERENCE_RETIREMENT_SIDECAR_PRESENT');
+    }
+  }
+  if (sha256ControlPlaneDatabaseFile(backupPath) !== expectedSha256) {
+    throw new Error('WORK_REFERENCE_RETIREMENT_BACKUP_DIGEST_MISMATCH');
+  }
+  // Exclusive creation prevents overwriting a live DB, existing backup or
+  // symlink even when a caller accidentally supplies its path.
+  copyFileSync(backupPath, destinationPath, constants.COPYFILE_EXCL);
+  try {
+    if (sha256ControlPlaneDatabaseFile(destinationPath) !== expectedSha256) {
+      throw new Error('WORK_REFERENCE_RETIREMENT_COPY_DIGEST_MISMATCH');
+    }
+    const database = openRawDatabase(destinationPath);
+    let retired: ReturnType<typeof removeRetiredWorkReferences>;
+    try {
+      database.exec('PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;');
+      const before = inspectOpenDatabase(database, destinationPath);
+      database.exec('BEGIN IMMEDIATE');
+      try {
+        retired = removeRetiredWorkReferences(database);
+        const after = inspectOpenDatabase(database, destinationPath);
+        if (before.recordCount !== after.recordCount || before.auditEventCount !== after.auditEventCount) {
+          throw new Error('WORK_REFERENCE_RETIREMENT_NATIVE_FACT_COUNT_CHANGED');
+        }
+        if (withSqliteStatement(database, 'PRAGMA foreign_key_check', (statement) => statement.all()).length > 0) {
+          throw new Error('WORK_REFERENCE_RETIREMENT_FOREIGN_KEY_VIOLATION');
+        }
+        database.exec('COMMIT');
+      } catch (error) {
+        database.exec('ROLLBACK');
+        throw error;
+      }
+      // Reclaim historical pages only on the disposable copy.
+      if (retired.fieldCount > 0) database.exec('VACUUM;');
+      inspectOpenDatabase(database, destinationPath);
+    } finally {
+      database.close();
+    }
+    return { ...retired, sha256: sha256ControlPlaneDatabaseFile(destinationPath) };
+  } catch (error) {
+    unlinkSync(destinationPath);
     throw error;
   }
 }
