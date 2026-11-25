@@ -36,28 +36,6 @@ const HELPER_FILES = Array.isArray(WORKFLOW_CONTRACT?.helpers?.scripts)
 if (HELPER_FILES.length === 0)
   throw new Error('[generated-authority] assets/workflow-contract.v1.json must declare helpers.scripts');
 
-const REFERENCE_CONFIG_FILES = [
-  'AGENTS.md',
-  'CLAUDE.md',
-  'agentic-development-flow.md',
-  'ai-workflows.md',
-  'changelog-versioning.md',
-  'coding-standards.md',
-  'development-protocol.md',
-  'document-generation.md',
-  'evaluator-rubric.md',
-  'external-tooling.md',
-  'git-strategy.md',
-  'global-working-rules.md',
-  'handoff-protocol.md',
-  'harness-overview.md',
-  'hook-operations.md',
-  'release-deploy.md',
-  'spa-day-protocol.md',
-  'sprint-contracts.md',
-  'workflow-orchestration.md',
-];
-
 const CLAUDE_TEMPLATE_FILES = [
   'contract.template.md',
   'implementation-notes.template.md',
@@ -76,7 +54,6 @@ if (COMMITTED) {
   const paths = [
     'package.json',
     ...HELPER_FILES.map((name) => `scripts/${name}`),
-    ...REFERENCE_CONFIG_FILES.map((name) => `docs/reference-configs/${name}`),
     ...CLAUDE_TEMPLATE_FILES.flatMap((name) => [`.claude/templates/${name}`, `assets/templates/${name}`]),
   ];
   const tree = execFileSync('git', ['ls-tree', '-r', '-z', candidateRevision], {
@@ -156,32 +133,6 @@ function projectClaudeTemplate(name, source) {
     );
   }
   return source;
-}
-
-const PACKAGE_VERSION = JSON.parse(sourceText('package.json')).version;
-
-function referenceConfigStub(name) {
-  const docId = name.replace(/\.md$/, '');
-  return `<!-- forge: reference-config-stub v1 -->
-# forge Reference: ${docId}
-
-> **Runtime Docs**: user-level forge reference
-> **Doc ID**: ${docId}
-> **Version**: ${PACKAGE_VERSION}
-> **Source Command**: \`forge docs path ${docId}\`
-
-This repo keeps workflow facts and runtime artifacts locally under \`.ai/\`.
-The full generic runtime guide is supplied by the installed forge
-package/user-level runtime so each repository does not need to refresh a full
-copy of shared documentation.
-
-Use:
-
-\`\`\`bash
-forge docs path ${docId}
-forge docs show ${docId}
-\`\`\`
-`;
 }
 
 function shellCompatibilityWrapper(name) {
@@ -271,9 +222,6 @@ for (const name of HELPER_FILES) {
   const expected = name.endsWith('.sh') ? shellCompatibilityWrapper(name) : typescriptCompatibilityWrapper(name);
   drift = syncGeneratedText(`scripts/${name}`, expected) || drift;
 }
-for (const name of REFERENCE_CONFIG_FILES) {
-  drift = syncGeneratedText(`docs/reference-configs/${name}`, referenceConfigStub(name), 0o644) || drift;
-}
 for (const name of CLAUDE_TEMPLATE_FILES) {
   drift =
     syncText(`.claude/templates/${name}`, `assets/templates/${name}`, (source) =>
@@ -283,5 +231,5 @@ for (const name of CLAUDE_TEMPLATE_FILES) {
 
 if (CHECK_ONLY && drift) process.exit(1);
 console.log(
-  `[generated-authority] ${CHECK_ONLY ? 'verified' : 'synchronized'} ${HELPER_FILES.length + REFERENCE_CONFIG_FILES.length + CLAUDE_TEMPLATE_FILES.length} projections`,
+  `[generated-authority] ${CHECK_ONLY ? 'verified' : 'synchronized'} ${HELPER_FILES.length + CLAUDE_TEMPLATE_FILES.length} projections`,
 );
