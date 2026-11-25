@@ -2090,6 +2090,43 @@ final class NativeWorkspaceTests: XCTestCase {
       ))
   }
 
+  func testRequirementCreationUsesCanonicalProjectHierarchy() throws {
+    let empty = try NativeWorkspace.decodeSemanticProject(["project": [
+      "projectId": "PROJECT-a", "displayName": "Project", "status": "active", "revision": 1,
+      "placements": [], "requirementCount": 0,
+    ]])
+    XCTAssertNil(empty.rootRequirementId)
+    XCTAssertEqual(NativeWorkspace.requirementCreationHierarchy(
+      project: empty, parentRequirementId: nil, createProjectRoot: true
+    )?["isProjectRoot"] as? Bool, true)
+    XCTAssertNil(NativeWorkspace.requirementCreationHierarchy(
+      project: empty, parentRequirementId: "REQ-parent", createProjectRoot: false
+    ))
+    XCTAssertNil(NativeWorkspace.requirementCreationHierarchy(
+      project: empty, parentRequirementId: nil, createProjectRoot: false
+    ))
+    let rooted = try NativeWorkspace.decodeSemanticProject(["project": [
+      "projectId": "PROJECT-a", "displayName": "Project", "status": "active", "revision": 2,
+      "rootRequirementId": "REQ-root", "placements": [], "requirementCount": 1,
+    ]])
+    XCTAssertEqual(rooted.rootRequirementId, "REQ-root")
+    let implicitChild = NativeWorkspace.requirementCreationHierarchy(
+      project: rooted, parentRequirementId: nil, createProjectRoot: nil
+    )
+    XCTAssertEqual(implicitChild?["parentRequirementId"] as? String, "REQ-root")
+    XCTAssertEqual(implicitChild?["expectedRootRequirementId"] as? String, "REQ-root")
+    XCTAssertEqual(implicitChild?["isProjectRoot"] as? Bool, false)
+    XCTAssertEqual(NativeWorkspace.requirementCreationHierarchy(
+      project: rooted, parentRequirementId: "REQ-parent", createProjectRoot: false
+    )?["parentRequirementId"] as? String, "REQ-parent")
+    XCTAssertNil(NativeWorkspace.requirementCreationHierarchy(
+      project: rooted, parentRequirementId: nil, createProjectRoot: true
+    ))
+    XCTAssertNil(NativeWorkspace.requirementCreationHierarchy(
+      project: rooted, parentRequirementId: "  ", createProjectRoot: false
+    ))
+  }
+
   func testProjectTaskPlacementCanBeBrowsedWithoutLocalCheckout() {
     let project = ForgeSemanticProject(
       projectId: "PROJECT-active", workspaceId: nil, displayName: "Active", status: "active",

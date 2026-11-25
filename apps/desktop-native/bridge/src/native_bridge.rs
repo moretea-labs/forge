@@ -373,6 +373,13 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("assignee")
                     .and_then(Value::as_str)
                     .map(str::to_owned),
+                optional_project_text(args, "parentRequirementId", 160)?,
+                optional_project_text(args, "expectedRootRequirementId", 160)?,
+                match args.get("isProjectRoot") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::Bool(value)) => Some(*value),
+                    Some(_) => return Err("FORGE_NATIVE_BRIDGE_PROJECT_ROOT_INVALID".into()),
+                },
             )
             .await
         }
@@ -1040,6 +1047,9 @@ mod tests {
                 status.map(str::to_owned),
                 priority.map(str::to_owned),
                 assignee.map(str::to_owned),
+                None,
+                None,
+                None,
             ))
         };
         assert_eq!(
@@ -1156,6 +1166,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         ));
         assert_eq!(
             create.unwrap_err(),
@@ -1261,6 +1274,9 @@ mod tests {
             "Task".into(),
             "Outcome".into(),
             vec![],
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -1500,7 +1516,10 @@ mod tests {
                 Some("planned"),
                 Some("high"),
                 Some("owner"),
-                Some(&dependencies)
+                Some(&dependencies),
+                None,
+                None,
+                false
             ),
             None
         );
@@ -1512,7 +1531,10 @@ mod tests {
                 Some("planned"),
                 Some("high"),
                 Some("owner"),
-                Some(&dependencies)
+                Some(&dependencies),
+                None,
+                None,
+                false
             ),
             Some("FORGE_DESKTOP_REQUIREMENT_PROJECT_NOT_CONFIRMED: refresh before retrying")
         );
@@ -1524,7 +1546,10 @@ mod tests {
                 Some("planned"),
                 Some("high"),
                 Some("owner"),
-                Some(&[])
+                Some(&[]),
+                None,
+                None,
+                false
             ),
             Some("FORGE_DESKTOP_REQUIREMENT_DEPENDENCIES_NOT_CONFIRMED: refresh before retrying")
         );
@@ -1536,7 +1561,10 @@ mod tests {
                 Some("planned"),
                 Some("high"),
                 Some("owner"),
-                Some(&dependencies)
+                Some(&dependencies),
+                None,
+                None,
+                false
             ),
             Some("FORGE_DESKTOP_REQUIREMENT_CREATE_NOT_CONFIRMED: refresh before retrying")
         );
@@ -1548,9 +1576,83 @@ mod tests {
                 Some("active"),
                 Some("high"),
                 Some("owner"),
-                Some(&dependencies)
+                Some(&dependencies),
+                None,
+                None,
+                false
             ),
             Some("FORGE_DESKTOP_REQUIREMENT_TASK_STATUS_NOT_CONFIRMED: refresh before retrying")
+        );
+    }
+
+    #[test]
+    fn requirement_create_receipt_requires_exact_parent_and_root() {
+        let child = json!({"requirement": {
+            "requirementId": "REQ-child", "projectId": "PROJECT-a",
+            "parentRequirementId": "REQ-parent", "rootRequirementId": "REQ-root"
+        }});
+        let check = |data: &Value, parent: Option<&str>, root: Option<&str>, is_root: bool| {
+            super::requirement_create_receipt_error(
+                data,
+                "REQ-child",
+                Some("PROJECT-a"),
+                None,
+                None,
+                None,
+                None,
+                parent,
+                root,
+                is_root,
+            )
+        };
+        let error =
+            Some("FORGE_DESKTOP_REQUIREMENT_HIERARCHY_NOT_CONFIRMED: refresh before retrying");
+        assert_eq!(
+            check(&child, Some("REQ-parent"), Some("REQ-root"), false),
+            None
+        );
+        assert_eq!(
+            check(&child, Some("REQ-other"), Some("REQ-root"), false),
+            error
+        );
+        assert_eq!(
+            check(&child, Some("REQ-parent"), Some("REQ-other"), false),
+            error
+        );
+        assert_eq!(check(&child, None, None, true), error);
+        let root = json!({"requirement": {
+            "requirementId": "REQ-child", "projectId": "PROJECT-a", "rootRequirementId": "REQ-child"
+        }});
+        assert_eq!(check(&root, None, None, true), None);
+        let missing =
+            json!({"requirement": {"requirementId": "REQ-child", "projectId": "PROJECT-a"}});
+        assert_eq!(check(&missing, None, None, true), error);
+    }
+
+    #[test]
+    fn requirement_create_rejects_contradictory_hierarchy_before_runtime_call() {
+        let invalid = tauri::async_runtime::block_on(dispatch(
+            "create_requirement",
+            &json!({
+                "projectId": "PROJECT-a", "requirementId": "REQ-new", "title": "Task", "outcome": "Outcome",
+                "parentRequirementId": "REQ-parent", "expectedRootRequirementId": "REQ-root",
+                "isProjectRoot": true
+            }),
+        ));
+        assert_eq!(
+            invalid.unwrap_err(),
+            "FORGE_DESKTOP_REQUIREMENT_CREATE_HIERARCHY_INVALID"
+        );
+        let invalid_type = tauri::async_runtime::block_on(dispatch(
+            "create_requirement",
+            &json!({
+                "projectId": "PROJECT-a", "requirementId": "REQ-new", "title": "Task", "outcome": "Outcome",
+                "isProjectRoot": "true"
+            }),
+        ));
+        assert_eq!(
+            invalid_type.unwrap_err(),
+            "FORGE_NATIVE_BRIDGE_PROJECT_ROOT_INVALID"
         );
     }
 

@@ -37,6 +37,7 @@ struct ForgeSemanticProject: Identifiable, Decodable, Equatable {
   let revision: Int
   let placements: [ForgeSemanticProjectPlacement]?
   let requirementCount: Int?
+  var rootRequirementId: String? = nil
   var id: String { projectId }
   var repositoryIds: [String] { placements?.map(\.repositoryId) ?? [] }
 }
@@ -5206,10 +5207,29 @@ final class NativeWorkspace: ObservableObject {
       && targetPlanningPageRequestGeneration == currentPlanningPageRequestGeneration
   }
 
+  nonisolated static func requirementCreationHierarchy(
+    project: ForgeSemanticProject, parentRequirementId: String?, createProjectRoot: Bool?
+  ) -> [String: Any]? {
+    guard project.status == "active" else { return nil }
+    let parent = parentRequirementId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let parent, parent.isEmpty || parent.utf16.count > 160 { return nil }
+    if let root = project.rootRequirementId {
+      guard !root.isEmpty, createProjectRoot != true else { return nil }
+      return [
+        "parentRequirementId": parent ?? root,
+        "expectedRootRequirementId": root,
+        "isProjectRoot": false,
+      ]
+    }
+    guard createProjectRoot != false, parent == nil else { return nil }
+    return ["isProjectRoot": true]
+  }
+
   func createRequirement(
     title: String, outcome: String, acceptanceCriteria: [String],
     taskStatus: String? = nil, priority: String? = nil, assignee: String? = nil,
-    dependencyRequirementIds: [String] = []
+    dependencyRequirementIds: [String] = [], parentRequirementId: String? = nil,
+    createProjectRoot: Bool? = nil
   ) async -> String? {
     guard let projectId = requireWritableSemanticProjectId() else { return nil }
     let targetRepoId = projectRepositoryId
@@ -5226,6 +5246,24 @@ final class NativeWorkspace: ObservableObject {
     }
     let id = Self.semanticRecordId(prefix: "REQ")
     do {
+      // Read canonical hierarchy immediately before mutation. The store owns
+      // the atomic root CAS; a stale Client must not silently create a sibling.
+      let fresh = try Self.decodeSemanticProject(await ForgeBridge.request(
+        "project_get", ["projectId": projectId, "detailLevel": "summary"]
+      ))
+      guard self.selectedProjectId == projectId, self.projectRepositoryId == targetRepoId,
+        self.projectContextGeneration == targetContextGeneration, self.checkoutId == targetCheckoutId
+      else { return nil }
+      guard fresh.projectId == projectId,
+        Self.projectDetailRequirementScopeIsValid(project: fresh, repositoryId: targetRepoId),
+        let hierarchy = Self.requirementCreationHierarchy(
+          project: fresh, parentRequirementId: parentRequirementId, createProjectRoot: createProjectRoot
+        )
+      else {
+        error = "项目根任务或上级任务状态已变化，请刷新项目后重试。"
+        _ = await refreshSemanticProjects()
+        return nil
+      }
       var arguments: [String: Any] = [
         "projectId": projectId, "requirementId": id, "title": cleanTitle, "outcome": cleanOutcome,
         "acceptanceCriteria": acceptanceCriteria.map {
@@ -5240,7 +5278,13 @@ final class NativeWorkspace: ObservableObject {
       if !dependencyRequirementIds.isEmpty {
         arguments["dependencyRequirementIds"] = dependencyRequirementIds
       }
+      for (key, value) in hierarchy { arguments[key] = value }
       _ = try await ForgeBridge.request("create_requirement", arguments)
+      // Root binding increments the Project revision; refresh the canonical
+      // project list rather than caching a second hierarchy authority.
+      if hierarchy["isProjectRoot"] as? Bool == true {
+        _ = await refreshSemanticProjects()
+      }
       guard self.selectedProjectId == projectId, self.projectRepositoryId == targetRepoId,
         self.checkoutId == targetCheckoutId,
         Self.semanticRecordCreationNavigationIsCurrent(

@@ -1010,6 +1010,9 @@ fn requirement_create_receipt_error(
     priority: Option<&str>,
     assignee: Option<&str>,
     dependencies: Option<&[String]>,
+    parent_requirement_id: Option<&str>,
+    expected_root_requirement_id: Option<&str>,
+    is_project_root: bool,
 ) -> Option<&'static str> {
     if data.pointer("/requirement/requirementId").and_then(Value::as_str) != Some(requirement_id) {
         return Some("FORGE_DESKTOP_REQUIREMENT_CREATE_NOT_CONFIRMED: refresh before retrying");
@@ -1040,6 +1043,14 @@ fn requirement_create_receipt_error(
             .unwrap_or_default();
         if actual != expected.iter().map(String::as_str).collect::<Vec<_>>() {
             return Some("FORGE_DESKTOP_REQUIREMENT_DEPENDENCIES_NOT_CONFIRMED: refresh before retrying");
+        }
+    }
+    if is_project_root || parent_requirement_id.is_some() {
+        let parent = data.pointer("/requirement/parentRequirementId").and_then(Value::as_str);
+        let root = data.pointer("/requirement/rootRequirementId").and_then(Value::as_str);
+        let expected_root = if is_project_root { Some(requirement_id) } else { expected_root_requirement_id };
+        if parent != parent_requirement_id || root != expected_root || root.is_none() {
+            return Some("FORGE_DESKTOP_REQUIREMENT_HIERARCHY_NOT_CONFIRMED: refresh before retrying");
         }
     }
     None
@@ -1103,6 +1114,9 @@ async fn create_requirement(
     task_status: Option<String>,
     priority: Option<String>,
     assignee: Option<String>,
+    parent_requirement_id: Option<String>,
+    expected_root_requirement_id: Option<String>,
+    is_project_root: Option<bool>,
 ) -> Result<Value, String> {
     if !has_repository_or_project_scope(repo_id.as_ref(), project_id.as_ref()) {
         return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_SCOPE_REQUIRED".to_string());
@@ -1116,6 +1130,18 @@ async fn create_requirement(
         || dependencies.as_ref().is_some_and(|items| items.len() > 50 || items.iter().any(|id| id.len() > 160)) {
         return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_METADATA_INVALID".to_string());
     }
+    let is_project_root = is_project_root.unwrap_or(false);
+    let invalid_id = |value: &String| value.trim().is_empty() || value.trim() != value || value.encode_utf16().count() > 160;
+    if parent_requirement_id.as_ref().is_some_and(invalid_id)
+        || expected_root_requirement_id.as_ref().is_some_and(invalid_id)
+        || (is_project_root && (parent_requirement_id.is_some() || expected_root_requirement_id.is_some()))
+        || (!is_project_root && parent_requirement_id.is_some() != expected_root_requirement_id.is_some())
+        || parent_requirement_id.as_deref() == Some(requirement_id.as_str())
+        || expected_root_requirement_id.as_deref() == Some(requirement_id.as_str())
+        || ((is_project_root || parent_requirement_id.is_some()) && project_id.is_none())
+    {
+        return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_HIERARCHY_INVALID".to_string());
+    }
     let result = call_runtime_tool("rh_project", json!({
         "repo_id": repo_id,
         "project_id": project_id,
@@ -1128,6 +1154,8 @@ async fn create_requirement(
         "requirement_priority": priority,
         "requirement_assignee": assignee,
         "requirement_dependencies": dependencies,
+        "requirement_parent_id": parent_requirement_id,
+        "requirement_is_project_root": is_project_root,
         "request_id": request_id("requirement-create")
     })).await?;
     let data = semantic_facade_data(result);
@@ -1139,6 +1167,9 @@ async fn create_requirement(
         priority.as_deref(),
         assignee.as_deref(),
         dependencies.as_deref(),
+        parent_requirement_id.as_deref(),
+        expected_root_requirement_id.as_deref(),
+        is_project_root,
     ) {
         return Err(error.to_string());
     }

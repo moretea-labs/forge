@@ -240,6 +240,8 @@ struct ZenWorkspacePane: View {
     @State private var editDependencyIdDraft = ""
 
     @State private var newTitle = ""
+    @State private var newParentRequirementId: String?
+    @State private var newIsProjectRoot = false
     @State private var newOutcome = ""
     @State private var newCriteria = ""
     @State private var newTaskStatus = "planned"
@@ -562,6 +564,8 @@ struct ZenWorkspacePane: View {
                         newTitle = ""; newOutcome = ""; newCriteria = ""
                         newTaskStatus = "planned"; newPriority = "normal"; newAssignee = ""
                         newDependencyRequirementIds=[]; newDependencyIdDraft=""
+                        newParentRequirementId=nil
+                        newIsProjectRoot=model.semanticProject?.rootRequirementId == nil
                         model.error = nil
                         showingRequirementSheet = true
                     } label: {
@@ -2128,6 +2132,34 @@ struct ZenWorkspacePane: View {
                     TextField("预期结果",text:$newOutcome,axis:.vertical).lineLimit(3...5)
                         .accessibilityIdentifier("zen.requirement.create.outcome")
                 }
+                ForgeClientFormField(label: "任务层级") {
+                    if newIsProjectRoot {
+                        Label("项目根任务",systemImage:"point.topleft.down.to.point.bottomright.curvepath")
+                            .font(.system(size:12))
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("zen.requirement.create.root")
+                    } else {
+                        Menu {
+                            Button("项目根任务（默认）") { newParentRequirementId=nil }
+                            ForEach(model.records.filter {
+                                $0.kind == .requirement && $0.taskStatus != "done" && $0.taskStatus != "cancelled"
+                            }) { task in
+                                Button(task.title) { newParentRequirementId=task.recordId }
+                            }
+                        } label: {
+                            ForgeMenuTriggerLabel(
+                                title:newParentRequirementId.flatMap { id in
+                                    model.records.first(where:{$0.recordId == id})?.title
+                                } ?? "项目根任务（默认）",
+                                systemImage:"point.topleft.down.to.point.bottomright.curvepath"
+                            )
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .accessibilityLabel("上级任务")
+                        .accessibilityIdentifier("zen.requirement.create.parent")
+                    }
+                }
                 ForgeClientFormField(label: "验收标准") {
                     TextField("每行一项",text:$newCriteria,axis:.vertical).lineLimit(3...6)
                         .accessibilityIdentifier("zen.requirement.create.acceptance-criteria")
@@ -2235,7 +2267,8 @@ struct ZenWorkspacePane: View {
                 title:newTitle,outcome:newOutcome,
                 acceptanceCriteria:newCriteria.components(separatedBy:.newlines),
                 taskStatus:newTaskStatus,priority:newPriority,
-                assignee:newAssignee,dependencyRequirementIds:newDependencyRequirementIds
+                assignee:newAssignee,dependencyRequirementIds:newDependencyRequirementIds,
+                parentRequirementId:newParentRequirementId,createProjectRoot:newIsProjectRoot
             )
             saving=false
             guard let id,model.selectedProjectId == context.projectId,
