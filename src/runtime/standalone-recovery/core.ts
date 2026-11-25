@@ -83,6 +83,7 @@ import {
   type StagedRuntimeRelease,
 } from '../root/release-materialize';
 import {
+  applyStoppedWorkReferenceRetirement,
   prepareRuntimeReleaseDatabaseBackup,
   protectRuntimeReleaseAuthority,
   publishRuntimeRelease,
@@ -2302,6 +2303,8 @@ export interface RuntimeReleaseActivationGuard {
   expectedSourceRevision?: string;
   /** Explicit incompatible-migration path may bind activation to one isolated Recovery ReleaseSession. */
   releaseSessionId?: string;
+  /** Explicit one-time #483 offline retirement; never inferred from release version. */
+  retireLegacyWorkReferences?: boolean;
 }
 
 function configuredPrimaryRuntimeService(
@@ -4276,6 +4279,19 @@ async function activateRuntimeReleaseInternal(
       };
     }
   }
+  if (
+    guard.retireLegacyWorkReferences &&
+    (!expectedSourceRevision ||
+      !expectedSourceRepositoryId ||
+      candidate.manifest.sourceRepositoryId !== expectedSourceRepositoryId ||
+      typeof guard.expectedActiveReleaseId !== 'string' ||
+      !Number.isSafeInteger(guard.expectedAuthorityRevision) ||
+      guard.requiredPinnedReleaseRevision ||
+      guard.allowPreviousRelease ||
+      guard.preserveDatabaseOnFailure)
+  ) {
+    return { ok: false, attempted: false, noOp: true, detail: 'WORK_REFERENCE_RETIREMENT_EXACT_RELEASE_REQUIRED' };
+  }
   const platform = dependencies.platform ?? process.platform;
   const uid = await (dependencies.currentUid ?? currentUid)();
   const service = primaryRuntimeServiceOwner(config, platform, uid);
@@ -4345,6 +4361,15 @@ async function activateRuntimeReleaseInternal(
         current.active.artifactIdentity === candidate.manifest.artifactIdentity &&
         resolve(current.active.manifestPath) === resolve(candidate.manifestPath),
     );
+    if (guard.retireLegacyWorkReferences && (!current || requestedCandidateAlreadyActive)) {
+      return {
+        ok: false,
+        attempted: false,
+        noOp: true,
+        detail: 'WORK_REFERENCE_RETIREMENT_REQUIRES_FRESH_RELEASE',
+        operationId,
+      };
+    }
     if ((authorityRevisionStale || activeReleaseStale) && requestedCandidateAlreadyActive) {
       const verify = await verifyLocal(config);
       audit(config, 'runtime_release_activation_reconciled_active', {
@@ -4444,7 +4469,12 @@ async function activateRuntimeReleaseInternal(
           });
         }
       }
-      if (behaviorEquivalent && !storageMigrationRequired && serviceContractMatches) {
+      if (
+        behaviorEquivalent &&
+        !storageMigrationRequired &&
+        serviceContractMatches &&
+        !guard.retireLegacyWorkReferences
+      ) {
         const verify = await verifyLocal(config);
         audit(config, 'runtime_release_activation_behavior_identical', {
           operationId,
@@ -4642,6 +4672,12 @@ async function activateRuntimeReleaseInternal(
             timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
             successDetail: 'requested Runtime release started and passed whole-Runtime verification',
             beforeStart: () => {
+              if (guard.retireLegacyWorkReferences) {
+                const retired = applyStoppedWorkReferenceRetirement(config.controllerHome, operationId, () => {
+                  if (runtimeRunning(config)) throw new Error('WORK_REFERENCE_RETIREMENT_RUNTIME_NOT_STOPPED');
+                });
+                audit(config, 'runtime_work_references_retired_offline', { operationId, ...retired });
+              }
               storageMigration = migrateStoppedRepoLocalControllerHomeStorage(config.controllerHome, platform);
               if (storageMigration.migrated) {
                 audit(config, 'runtime_controller_home_noindex_migrated', {

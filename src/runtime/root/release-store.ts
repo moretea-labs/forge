@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { ensureControllerHome } from '../../effects/controller-home';
 import {
   backupControlPlaneDatabase,
   controlPlaneDatabasePath,
   openControlPlaneDatabaseChangeObserver,
+  prepareRetiredWorkReferenceSnapshot,
   restoreControlPlaneDatabase,
   sha256ControlPlaneDatabaseFile,
   type ControlPlaneDatabaseChangeObserver,
@@ -96,13 +97,20 @@ interface RuntimeManifestIdentityCacheEntry {
   mtimeMs: number;
   ctimeMs: number;
   ino: number;
-  identity: Pick<RuntimePublishedRelease, 'releaseId' | 'artifactIdentity' | 'manifestPath' | 'manifestSha256' | 'workerProtocolVersion'>;
+  identity: Pick<
+    RuntimePublishedRelease,
+    'releaseId' | 'artifactIdentity' | 'manifestPath' | 'manifestSha256' | 'workerProtocolVersion'
+  >;
 }
 
 const runtimeManifestIdentityCache = new Map<string, RuntimeManifestIdentityCacheEntry>();
 
 function fileSize(path: string): number {
-  try { return existsSync(path) ? statSync(path).size : 0; } catch { return 0; }
+  try {
+    return existsSync(path) ? statSync(path).size : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function assertDatabaseBackupHeadroom(controllerHome: string, operation: string, extraBytes = 0): void {
@@ -121,7 +129,13 @@ export function runtimeReleaseAuthorityPath(controllerHome: string): string {
 /** Resolve a local operational backup path under Controller Home only. */
 function backupPath(controllerHome: string, releaseId: string, operationId: string): string {
   const safe = `${releaseId}-${operationId}`.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 120);
-  return join(ensureControllerHome(controllerHome), 'runtime', 'releases', 'backups', `${Date.now()}-${randomUUID().slice(0, 8)}-${safe}.sqlite`);
+  return join(
+    ensureControllerHome(controllerHome),
+    'runtime',
+    'releases',
+    'backups',
+    `${Date.now()}-${randomUUID().slice(0, 8)}-${safe}.sqlite`,
+  );
 }
 
 interface RuntimeReleasePublicationLease {
@@ -180,61 +194,77 @@ function atomicWrite(path: string, value: unknown): void {
   renameSync(temporary, path);
 }
 
-function manifestRecord(controllerHome: string, manifestPath: string, publishedAt = new Date().toISOString()): RuntimePublishedRelease {
+function manifestRecord(
+  controllerHome: string,
+  manifestPath: string,
+  publishedAt = new Date().toISOString(),
+): RuntimePublishedRelease {
   const path = resolve(manifestPath);
   const file = statSync(path);
   const cached = runtimeManifestIdentityCache.get(path);
-  const identity = cached
-    && cached.size === file.size
-    && cached.mtimeMs === file.mtimeMs
-    && cached.ctimeMs === file.ctimeMs
-    && cached.ino === file.ino
-    ? cached.identity
-    : (() => {
-      const manifest = loadRuntimeReleaseManifest(path, controllerHome);
-      const bytes = readFileSync(path);
-      const next: RuntimeManifestIdentityCacheEntry = {
-        size: file.size,
-        mtimeMs: file.mtimeMs,
-        ctimeMs: file.ctimeMs,
-        ino: Number(file.ino ?? 0),
-        identity: {
-          releaseId: manifest.releaseId,
-          artifactIdentity: manifest.artifactIdentity,
-          manifestPath: path,
-          manifestSha256: createHash('sha256').update(bytes).digest('hex'),
-          workerProtocolVersion: manifest.workerProtocolVersion,
-        },
-      };
-      runtimeManifestIdentityCache.set(path, next);
-      return next.identity;
-    })();
+  const identity =
+    cached &&
+    cached.size === file.size &&
+    cached.mtimeMs === file.mtimeMs &&
+    cached.ctimeMs === file.ctimeMs &&
+    cached.ino === file.ino
+      ? cached.identity
+      : (() => {
+          const manifest = loadRuntimeReleaseManifest(path, controllerHome);
+          const bytes = readFileSync(path);
+          const next: RuntimeManifestIdentityCacheEntry = {
+            size: file.size,
+            mtimeMs: file.mtimeMs,
+            ctimeMs: file.ctimeMs,
+            ino: Number(file.ino ?? 0),
+            identity: {
+              releaseId: manifest.releaseId,
+              artifactIdentity: manifest.artifactIdentity,
+              manifestPath: path,
+              manifestSha256: createHash('sha256').update(bytes).digest('hex'),
+              workerProtocolVersion: manifest.workerProtocolVersion,
+            },
+          };
+          runtimeManifestIdentityCache.set(path, next);
+          return next.identity;
+        })();
   return {
     ...identity,
     publishedAt,
   };
 }
 
-function validRelease(controllerHome: string, release: RuntimePublishedRelease | undefined): release is RuntimePublishedRelease {
-  if (!release || !release.releaseId || !release.artifactIdentity || !release.manifestPath || !release.manifestSha256) return false;
-  if (!Number.isInteger(release.workerProtocolVersion) || release.workerProtocolVersion < 1 || !Number.isFinite(Date.parse(release.publishedAt))) return false;
+function validRelease(
+  controllerHome: string,
+  release: RuntimePublishedRelease | undefined,
+): release is RuntimePublishedRelease {
+  if (!release || !release.releaseId || !release.artifactIdentity || !release.manifestPath || !release.manifestSha256)
+    return false;
+  if (
+    !Number.isInteger(release.workerProtocolVersion) ||
+    release.workerProtocolVersion < 1 ||
+    !Number.isFinite(Date.parse(release.publishedAt))
+  )
+    return false;
   try {
     const observed = manifestRecord(controllerHome, release.manifestPath, release.publishedAt);
-    return observed.releaseId === release.releaseId
-      && observed.artifactIdentity === release.artifactIdentity
-      && observed.manifestSha256 === release.manifestSha256
-      && observed.workerProtocolVersion === release.workerProtocolVersion
-      && (!release.databaseBackup || (
-        resolve(release.databaseBackup.path) === release.databaseBackup.path
-        && Number.isInteger(release.databaseBackup.schemaVersion)
-        && Number.isFinite(Date.parse(release.databaseBackup.createdAt))
-        && (release.databaseBackup.auditEventCount === undefined
-          || (Number.isSafeInteger(release.databaseBackup.auditEventCount) && release.databaseBackup.auditEventCount >= 0))
-        && (release.databaseBackup.recordCount === undefined
-          || (Number.isSafeInteger(release.databaseBackup.recordCount) && release.databaseBackup.recordCount >= 0))
-        && (release.databaseBackup.databaseSha256 === undefined
-          || /^[a-f0-9]{64}$/i.test(release.databaseBackup.databaseSha256))
-      ));
+    return (
+      observed.releaseId === release.releaseId &&
+      observed.artifactIdentity === release.artifactIdentity &&
+      observed.manifestSha256 === release.manifestSha256 &&
+      observed.workerProtocolVersion === release.workerProtocolVersion &&
+      (!release.databaseBackup ||
+        (resolve(release.databaseBackup.path) === release.databaseBackup.path &&
+          Number.isInteger(release.databaseBackup.schemaVersion) &&
+          Number.isFinite(Date.parse(release.databaseBackup.createdAt)) &&
+          (release.databaseBackup.auditEventCount === undefined ||
+            (Number.isSafeInteger(release.databaseBackup.auditEventCount) &&
+              release.databaseBackup.auditEventCount >= 0)) &&
+          (release.databaseBackup.recordCount === undefined ||
+            (Number.isSafeInteger(release.databaseBackup.recordCount) && release.databaseBackup.recordCount >= 0)) &&
+          (release.databaseBackup.databaseSha256 === undefined ||
+            /^[a-f0-9]{64}$/i.test(release.databaseBackup.databaseSha256))))
+    );
   } catch {
     return false;
   }
@@ -257,15 +287,17 @@ type LegacyRuntimeReleaseAuthorityV1 = Omit<RuntimeReleaseAuthority, 'schemaVers
 };
 
 function validRuntimeReleaseAuthority(controllerHome: string, value: RuntimeReleaseAuthority): boolean {
-  return value.schemaVersion === 2
-    && value.status === 'committed'
-    && Number.isInteger(value.revision)
-    && value.revision >= 1
-    && Boolean(value.fencingToken)
-    && Boolean(value.operationId)
-    && Number.isFinite(Date.parse(value.committedAt))
-    && validRelease(controllerHome, value.active)
-    && (value.previous === undefined || validRelease(controllerHome, value.previous));
+  return (
+    value.schemaVersion === 2 &&
+    value.status === 'committed' &&
+    Number.isInteger(value.revision) &&
+    value.revision >= 1 &&
+    Boolean(value.fencingToken) &&
+    Boolean(value.operationId) &&
+    Number.isFinite(Date.parse(value.committedAt)) &&
+    validRelease(controllerHome, value.active) &&
+    (value.previous === undefined || validRelease(controllerHome, value.previous))
+  );
 }
 
 export function migrateRuntimeReleaseAuthorityState(controllerHome: string): RuntimeReleaseAuthority | undefined {
@@ -284,7 +316,9 @@ export function migrateRuntimeReleaseAuthorityState(controllerHome: string): Run
     return raw as RuntimeReleaseAuthority;
   }
   if (raw.schemaVersion !== 1) {
-    throw new Error(`RUNTIME_RELEASE_AUTHORITY_MIGRATION_UNSUPPORTED_SCHEMA: ${String((raw as { schemaVersion?: unknown }).schemaVersion)}`);
+    throw new Error(
+      `RUNTIME_RELEASE_AUTHORITY_MIGRATION_UNSUPPORTED_SCHEMA: ${String((raw as { schemaVersion?: unknown }).schemaVersion)}`,
+    );
   }
   const legacy = raw as LegacyRuntimeReleaseAuthorityV1;
   const { activation: _legacyActivation, ...physical } = legacy;
@@ -331,9 +365,14 @@ export function readRuntimeReleaseAuthority(controllerHome: string): RuntimeRele
   return observed.state === 'valid' ? observed.authority : undefined;
 }
 
-function writeRuntimeReleaseAuthority(controllerHome: string, authority: RuntimeReleaseAuthority): RuntimeReleaseAuthority {
-  if (!validRelease(controllerHome, authority.active)
-    || (authority.previous && !validRelease(controllerHome, authority.previous))) {
+function writeRuntimeReleaseAuthority(
+  controllerHome: string,
+  authority: RuntimeReleaseAuthority,
+): RuntimeReleaseAuthority {
+  if (
+    !validRelease(controllerHome, authority.active) ||
+    (authority.previous && !validRelease(controllerHome, authority.previous))
+  ) {
     throw new Error('RUNTIME_RELEASE_AUTHORITY_INVALID');
   }
   atomicWrite(runtimeReleaseAuthorityPath(controllerHome), authority);
@@ -348,27 +387,36 @@ export function protectRuntimeReleaseAuthority(
 ): () => void {
   const releases: Array<() => void> = [];
   try {
-    for (const [role, record] of [['active', authority?.active], ['previous', authority?.previous]] as const) {
+    for (const [role, record] of [
+      ['active', authority?.active],
+      ['previous', authority?.previous],
+    ] as const) {
       if (!record) continue;
-      releases.push(writePublicationLease(
-        controllerHome,
-        `preactivation-${role}-${operationId}`,
-        record.manifestPath,
-        record.databaseBackup?.path,
-      ));
+      releases.push(
+        writePublicationLease(
+          controllerHome,
+          `preactivation-${role}-${operationId}`,
+          record.manifestPath,
+          record.databaseBackup?.path,
+        ),
+      );
     }
   } catch (error) {
     for (const release of releases) release();
     throw error;
   }
-  return () => { for (const release of releases) release(); };
+  return () => {
+    for (const release of releases) release();
+  };
 }
 
 function sameRelease(left: RuntimePublishedRelease, right: RuntimePublishedRelease): boolean {
-  return left.releaseId === right.releaseId
-    && left.artifactIdentity === right.artifactIdentity
-    && left.manifestSha256 === right.manifestSha256
-    && left.workerProtocolVersion === right.workerProtocolVersion;
+  return (
+    left.releaseId === right.releaseId &&
+    left.artifactIdentity === right.artifactIdentity &&
+    left.manifestSha256 === right.manifestSha256 &&
+    left.workerProtocolVersion === right.workerProtocolVersion
+  );
 }
 
 export function ensureActiveRuntimeRelease(
@@ -488,68 +536,133 @@ export function publishRuntimeRelease(
     return current;
   }
   const preparedMatches = Boolean(
-    preparedDatabaseBackup
-    && preparedDatabaseBackup.controllerHome === resolve(controllerHome)
-    && preparedDatabaseBackup.activeReleaseId === current.active.releaseId
-    && preparedDatabaseBackup.operationId === operationId,
+    preparedDatabaseBackup &&
+      preparedDatabaseBackup.controllerHome === resolve(controllerHome) &&
+      preparedDatabaseBackup.activeReleaseId === current.active.releaseId &&
+      preparedDatabaseBackup.operationId === operationId,
   );
-  let pendingBackupPath = preparedMatches && preparedDatabaseBackup
-    ? preparedDatabaseBackup.path
-    : backupPath(controllerHome, current.active.releaseId, operationId);
+  let pendingBackupPath =
+    preparedMatches && preparedDatabaseBackup
+      ? preparedDatabaseBackup.path
+      : backupPath(controllerHome, current.active.releaseId, operationId);
   let releaseLease = () => {};
   try {
-  let prepared: { path: string; inspection: ControlPlaneDatabaseInspection; databaseSha256: string } | undefined;
-  if (preparedMatches && preparedDatabaseBackup) {
-    prepared = preparedDatabaseBackup.takeIfCurrent();
-  } else {
-    preparedDatabaseBackup?.discard();
-    releaseLease = writePublicationLease(controllerHome, operationId, candidate.manifestPath, pendingBackupPath);
-  }
-  // A prepared backup lease initially protects Stable A. Refresh the same
-  // lease with Candidate B before publication so cleanup protects both sides
-  // of the complete authority transition.
-  if (prepared || preparedMatches) {
-    if (!prepared) pendingBackupPath = backupPath(controllerHome, current.active.releaseId, operationId);
-    releaseLease = writePublicationLease(controllerHome, operationId, candidate.manifestPath, pendingBackupPath);
-  }
-  let backup: string;
-  let inspection: ControlPlaneDatabaseInspection;
-  let databaseSha256: string;
-  if (prepared) {
-    backup = prepared.path;
-    inspection = prepared.inspection;
-    databaseSha256 = prepared.databaseSha256;
-  } else {
-    assertDatabaseBackupHeadroom(controllerHome, 'publish_runtime_release_database_backup');
-    backup = pendingBackupPath;
-    inspection = dependencies.backupDatabase(controllerHome, backup);
-    databaseSha256 = sha256ControlPlaneDatabaseFile(backup);
-  }
-  const committedAt = new Date().toISOString();
-  const authority = writeRuntimeReleaseAuthority(controllerHome, {
-    schemaVersion: 2,
-    status: 'committed',
-    revision: current.revision + 1,
-    fencingToken: randomUUID(),
-    active: { ...candidate, publishedAt: committedAt },
-    previous: {
-      ...current.active,
-      databaseBackup: {
-        path: resolve(backup),
-        schemaVersion: inspection.schemaVersion,
-        createdAt: committedAt,
-        auditEventCount: inspection.auditEventCount,
-        recordCount: inspection.recordCount,
-        databaseSha256,
+    let prepared: { path: string; inspection: ControlPlaneDatabaseInspection; databaseSha256: string } | undefined;
+    if (preparedMatches && preparedDatabaseBackup) {
+      prepared = preparedDatabaseBackup.takeIfCurrent();
+    } else {
+      preparedDatabaseBackup?.discard();
+      releaseLease = writePublicationLease(controllerHome, operationId, candidate.manifestPath, pendingBackupPath);
+    }
+    // A prepared backup lease initially protects Stable A. Refresh the same
+    // lease with Candidate B before publication so cleanup protects both sides
+    // of the complete authority transition.
+    if (prepared || preparedMatches) {
+      if (!prepared) pendingBackupPath = backupPath(controllerHome, current.active.releaseId, operationId);
+      releaseLease = writePublicationLease(controllerHome, operationId, candidate.manifestPath, pendingBackupPath);
+    }
+    let backup: string;
+    let inspection: ControlPlaneDatabaseInspection;
+    let databaseSha256: string;
+    if (prepared) {
+      backup = prepared.path;
+      inspection = prepared.inspection;
+      databaseSha256 = prepared.databaseSha256;
+    } else {
+      assertDatabaseBackupHeadroom(controllerHome, 'publish_runtime_release_database_backup');
+      backup = pendingBackupPath;
+      inspection = dependencies.backupDatabase(controllerHome, backup);
+      databaseSha256 = sha256ControlPlaneDatabaseFile(backup);
+    }
+    const committedAt = new Date().toISOString();
+    const authority = writeRuntimeReleaseAuthority(controllerHome, {
+      schemaVersion: 2,
+      status: 'committed',
+      revision: current.revision + 1,
+      fencingToken: randomUUID(),
+      active: { ...candidate, publishedAt: committedAt },
+      previous: {
+        ...current.active,
+        databaseBackup: {
+          path: resolve(backup),
+          schemaVersion: inspection.schemaVersion,
+          createdAt: committedAt,
+          auditEventCount: inspection.auditEventCount,
+          recordCount: inspection.recordCount,
+          databaseSha256,
+        },
       },
-    },
-    operationId,
-    committedAt,
-  });
-  return authority;
+      operationId,
+      committedAt,
+    });
+    return authority;
   } finally {
     releaseLease();
     preparedDatabaseBackup?.release();
+  }
+}
+
+/**
+ * One-time #483 retirement, under Recovery's existing release mutation lock,
+ * after a verified Runtime stop and before any candidate start. The previous
+ * release's published rollback backup is the generation fence, not a source
+ * of old live state. Never invoke from ordinary startup or maintenance.
+ */
+export function applyStoppedWorkReferenceRetirement(
+  controllerHome: string,
+  operationId: string,
+  assertRuntimeStopped: () => void,
+): { recordCount: number; fieldCount: number } {
+  const authority = mutableRuntimeReleaseAuthority(controllerHome);
+  const rollback = authority?.previous?.databaseBackup;
+  if (!authority || authority.operationId !== operationId || !rollback?.databaseSha256) {
+    throw new Error('WORK_REFERENCE_RETIREMENT_RELEASE_BACKUP_REQUIRED');
+  }
+  const expectedDigest = rollback.databaseSha256;
+  assertRuntimeStopped();
+  if (sha256ControlPlaneDatabaseFile(rollback.path) !== expectedDigest) {
+    throw new Error('WORK_REFERENCE_RETIREMENT_ROLLBACK_BACKUP_CHANGED');
+  }
+  assertDatabaseBackupHeadroom(
+    controllerHome,
+    'retire_work_references_in_stopped_release',
+    2 * fileSize(rollback.path),
+  );
+  const scratch = mkdtempSync(join(dirname(rollback.path), 'work-retirement-'));
+  try {
+    const observer = openControlPlaneDatabaseChangeObserver(controllerHome);
+    let result: ReturnType<typeof prepareRetiredWorkReferenceSnapshot>;
+    const candidate = join(scratch, 'candidate.sqlite');
+    try {
+      const generation = observer.dataVersion();
+      const fresh = join(scratch, 'fresh.sqlite');
+      backupControlPlaneDatabase(controllerHome, fresh);
+      if (sha256ControlPlaneDatabaseFile(fresh) !== expectedDigest) {
+        throw new Error('WORK_REFERENCE_RETIREMENT_LIVE_GENERATION_CHANGED');
+      }
+      result = prepareRetiredWorkReferenceSnapshot(fresh, expectedDigest, candidate);
+      assertRuntimeStopped();
+      const latest = mutableRuntimeReleaseAuthority(controllerHome);
+      if (
+        latest?.revision !== authority.revision ||
+        latest.operationId !== operationId ||
+        observer.dataVersion() !== generation
+      ) {
+        throw new Error('WORK_REFERENCE_RETIREMENT_LIVE_GENERATION_CHANGED');
+      }
+    } finally {
+      observer.close();
+    }
+    if (result.fieldCount > 0) {
+      // Recovery still owns the stop and mutation lock. The native restore
+      // owner verifies and atomically replaces the SQLite file. Its previous
+      // release backup remains untouched for independently authorized recovery.
+      assertRuntimeStopped();
+      restoreControlPlaneDatabase(controllerHome, candidate);
+    }
+    return { recordCount: result.recordCount, fieldCount: result.fieldCount };
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
 }
 
@@ -584,11 +697,12 @@ export function rollbackRuntimeReleaseWithResult(
   // auditEventCount is retention-sensitive diagnostic evidence, not a durable
   // mutation generation. Whole-snapshot identity is the only proof that no
   // SQLite domain state changed after cutover.
-  const databaseDisposition: RuntimeDatabaseRollbackDisposition = rollbackDatabaseSha256 === undefined
-    ? 'preserved_unversioned_backup'
-    : currentDatabaseSha256 === rollbackDatabaseSha256
-      ? 'restored_backup'
-      : 'preserved_newer_live_state';
+  const databaseDisposition: RuntimeDatabaseRollbackDisposition =
+    rollbackDatabaseSha256 === undefined
+      ? 'preserved_unversioned_backup'
+      : currentDatabaseSha256 === rollbackDatabaseSha256
+        ? 'restored_backup'
+        : 'preserved_newer_live_state';
   if (databaseDisposition === 'restored_backup') {
     dependencies.restoreDatabase(controllerHome, target.databaseBackup.path);
   }

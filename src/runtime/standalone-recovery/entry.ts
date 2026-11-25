@@ -834,6 +834,11 @@ export const RECOVERY_TOOLS = [
         expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' },
         expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 },
         expected_authority_revision: { type: 'integer', minimum: 1 },
+        retire_legacy_work_references: {
+          type: 'boolean',
+          description:
+            'Explicitly authorize the one-time #483 offline Work reference retirement as part of this exact release transition. The old release must already support Work-free data.',
+        },
       },
       [
         'release_path',
@@ -1440,6 +1445,7 @@ export async function dispatchRecoveryTool(
             expectedSourceRevision: args.expected_source_revision.trim(),
             expectedActiveReleaseId: args.expected_active_release_id.trim(),
             expectedAuthorityRevision: Number(args.expected_authority_revision),
+            retireLegacyWorkReferences: args.retire_legacy_work_references === true,
           },
         ),
       );

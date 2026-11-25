@@ -2,8 +2,15 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
-import { openControlPlaneDatabaseChangeObserver, withControlPlaneTransaction } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
+  openControlPlaneDatabaseChangeObserver,
+  readControlPlaneRecord,
+  sha256ControlPlaneDatabaseFile,
+  withControlPlaneTransaction,
+  writeControlPlaneRecord,
+} from '../../src/runtime/control-plane/persistence/sqlite-store';
+import {
+  applyStoppedWorkReferenceRetirement,
   ensureActiveRuntimeRelease,
   migrateRuntimeReleaseAuthorityState,
   prepareRuntimeReleaseDatabaseBackup,
@@ -26,18 +33,25 @@ function fixture() {
   mkdirSync(manifests, { recursive: true });
   const manifest = (releaseId: string, artifactIdentity: string, protocol = 1) => {
     const path = join(manifests, `${releaseId}.json`);
-    writeFileSync(path, `${JSON.stringify({
-      schemaVersion: 1,
-      releaseId,
-      artifactIdentity,
-      entrypoint: 'forge-runtime',
-      arguments: [],
-      configurationSchemaVersion: 1,
-      controllerHome: resolve(controllerHome),
-      databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
-      workerProtocolVersion: protocol,
-      createdAt: new Date().toISOString(),
-    }, null, 2)}\n`);
+    writeFileSync(
+      path,
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          releaseId,
+          artifactIdentity,
+          entrypoint: 'forge-runtime',
+          arguments: [],
+          configurationSchemaVersion: 1,
+          controllerHome: resolve(controllerHome),
+          databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+          workerProtocolVersion: protocol,
+          createdAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+    );
     return path;
   };
   return { controllerHome, manifest };
@@ -48,7 +62,10 @@ describe('whole Runtime release store', () => {
     const fx = fixture();
     const first = fx.manifest('release-a', 'artifact-a');
     const second = fx.manifest('release-b', 'artifact-b');
-    expect(ensureActiveRuntimeRelease(fx.controllerHome, first)).toMatchObject({ revision: 1, active: { releaseId: 'release-a' } });
+    expect(ensureActiveRuntimeRelease(fx.controllerHome, first)).toMatchObject({
+      revision: 1,
+      active: { releaseId: 'release-a' },
+    });
     expect(() => ensureActiveRuntimeRelease(fx.controllerHome, second)).toThrow(/RUNTIME_RELEASE_AUTHORITY_MISMATCH/);
   });
 
@@ -61,9 +78,23 @@ describe('whole Runtime release store', () => {
       backupDatabase: (_home: string, path: string) => {
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, 'sqlite-backup');
-        return { path, integrity: 'ok' as const, schemaVersion: 1, recordCount: 0, auditEventCount: 0, orphanRecordCount: 0 };
+        return {
+          path,
+          integrity: 'ok' as const,
+          schemaVersion: 1,
+          recordCount: 0,
+          auditEventCount: 0,
+          orphanRecordCount: 0,
+        };
       },
-      restoreDatabase: (_home: string, path: string) => ({ path, integrity: 'ok' as const, schemaVersion: 1, recordCount: 0, auditEventCount: 0, orphanRecordCount: 0 }),
+      restoreDatabase: (_home: string, path: string) => ({
+        path,
+        integrity: 'ok' as const,
+        schemaVersion: 1,
+        recordCount: 0,
+        auditEventCount: 0,
+        orphanRecordCount: 0,
+      }),
     };
     publishRuntimeRelease(fx.controllerHome, second, 'publish-b', dependencies);
     const authorityPath = join(fx.controllerHome, 'runtime', 'releases', 'authority.json');
@@ -84,7 +115,10 @@ describe('whole Runtime release store', () => {
     const migrated = migrateRuntimeReleaseAuthorityState(fx.controllerHome);
     expect(migrated).toMatchObject({ schemaVersion: 2, active: { releaseId: 'release-b' } });
     expect(migrated as unknown as Record<string, unknown>).not.toHaveProperty('activation');
-    expect(migrateRuntimeReleaseAuthorityState(fx.controllerHome)).toMatchObject({ schemaVersion: 2, revision: migrated?.revision });
+    expect(migrateRuntimeReleaseAuthorityState(fx.controllerHome)).toMatchObject({
+      schemaVersion: 2,
+      revision: migrated?.revision,
+    });
   });
 
   test('database-wide change observation notices direct domain-table commits outside control_plane_audit', () => {
@@ -104,6 +138,71 @@ describe('whole Runtime release store', () => {
     }
   });
 
+  test('stopped release retirement uses the exact published backup generation and preserves it', () => {
+    const fx = fixture();
+    ensureActiveRuntimeRelease(fx.controllerHome, fx.manifest('release-a', 'artifact-a'));
+    writeControlPlaneRecord(fx.controllerHome, {
+      namespace: 'execution_session',
+      scope: 'fixture',
+      key: 'session',
+      schemaVersion: 1,
+      value: { activeWorkId: 'old', goalDelegation: { workId: 'old', goal: 'native' } },
+      expectedRevision: null,
+    });
+    const authority = publishRuntimeRelease(fx.controllerHome, fx.manifest('release-b', 'artifact-b'), 'retire-op');
+    const backup = authority.previous!.databaseBackup!;
+    expect(() => applyStoppedWorkReferenceRetirement(fx.controllerHome, 'wrong-op', () => {})).toThrow(
+      'WORK_REFERENCE_RETIREMENT_RELEASE_BACKUP_REQUIRED',
+    );
+    expect(() =>
+      applyStoppedWorkReferenceRetirement(fx.controllerHome, 'retire-op', () => {
+        throw new Error('runtime running');
+      }),
+    ).toThrow('runtime running');
+    const result = applyStoppedWorkReferenceRetirement(fx.controllerHome, 'retire-op', () => {});
+    expect(result).toEqual({ recordCount: 1, fieldCount: 2 });
+    expect(readControlPlaneRecord(fx.controllerHome, 'execution_session', 'fixture', 'session')?.value).toEqual({
+      goalDelegation: { goal: 'native' },
+    });
+    expect(sha256ControlPlaneDatabaseFile(backup.path)).toBe(backup.databaseSha256!);
+    // The old pre-migration backup must never overwrite the new native facts.
+    expect(rollbackRuntimeReleaseWithResult(fx.controllerHome, 'rollback-op').databaseDisposition).toBe(
+      'preserved_newer_live_state',
+    );
+    expect(readControlPlaneRecord(fx.controllerHome, 'execution_session', 'fixture', 'session')?.value).toEqual({
+      goalDelegation: { goal: 'native' },
+    });
+  });
+
+  test('stopped release retirement refuses an intervening live commit', () => {
+    const fx = fixture();
+    ensureActiveRuntimeRelease(fx.controllerHome, fx.manifest('release-a', 'artifact-a'));
+    const initial = writeControlPlaneRecord(fx.controllerHome, {
+      namespace: 'execution_session',
+      scope: 'fixture',
+      key: 'session',
+      schemaVersion: 1,
+      value: { activeWorkId: 'old' },
+      expectedRevision: null,
+    });
+    publishRuntimeRelease(fx.controllerHome, fx.manifest('release-b', 'artifact-b'), 'retire-op');
+    writeControlPlaneRecord(fx.controllerHome, {
+      namespace: 'execution_session',
+      scope: 'fixture',
+      key: 'session',
+      schemaVersion: 1,
+      value: { activeWorkId: 'old', nativeReceipt: 'new' },
+      expectedRevision: initial.revision,
+    });
+    expect(() => applyStoppedWorkReferenceRetirement(fx.controllerHome, 'retire-op', () => {})).toThrow(
+      'WORK_REFERENCE_RETIREMENT_LIVE_GENERATION_CHANGED',
+    );
+    expect(readControlPlaneRecord(fx.controllerHome, 'execution_session', 'fixture', 'session')?.value).toEqual({
+      activeWorkId: 'old',
+      nativeReceipt: 'new',
+    });
+  });
+
   test('reuses a prepared rollback database snapshot when no SQLite commit occurs before publish', () => {
     const fx = fixture();
     const first = fx.manifest('release-a', 'artifact-a');
@@ -117,13 +216,29 @@ describe('whole Runtime release store', () => {
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, `sqlite-backup-${backups.length}`);
         backups.push(path);
-        return { path, integrity: 'ok' as const, schemaVersion: 1, recordCount: 3, auditEventCount: 5, orphanRecordCount: 0 };
+        return {
+          path,
+          integrity: 'ok' as const,
+          schemaVersion: 1,
+          recordCount: 3,
+          auditEventCount: 5,
+          orphanRecordCount: 0,
+        };
       },
-      restoreDatabase: (_home: string, path: string) => ({ path, integrity: 'ok' as const, schemaVersion: 1, recordCount: 3, auditEventCount: 5, orphanRecordCount: 0 }),
+      restoreDatabase: (_home: string, path: string) => ({
+        path,
+        integrity: 'ok' as const,
+        schemaVersion: 1,
+        recordCount: 3,
+        auditEventCount: 5,
+        orphanRecordCount: 0,
+      }),
       openDatabaseChangeObserver: () => ({
         path: join(fx.controllerHome, 'control-plane.sqlite'),
         dataVersion: () => dataVersion,
-        close: () => { observerCloses += 1; },
+        close: () => {
+          observerCloses += 1;
+        },
       }),
     };
     const prepared = prepareRuntimeReleaseDatabaseBackup(fx.controllerHome, 'publish-b', dependencies);
@@ -147,9 +262,23 @@ describe('whole Runtime release store', () => {
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, `sqlite-backup-${backups.length}`);
         backups.push(path);
-        return { path, integrity: 'ok' as const, schemaVersion: 1, recordCount: backups.length, auditEventCount: backups.length, orphanRecordCount: 0 };
+        return {
+          path,
+          integrity: 'ok' as const,
+          schemaVersion: 1,
+          recordCount: backups.length,
+          auditEventCount: backups.length,
+          orphanRecordCount: 0,
+        };
       },
-      restoreDatabase: (_home: string, path: string) => ({ path, integrity: 'ok' as const, schemaVersion: 1, recordCount: 0, auditEventCount: 0, orphanRecordCount: 0 }),
+      restoreDatabase: (_home: string, path: string) => ({
+        path,
+        integrity: 'ok' as const,
+        schemaVersion: 1,
+        recordCount: 0,
+        auditEventCount: 0,
+        orphanRecordCount: 0,
+      }),
       openDatabaseChangeObserver: () => ({
         path: join(fx.controllerHome, 'control-plane.sqlite'),
         dataVersion: () => dataVersion,
@@ -172,7 +301,9 @@ describe('whole Runtime release store', () => {
     const second = fx.manifest('release-b', 'artifact-b');
     ensureActiveRuntimeRelease(fx.controllerHome, first);
     withControlPlaneTransaction(fx.controllerHome, (database) => {
-      database.exec("CREATE TABLE direct_domain_state (id INTEGER PRIMARY KEY, value TEXT NOT NULL); INSERT INTO direct_domain_state (id, value) VALUES (1, 'before')");
+      database.exec(
+        "CREATE TABLE direct_domain_state (id INTEGER PRIMARY KEY, value TEXT NOT NULL); INSERT INTO direct_domain_state (id, value) VALUES (1, 'before')",
+      );
     });
     const published = publishRuntimeRelease(fx.controllerHome, second, 'publish-b');
     expect(published.previous?.databaseBackup?.databaseSha256).toMatch(/^[a-f0-9]{64}$/);
@@ -186,8 +317,11 @@ describe('whole Runtime release store', () => {
     expect(rolled.liveAuditEventCount).toBe(rollbackAuditCount!);
     const value = withControlPlaneTransaction(fx.controllerHome, (database) => {
       const statement = database.prepare('SELECT value FROM direct_domain_state WHERE id = 1');
-      try { return (statement.get() as { value: string }).value; }
-      finally { statement.finalize?.(); }
+      try {
+        return (statement.get() as { value: string }).value;
+      } finally {
+        statement.finalize?.();
+      }
     });
     expect(value).toBe('after');
   });
@@ -244,7 +378,9 @@ describe('whole Runtime release store', () => {
     const second = fx.manifest('release-b', 'artifact-b');
     ensureActiveRuntimeRelease(fx.controllerHome, first);
     withControlPlaneTransaction(fx.controllerHome, (database) => {
-      database.exec("CREATE TABLE direct_domain_state (id INTEGER PRIMARY KEY, value TEXT NOT NULL); INSERT INTO direct_domain_state (id, value) VALUES (1, 'stable')");
+      database.exec(
+        "CREATE TABLE direct_domain_state (id INTEGER PRIMARY KEY, value TEXT NOT NULL); INSERT INTO direct_domain_state (id, value) VALUES (1, 'stable')",
+      );
     });
     const published = publishRuntimeRelease(fx.controllerHome, second, 'publish-b');
     const rollbackHash = published.previous?.databaseBackup?.databaseSha256;
@@ -267,19 +403,41 @@ describe('whole Runtime release store', () => {
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, 'sqlite-backup');
         backups.push(path);
-        return { path, integrity: 'ok' as const, schemaVersion: 1, recordCount: 0, auditEventCount: 0, orphanRecordCount: 0 };
+        return {
+          path,
+          integrity: 'ok' as const,
+          schemaVersion: 1,
+          recordCount: 0,
+          auditEventCount: 0,
+          orphanRecordCount: 0,
+        };
       },
       restoreDatabase: (_home: string, path: string) => {
         restores.push(path);
         expect(readFileSync(path, 'utf8')).toBe('sqlite-backup');
-        return { path, integrity: 'ok' as const, schemaVersion: 1, recordCount: 0, auditEventCount: 0, orphanRecordCount: 0 };
+        return {
+          path,
+          integrity: 'ok' as const,
+          schemaVersion: 1,
+          recordCount: 0,
+          auditEventCount: 0,
+          orphanRecordCount: 0,
+        };
       },
     };
     const published = publishRuntimeRelease(fx.controllerHome, second, 'publish-b', dependencies);
-    expect(published).toMatchObject({ revision: 2, active: { releaseId: 'release-b', workerProtocolVersion: 2 }, previous: { releaseId: 'release-a' } });
+    expect(published).toMatchObject({
+      revision: 2,
+      active: { releaseId: 'release-b', workerProtocolVersion: 2 },
+      previous: { releaseId: 'release-a' },
+    });
     expect(published.previous?.databaseBackup?.path).toBe(backups[0]);
     const rolled = rollbackRuntimeRelease(fx.controllerHome, 'rollback-a', dependencies);
-    expect(rolled).toMatchObject({ revision: 3, active: { releaseId: 'release-a' }, previous: { releaseId: 'release-b' } });
+    expect(rolled).toMatchObject({
+      revision: 3,
+      active: { releaseId: 'release-a' },
+      previous: { releaseId: 'release-b' },
+    });
     expect(restores).toEqual([published.previous!.databaseBackup!.path]);
     expect(readRuntimeReleaseAuthority(fx.controllerHome)?.active.releaseId).toBe('release-a');
   });

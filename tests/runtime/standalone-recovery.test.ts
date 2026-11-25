@@ -7428,6 +7428,127 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+  test('explicit #483 migration retires Work references after systemd stop and before start', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const active = verifiedManifest(home, 'release-a', 'runtime-a');
+      const sourceRevision = 'a'.repeat(40);
+      const candidate = verifiedManifest(home, 'release-b', 'runtime-b', sourceRevision, 'repo_retirement');
+      const base = ensureActiveRuntimeRelease(home, active.path);
+      writeControlPlaneRecord(home, {
+        namespace: 'execution_session',
+        scope: 'fixture',
+        key: 'session',
+        schemaVersion: 1,
+        value: { activeWorkId: 'old', nativeReceipt: 'keep' },
+        expectedRevision: null,
+      });
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      const unitName = `${paths.label}.service`;
+      const unitPath = writePackageRuntimeSystemdUserService(home);
+      const beforeUnit = readFileSync(unitPath, 'utf8');
+      expect(beforeUnit).toContain(join(home, 'runtime', 'releases', 'release-a', 'forge-runtime'));
+      expect(beforeUnit).not.toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));
+      let serviceActive = true;
+      let connectorBindings = 0;
+      const commands: string[][] = [];
+      const activationOrder: string[] = [];
+      const config = createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      const noFence = await activateRuntimeRelease(config, candidate.path, {}, { retireLegacyWorkReferences: true });
+      expect(noFence).toMatchObject({
+        ok: false,
+        attempted: false,
+        detail: 'WORK_REFERENCE_RETIREMENT_EXACT_RELEASE_REQUIRED',
+      });
+      const result = await activateRuntimeRelease(
+        config,
+        candidate.path,
+        {
+          platform: 'linux',
+          currentUid: async () => 1000,
+          runCommand: async (name, args) => {
+            commands.push([name, ...args]);
+            if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+            if (name === 'systemctl' && args[0] === '--user' && args[1] === 'stop') serviceActive = false;
+            if (name === 'systemctl' && args[0] === '--user' && args[1] === 'start') {
+              expect(readControlPlaneRecord(home, 'execution_session', 'fixture', 'session')?.value).toEqual({
+                nativeReceipt: 'keep',
+              });
+              activationOrder.push('runtime-start');
+              serviceActive = true;
+            }
+            if (name === 'systemctl' && args[0] === '--user' && args[1] === 'show') {
+              return { ok: true, status: 0, stdout: serviceActive ? 'active\n' : 'inactive\n', stderr: '' };
+            }
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => serviceActive,
+          repairPrimaryConnectorBinding: async () => {
+            connectorBindings += 1;
+            activationOrder.push('connector-bind');
+            if (!serviceActive) {
+              return {
+                ok: false,
+                attempted: true,
+                detail: 'candidate Connector cannot become ready before the Runtime starts',
+              };
+            }
+            return { ok: true, attempted: true, detail: 'candidate Connector binding refreshed' };
+          },
+          verifyLocal: async () => {
+            const authority = readRuntimeReleaseAuthority(home)!;
+            return {
+              ...healthyVerify(),
+              releases: {
+                active: {
+                  path: authority.active.manifestPath,
+                  revision: authority.active.releaseId,
+                  artifactIdentity: authority.active.artifactIdentity,
+                  manifestSha256: 'test-sha',
+                  workerProtocolVersion: 1,
+                },
+                coherent: true,
+              },
+            };
+          },
+          now: (() => {
+            let value = 0;
+            return () => (value += 1_000);
+          })(),
+          sleep: async () => undefined,
+        },
+        {
+          retireLegacyWorkReferences: true,
+          expectedSourceRepositoryId: 'repo_retirement',
+          expectedSourceRevision: sourceRevision,
+          expectedActiveReleaseId: base.active.releaseId,
+          expectedAuthorityRevision: base.revision,
+        },
+      );
+      expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: unitName });
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
+      expect(commands).toContainEqual(['systemctl', '--user', 'stop', unitName]);
+      expect(commands).toContainEqual(['systemctl', '--user', 'daemon-reload']);
+      expect(commands).toContainEqual(['systemctl', '--user', 'enable', unitName]);
+      expect(commands).toContainEqual(['systemctl', '--user', 'start', unitName]);
+      expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
+      expect(connectorBindings).toBe(1);
+      expect(activationOrder).toEqual(['runtime-start', 'connector-bind']);
+      const reboundUnit = readFileSync(unitPath, 'utf8');
+      expect(reboundUnit).toBe(renderPackageRuntimeSystemdUserService(home));
+      expect(reboundUnit).toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));
+      expect(reboundUnit).not.toContain(join(home, 'runtime', 'releases', 'release-a', 'forge-runtime'));
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('does not skip behavior-identical activation when an existing repo-local Controller Home needs .noindex migration', async () => {
     const home = repoLocalControllerHome();
     const previousHome = process.env.HOME;
