@@ -20,11 +20,7 @@ import {
   writeMcpServiceLocalConfig,
   writeMcpServiceRuntimeState,
 } from '../../adapters/mcp/auth';
-import {
-  cancelAgentJob,
-  getAgentJob,
-  listAgentJobs,
-} from '../../src/cli/agent-jobs/job-manager';
+import { cancelAgentJob, getAgentJob, listAgentJobs } from '../../src/cli/agent-jobs/job-manager';
 import {
   controllerCheckConcurrencyClass,
   releaseControllerCheckSubscription,
@@ -47,6 +43,8 @@ import {
 } from '../../src/cli/local-bridge/job-store';
 import { startLocalBridgeServer, type LocalBridgeServerHandle } from '../../src/cli/local-bridge/server';
 import { startConfiguredRuntimeLocalBridge } from '../../src/cli/local-bridge/runtime-bridge';
+import { normalizeAgentMailWatchEvent } from '../../src/runtime/events/adapters/agentmail-watch';
+import type { WorkflowJsonValue } from '../../packages/workflow-runtime/api/index';
 import { isProcessAlive } from '../../src/runtime/shared/process-tree';
 import {
   projectAgentRunToLocalBridgeJob,
@@ -1298,6 +1296,16 @@ describe('Local Execution Bridge', () => {
       // The App target is explicit event data; sender and Watch rule identity never select a Case.
       route: { app_id: '6771288893' },
     };
+    const { route, ...sourceEvent } = event;
+    void route;
+    const eventEnvelope = JSON.parse(
+      JSON.stringify(
+        normalizeAgentMailWatchEvent(sourceEvent as Parameters<typeof normalizeAgentMailWatchEvent>[0], {
+          receivedAt: event.observed_at,
+        }),
+      ),
+    ) as WorkflowJsonValue;
+
     const forgedCasePayload = JSON.stringify({
       intent: 'workflow_event',
       event: {
@@ -1355,10 +1363,16 @@ describe('Local Execution Bridge', () => {
     const stored = readWorkflowRun(controllerHome, scopeId, first.body.workflowRunId);
     expect(stored?.value.status).toBe('succeeded');
     expect(stored?.value.outputs['validate-event']).toMatchObject({
+      event_envelope: eventEnvelope,
       route: { app_id: '6771288893', case_id: '30000012066543' },
     });
     const persistedInputs = {
-      ...event,
+      source: event.source,
+      event_id: event.event_id,
+      observed_at: event.observed_at,
+      ref: event.ref,
+      summary: event.summary,
+      event_envelope: eventEnvelope,
       route: { app_id: '6771288893', case_id: '30000012066543' },
     };
     expect(stored?.value.inputDigest).toBe(workflowInputDigest(persistedInputs));

@@ -78,6 +78,7 @@ import {
   AGENTMAIL_EVENT_WORKFLOW_ID,
   resolveAgentMailAppCaseRoute,
 } from '../../runtime/workflows/first-party/agentmail-event';
+import { normalizeAgentMailWatchEvent } from '../../runtime/events/adapters/agentmail-watch';
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from '../../../adapters/mcp/auth';
 import {
   loadRepositoryRegistry,
@@ -1270,6 +1271,24 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
           }
           route = resolveAgentMailAppCaseRoute(event.route.app_id);
         }
+        const eventEnvelope = normalizeAgentMailWatchEvent(
+          {
+            source,
+            event_id: eventId,
+            observed_at: observedAt,
+            ref: {
+              provider,
+              account_id: accountId,
+              provider_message_id: providerMessageId,
+            },
+            summary: {
+              rule_id: ruleId,
+              sender_email: senderEmail,
+            },
+          },
+          // AgentMail's persisted observed_at is stable across Outbox retries.
+          { receivedAt: observedAt },
+        );
         const workflowInputs: Record<string, unknown> = {
           source,
           event_id: eventId,
@@ -1283,6 +1302,7 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
             rule_id: ruleId,
             sender_email: senderEmail,
           },
+          event_envelope: eventEnvelope,
         };
         if (route) workflowInputs.route = route;
         const workflowRunId = `agentmail-${createHash('sha256').update(eventId).digest('hex').slice(0, 40)}`;

@@ -12,7 +12,8 @@ import {
   materializedAgentMailEventWorkflow,
   resolveAgentMailAppCaseRoute,
 } from '../../src/runtime/workflows/first-party/agentmail-event';
-import { validateWorkflowRunInputs } from '../../packages/workflow-runtime/api/index';
+import { validateWorkflowRunInputs, type WorkflowJsonValue } from '../../packages/workflow-runtime/api/index';
+import { normalizeAgentMailWatchEvent } from '../../src/runtime/events/adapters/agentmail-watch';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -62,12 +63,12 @@ const ACCOUNT_ID = '22222222-2222-4222-8222-222222222222';
 
 function event() {
   const providerMessageID = 'm'.repeat(700);
-  return {
-    source: 'mail.watch.matched',
+  const observation = {
+    source: 'mail.watch.matched' as const,
     event_id: RULE_ID + ':' + ACCOUNT_ID + ':' + providerMessageID,
     observed_at: '2026-11-17T02:00:00.000Z',
     ref: {
-      provider: 'agentmail',
+      provider: 'agentmail' as const,
       account_id: ACCOUNT_ID,
       provider_message_id: providerMessageID,
     },
@@ -75,6 +76,12 @@ function event() {
       rule_id: RULE_ID,
       sender_email: 'sender@example.com',
     },
+  };
+  return {
+    ...observation,
+    event_envelope: JSON.parse(
+      JSON.stringify(normalizeAgentMailWatchEvent(observation, { receivedAt: observation.observed_at })),
+    ) as WorkflowJsonValue,
   };
 }
 
@@ -208,6 +215,9 @@ describe('AgentMail Watch event Workflow (#652)', () => {
     const stored = readWorkflowRun(controllerHome, scopeId(), 'agentmail-event-stable-run')!;
     expect(stored.value.status).toBe('succeeded');
     expect(stored.value.outputs['validate-event']).toEqual(input);
-    expect(JSON.stringify(stored.value)).not.toMatch(/subject|body|credential|access_token/i);
+    expect(stored.value.outputs['validate-event']).toMatchObject({
+      event_envelope: { source: 'agentmail.watch', subject: { kind: 'mail.message' } },
+    });
+    expect(JSON.stringify(stored.value)).not.toMatch(/body|credential|access_token/i);
   });
 });
