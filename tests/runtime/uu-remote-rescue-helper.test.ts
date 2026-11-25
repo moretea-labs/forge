@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { buildWslStatusCommand, executeAction, serviceUnits, validateConfig, withJsonOutput } from '../../scripts/forge-uu-remote-rescue-helper.mjs';
+import {
+  buildWslStatusCommand,
+  executeAction,
+  serviceUnits,
+  validateConfig,
+  withJsonOutput,
+} from '../../scripts/forge-uu-remote-rescue-helper.mjs';
 
 const TEST_LINUX_HOME = '/home' + '/forge-test';
 
@@ -17,17 +23,19 @@ function decodeRemoteScript(command: string): string {
   return payload ? Buffer.from(payload, 'base64').toString('utf8') : '';
 }
 
-function fixture(options: {
-  mismatch?: boolean;
-  offline?: boolean;
-  actionExit?: number;
-  terminalInitiallyFocused?: boolean;
-  terminalFocusNeverSucceeds?: boolean;
-  terminalWindowFocusAction?: boolean;
-  terminalWindowClickAction?: boolean;
-  accessibilityDeviceName?: string;
-  openButtonCount?: number;
-} = {}) {
+function fixture(
+  options: {
+    mismatch?: boolean;
+    offline?: boolean;
+    actionExit?: number;
+    terminalInitiallyFocused?: boolean;
+    terminalFocusNeverSucceeds?: boolean;
+    terminalWindowFocusAction?: boolean;
+    terminalWindowClickAction?: boolean;
+    accessibilityDeviceName?: string;
+    openButtonCount?: number;
+  } = {},
+) {
   const cliCalls: string[][] = [];
   const desktopCalls: Array<{ action: string; args: Record<string, unknown> }> = [];
   let clipboard = 'private-existing-clipboard';
@@ -36,7 +44,16 @@ function fixture(options: {
   let terminalFocused = options.terminalInitiallyFocused ?? true;
   const runCli = async (_config: unknown, args: string[]) => {
     cliCalls.push(args);
-    if (args[0] === 'device') return { success: true, data: { deviceId: options.mismatch ? 'other' : config.device.id, deviceName: config.device.name, platform: 'windows', isOnline: !options.offline } };
+    if (args[0] === 'device')
+      return {
+        success: true,
+        data: {
+          deviceId: options.mismatch ? 'other' : config.device.id,
+          deviceName: config.device.name,
+          platform: 'windows',
+          isOnline: !options.offline,
+        },
+      };
     return { success: true, data: { success: true } };
   };
   const elementObservation = () => ({
@@ -54,20 +71,29 @@ function fixture(options: {
               role: 'AXTable',
               children: Array.from({ length: options.openButtonCount ?? 1 }, (_, index) => ({
                 role: 'AXRow',
-                children: [{
-                  role: 'AXCell',
-                  children: [
-                    { role: 'AXStaticText', value: 'session' + (index + 1) },
-                    {
-                      role: 'AXButton',
-                      name: '打开终端',
-                      ref: 'open-terminal-' + (index + 1),
-                      target: { interactionId: 'ix-1', pid: 90766, bundleIdentifier: config.uuBundleId, appName: 'UU远程', windowRef: 'list-window', snapshotRevision: 1 },
-                      actions: ['focus', 'invoke'],
-                      state: { enabled: true },
-                    },
-                  ],
-                }],
+                children: [
+                  {
+                    role: 'AXCell',
+                    children: [
+                      { role: 'AXStaticText', value: 'session' + (index + 1) },
+                      {
+                        role: 'AXButton',
+                        name: '打开终端',
+                        ref: 'open-terminal-' + (index + 1),
+                        target: {
+                          interactionId: 'ix-1',
+                          pid: 90766,
+                          bundleIdentifier: config.uuBundleId,
+                          appName: 'UU远程',
+                          windowRef: 'list-window',
+                          snapshotRevision: 1,
+                        },
+                        actions: ['focus', 'invoke'],
+                        state: { enabled: true },
+                      },
+                    ],
+                  },
+                ],
               })),
             },
           ],
@@ -77,11 +103,20 @@ function fixture(options: {
           identifier: 'TerminalWindow',
           name: 'session1',
           state: { focused: terminalFocused },
-          ...((options.terminalWindowFocusAction || options.terminalWindowClickAction) ? {
-            ref: 'terminal-window-1',
-            target: { interactionId: 'ix-1', pid: 90766, bundleIdentifier: config.uuBundleId, appName: 'UU远程', windowRef: 'terminal-window', snapshotRevision: 1 },
-            actions: options.terminalWindowFocusAction ? ['focus'] : ['click'],
-          } : {}),
+          ...(options.terminalWindowFocusAction || options.terminalWindowClickAction
+            ? {
+                ref: 'terminal-window-1',
+                target: {
+                  interactionId: 'ix-1',
+                  pid: 90766,
+                  bundleIdentifier: config.uuBundleId,
+                  appName: 'UU远程',
+                  windowRef: 'terminal-window',
+                  snapshotRevision: 1,
+                },
+                actions: options.terminalWindowFocusAction ? ['focus'] : ['click'],
+              }
+            : {}),
           children: [{ role: 'AXStaticText', value: config.device.name }],
         },
       ],
@@ -101,22 +136,50 @@ function fixture(options: {
         const end = decoded.match(/__FORGE_UU_RESCUE_END_[a-f0-9]+__/)?.[0] ?? '';
         const records = [
           'distro_b64|' + Buffer.from('Ubuntu-24.04').toString('base64'),
-          'controller_home_present|1', 'control_plane_present|1', 'runtime_owner_present|1', 'runtime_status_present|1', 'connector_authority_present|1', 'recovery_config_present|1',
-          'migration_json_b64|' + Buffer.from(JSON.stringify([{ status: 'applied', sourceHome: '/old', destinationHome: TEST_LINUX_HOME + '/.forge/controller' }])).toString('base64'),
+          'controller_home_present|1',
+          'control_plane_present|1',
+          'runtime_owner_present|1',
+          'runtime_status_present|1',
+          'connector_authority_present|1',
+          'recovery_config_present|1',
+          'migration_json_b64|' +
+            Buffer.from(
+              JSON.stringify([
+                { status: 'applied', sourceHome: '/old', destinationHome: TEST_LINUX_HOME + '/.forge/controller' },
+              ]),
+            ).toString('base64'),
           'action_exit|' + (options.actionExit ?? 0),
-          'service|runtime|loaded|active|running|101', 'service|connector|loaded|active|running|102', 'service|recoveryGateway|loaded|active|running|103', 'service|recoveryWatchdog|loaded|active|running|104', 'service|independentRecovery|loaded|active|running|105',
+          'service|runtime|loaded|active|running|101',
+          'service|connector|loaded|active|running|102',
+          'service|recoveryGateway|loaded|active|running|103',
+          'service|recoveryWatchdog|loaded|active|running|104',
+          'service|independentRecovery|loaded|active|running|105',
         ].join('\n');
         return { tree: command + '\n' + begin + '\n' + records + '\n' + end };
       }
       return elementObservation();
     }
     if (action === 'computer_element_action') {
-      if (['focus', 'click'].includes(String(args.action)) && args.ref === 'terminal-window-1' && !options.terminalFocusNeverSucceeds) terminalFocused = true;
-      if (args.action === 'invoke' && String(args.ref).startsWith('open-terminal-') && !options.terminalFocusNeverSucceeds) terminalFocused = true;
+      if (
+        ['focus', 'click'].includes(String(args.action)) &&
+        args.ref === 'terminal-window-1' &&
+        !options.terminalFocusNeverSucceeds
+      )
+        terminalFocused = true;
+      if (
+        args.action === 'invoke' &&
+        String(args.ref).startsWith('open-terminal-') &&
+        !options.terminalFocusNeverSucceeds
+      )
+        terminalFocused = true;
       return { method: 'AXPress_background', ref: args.ref, semantic_action: args.action };
     }
     if (action === 'desktop_clipboard_read') return { text: clipboard };
-    if (action === 'desktop_clipboard_write') { clipboard = String(args.text ?? ''); if (clipboard !== 'private-existing-clipboard') command = clipboard; return { ok: true }; }
+    if (action === 'desktop_clipboard_write') {
+      clipboard = String(args.text ?? '');
+      if (clipboard !== 'private-existing-clipboard') command = clipboard;
+      return { ok: true };
+    }
     if (action === 'desktop_key') {
       const keys = Array.isArray(args.keys) ? args.keys.map(String) : [];
       if (keys.some((key) => key.toUpperCase() === 'RETURN')) keySent = true;
@@ -128,16 +191,39 @@ function fixture(options: {
       const end = decoded.match(/__FORGE_UU_RESCUE_END_[a-f0-9]+__/)?.[0] ?? '';
       const records = [
         'distro_b64|' + Buffer.from('Ubuntu-24.04').toString('base64'),
-        'controller_home_present|1', 'control_plane_present|1', 'runtime_owner_present|1', 'runtime_status_present|1', 'connector_authority_present|1', 'recovery_config_present|1',
-        'migration_json_b64|' + Buffer.from(JSON.stringify([{ status: 'applied', sourceHome: '/old', destinationHome: TEST_LINUX_HOME + '/.forge/controller' }])).toString('base64'),
+        'controller_home_present|1',
+        'control_plane_present|1',
+        'runtime_owner_present|1',
+        'runtime_status_present|1',
+        'connector_authority_present|1',
+        'recovery_config_present|1',
+        'migration_json_b64|' +
+          Buffer.from(
+            JSON.stringify([
+              { status: 'applied', sourceHome: '/old', destinationHome: TEST_LINUX_HOME + '/.forge/controller' },
+            ]),
+          ).toString('base64'),
         'action_exit|' + (options.actionExit ?? 0),
-        'service|runtime|loaded|active|running|101', 'service|connector|loaded|active|running|102', 'service|recoveryGateway|loaded|active|running|103', 'service|recoveryWatchdog|loaded|active|running|104', 'service|independentRecovery|loaded|active|running|105',
+        'service|runtime|loaded|active|running|101',
+        'service|connector|loaded|active|running|102',
+        'service|recoveryGateway|loaded|active|running|103',
+        'service|recoveryWatchdog|loaded|active|running|104',
+        'service|independentRecovery|loaded|active|running|105',
       ].join('\n');
       return { tree: command + '\n' + begin + '\n' + records + '\n' + end };
     }
     return { ok: true };
   };
-  return { cliCalls, desktopCalls, runCli, runCliText, desktopCall, sleep: async () => undefined, getClipboard: () => clipboard, getCommand: () => command };
+  return {
+    cliCalls,
+    desktopCalls,
+    runCli,
+    runCliText,
+    desktopCall,
+    sleep: async () => undefined,
+    getClipboard: () => clipboard,
+    getCommand: () => command,
+  };
 }
 
 describe('UU Remote rescue helper', () => {
@@ -154,17 +240,15 @@ describe('UU Remote rescue helper', () => {
   });
 
   test('requests stable JSON from every uuyc-cli invocation', () => {
-    expect(withJsonOutput(['device', 'info', 'device-1'])).toEqual([
-      'device', 'info', 'device-1', '--json',
-    ]);
-    expect(withJsonOutput(['device', 'info', 'device-1', '--json'])).toEqual([
-      'device', 'info', 'device-1', '--json',
-    ]);
+    expect(withJsonOutput(['device', 'info', 'device-1'])).toEqual(['device', 'info', 'device-1', '--json']);
+    expect(withJsonOutput(['device', 'info', 'device-1', '--json'])).toEqual(['device', 'info', 'device-1', '--json']);
   });
 
   test('accepts the current device info payload without a legacy matchedItem wrapper', async () => {
     const fx = fixture();
-    await expect(executeAction('device_status', {}, config, { ...fx, requestId: 'device-status-1' })).resolves.toMatchObject({
+    await expect(
+      executeAction('device_status', {}, config, { ...fx, requestId: 'device-status-1' }),
+    ).resolves.toMatchObject({
       device: { deviceId: config.device.id, deviceName: config.device.name, platform: 'windows', isOnline: true },
     });
   });
@@ -198,37 +282,54 @@ describe('UU Remote rescue helper', () => {
     });
     expect(JSON.stringify(result)).not.toContain('private-existing-clipboard');
     expect(fx.getClipboard()).toBe('private-existing-clipboard');
-    expect(fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'new' && args.includes(config.device.id))).toBe(true);
-    expect(fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'kill' && args.includes(config.device.id))).toBe(true);
+    expect(fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'new' && args.includes(config.device.id))).toBe(
+      true,
+    );
+    expect(
+      fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'kill' && args.includes(config.device.id)),
+    ).toBe(true);
     expect(fx.cliCalls.some((args) => ['open', 'exit'].includes(args[1]))).toBe(false);
   });
 
   test('focuses an existing exact terminal window directly before requiring the session list button', async () => {
     const fx = fixture({ terminalInitiallyFocused: false, terminalWindowFocusAction: true, openButtonCount: 0 });
     await executeAction('forge_health', {}, config, { ...fx, requestId: 'focus-existing-window-1' });
-    const focusIndex = fx.desktopCalls.findIndex((call) =>
-      call.action === 'computer_element_action'
-      && call.args.action === 'focus'
-      && call.args.ref === 'terminal-window-1');
-    const commandWriteIndex = fx.desktopCalls.findIndex((call) =>
-      call.action === 'desktop_clipboard_write' && call.args.text !== 'private-existing-clipboard');
+    const focusIndex = fx.desktopCalls.findIndex(
+      (call) =>
+        call.action === 'computer_element_action' &&
+        call.args.action === 'focus' &&
+        call.args.ref === 'terminal-window-1',
+    );
+    const commandWriteIndex = fx.desktopCalls.findIndex(
+      (call) => call.action === 'desktop_clipboard_write' && call.args.text !== 'private-existing-clipboard',
+    );
     expect(focusIndex).toBeGreaterThanOrEqual(0);
     expect(commandWriteIndex).toBeGreaterThan(focusIndex);
-    expect(fx.desktopCalls.some((call) =>
-      call.action === 'computer_element_action'
-      && call.args.action === 'invoke'
-      && String(call.args.ref).startsWith('open-terminal-'))).toBe(false);
+    expect(
+      fx.desktopCalls.some(
+        (call) =>
+          call.action === 'computer_element_action' &&
+          call.args.action === 'invoke' &&
+          String(call.args.ref).startsWith('open-terminal-'),
+      ),
+    ).toBe(false);
   });
 
   test('click-focuses an existing exact terminal window when AX exposes click but not focus', async () => {
     const fx = fixture({ terminalInitiallyFocused: false, terminalWindowClickAction: true, openButtonCount: 0 });
-    await executeAction('host_full_recover_dispatch', {}, config, { ...fx, requestId: 'click-focus-existing-window-1' });
-    const clickIndex = fx.desktopCalls.findIndex((call) =>
-      call.action === 'computer_element_action'
-      && call.args.action === 'click'
-      && call.args.ref === 'terminal-window-1');
-    const commandWriteIndex = fx.desktopCalls.findIndex((call) =>
-      call.action === 'desktop_clipboard_write' && call.args.text !== 'private-existing-clipboard');
+    await executeAction('host_full_recover_dispatch', {}, config, {
+      ...fx,
+      requestId: 'click-focus-existing-window-1',
+    });
+    const clickIndex = fx.desktopCalls.findIndex(
+      (call) =>
+        call.action === 'computer_element_action' &&
+        call.args.action === 'click' &&
+        call.args.ref === 'terminal-window-1',
+    );
+    const commandWriteIndex = fx.desktopCalls.findIndex(
+      (call) => call.action === 'desktop_clipboard_write' && call.args.text !== 'private-existing-clipboard',
+    );
     expect(clickIndex).toBeGreaterThanOrEqual(0);
     expect(commandWriteIndex).toBeGreaterThan(clickIndex);
   });
@@ -236,50 +337,66 @@ describe('UU Remote rescue helper', () => {
   test('focuses the exact configured device session through its Open Terminal control before pasting', async () => {
     const fx = fixture({ terminalInitiallyFocused: false });
     await executeAction('forge_health', {}, config, { ...fx, requestId: 'focus-1' });
-    const focusIndex = fx.desktopCalls.findIndex((call) =>
-      call.action === 'computer_element_action'
-      && call.args.action === 'invoke'
-      && call.args.ref === 'open-terminal-1'
-      && (call.args.target as Record<string, unknown>).windowRef === 'list-window');
-    const commandWriteIndex = fx.desktopCalls.findIndex((call) => call.action === 'desktop_clipboard_write' && call.args.text !== 'private-existing-clipboard');
+    const focusIndex = fx.desktopCalls.findIndex(
+      (call) =>
+        call.action === 'computer_element_action' &&
+        call.args.action === 'invoke' &&
+        call.args.ref === 'open-terminal-1' &&
+        (call.args.target as Record<string, unknown>).windowRef === 'list-window',
+    );
+    const commandWriteIndex = fx.desktopCalls.findIndex(
+      (call) => call.action === 'desktop_clipboard_write' && call.args.text !== 'private-existing-clipboard',
+    );
     expect(focusIndex).toBeGreaterThanOrEqual(0);
     expect(commandWriteIndex).toBeGreaterThan(focusIndex);
   });
 
   test('fails closed before clipboard mutation when the exact terminal cannot be focused', async () => {
     const fx = fixture({ terminalInitiallyFocused: false, terminalFocusNeverSucceeds: true });
-    await expect(executeAction('forge_health', {}, config, { ...fx, requestId: 'focus-fail-1' })).rejects.toThrow('proven focused');
+    await expect(executeAction('forge_health', {}, config, { ...fx, requestId: 'focus-fail-1' })).rejects.toThrow(
+      'proven focused',
+    );
     expect(fx.desktopCalls.some((call) => call.action === 'desktop_clipboard_write')).toBe(false);
   });
 
   test('fails closed when the terminal list does not prove the configured device', async () => {
     const fx = fixture({ terminalInitiallyFocused: false, accessibilityDeviceName: 'OTHER-DEVICE' });
-    await expect(executeAction('forge_health', {}, config, { ...fx, requestId: 'device-list-mismatch-1' })).rejects.toThrow('could not be bound');
+    await expect(
+      executeAction('forge_health', {}, config, { ...fx, requestId: 'device-list-mismatch-1' }),
+    ).rejects.toThrow('could not be bound');
     expect(fx.desktopCalls.some((call) => call.action === 'computer_element_action')).toBe(false);
     expect(fx.desktopCalls.some((call) => call.action === 'desktop_clipboard_write')).toBe(false);
   });
 
   test('fails closed when multiple terminal sessions could match the configured device', async () => {
     const fx = fixture({ terminalInitiallyFocused: false, openButtonCount: 2 });
-    await expect(executeAction('forge_health', {}, config, { ...fx, requestId: 'session-ambiguous-1' })).rejects.toThrow('More than one exact configured-device UU terminal session');
+    await expect(
+      executeAction('forge_health', {}, config, { ...fx, requestId: 'session-ambiguous-1' }),
+    ).rejects.toThrow('More than one exact configured-device UU terminal session');
     expect(fx.desktopCalls.some((call) => call.action === 'desktop_clipboard_write')).toBe(false);
   });
   test('fails closed on exact-device mismatch before opening the remote terminal', async () => {
     const fx = fixture({ mismatch: true });
-    await expect(executeAction('runtime_restart', {}, config, { ...fx, requestId: 'mismatch-1' })).rejects.toThrow('device identity');
+    await expect(executeAction('runtime_restart', {}, config, { ...fx, requestId: 'mismatch-1' })).rejects.toThrow(
+      'device identity',
+    );
     expect(fx.cliCalls.some((args) => args[0] === 'term')).toBe(false);
     expect(fx.desktopCalls).toHaveLength(0);
   });
 
   test('fails closed on an offline target before mutation', async () => {
     const fx = fixture({ offline: true });
-    await expect(executeAction('connector_restart', {}, config, { ...fx, requestId: 'offline-1' })).rejects.toThrow('offline');
+    await expect(executeAction('connector_restart', {}, config, { ...fx, requestId: 'offline-1' })).rejects.toThrow(
+      'offline',
+    );
     expect(fx.cliCalls.some((args) => args[0] === 'term')).toBe(false);
   });
 
   test('rejects arbitrary caller command or service arguments', async () => {
     const fx = fixture();
-    await expect(executeAction('forge_health', { command: 'whoami' }, config, { ...fx, requestId: 'arbitrary-1' })).rejects.toThrow('do not accept caller-provided');
+    await expect(
+      executeAction('forge_health', { command: 'whoami' }, config, { ...fx, requestId: 'arbitrary-1' }),
+    ).rejects.toThrow('do not accept caller-provided');
     expect(fx.cliCalls).toHaveLength(0);
     expect(fx.desktopCalls).toHaveLength(0);
   });
@@ -294,30 +411,52 @@ describe('UU Remote rescue helper', () => {
 
   test('host recovery task installation uses the fixed Windows script with no caller arguments', async () => {
     const fx = fixture();
-    const result = await executeAction('host_task_install_dispatch', {}, config, { ...fx, requestId: 'host-install-1' });
+    const result = await executeAction('host_task_install_dispatch', {}, config, {
+      ...fx,
+      requestId: 'host-install-1',
+    });
     expect(fx.getCommand()).toContain('ForgeRecovery.ps1');
     expect(fx.getCommand()).toContain("'task_install'");
     expect(fx.getCommand()).toContain('FORGE_RECOVERY_TASK_INSTALL_EXIT');
     expect(fx.getCommand()).toContain('FORGE_RECOVERY_PARENT_SID');
     expect(fx.getCommand()).toContain('FORGE_RECOVERY_PARENT_RUN');
-    const clear = fx.desktopCalls.findIndex((call) => call.action === 'desktop_key' && Array.isArray(call.args.keys) && call.args.keys.includes('ESCAPE'));
-    const write = fx.desktopCalls.findIndex((call) => call.action === 'desktop_clipboard_write' && call.args.text !== 'private-existing-clipboard');
+    const clear = fx.desktopCalls.findIndex(
+      (call) => call.action === 'desktop_key' && Array.isArray(call.args.keys) && call.args.keys.includes('ESCAPE'),
+    );
+    const write = fx.desktopCalls.findIndex(
+      (call) => call.action === 'desktop_clipboard_write' && call.args.text !== 'private-existing-clipboard',
+    );
     expect(clear).toBeGreaterThanOrEqual(0);
     expect(write).toBeGreaterThan(clear);
     expect(fx.getCommand()).not.toContain('Start-Process -WindowStyle Hidden');
     expect(fx.getCommand()).not.toContain("'full_recover'");
-    expect(result).toMatchObject({ dispatch: { accepted: true, action: 'task_install', recoveryStatus: 'unverified' } });
-    await expect(executeAction('host_task_install_dispatch', { taskName: 'other' }, config, { ...fixture(), requestId: 'host-install-invalid' })).rejects.toThrow('do not accept caller-provided');
+    expect(result).toMatchObject({
+      dispatch: { accepted: true, action: 'task_install', recoveryStatus: 'unverified' },
+    });
+    await expect(
+      executeAction('host_task_install_dispatch', { taskName: 'other' }, config, {
+        ...fixture(),
+        requestId: 'host-install-invalid',
+      }),
+    ).rejects.toThrow('do not accept caller-provided');
   });
 
   test('host tunnel recovery dispatch is fixed and remains explicitly unverified', async () => {
     const fx = fixture();
-    const result = await executeAction('host_tunnel_restart_dispatch', {}, config, { ...fx, requestId: 'host-tunnel-1' });
+    const result = await executeAction('host_tunnel_restart_dispatch', {}, config, {
+      ...fx,
+      requestId: 'host-tunnel-1',
+    });
     expect(fx.getCommand()).toContain(String.raw`C:\ProgramData\ForgeRecovery\ForgeRecovery.ps1`);
     expect(fx.getCommand()).toContain("'tunnel_restart'");
     expect(fx.getCommand()).not.toContain("'full_recover'");
     expect(result).toMatchObject({
-      dispatch: { accepted: true, action: 'tunnel_restart', recoveryStatus: 'unverified', verificationRequired: 'Forge Cloud connectivity' },
+      dispatch: {
+        accepted: true,
+        action: 'tunnel_restart',
+        recoveryStatus: 'unverified',
+        verificationRequired: 'Forge Cloud connectivity',
+      },
     });
     expect(fx.getClipboard()).toBe('private-existing-clipboard');
   });
@@ -328,8 +467,18 @@ describe('UU Remote rescue helper', () => {
     expect(fx.getCommand()).toContain(String.raw`C:\ProgramData\ForgeRecovery\ForgeRecovery.ps1`);
     expect(fx.getCommand()).toContain("'full_recover'");
     expect(result).toMatchObject({
-      dispatch: { accepted: true, action: 'full_recover', recoveryStatus: 'unverified', verificationRequired: 'Forge Cloud connectivity' },
+      dispatch: {
+        accepted: true,
+        action: 'full_recover',
+        recoveryStatus: 'unverified',
+        verificationRequired: 'Forge Cloud connectivity',
+      },
     });
-    await expect(executeAction('host_full_recover_dispatch', { command: 'whoami' }, config, { ...fixture(), requestId: 'host-full-arbitrary' })).rejects.toThrow('do not accept caller-provided');
+    await expect(
+      executeAction('host_full_recover_dispatch', { command: 'whoami' }, config, {
+        ...fixture(),
+        requestId: 'host-full-arbitrary',
+      }),
+    ).rejects.toThrow('do not accept caller-provided');
   });
 });

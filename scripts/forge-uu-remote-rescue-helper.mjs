@@ -17,19 +17,35 @@ export const CAPABILITIES = [
   'forge_wsl.host_recovery.v1',
 ];
 export const ACTIONS = [
-  'device_status', 'wsl_status', 'forge_health',
-  'runtime_start', 'runtime_restart', 'connector_start', 'connector_restart',
-  'recovery_start', 'recovery_restart', 'runtime_recover',
-  'host_task_install_dispatch', 'host_tunnel_restart_dispatch', 'host_full_recover_dispatch',
+  'device_status',
+  'wsl_status',
+  'forge_health',
+  'runtime_start',
+  'runtime_restart',
+  'connector_start',
+  'connector_restart',
+  'recovery_start',
+  'recovery_restart',
+  'runtime_recover',
+  'host_task_install_dispatch',
+  'host_tunnel_restart_dispatch',
+  'host_full_recover_dispatch',
 ];
 
-const MUTATING_ACTIONS = new Set(['runtime_start', 'runtime_restart', 'connector_start', 'connector_restart', 'recovery_start', 'recovery_restart', 'runtime_recover']);
+const MUTATING_ACTIONS = new Set([
+  'runtime_start',
+  'runtime_restart',
+  'connector_start',
+  'connector_restart',
+  'recovery_start',
+  'recovery_restart',
+  'runtime_recover',
+]);
 const HOST_RECOVERY_DISPATCH_ACTIONS = new Map([
   ['host_task_install_dispatch', 'task_install'],
   ['host_tunnel_restart_dispatch', 'tunnel_restart'],
   ['host_full_recover_dispatch', 'full_recover'],
 ]);
-const TERMINAL_ACTIONS = new Set(ACTIONS.filter((action) => action !== 'device_status'));
 
 function rescueError(code, message, retryable = false, details) {
   const error = new Error(message);
@@ -60,12 +76,24 @@ export function validateConfig(value) {
   const uuycCliPath = boundedString(value.uuycCliPath, 'uuycCliPath', 1024);
   const desktopOperatorSocketPath = boundedString(value.desktopOperatorSocketPath, 'desktopOperatorSocketPath', 1024);
   const uuBundleId = boundedString(value.uuBundleId, 'uuBundleId', 128);
-  if (!/^[A-Za-z0-9_-]{4,64}$/.test(id)) throw rescueError('UU_RESCUE_CONFIG_INVALID', 'Configured device id is invalid.');
-  if (platform !== 'windows') throw rescueError('UU_RESCUE_CONFIG_INVALID', 'Configured rescue target must be Windows.');
-  if (!/^[A-Za-z0-9._ -]{1,128}$/.test(distro)) throw rescueError('UU_RESCUE_CONFIG_INVALID', 'Configured WSL distro is invalid.');
-  if (!controllerHome.startsWith('/')) throw rescueError('UU_RESCUE_CONFIG_INVALID', 'Configured remote Controller Home must be an absolute WSL path.');
-  if (!isAbsolute(uuycCliPath) || !isAbsolute(desktopOperatorSocketPath)) throw rescueError('UU_RESCUE_CONFIG_INVALID', 'Configured local IPC paths must be absolute.');
-  return { schemaVersion: 1, device: { id, name, platform }, wsl: { distro, controllerHome }, uuycCliPath, desktopOperatorSocketPath, uuBundleId };
+  if (!/^[A-Za-z0-9_-]{4,64}$/.test(id))
+    throw rescueError('UU_RESCUE_CONFIG_INVALID', 'Configured device id is invalid.');
+  if (platform !== 'windows')
+    throw rescueError('UU_RESCUE_CONFIG_INVALID', 'Configured rescue target must be Windows.');
+  if (!/^[A-Za-z0-9._ -]{1,128}$/.test(distro))
+    throw rescueError('UU_RESCUE_CONFIG_INVALID', 'Configured WSL distro is invalid.');
+  if (!controllerHome.startsWith('/'))
+    throw rescueError('UU_RESCUE_CONFIG_INVALID', 'Configured remote Controller Home must be an absolute WSL path.');
+  if (!isAbsolute(uuycCliPath) || !isAbsolute(desktopOperatorSocketPath))
+    throw rescueError('UU_RESCUE_CONFIG_INVALID', 'Configured local IPC paths must be absolute.');
+  return {
+    schemaVersion: 1,
+    device: { id, name, platform },
+    wsl: { distro, controllerHome },
+    uuycCliPath,
+    desktopOperatorSocketPath,
+    uuBundleId,
+  };
 }
 
 export function serviceUnits(controllerHome) {
@@ -80,17 +108,23 @@ export function serviceUnits(controllerHome) {
 }
 
 function minimalEnv() {
-  return Object.fromEntries(Object.entries({
-    PATH: '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
-    HOME: process.env.HOME,
-    TMPDIR: process.env.TMPDIR,
-    LANG: process.env.LANG,
-    LC_ALL: process.env.LC_ALL,
-  }).filter(([, value]) => typeof value === 'string'));
+  return Object.fromEntries(
+    Object.entries({
+      PATH: '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+      HOME: process.env.HOME,
+      TMPDIR: process.env.TMPDIR,
+      LANG: process.env.LANG,
+      LC_ALL: process.env.LC_ALL,
+    }).filter(([, value]) => typeof value === 'string'),
+  );
 }
 
 function parseJson(text, code) {
-  try { return JSON.parse(text); } catch { throw rescueError(code, 'Provider returned invalid JSON.', true); }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw rescueError(code, 'Provider returned invalid JSON.', true);
+  }
 }
 
 export function withJsonOutput(args) {
@@ -98,20 +132,47 @@ export function withJsonOutput(args) {
 }
 
 function runCliDefault(config, args) {
-  if (!existsSync(config.uuycCliPath)) throw rescueError('UU_RESCUE_UUYC_CLI_UNAVAILABLE', 'Configured uuyc-cli is unavailable.');
-  const result = spawnSync(config.uuycCliPath, withJsonOutput(args), { encoding: 'utf8', env: minimalEnv(), timeout: 15_000, maxBuffer: 256 * 1024, shell: false, windowsHide: true });
+  if (!existsSync(config.uuycCliPath))
+    throw rescueError('UU_RESCUE_UUYC_CLI_UNAVAILABLE', 'Configured uuyc-cli is unavailable.');
+  const result = spawnSync(config.uuycCliPath, withJsonOutput(args), {
+    encoding: 'utf8',
+    env: minimalEnv(),
+    timeout: 15_000,
+    maxBuffer: 256 * 1024,
+    shell: false,
+    windowsHide: true,
+  });
   if (result.error) throw rescueError('UU_RESCUE_UUYC_CLI_FAILED', result.error.message, true);
-  if (result.status !== 0) throw rescueError('UU_RESCUE_UUYC_CLI_FAILED', String(result.stderr || result.stdout || 'uuyc-cli failed').slice(-1000), true);
+  if (result.status !== 0)
+    throw rescueError(
+      'UU_RESCUE_UUYC_CLI_FAILED',
+      String(result.stderr || result.stdout || 'uuyc-cli failed').slice(-1000),
+      true,
+    );
   const parsed = parseJson(String(result.stdout || '').trim(), 'UU_RESCUE_UUYC_PROTOCOL_INVALID');
-  if (parsed?.success !== true) throw rescueError('UU_RESCUE_UUYC_OPERATION_FAILED', 'uuyc-cli reported failure.', true);
+  if (parsed?.success !== true)
+    throw rescueError('UU_RESCUE_UUYC_OPERATION_FAILED', 'uuyc-cli reported failure.', true);
   return parsed;
 }
 
 function runCliTextDefault(config, args) {
-  if (!existsSync(config.uuycCliPath)) throw rescueError('UU_RESCUE_UUYC_CLI_UNAVAILABLE', 'Configured uuyc-cli is unavailable.');
-  const result = spawnSync(config.uuycCliPath, args, { encoding: 'utf8', env: minimalEnv(), timeout: 15_000, maxBuffer: 256 * 1024, shell: false, windowsHide: true });
+  if (!existsSync(config.uuycCliPath))
+    throw rescueError('UU_RESCUE_UUYC_CLI_UNAVAILABLE', 'Configured uuyc-cli is unavailable.');
+  const result = spawnSync(config.uuycCliPath, args, {
+    encoding: 'utf8',
+    env: minimalEnv(),
+    timeout: 15_000,
+    maxBuffer: 256 * 1024,
+    shell: false,
+    windowsHide: true,
+  });
   if (result.error) throw rescueError('UU_RESCUE_UUYC_CLI_FAILED', result.error.message, true);
-  if (result.status !== 0) throw rescueError('UU_RESCUE_UUYC_CLI_FAILED', String(result.stderr || result.stdout || 'uuyc-cli failed').slice(-1000), true);
+  if (result.status !== 0)
+    throw rescueError(
+      'UU_RESCUE_UUYC_CLI_FAILED',
+      String(result.stderr || result.stdout || 'uuyc-cli failed').slice(-1000),
+      true,
+    );
   return { success: true, text: String(result.stdout || '').trim() };
 }
 
@@ -119,9 +180,17 @@ async function desktopCallDefault(config, requestId, action, args) {
   const socketPath = config.desktopOperatorSocketPath;
   let request;
   if (action === 'computer_element_observe') {
-    request = { id: requestId, method: 'computer_execute', params: { capability: 'computer.element.observe.v2', protocolVersion: 2, arguments: args } };
+    request = {
+      id: requestId,
+      method: 'computer_execute',
+      params: { capability: 'computer.element.observe.v2', protocolVersion: 2, arguments: args },
+    };
   } else if (action === 'computer_element_action') {
-    request = { id: requestId, method: 'computer_execute', params: { capability: 'computer.element.action.v2', protocolVersion: 2, arguments: args } };
+    request = {
+      id: requestId,
+      method: 'computer_execute',
+      params: { capability: 'computer.element.action.v2', protocolVersion: 2, arguments: args },
+    };
   } else {
     request = { id: requestId, method: 'execute', params: { action, arguments: args } };
   }
@@ -130,7 +199,10 @@ async function desktopCallDefault(config, requestId, action, args) {
     let socket;
     let settled = false;
     let buffer = Buffer.alloc(0);
-    const timer = setTimeout(() => finish(() => reject(rescueError('UU_RESCUE_DESKTOP_TIMEOUT', 'Desktop Operator request timed out.', true))), 12_000);
+    const timer = setTimeout(
+      () => finish(() => reject(rescueError('UU_RESCUE_DESKTOP_TIMEOUT', 'Desktop Operator request timed out.', true))),
+      12_000,
+    );
     const finish = (callback) => {
       if (settled) return;
       settled = true;
@@ -138,28 +210,57 @@ async function desktopCallDefault(config, requestId, action, args) {
       if (socket && !socket.destroyed) socket.destroy();
       callback();
     };
-    try { socket = createConnection({ path: socketPath }); } catch (error) { finish(() => reject(error)); return; }
+    try {
+      socket = createConnection({ path: socketPath });
+    } catch (error) {
+      finish(() => reject(error));
+      return;
+    }
     socket.once('connect', () => socket.write(envelope));
     socket.on('data', (chunk) => {
       buffer = Buffer.concat([buffer, chunk]);
-      if (buffer.length > 1024 * 1024) return finish(() => reject(rescueError('UU_RESCUE_DESKTOP_RESPONSE_TOO_LARGE', 'Desktop Operator response exceeded the bounded limit.')));
+      if (buffer.length > 1024 * 1024)
+        return finish(() =>
+          reject(
+            rescueError(
+              'UU_RESCUE_DESKTOP_RESPONSE_TOO_LARGE',
+              'Desktop Operator response exceeded the bounded limit.',
+            ),
+          ),
+        );
       const newline = buffer.indexOf(0x0a);
       if (newline < 0) return;
       try {
         const response = parseJson(buffer.subarray(0, newline).toString('utf8'), 'UU_RESCUE_DESKTOP_PROTOCOL_INVALID');
-        if (response.id !== requestId || typeof response.ok !== 'boolean') throw rescueError('UU_RESCUE_DESKTOP_PROTOCOL_INVALID', 'Desktop Operator returned a mismatched response.');
-        if (!response.ok) throw rescueError(response.error?.code || 'UU_RESCUE_DESKTOP_ACTION_FAILED', response.error?.message || 'Desktop Operator action failed.', response.error?.retryable === true);
+        if (response.id !== requestId || typeof response.ok !== 'boolean')
+          throw rescueError('UU_RESCUE_DESKTOP_PROTOCOL_INVALID', 'Desktop Operator returned a mismatched response.');
+        if (!response.ok)
+          throw rescueError(
+            response.error?.code || 'UU_RESCUE_DESKTOP_ACTION_FAILED',
+            response.error?.message || 'Desktop Operator action failed.',
+            response.error?.retryable === true,
+          );
         finish(() => resolve(response.result && typeof response.result === 'object' ? response.result : {}));
-      } catch (error) { finish(() => reject(error)); }
+      } catch (error) {
+        finish(() => reject(error));
+      }
     });
-    socket.once('error', (error) => finish(() => reject(rescueError('UU_RESCUE_DESKTOP_UNAVAILABLE', error.message, true))));
+    socket.once('error', (error) =>
+      finish(() => reject(rescueError('UU_RESCUE_DESKTOP_UNAVAILABLE', error.message, true))),
+    );
   });
 }
 
 function collectStrings(value, output = []) {
   if (typeof value === 'string') output.push(value);
-  else if (Array.isArray(value)) value.forEach((entry) => collectStrings(entry, output));
-  else if (value && typeof value === 'object') Object.values(value).forEach((entry) => collectStrings(entry, output));
+  else if (Array.isArray(value))
+    value.forEach((entry) => {
+      collectStrings(entry, output);
+    });
+  else if (value && typeof value === 'object')
+    Object.values(value).forEach((entry) => {
+      collectStrings(entry, output);
+    });
   return output;
 }
 
@@ -167,9 +268,15 @@ function findStringKey(value, keys) {
   if (!value || typeof value !== 'object') return undefined;
   if (!Array.isArray(value)) {
     for (const key of keys) if (typeof value[key] === 'string') return value[key];
-    for (const nested of Object.values(value)) { const found = findStringKey(nested, keys); if (found !== undefined) return found; }
+    for (const nested of Object.values(value)) {
+      const found = findStringKey(nested, keys);
+      if (found !== undefined) return found;
+    }
   } else {
-    for (const nested of value) { const found = findStringKey(nested, keys); if (found !== undefined) return found; }
+    for (const nested of value) {
+      const found = findStringKey(nested, keys);
+      if (found !== undefined) return found;
+    }
   }
   return undefined;
 }
@@ -177,12 +284,16 @@ function findStringKey(value, keys) {
 function accessibilityNodes(value, predicate, output = []) {
   if (!value || typeof value !== 'object') return output;
   if (Array.isArray(value)) {
-    value.forEach((entry) => accessibilityNodes(entry, predicate, output));
+    value.forEach((entry) => {
+      accessibilityNodes(entry, predicate, output);
+    });
     return output;
   }
   if (predicate(value)) output.push(value);
   if (Array.isArray(value.children)) {
-    value.children.forEach((entry) => accessibilityNodes(entry, predicate, output));
+    value.children.forEach((entry) => {
+      accessibilityNodes(entry, predicate, output);
+    });
   }
   return output;
 }
@@ -193,7 +304,9 @@ function accessibilityNodeStrings(node, output = []) {
     if (typeof node[key] === 'string') output.push(node[key]);
   }
   if (Array.isArray(node.children)) {
-    node.children.forEach((child) => accessibilityNodeStrings(child, output));
+    node.children.forEach((child) => {
+      accessibilityNodeStrings(child, output);
+    });
   }
   return output;
 }
@@ -210,13 +323,15 @@ function accessibilityWindows(observation) {
 }
 
 function exactTerminalWindows(observation, config) {
-  return accessibilityWindows(observation).filter((window) =>
-    window.identifier === 'TerminalWindow' && window.strings.includes(config.device.name));
+  return accessibilityWindows(observation).filter(
+    (window) => window.identifier === 'TerminalWindow' && window.strings.includes(config.device.name),
+  );
 }
 
 function exactTerminalOpenButtons(observation, config) {
-  const listWindows = accessibilityWindows(observation).filter((window) =>
-    window.identifier === 'TerminalListWindow' && window.strings.includes(config.device.name));
+  const listWindows = accessibilityWindows(observation).filter(
+    (window) => window.identifier === 'TerminalListWindow' && window.strings.includes(config.device.name),
+  );
   if (listWindows.length !== 1) return [];
   const rows = accessibilityNodes(listWindows[0].node, (node) => node.role === 'AXRow');
   return rows.flatMap((row) => {
@@ -224,45 +339,61 @@ function exactTerminalOpenButtons(observation, config) {
       .map((node) => node.value)
       .filter((value) => typeof value === 'string' && value.trim());
     if (sessionLabels.length === 0) return [];
-    return accessibilityNodes(row, (node) =>
-      node.role === 'AXButton'
-      && node.name === '打开终端'
-      && Array.isArray(node.actions)
-      && node.actions.includes('invoke')
-      && node.state?.enabled !== false);
+    return accessibilityNodes(
+      row,
+      (node) =>
+        node.role === 'AXButton' &&
+        node.name === '打开终端' &&
+        Array.isArray(node.actions) &&
+        node.actions.includes('invoke') &&
+        node.state?.enabled !== false,
+    );
   });
 }
 
 async function ensureTerminalWindowFocused(config, requestId, interactionId, initialObservation, deps) {
   const terminals = exactTerminalWindows(initialObservation, config);
   if (terminals.length > 1) {
-    throw rescueError('UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS', 'More than one exact configured-device UU terminal window is visible; refusing remote input.');
+    throw rescueError(
+      'UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS',
+      'More than one exact configured-device UU terminal window is visible; refusing remote input.',
+    );
   }
   if (terminals.length === 1 && terminals[0].focused) return initialObservation;
 
   if (terminals.length === 1) {
     const terminal = terminals[0].node;
     const focusAction = Array.isArray(terminal?.actions)
-      ? (terminal.actions.includes('focus') ? 'focus' : (terminal.actions.includes('click') ? 'click' : undefined))
+      ? terminal.actions.includes('focus')
+        ? 'focus'
+        : terminal.actions.includes('click')
+          ? 'click'
+          : undefined
       : undefined;
-    if (typeof terminal?.ref === 'string'
-      && terminal.target
-      && focusAction) {
+    if (typeof terminal?.ref === 'string' && terminal.target && focusAction) {
       await deps.desktopCall(config, requestId + ':focus-terminal-window', 'computer_element_action', {
         target: terminal.target,
         ref: terminal.ref,
         action: focusAction,
       });
       await deps.sleep(100);
-      const focusedObservation = await deps.desktopCall(config, requestId + ':focus-terminal-window-verify', 'computer_element_observe', {
-        interactionId,
-        maxDepth: 12,
-        maxNodes: 2500,
-        includeValues: true,
-      });
+      const focusedObservation = await deps.desktopCall(
+        config,
+        requestId + ':focus-terminal-window-verify',
+        'computer_element_observe',
+        {
+          interactionId,
+          maxDepth: 12,
+          maxNodes: 2500,
+          includeValues: true,
+        },
+      );
       const focusedWindows = exactTerminalWindows(focusedObservation, config);
       if (focusedWindows.length > 1) {
-        throw rescueError('UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS', 'More than one exact configured-device UU terminal window is visible; refusing remote input.');
+        throw rescueError(
+          'UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS',
+          'More than one exact configured-device UU terminal window is visible; refusing remote input.',
+        );
       }
       if (focusedWindows.length === 1 && focusedWindows[0].focused) return focusedObservation;
     }
@@ -270,10 +401,17 @@ async function ensureTerminalWindowFocused(config, requestId, interactionId, ini
 
   const buttons = exactTerminalOpenButtons(initialObservation, config);
   if (buttons.length > 1) {
-    throw rescueError('UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS', 'More than one exact configured-device UU terminal session can be opened; refusing remote input.');
+    throw rescueError(
+      'UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS',
+      'More than one exact configured-device UU terminal session can be opened; refusing remote input.',
+    );
   }
   if (buttons.length !== 1 || typeof buttons[0].ref !== 'string' || !buttons[0].target) {
-    throw rescueError('UU_RESCUE_TERMINAL_FOCUS_UNPROVEN', 'The exact configured-device UU terminal session could not be bound to its Open Terminal control; refusing remote input.', true);
+    throw rescueError(
+      'UU_RESCUE_TERMINAL_FOCUS_UNPROVEN',
+      'The exact configured-device UU terminal session could not be bound to its Open Terminal control; refusing remote input.',
+      true,
+    );
   }
 
   const button = buttons[0];
@@ -291,10 +429,17 @@ async function ensureTerminalWindowFocused(config, requestId, interactionId, ini
   });
   const focused = exactTerminalWindows(observation, config);
   if (focused.length > 1) {
-    throw rescueError('UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS', 'More than one exact configured-device UU terminal window is visible; refusing remote input.');
+    throw rescueError(
+      'UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS',
+      'More than one exact configured-device UU terminal window is visible; refusing remote input.',
+    );
   }
   if (focused.length !== 1 || !focused[0].focused) {
-    throw rescueError('UU_RESCUE_TERMINAL_FOCUS_UNPROVEN', 'The exact configured-device UU terminal window could not be proven focused after opening its bound session; refusing remote input.', true);
+    throw rescueError(
+      'UU_RESCUE_TERMINAL_FOCUS_UNPROVEN',
+      'The exact configured-device UU terminal window could not be proven focused after opening its bound session; refusing remote input.',
+      true,
+    );
   }
   return observation;
 }
@@ -316,8 +461,16 @@ function extractMarkedText(observation, markers) {
   return undefined;
 }
 
-function b64(value) { return Buffer.from(String(value), 'utf8').toString('base64'); }
-function decodeB64(value) { try { return Buffer.from(value, 'base64').toString('utf8'); } catch { return ''; } }
+function b64(value) {
+  return Buffer.from(String(value), 'utf8').toString('base64');
+}
+function decodeB64(value) {
+  try {
+    return Buffer.from(value, 'base64').toString('utf8');
+  } catch {
+    return '';
+  }
+}
 
 export function buildWslStatusCommand(markers) {
   return `$ErrorActionPreference='Continue'; $d=@(wsl.exe --list --quiet 2>$null | ForEach-Object { ($_ -replace [char]0,'').Trim() } | Where-Object { $_ }); $s=(wsl.exe --status 2>&1 | Out-String).Trim(); Write-Output '${markers.begin}'; foreach($x in $d){ Write-Output ('distro_b64|'+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($x))) }; Write-Output ('status_b64|'+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s))); $vv=@(wsl.exe --list --verbose 2>$null | ForEach-Object { ($_ -replace [char]0,'').Trim() } | Where-Object { $_ } | Select-Object -First 6); foreach($line in $vv){ Write-Output ('distro_detail|'+$line) }; $t=Get-ScheduledTask -TaskName 'Forge Independent Recovery WSL' -ErrorAction SilentlyContinue; Write-Output ('host_task_state|'+$(if($null -ne $t){$t.State.ToString()}else{'missing'})); $ti=if($null -ne $t){Get-ScheduledTaskInfo -TaskName 'Forge Independent Recovery WSL' -ErrorAction SilentlyContinue}else{$null}; Write-Output ('host_task_last_result|'+$(if($null -ne $ti){[string]$ti.LastTaskResult}else{'unknown'})); $fallback=(Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'ForgeIndependentRecoveryWSL' -ErrorAction SilentlyContinue).ForgeIndependentRecoveryWSL; Write-Output ('host_logon_fallback|'+$(if($fallback){'present'}else{'missing'})); $ctx=[Security.Principal.WindowsIdentity]::GetCurrent(); Write-Output ('host_windows_identity|'+$ctx.Name); $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; $literal=(Get-ItemProperty -LiteralPath $runKey -Name 'ForgeIndependentRecoveryWSL' -ErrorAction SilentlyContinue).ForgeIndependentRecoveryWSL; Write-Output ('host_logon_fallback_literal|'+$(if($literal){'present'}else{'missing'})); Write-Output ('host_run_key_exists|'+$(if(Test-Path -LiteralPath $runKey){'true'}else{'false'})); Write-Output '${markers.end}'`;
@@ -325,15 +478,22 @@ export function buildWslStatusCommand(markers) {
 
 export function buildHostRecoveryDispatchCommand(action) {
   const recoveryAction = HOST_RECOVERY_DISPATCH_ACTIONS.get(action);
-  if (!recoveryAction) throw rescueError('UU_RESCUE_ACTION_UNSUPPORTED', 'Unsupported fixed host Recovery dispatch action.');
+  if (!recoveryAction)
+    throw rescueError('UU_RESCUE_ACTION_UNSUPPORTED', 'Unsupported fixed host Recovery dispatch action.');
   const recoveryScript = String.raw`C:\ProgramData\ForgeRecovery\ForgeRecovery.ps1`;
   const powershellSuffix = String.raw`System32\WindowsPowerShell\v1.0\powershell.exe`;
   const prefix = `$recoveryScript='${recoveryScript}'; $powershell=Join-Path $env:SystemRoot '${powershellSuffix}'; if (-not (Test-Path -LiteralPath $recoveryScript -PathType Leaf)) { throw 'FORGE_RECOVERY_SCRIPT_MISSING' }; if (-not (Test-Path -LiteralPath $powershell -PathType Leaf)) { throw 'WINDOWS_POWERSHELL_MISSING' };`;
   if (action === 'host_task_install_dispatch') {
     // Keep the fixed Windows install action foreground-visible to expose real failures.
-    return prefix + `$parentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; Write-Output ('FORGE_RECOVERY_PARENT_SID|' + $parentSid); & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $recoveryScript 'task_install'; Write-Output ('FORGE_RECOVERY_TASK_INSTALL_EXIT|' + [string]$LASTEXITCODE); $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; $entry=(Get-ItemProperty -LiteralPath $runKey -Name 'ForgeIndependentRecoveryWSL' -ErrorAction SilentlyContinue).ForgeIndependentRecoveryWSL; Write-Output ('FORGE_RECOVERY_PARENT_RUN|' + $(if($entry){'present'}else{'missing'}))`;
+    return (
+      prefix +
+      `$parentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; Write-Output ('FORGE_RECOVERY_PARENT_SID|' + $parentSid); & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $recoveryScript 'task_install'; Write-Output ('FORGE_RECOVERY_TASK_INSTALL_EXIT|' + [string]$LASTEXITCODE); $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; $entry=(Get-ItemProperty -LiteralPath $runKey -Name 'ForgeIndependentRecoveryWSL' -ErrorAction SilentlyContinue).ForgeIndependentRecoveryWSL; Write-Output ('FORGE_RECOVERY_PARENT_RUN|' + $(if($entry){'present'}else{'missing'}))`
+    );
   }
-  return prefix + `Start-Process -WindowStyle Hidden -FilePath $powershell -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$recoveryScript,'${recoveryAction}')`;
+  return (
+    prefix +
+    `Start-Process -WindowStyle Hidden -FilePath $powershell -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$recoveryScript,'${recoveryAction}')`
+  );
 }
 
 export function buildForgeCommand(action, config, markers) {
@@ -348,7 +508,8 @@ export function buildForgeCommand(action, config, markers) {
     recovery_restart: `systemctl --user restart '${units.recoveryGateway}' '${units.recoveryWatchdog}'; emit action_exit "$?"`,
     runtime_recover: `if command -v forge >/dev/null 2>&1; then recovery_out="$(forge recovery recover --controller-home "$CH" 2>&1)"; recovery_code="$?"; emit recovery_output_b64 "$(printf %s "$recovery_out" | base64 | tr -d '\\n')"; emit action_exit "$recovery_code"; else emit recovery_output_b64 "$(printf %s 'forge CLI unavailable' | base64 | tr -d '\\n')"; emit action_exit 127; fi`,
   }[action];
-  if (operation === undefined) throw rescueError('UU_RESCUE_ACTION_UNSUPPORTED', 'Unsupported fixed Forge rescue action.');
+  if (operation === undefined)
+    throw rescueError('UU_RESCUE_ACTION_UNSUPPORTED', 'Unsupported fixed Forge rescue action.');
   const script = `set +e\nCH="$(printf %s '${b64(config.wsl.controllerHome)}' | base64 -d)"\nemit(){ printf '%s|%s\\n' "$1" "$2"; }\nstatus(){ unit="$2"; load="$(systemctl --user show "$unit" -p LoadState --value 2>/dev/null)"; active="$(systemctl --user show "$unit" -p ActiveState --value 2>/dev/null)"; sub="$(systemctl --user show "$unit" -p SubState --value 2>/dev/null)"; pid="$(systemctl --user show "$unit" -p MainPID --value 2>/dev/null)"; printf 'service|%s|%s|%s|%s|%s\\n' "$1" "\${load:-unknown}" "\${active:-unknown}" "\${sub:-unknown}" "\${pid:-0}"; }\nprintf '%s\\n' '${markers.begin}'\nemit distro_b64 "$(printf %s "\${WSL_DISTRO_NAME:-}" | base64 | tr -d '\\n')"\nemit controller_home_present "$([ -d "$CH" ] && echo 1 || echo 0)"\nemit control_plane_present "$([ -f "$CH/control-plane.sqlite" ] && echo 1 || echo 0)"\nemit runtime_owner_present "$([ -f "$CH/runtime/active-runtime-owner.json" ] && echo 1 || echo 0)"\nemit runtime_status_present "$([ -f "$CH/runtime/status.json" ] && echo 1 || echo 0)"\nemit connector_authority_present "$([ -f "$CH/runtime/connector-service/authority.json" ] && echo 1 || echo 0)"\nemit recovery_config_present "$([ -d "$CH/recovery/config" ] && echo 1 || echo 0)"\nif command -v sqlite3 >/dev/null 2>&1 && [ -f "$CH/control-plane.sqlite" ]; then migration="$(sqlite3 -json "$CH/control-plane.sqlite" \"select json_extract(payload,'$.status') as status,json_extract(payload,'$.sourceHome') as sourceHome,json_extract(payload,'$.destinationHome') as destinationHome,updated_at as updatedAt from control_plane_records where namespace='controller_home_migration' order by updated_at desc limit 1;\" 2>/dev/null)"; emit migration_json_b64 "$(printf %s "$migration" | base64 | tr -d '\\n')"; else emit migration_unavailable_b64 "$(printf %s 'sqlite3 unavailable or control-plane missing' | base64 | tr -d '\\n')"; fi\n${operation}\nstatus runtime '${units.runtime}'\nstatus connector '${units.connector}'\nstatus recoveryGateway '${units.recoveryGateway}'\nstatus recoveryWatchdog '${units.recoveryWatchdog}'\nstatus independentRecovery '${units.independentRecovery}'\nprintf '%s\\n' '${markers.end}'`;
   const payload = b64(script);
   const distro = config.wsl.distro.replaceAll("'", "''");
@@ -362,7 +523,12 @@ export function parseRecords(text) {
     if (!line) continue;
     const parts = line.split('|');
     if (parts[0] === 'service' && parts.length >= 6) {
-      result.services[parts[1]] = { unitLoadState: parts[2], activeState: parts[3], subState: parts[4], mainPid: Number(parts[5]) || 0 };
+      result.services[parts[1]] = {
+        unitLoadState: parts[2],
+        activeState: parts[3],
+        subState: parts[4],
+        mainPid: Number(parts[5]) || 0,
+      };
       continue;
     }
     const key = parts.shift();
@@ -370,11 +536,25 @@ export function parseRecords(text) {
     if (!key) continue;
     if (key.endsWith('_b64')) result[key.slice(0, -4)] = decodeB64(value);
     else if (key === 'action_exit') result.actionExit = Number(value);
-    else if (['controller_home_present', 'control_plane_present', 'runtime_owner_present', 'runtime_status_present', 'connector_authority_present', 'recovery_config_present'].includes(key)) result[key] = value === '1';
+    else if (
+      [
+        'controller_home_present',
+        'control_plane_present',
+        'runtime_owner_present',
+        'runtime_status_present',
+        'connector_authority_present',
+        'recovery_config_present',
+      ].includes(key)
+    )
+      result[key] = value === '1';
     else result[key] = value;
   }
   if (typeof result.migration_json === 'string' && result.migration_json.trim()) {
-    try { result.migration = JSON.parse(result.migration_json); } catch { result.migration = { parseError: true }; }
+    try {
+      result.migration = JSON.parse(result.migration_json);
+    } catch {
+      result.migration = { parseError: true };
+    }
     delete result.migration_json;
   }
   return result;
@@ -386,11 +566,25 @@ async function verifyDevice(config, deps, requireOnline) {
   // Current uuyc-cli returns the exact requested device directly in data.
   // Keep the legacy matchedItem shape for older app/CLI builds.
   const item = data.matchedItem || data;
-  if (data.isUniqueMatch === false || item.deviceId !== config.device.id || item.deviceName !== config.device.name || String(item.platform || '').toLowerCase() !== 'windows') {
-    throw rescueError('UU_RESCUE_DEVICE_MISMATCH', 'UU Remote device identity did not match the registration-bound Windows target.');
+  if (
+    data.isUniqueMatch === false ||
+    item.deviceId !== config.device.id ||
+    item.deviceName !== config.device.name ||
+    String(item.platform || '').toLowerCase() !== 'windows'
+  ) {
+    throw rescueError(
+      'UU_RESCUE_DEVICE_MISMATCH',
+      'UU Remote device identity did not match the registration-bound Windows target.',
+    );
   }
-  if (requireOnline && item.isOnline !== true) throw rescueError('UU_RESCUE_DEVICE_OFFLINE', 'The registration-bound UU Remote device is offline.', true);
-  return { deviceId: item.deviceId, deviceName: item.deviceName, platform: 'windows', isOnline: item.isOnline === true };
+  if (requireOnline && item.isOnline !== true)
+    throw rescueError('UU_RESCUE_DEVICE_OFFLINE', 'The registration-bound UU Remote device is offline.', true);
+  return {
+    deviceId: item.deviceId,
+    deviceName: item.deviceName,
+    platform: 'windows',
+    isOnline: item.isOnline === true,
+  };
 }
 
 async function runTerminalCommand(config, requestId, command, deps, options = {}) {
@@ -403,13 +597,29 @@ async function runTerminalCommand(config, requestId, command, deps, options = {}
   let originalClipboard;
   let clipboardCaptured = false;
   try {
-    const opened = await deps.desktopCall(config, `${requestId}:session`, 'desktop_session_open', { bundle_id: config.uuBundleId, launch: false, activate: true });
+    const opened = await deps.desktopCall(config, `${requestId}:session`, 'desktop_session_open', {
+      bundle_id: config.uuBundleId,
+      launch: false,
+      activate: true,
+    });
     interactionId = findStringKey(opened, ['interaction_id', 'interactionId']);
-    if (!interactionId) throw rescueError('UU_RESCUE_TERMINAL_SESSION_UNBOUND', 'Desktop Operator did not return a bound UURemote interaction session.');
-    const observed = await deps.desktopCall(config, requestId + ':preflight', 'computer_element_observe', { interactionId, maxDepth: 12, maxNodes: 2500, includeValues: true });
+    if (!interactionId)
+      throw rescueError(
+        'UU_RESCUE_TERMINAL_SESSION_UNBOUND',
+        'Desktop Operator did not return a bound UURemote interaction session.',
+      );
+    const observed = await deps.desktopCall(config, requestId + ':preflight', 'computer_element_observe', {
+      interactionId,
+      maxDepth: 12,
+      maxNodes: 2500,
+      includeValues: true,
+    });
     await ensureTerminalWindowFocused(config, requestId, interactionId, observed, deps);
     if (options.resetPendingInput === true) {
-      await deps.desktopCall(config, requestId + ':clear-pending-input', 'desktop_key', { interaction_id: interactionId, keys: ['ESCAPE'] });
+      await deps.desktopCall(config, requestId + ':clear-pending-input', 'desktop_key', {
+        interaction_id: interactionId,
+        keys: ['ESCAPE'],
+      });
     }
     const clipboard = await deps.desktopCall(config, `${requestId}:clipboard-read`, 'desktop_clipboard_read', {});
     originalClipboard = findStringKey(clipboard, ['text', 'value']) ?? '';
@@ -417,7 +627,10 @@ async function runTerminalCommand(config, requestId, command, deps, options = {}
     await deps.desktopCall(config, `${requestId}:clipboard-command`, 'desktop_clipboard_write', { text: command });
     await deps.desktopCall(config, `${requestId}:paste`, 'desktop_paste', { interaction_id: interactionId });
     if (options.awaitResult === false) await deps.sleep(900);
-    await deps.desktopCall(config, `${requestId}:return`, 'desktop_key', { interaction_id: interactionId, keys: ['RETURN'] });
+    await deps.desktopCall(config, `${requestId}:return`, 'desktop_key', {
+      interaction_id: interactionId,
+      keys: ['RETURN'],
+    });
     if (options.awaitResult === false) {
       await deps.sleep(1800);
       return undefined;
@@ -434,22 +647,47 @@ async function runTerminalCommand(config, requestId, command, deps, options = {}
       const payload = extractMarkedText(next, markers);
       if (payload !== undefined) return payload;
     }
-    throw rescueError('UU_RESCUE_REMOTE_RESULT_TIMEOUT', 'The fixed UU Remote terminal command did not produce its bounded result marker.', true);
+    throw rescueError(
+      'UU_RESCUE_REMOTE_RESULT_TIMEOUT',
+      'The fixed UU Remote terminal command did not produce its bounded result marker.',
+      true,
+    );
   } finally {
     if (clipboardCaptured) {
-      try { await deps.desktopCall(config, `${requestId}:clipboard-restore`, 'desktop_clipboard_write', { text: originalClipboard }); } catch { /* never expose prior clipboard */ }
+      try {
+        await deps.desktopCall(config, `${requestId}:clipboard-restore`, 'desktop_clipboard_write', {
+          text: originalClipboard,
+        });
+      } catch {
+        /* never expose prior clipboard */
+      }
     }
     if (interactionId) {
-      try { await deps.desktopCall(config, `${requestId}:session-close`, 'desktop_session_close', { interaction_id: interactionId }); } catch { /* best effort */ }
+      try {
+        await deps.desktopCall(config, `${requestId}:session-close`, 'desktop_session_close', {
+          interaction_id: interactionId,
+        });
+      } catch {
+        /* best effort */
+      }
     }
-    try { await deps.runCli(config, ['term', 'kill', '--device', config.device.id, sessionName]); } catch { /* best effort */ }
+    try {
+      await deps.runCli(config, ['term', 'kill', '--device', config.device.id, sessionName]);
+    } catch {
+      /* best effort */
+    }
   }
 }
 
 export async function executeAction(actionId, input, configInput, injected = {}) {
   const config = validateConfig(configInput);
-  if (!ACTIONS.includes(actionId)) throw rescueError('UU_RESCUE_ACTION_UNSUPPORTED', 'Unsupported UU Remote rescue action.');
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 0) throw rescueError('UU_RESCUE_ARGUMENTS_FORBIDDEN', 'UU Remote rescue actions do not accept caller-provided commands, service names, devices, paths, or shell arguments.');
+  if (!ACTIONS.includes(actionId))
+    throw rescueError('UU_RESCUE_ACTION_UNSUPPORTED', 'Unsupported UU Remote rescue action.');
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 0)
+    throw rescueError(
+      'UU_RESCUE_ARGUMENTS_FORBIDDEN',
+      'UU Remote rescue actions do not accept caller-provided commands, service names, devices, paths, or shell arguments.',
+    );
   const deps = {
     runCli: runCliDefault,
     runCliText: runCliTextDefault,
@@ -461,7 +699,10 @@ export async function executeAction(actionId, input, configInput, injected = {})
   const effectiveRequestId = injected.requestId || `${actionId}:${Date.now()}`;
   if (HOST_RECOVERY_DISPATCH_ACTIONS.has(actionId)) {
     const command = buildHostRecoveryDispatchCommand(actionId);
-    await runTerminalCommand(config, effectiveRequestId, command, deps, { awaitResult: false, resetPendingInput: actionId === 'host_task_install_dispatch' });
+    await runTerminalCommand(config, effectiveRequestId, command, deps, {
+      awaitResult: false,
+      resetPendingInput: actionId === 'host_task_install_dispatch',
+    });
     return {
       device: config.device,
       wsl: { configuredDistro: config.wsl.distro },
@@ -475,11 +716,16 @@ export async function executeAction(actionId, input, configInput, injected = {})
     };
   }
   const markers = markerPair(effectiveRequestId);
-  const command = actionId === 'wsl_status' ? buildWslStatusCommand(markers) : buildForgeCommand(actionId, config, markers);
+  const command =
+    actionId === 'wsl_status' ? buildWslStatusCommand(markers) : buildForgeCommand(actionId, config, markers);
   const payload = await runTerminalCommand(config, effectiveRequestId, command, deps);
   if (actionId === 'wsl_status') {
     const records = parseRecords(payload);
-    const distros = payload.split(/\r?\n/).filter((line) => line.startsWith('distro_b64|')).map((line) => decodeB64(line.slice('distro_b64|'.length))).filter(Boolean);
+    const distros = payload
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('distro_b64|'))
+      .map((line) => decodeB64(line.slice('distro_b64|'.length)))
+      .filter(Boolean);
     return { device: config.device, configuredDistro: config.wsl.distro, distros, status: records.status || '' };
   }
   const result = parseRecords(payload);
@@ -487,7 +733,13 @@ export async function executeAction(actionId, input, configInput, injected = {})
   result.wsl = { configuredDistro: config.wsl.distro, observedDistro: result.distro || '' };
   result.controllerHome = config.wsl.controllerHome;
   result.units = serviceUnits(config.wsl.controllerHome);
-  if (MUTATING_ACTIONS.has(actionId) && result.actionExit !== 0) throw rescueError('UU_RESCUE_REMOTE_ACTION_FAILED', `Fixed remote action ${actionId} exited with code ${String(result.actionExit ?? 'unknown')}.`, false, { actionId, actionExit: result.actionExit });
+  if (MUTATING_ACTIONS.has(actionId) && result.actionExit !== 0)
+    throw rescueError(
+      'UU_RESCUE_REMOTE_ACTION_FAILED',
+      `Fixed remote action ${actionId} exited with code ${String(result.actionExit ?? 'unknown')}.`,
+      false,
+      { actionId, actionExit: result.actionExit },
+    );
   return result;
 }
 
@@ -499,39 +751,96 @@ function loadConfig() {
 
 async function providerAction(request) {
   const config = loadConfig();
-  if (request.actionId === 'manifest') return { id: PLUGIN_ID, name: 'Forge UU Remote Rescue', version: PLUGIN_VERSION, protocolVersion: '1.0', mode: 'external', scope: 'controller', provider: 'local-macos', capabilities: CAPABILITIES, actions: ACTIONS };
+  if (request.actionId === 'manifest')
+    return {
+      id: PLUGIN_ID,
+      name: 'Forge UU Remote Rescue',
+      version: PLUGIN_VERSION,
+      protocolVersion: '1.0',
+      mode: 'external',
+      scope: 'controller',
+      provider: 'local-macos',
+      capabilities: CAPABILITIES,
+      actions: ACTIONS,
+    };
   if (request.actionId === 'health') {
     const system = runCliDefault(config, ['status']);
     let device;
-    try { device = await verifyDevice(config, { runCli: runCliDefault }, false); } catch (error) { return { state: 'degraded', warnings: [error.code || 'UU_RESCUE_DEVICE_UNAVAILABLE'], xpcServiceStatus: system?.data?.xpcServiceStatus, networkStatus: system?.data?.networkStatus }; }
+    try {
+      device = await verifyDevice(config, { runCli: runCliDefault }, false);
+    } catch (error) {
+      return {
+        state: 'degraded',
+        warnings: [error.code || 'UU_RESCUE_DEVICE_UNAVAILABLE'],
+        xpcServiceStatus: system?.data?.xpcServiceStatus,
+        networkStatus: system?.data?.networkStatus,
+      };
+    }
     const ready = system?.data?.xpcServiceStatus === 'running' && system?.data?.isLoggedIn === true && device.isOnline;
-    return { state: ready ? 'ready' : 'degraded', warnings: ready ? [] : ['Configured UU Remote target is not currently ready for rescue.'], device, xpcServiceStatus: system?.data?.xpcServiceStatus, networkStatus: system?.data?.networkStatus };
+    return {
+      state: ready ? 'ready' : 'degraded',
+      warnings: ready ? [] : ['Configured UU Remote target is not currently ready for rescue.'],
+      device,
+      xpcServiceStatus: system?.data?.xpcServiceStatus,
+      networkStatus: system?.data?.networkStatus,
+    };
   }
   return await executeAction(request.actionId, request.input, config, { requestId: request.requestId });
 }
 
 export async function runManagedHelper() {
-  process.stdout.write(`${JSON.stringify({ schemaVersion: 1, type: 'handshake', protocolVersion: PROTOCOL_VERSION, pluginId: PLUGIN_ID, helperVersion: PLUGIN_VERSION, capabilities: CAPABILITIES })}\n`);
+  process.stdout.write(
+    `${JSON.stringify({ schemaVersion: 1, type: 'handshake', protocolVersion: PROTOCOL_VERSION, pluginId: PLUGIN_ID, helperVersion: PLUGIN_VERSION, capabilities: CAPABILITIES })}\n`,
+  );
   let raw = '';
   for await (const chunk of process.stdin) raw += chunk;
   const line = raw.split(/\r?\n/).find((entry) => entry.trim());
   if (!line) throw rescueError('UU_RESCUE_REQUEST_MISSING', 'Managed plugin request is missing.');
   const request = parseJson(line, 'UU_RESCUE_REQUEST_INVALID');
-  if (request.schemaVersion !== 1 || request.type !== 'execute' || typeof request.requestId !== 'string' || typeof request.actionId !== 'string' || !request.input || typeof request.input !== 'object' || Array.isArray(request.input)) {
+  if (
+    request.schemaVersion !== 1 ||
+    request.type !== 'execute' ||
+    typeof request.requestId !== 'string' ||
+    typeof request.actionId !== 'string' ||
+    !request.input ||
+    typeof request.input !== 'object' ||
+    Array.isArray(request.input)
+  ) {
     throw rescueError('UU_RESCUE_REQUEST_INVALID', 'Managed plugin request envelope is invalid.');
   }
   try {
     const result = await providerAction(request);
-    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, type: 'result', requestId: request.requestId, ok: true, result })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ schemaVersion: 1, type: 'result', requestId: request.requestId, ok: true, result })}\n`,
+    );
   } catch (error) {
-    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, type: 'result', requestId: request.requestId, ok: false, error: { code: error?.code || 'UU_RESCUE_FAILED', message: String(error?.message || 'UU Remote rescue failed.').replace(/(token|secret|password|authorization)\s*[=:]\s*\S+/gi, '$1=[REDACTED]').slice(0, 1000), retryable: error?.retryable === true, ...(error?.details ? { details: error.details } : {}) } })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({
+        schemaVersion: 1,
+        type: 'result',
+        requestId: request.requestId,
+        ok: false,
+        error: {
+          code: error?.code || 'UU_RESCUE_FAILED',
+          message: String(error?.message || 'UU Remote rescue failed.')
+            .replace(/(token|secret|password|authorization)\s*[=:]\s*\S+/gi, '$1=[REDACTED]')
+            .slice(0, 1000),
+          retryable: error?.retryable === true,
+          ...(error?.details ? { details: error.details } : {}),
+        },
+      })}\n`,
+    );
   }
 }
 
 const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   runManagedHelper().catch((error) => {
-    process.stderr.write(`UU_RESCUE_HELPER_FATAL: ${String(error?.message || error).replace(/(token|secret|password|authorization)\s*[=:]\s*\S+/gi, '$1=[REDACTED]').slice(0, 1000)}\n`);
+    process.stderr.write(
+      `UU_RESCUE_HELPER_FATAL: ${String(error?.message || error)
+        .replace(/(token|secret|password|authorization)\s*[=:]\s*\S+/gi, '$1=[REDACTED]')
+        .slice(0, 1000)}\n`,
+    );
     process.exitCode = 1;
   });
 }
