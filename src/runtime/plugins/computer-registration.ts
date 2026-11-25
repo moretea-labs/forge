@@ -282,13 +282,14 @@ function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
       type: 'string',
       minLength: 1,
       maxLength: 2048,
-      description: 'Existing ChatGPT Project URL used only for one Computer-owned successor bootstrap.',
+      description:
+        'ChatGPT bootstrap URL used only for one Computer-owned successor: signed-in root or an exact Project page.',
     },
     bootstrap_key: {
       type: 'string',
       minLength: 1,
       maxLength: 256,
-      description: 'Stable external-orchestrator bootstrap identity within the exact ChatGPT Project.',
+      description: 'Stable external-orchestrator identity for one exact Computer-owned ChatGPT bootstrap target.',
     },
   };
   const targetIdentitySchema = { ...conversationIdentitySchema, ...bootstrapIdentitySchema };
@@ -525,6 +526,8 @@ function computerChatgptTargetIdentity(args: Record<string, unknown>): ComputerC
       retryable: false,
     });
   }
+  const isRootBootstrap = parsed.pathname === '/';
+  const isProjectBootstrap = /^\/g\/g-p-[a-z0-9]+(?:-[^/]+)?\/project\/?$/i.test(parsed.pathname);
   if (
     parsed.protocol !== 'https:' ||
     parsed.hostname !== 'chatgpt.com' ||
@@ -532,18 +535,18 @@ function computerChatgptTargetIdentity(args: Record<string, unknown>): ComputerC
     parsed.password ||
     parsed.search ||
     parsed.hash ||
-    !/^\/g\/g-p-[a-z0-9]+(?:-[^/]+)?\/project\/?$/i.test(parsed.pathname)
+    (!isRootBootstrap && !isProjectBootstrap)
   ) {
     throw new AssistantPluginError(
       'PLUGIN_ACTION_ARGUMENT_INVALID',
-      'project_url must be an exact ChatGPT Project page.',
+      'project_url must be https://chatgpt.com/ or an exact ChatGPT Project page.',
       { retryable: false },
     );
   }
   return {
     namespace: 'chatgpt.bootstrap',
     bootstrapKey: computerChatgptBootstrapKey(args),
-    projectUrl: `https://chatgpt.com${parsed.pathname.replace(/\/+$/, '')}`,
+    projectUrl: isRootBootstrap ? 'https://chatgpt.com/' : `https://chatgpt.com${parsed.pathname.replace(/\/+$/, '')}`,
   };
 }
 

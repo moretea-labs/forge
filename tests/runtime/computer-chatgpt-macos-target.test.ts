@@ -33,6 +33,34 @@ function testPage(tabId: string, onEvaluate: () => void): TestPage {
   };
 }
 
+test('generic ChatGPT root is a valid native bootstrap target', async () => {
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-chatgpt-root-bootstrap-'));
+  const authority = runtimeComputerInteractionTargetAuthority();
+  const bootstrapKey = 'root-bootstrap-authority';
+  const port = new MacOsChatgptConversationTargetPort(controllerHome, authority, 1_000);
+  let createdUrl = '';
+  (port as unknown as TestablePort).create = async (url) => {
+    createdUrl = url;
+    return testPage('root-bootstrap-tab', () => undefined);
+  };
+
+  try {
+    const opened = await port.openBootstrap('https://chatgpt.com/', bootstrapKey);
+    expect(opened.state).toBe('ready');
+    expect(createdUrl).toBe('https://chatgpt.com/');
+    expect(
+      authority.findSurfaceByStableIdentity(controllerHome, {
+        surfaceType: 'browser-tab',
+        ownership: 'provider_owned',
+        resource: { namespace: 'chatgpt.bootstrap', key: bootstrapKey },
+      })?.providerBinding,
+    ).toMatchObject({ providerId: 'browser.macos-apple-events', tabId: 'root-bootstrap-tab' });
+  } finally {
+    await port.close();
+    rmSync(controllerHome, { recursive: true, force: true });
+  }
+});
+
 test('bootstrap persists exact native binding before DOM owner marking and reuses it across ports', async () => {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-chatgpt-bootstrap-binding-'));
   const authority = runtimeComputerInteractionTargetAuthority();
