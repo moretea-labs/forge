@@ -43,7 +43,6 @@ export type AgentJobPreservationReason =
   | 'active_worker'
   | 'active_lease'
   | 'active_job'
-  | 'active_edit_session'
   | 'waiting_for_user'
   | 'canonical_main_occupied'
   | 'worktree_path_mismatch'

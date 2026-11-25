@@ -14,7 +14,6 @@ import { createMcpToolContext } from '../../adapters/mcp/server';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/runtime/repositories/registry';
 import { commitSelectedPaths } from '../../src/runtime/repositories/selected-path-actions';
-import { ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/runtime/local-bridge/read-model';
 import { listActiveAgentJobSnapshots } from '../../src/runtime/agent-jobs/read-model';
@@ -44,16 +43,6 @@ import {
 } from '../../src/runtime/evidence/controller-worklog';
 import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 import { MCP_SERVER_INSTRUCTIONS } from '../../adapters/mcp/instructions';
-import {
-  applyEditOperations,
-  assertEditSessionDurableBinding,
-  beginEditSession,
-  finalizeEditSession,
-  reconcileEditSession,
-  getEditSession,
-  recordEditSessionProcessCheckReceipts,
-} from '../../src/runtime/editing/edit-session';
-import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { executeRepositoryBatch } from '../../src/runtime/execution/thin-harness/batch-executor';
 import { resolveAuthorizationRequest } from '../../src/runtime/control-plane/governance/authorization';
 
@@ -1618,46 +1607,6 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(existsSync(storage.physicalPath)).toBe(true);
     expect(existsSync(join(fx.repoRoot, '.ai', 'harness', 'controller', 'worklog.jsonl'))).toBe(false);
     expect(listControllerWorklogEvents(fx.repoRoot, { limit: 1 }, authority)[0]?.id).toBe(event.id);
-  });
-
-  test('durable edit-session validation binding rejects different Work, principal, or checkout', () => {
-    const fx = fixture();
-    roots.push(fx.root);
-    const binding = {
-      workId: 'work-validation-owner',
-      repoId: fx.repository.repoId,
-      checkoutId: fx.repository.activeCheckoutId,
-      principalId: 'principal-validation-owner',
-      routeDecisionFingerprint: 'route-validation-owner',
-    };
-    const editStorage = ensureRepositoryRuntimeStorageBinding(fx.repository, 'edit-sessions', fx.controllerHome);
-    expect(['linked', 'already-linked', 'migrated', 'merged']).toContain(editStorage.status);
-    const session = beginEditSession(fx.repoRoot, {
-      purpose: 'durable validation identity fence',
-      binding,
-    });
-
-    expect(() => assertEditSessionDurableBinding(session, binding, { requireBoundIdentity: true })).not.toThrow();
-    expect(() =>
-      assertEditSessionDurableBinding(session, { ...binding, repoId: 'repo-other' }, { requireBoundIdentity: true }),
-    ).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: repoId');
-    expect(() =>
-      assertEditSessionDurableBinding(
-        session,
-        { ...binding, principalId: 'principal-other' },
-        { requireBoundIdentity: true },
-      ),
-    ).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: principalId');
-    expect(() =>
-      assertEditSessionDurableBinding(
-        session,
-        { ...binding, checkoutId: 'checkout_other' },
-        { requireBoundIdentity: true },
-      ),
-    ).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: checkoutId');
-    expect(() => assertEditSessionDurableBinding(session, undefined, { requireBoundIdentity: true })).toThrow(
-      'EDIT_SESSION_IDENTITY_MISMATCH: binding',
-    );
   });
 
   test('run_check preserves Process Runtime request conflicts instead of masking them', async () => {

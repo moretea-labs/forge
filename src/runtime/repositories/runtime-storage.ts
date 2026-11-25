@@ -62,7 +62,6 @@ const OWNER_MARKER = '.forge-owner.json';
 const RUNTIME_STORAGE_SPECS: RuntimeStorageSpec[] = [
   { name: 'runs', sourceName: 'jobs', controllerName: 'runs', detectActiveRuns: true },
   { name: 'worktrees', sourceName: 'worktrees', controllerName: 'worktrees', preserveNonEmpty: true },
-  { name: 'edit-sessions', sourceName: 'edit-sessions', controllerName: 'edit-sessions' },
   { name: 'controller-state', sourceName: 'controller', controllerName: 'controller' },
   { name: 'artifacts', sourceName: 'artifacts', controllerName: 'artifacts' },
   { name: 'local-jobs', sourceName: 'local-jobs', controllerName: 'local-jobs', detectActiveLocalJobs: true },

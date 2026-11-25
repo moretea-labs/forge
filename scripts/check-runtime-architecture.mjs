@@ -2022,16 +2022,13 @@ for (const path of [
   );
 }
 requireText('src/runtime/editing/edit-operation-contract.ts', 'export function findOccurrence');
-for (const path of ['src/runtime/editing/edit-session.ts', 'src/runtime/repositories/safe-patch.ts']) {
+for (const path of ['src/runtime/repositories/safe-patch.ts']) {
   forbid(
     path,
     /^(?:export )?function\s+findOccurrence\s*\(/m,
     'edit implementations must reuse the shared edit-operation anchor matcher',
   );
 }
-requireText('src/runtime/editing/edit-session.ts', 'beforeMode');
-requireText('src/runtime/editing/edit-session.ts', 'afterMode');
-requireText('src/runtime/editing/edit-session.ts', '{ mode: record.beforeMode }');
 requireText('src/cli/editing/executable-modes.ts', 'mode | 0o111');
 requireText('scripts/repair-executable-modes.ts', "process.argv.includes('--check')");
 requireText('package.json', 'check:executable-modes');
@@ -2459,7 +2456,6 @@ requireText(
 );
 requireText('src/runtime/control-plane/global-scheduler/worker-lifecycle.ts', 'buildSchedulerWorkerExitFailure');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'runSchedulerPeriodicCleanup');
-requireText('src/runtime/control-plane/global-scheduler/maintenance.ts', 'runSchedulerValidationReconciliation');
 requireMatch(
   'src/runtime/control-plane/global-scheduler/maintenance.ts',
   /input\.runtimeCleanup\(input\.controllerHome,\s*\{\s*reason:\s*['"]periodic['"]/s,
@@ -2937,11 +2933,6 @@ forbid(
   'current Scheduler domain must not expose Work ownership in ScheduleResourceClaim or helper APIs',
 );
 forbid(
-  'src/runtime/editing/edit-session.ts',
-  /\bworkId\b/,
-  'current EditSession schema, summary and worklog must not expose legacy Work identity',
-);
-forbid(
   'src/cli/controller/task-ledger.ts',
   /active_work|Work in progress/,
   'current TaskLedger schema must use Run terminology, not first-class Work terminology',
@@ -3063,11 +3054,6 @@ forbid(
   'src/runtime/control-plane/global-scheduler/maintenance.ts',
   /readWorkContractStore|releasableIosTestEvidenceWorkIds/,
   'periodic maintenance must not query historical Work state to authorize evidence retention',
-);
-forbid(
-  'src/runtime/editing/edit-session.ts',
-  /protectedWorkIds|skippedByReason\.active_work/,
-  'EditSession retention must be owned by EditSession state/retention rather than Work liveness',
 );
 forbid(
   'src/runtime/control-plane/execution/repository-lifecycle-audit.ts',

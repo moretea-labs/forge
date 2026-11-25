@@ -3,7 +3,7 @@
  *
  * Ordinary checks execute through an in-memory lightweight handle and return
  * within the interactive budget without creating Process/Lease state. Checks
- * with real EditSession/verification consumers keep persisted Process receipts.
+ * with current verification consumers keep persisted Process receipts.
  * Multi-phase and release checks require explicit external Controller handling.
  */
 
@@ -60,8 +60,6 @@ export interface RunCheckFacadeInput {
   /** Exact consumers of the resulting persisted Process check receipt. */
   verificationBinding?: {
     executionSessionId?: string;
-    editSessionId?: string;
-    editRevision?: number;
     issueId?: string;
     taskId?: string;
   };
@@ -72,10 +70,10 @@ export function processCheckSemanticScopeKey(
   reuseScope: 'repository' | 'checkout',
 ): string {
   const scope = reuseScope === 'repository' ? 'repository' : `checkout:${input.checkoutId ?? 'unknown'}`;
-  // The physical Check cacheKey stays owned by Check Runner; an EditSession's
-  // exact source identity fences semantic Process reuse across input changes.
-  const editInput = input.verificationBinding?.editSessionId ? input.requestSemanticFingerprint?.trim() : undefined;
-  return editInput ? `${scope}:edit-input:${editInput}` : scope;
+  // The physical Check cacheKey stays owned by Check Runner; an explicit
+  // semantic input fingerprint fences Process reuse across source/input changes.
+  const semanticInput = input.requestSemanticFingerprint?.trim();
+  return semanticInput ? `${scope}:semantic-input:${semanticInput}` : scope;
 }
 
 export interface RunCheckFacadeResult {
@@ -180,7 +178,6 @@ export async function runCheckViaProcessRuntime(
   );
   const durableVerificationBinding = Boolean(
     input.verificationBinding?.executionSessionId
-    || input.verificationBinding?.editSessionId
     || input.verificationBinding?.issueId
     || input.verificationBinding?.taskId,
   );
@@ -274,9 +271,8 @@ export async function runCheckViaProcessRuntime(
       toolName: 'run_check',
       checkId: input.checkId,
       requestId: input.requestId,
+      requestSemanticFingerprint: input.requestSemanticFingerprint,
       executionSessionId: input.verificationBinding?.executionSessionId,
-      editSessionId: input.verificationBinding?.editSessionId,
-      editRevision: input.verificationBinding?.editRevision,
       issueId: input.verificationBinding?.issueId,
       taskId: input.verificationBinding?.taskId,
     },

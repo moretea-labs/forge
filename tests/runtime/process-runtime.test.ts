@@ -2211,14 +2211,14 @@ describe('run_check Process Runtime facade', () => {
     ).toBe(checkoutScope);
     expect(
       persistedCheckSemanticScopeKey(
-        { checkoutId: 'checkout-a', verificationBinding: { editSessionId: 'edit-b', editRevision: 2 } },
+        { checkoutId: 'checkout-a', verificationBinding: { issueId: 'ISS-b', taskId: 'T2' } },
         'checkout',
       ),
     ).toBe(checkoutScope);
     expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-b' }, 'checkout')).not.toBe(checkoutScope);
     expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a' }, 'repository')).toBe('repository');
   });
-  test('reuses identical Check Process evidence across Edit Session consumers', async () => {
+  test('reuses identical Check Process evidence across generic consumers', async () => {
     const fx = fixture();
     const common = {
       controllerHome: fx.controllerHome,
@@ -2231,15 +2231,15 @@ describe('run_check Process Runtime facade', () => {
     };
     const first = await runPersistedCheckViaProcessRuntime({
       ...common,
-      requestId: 'edit-check-a',
-      commandId: 'edit-check-a',
-      verificationBinding: { editSessionId: 'edit-a', editRevision: 1 },
+      requestId: 'consumer-check-a',
+      commandId: 'consumer-check-a',
+      verificationBinding: { issueId: 'ISS-a', taskId: 'T1' },
     });
     const second = await runPersistedCheckViaProcessRuntime({
       ...common,
-      requestId: 'edit-check-b',
-      commandId: 'edit-check-b',
-      verificationBinding: { editSessionId: 'edit-b', editRevision: 1 },
+      requestId: 'consumer-check-b',
+      commandId: 'consumer-check-b',
+      verificationBinding: { issueId: 'ISS-b', taskId: 'T2' },
     });
     expect(first.process?.completed).toBe(true);
     expect(second.process?.completed).toBe(true);

@@ -320,7 +320,6 @@ const DEFAULT_EXCLUDES = [
   '.build/**',
   'DerivedData/**',
   '.ai/harness/backups/**',
-  '.ai/harness/edit-sessions/**',
   '.ai/harness/jobs/**',
   '.ai/harness/local-jobs/**',
   '.ai/harness/controller/**',

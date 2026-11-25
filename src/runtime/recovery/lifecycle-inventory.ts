@@ -220,31 +220,6 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     ],
   }),
   lifecycle({
-    id: 'edit_session',
-    owner: 'Edit Session authority',
-    scope: 'repository',
-    dataClass: 'execution_authority',
-    storage:
-      'Controller Home repository edit-sessions namespace reached through the repository runtime-storage compatibility binding.',
-    terminalCondition:
-      'Edit session is finalized, superseded or rolled back; Work identity is fully retired and is not a session owner.',
-    activeProtection:
-      'Non-terminal sessions are never physically reclaimed; terminal sessions remain until EditSession retention policy applies.',
-    retentionCapacity:
-      'Terminal unowned sessions retain at most the newest 200 identities and seven days of history; centralized cleanup uses bounded rotating scans/removal budgets.',
-    cleanupAuthority:
-      'Central Runtime maintenance invokes EditSession-owned physical retention using EditSession state and current resource ownership.',
-    recoverySemantics:
-      'Stale fingerprints reconcile into explicit session state before terminality; physical cleanup removes disposable patch/session artifacts only and never implies semantic task completion.',
-    closureStatus: 'existing_bounded',
-    evidencePaths: [
-      'src/runtime/editing/edit-session.ts',
-      'src/runtime/repositories/runtime-storage.ts',
-      'src/runtime/control-plane/runtime-cleanup.ts',
-      'tests/runtime/runtime-cleanup.test.ts',
-    ],
-  }),
-  lifecycle({
     id: 'mcp_transport_session',
     owner: 'MCP HTTP transport lifecycle',
     scope: 'session',

@@ -848,7 +848,7 @@ export async function callRepositoryTool(
           operation: 'repository_safe_patch_apply',
           summary:
             atomic.status === 'applied'
-              ? `原子补丁已应用：${atomic.changedFiles.join(', ')}（无持久 EditSession）。`
+              ? `原子补丁已应用：${atomic.changedFiles.join(', ')}（无持久编辑生命周期）。`
               : atomic.status === 'partial'
                 ? `原子补丁已局部应用：${atomic.changedFiles.join(', ')}；冲突语义组未落地：${firstFailure?.message ?? '需要局部合并'}`
                 : `原子补丁未应用：${firstFailure?.message ?? '请刷新源码后重试'}`,
@@ -877,7 +877,7 @@ export async function callRepositoryTool(
                   source: 'atomic_patch',
                   receipts: atomic.receipts ?? (atomic.receipt ? [atomic.receipt] : []),
                   semanticReviewAuthority: 'chatgpt',
-                  next: 'Use repository.git diff_paths for the exact reviewable diff; no EditSession was created.',
+                  next: 'Use repository.git diff_paths for the exact reviewable diff; no persistent edit lifecycle was created.',
                 }
               : undefined,
           suggestedNextActions: digest.suggestedNextActions,

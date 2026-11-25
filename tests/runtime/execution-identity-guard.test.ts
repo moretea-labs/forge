@@ -7,7 +7,6 @@ import { createHash } from 'crypto';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { createMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
-import { getEditSession } from '../../src/runtime/editing/edit-session';
 import {
   addRepositoryCheckout,
   loadRepositoryRegistry,
@@ -373,7 +372,7 @@ describe('execution identity pre-spawn guard', () => {
     );
   });
 
-  test('authenticated Safe Patch survives unrelated Writer commit without losing session ownership (#713)', async () => {
+  test('authenticated sessionless Safe Patch survives an unrelated Writer commit (#713)', async () => {
     const fx = dualRepoFixture();
     const ctx = createMcpToolContext({
       controllerHome: fx.controllerHome,
@@ -381,13 +380,6 @@ describe('execution identity pre-spawn guard', () => {
       repo: fx.repoARoot,
       sessionId: 'authenticated-writer-a',
       principalId: 'authenticated-principal-a',
-    });
-    const other = createMcpToolContext({
-      controllerHome: fx.controllerHome,
-      profile: 'controller',
-      repo: fx.repoARoot,
-      sessionId: 'authenticated-writer-b',
-      principalId: 'authenticated-principal-b',
     });
     const base = {
       repo_id: fx.repoA.repoId,
@@ -398,22 +390,18 @@ describe('execution identity pre-spawn guard', () => {
       'repository_safe_patch_apply',
       {
         ...base,
-        purpose: 'parallel source Writer continuation',
         allowed_paths: ['owned-file.txt'],
         operations: [{ type: 'create', path: 'owned-file.txt', content: 'writer-a-v1\n' }],
       },
       ctx,
     );
     expect(first?.isError).not.toBe(true);
-    const firstPayload = first?.structuredContent as Record<string, any>;
-    const sessionId = String(firstPayload?.session?.sessionId ?? '');
-    expect(sessionId).toMatch(/^EDIT-/);
-    const bound = getEditSession(fx.repoARoot, sessionId);
-    expect(bound).toMatchObject({
-      repoId: fx.repoA.repoId,
-      checkoutId: fx.repoA.activeCheckoutId,
-      principalId: 'authenticated-principal-a',
+    expect(first?.structuredContent).toMatchObject({
+      status: 'applied',
+      sessionless: true,
+      createdSession: false,
     });
+    expect((first?.structuredContent as Record<string, unknown>)?.session).toBeUndefined();
 
     writeFileSync(join(fx.repoARoot, 'foreign-writer.txt'), 'unrelated commit\n');
     expect(spawnSync('git', ['-C', fx.repoARoot, 'add', '--', 'foreign-writer.txt']).status).toBe(0);
@@ -421,36 +409,31 @@ describe('execution identity pre-spawn guard', () => {
     const head = spawnSync('git', ['-C', fx.repoARoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
     expect(head).not.toBe(fx.headA);
 
-    const followup = {
-      ...base,
-      session_id: sessionId,
-      expected_revision: bound.currentRevision,
-      operations: [
-        {
-          type: 'replace',
-          path: 'owned-file.txt',
-          expected_sha256: createHash('sha256').update('writer-a-v1\n').digest('hex'),
-          old_text: 'writer-a-v1',
-          new_text: 'writer-a-v2',
-        },
-      ],
-    };
-    const rejected = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', followup, other);
-    expect(rejected?.isError).toBe(true);
-    expect(JSON.stringify(rejected?.structuredContent)).toContain('EDIT_SESSION_IDENTITY_MISMATCH');
-    const anonymous = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', followup);
-    expect(anonymous?.isError).toBe(true);
-    expect(JSON.stringify(anonymous?.structuredContent)).toContain('EDIT_SESSION_IDENTITY_MISMATCH');
-    expect(readFileSync(join(fx.repoARoot, 'owned-file.txt'), 'utf8')).toBe('writer-a-v1\n');
-
-    const continued = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', followup, ctx);
+    const continued = await callRepositoryTool(
+      fx.controllerHome,
+      'repository_safe_patch_apply',
+      {
+        ...base,
+        allowed_paths: ['owned-file.txt'],
+        operations: [
+          {
+            type: 'replace',
+            path: 'owned-file.txt',
+            expected_sha256: createHash('sha256').update('writer-a-v1\n').digest('hex'),
+            old_text: 'writer-a-v1',
+            new_text: 'writer-a-v2',
+          },
+        ],
+      },
+      ctx,
+    );
     if (continued?.isError) throw new Error(JSON.stringify(continued.structuredContent));
-    const payload = continued?.structuredContent as Record<string, any>;
-    expect(payload?.status).toBe('applied');
-    expect(payload?.session?.sessionId).toBe(sessionId);
-    expect(payload?.session?.baseRevision).toBe(head);
-    expect(payload?.session?.currentRevision).toBe(3);
-    expect(payload?.recoveredSession?.previousSessionId).toBe(sessionId);
+    expect(continued?.structuredContent).toMatchObject({
+      status: 'applied',
+      sessionless: true,
+      createdSession: false,
+    });
+    expect((continued?.structuredContent as Record<string, unknown>)?.session).toBeUndefined();
     expect(readFileSync(join(fx.repoARoot, 'owned-file.txt'), 'utf8')).toBe('writer-a-v2\n');
     expect(readFileSync(join(fx.repoARoot, 'foreign-writer.txt'), 'utf8')).toBe('unrelated commit\n');
   });

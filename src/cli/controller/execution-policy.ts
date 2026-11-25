@@ -29,7 +29,6 @@ export function completionReceiptComplete(
     && receipt.receiptId.trim()
     && receipt.targetBranch.trim()
     && receipt.targetRevision.trim()
-    && receipt.editSessionId.trim()
     && (!expected.targetBranch || receipt.targetBranch === expected.targetBranch)
     && receipt.reachable
     && Array.isArray(receipt.resourceBlockers)
@@ -60,7 +59,6 @@ export function cleanupEvidenceResourceBlockers(
     add(cleanupBlocker('unknown_resource_ownership', 'Temporary branch deletion or retention was not proven.', 'branch'));
   }
   if (!cleanup.leasesReleased) add(cleanupBlocker('lease_active', 'Task-owned leases are still active.', 'lease'));
-  if (!cleanup.editSessionClosedOrNotCreated) add(cleanupBlocker('edit_session_open', 'Task-owned edit session is not closed.', 'edit_session'));
   if (!cleanup.noActiveProcess) add(cleanupBlocker('active_write_process', 'Task-owned execution process may still be active.', 'process'));
   if (!cleanup.noDirtyDiff) add(cleanupBlocker('dirty_owned_paths', 'Task-owned paths still have uncommitted changes.', 'workspace'));
   if (options.includeRunTerminal !== false && !cleanup.runTerminal) {
@@ -75,7 +73,6 @@ function cleanupEvidenceHasOnlyMaintenanceWarnings(cleanup: CleanupEvidence): bo
     && cleanupEvidenceResourceBlockers(cleanup).length === 0
     && cleanup.leasesReleased
     && cleanup.runTerminal
-    && cleanup.editSessionClosedOrNotCreated
     && cleanup.noActiveProcess
     && cleanup.noDirtyDiff,
   );
@@ -105,7 +102,6 @@ export function completionEvidenceComplete(
     && (cleanup.branchDeletedOrRetained || cleanupEvidenceHasOnlyMaintenanceWarnings(cleanup))
     && cleanup.leasesReleased
     && cleanup.runTerminal
-    && cleanup.editSessionClosedOrNotCreated
     && cleanup.noActiveProcess
     && cleanup.noDirtyDiff);
 }

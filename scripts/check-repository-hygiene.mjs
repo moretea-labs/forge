@@ -39,7 +39,6 @@ for (const relativePath of [
   '.ai/harness/planning',
   '.ai/harness/security',
   '.ai/harness/transfers',
-  '.ai/harness/edit-sessions',
 ]) {
   const path = join(ROOT, relativePath);
   if (!existsSync(path)) continue;

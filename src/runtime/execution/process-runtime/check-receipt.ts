@@ -11,8 +11,7 @@ export interface ProcessCheckReceiptExpectation {
   repoId?: string;
   checkoutId?: string;
   executionSessionId?: string;
-  editSessionId?: string;
-  editRevision?: number;
+  requestSemanticFingerprint?: string;
   issueId?: string;
   taskId?: string;
   checkId?: string;
@@ -66,7 +65,7 @@ function stableDigest(value: Record<string, unknown>): string {
 
 /**
  * Normalize one persisted Process Runtime record into the single authoritative
- * check completion receipt consumed by Edit Sessions, Issues/Tasks and validation.
+ * check completion receipt consumed by Issues/Tasks and validation.
  */
 export function processCheckCompletionReceipt(
   record: ManagedProcessRecord,
@@ -112,8 +111,7 @@ export function processCheckCompletionReceipt(
   } else {
     assertExpected('checkoutId', record.checkoutId, expected.checkoutId);
     assertExpected('executionSessionId', record.origin.executionSessionId, expected.executionSessionId);
-    assertExpected('editSessionId', record.origin.editSessionId, expected.editSessionId);
-    assertExpected('editRevision', record.origin.editRevision, expected.editRevision);
+    assertExpected('requestSemanticFingerprint', record.origin.requestSemanticFingerprint, expected.requestSemanticFingerprint);
     assertExpected('issueId', record.origin.issueId, expected.issueId);
     assertExpected('taskId', record.origin.taskId, expected.taskId);
     assertExpected('requestId', record.origin.requestId, expected.requestId);
@@ -121,16 +119,16 @@ export function processCheckCompletionReceipt(
 
   const consumerCheckoutId = semanticRebind ? expected.checkoutId ?? record.checkoutId : record.checkoutId;
   const consumerExecutionSessionId = semanticRebind ? expected.executionSessionId : record.origin.executionSessionId;
-  const consumerEditSessionId = semanticRebind ? expected.editSessionId : record.origin.editSessionId;
-  const consumerEditRevision = semanticRebind ? expected.editRevision : record.origin.editRevision;
+  const consumerSemanticFingerprint = semanticRebind
+    ? expected.requestSemanticFingerprint ?? record.origin.requestSemanticFingerprint
+    : record.origin.requestSemanticFingerprint;
   const consumerIssueId = semanticRebind ? expected.issueId : record.origin.issueId;
   const consumerTaskId = semanticRebind ? expected.taskId : record.origin.taskId;
   const consumerRequestId = semanticRebind ? expected.requestId : record.origin.requestId;
   const reusedExecution = semanticRebind && (
     consumerCheckoutId !== record.checkoutId
     || consumerExecutionSessionId !== record.origin.executionSessionId
-    || consumerEditSessionId !== record.origin.editSessionId
-    || consumerEditRevision !== record.origin.editRevision
+    || consumerSemanticFingerprint !== record.origin.requestSemanticFingerprint
     || consumerIssueId !== record.origin.issueId
     || consumerTaskId !== record.origin.taskId
     || consumerRequestId !== record.origin.requestId
@@ -146,8 +144,7 @@ export function processCheckCompletionReceipt(
     repoId: record.repoId,
     checkoutId: consumerCheckoutId,
     executionSessionId: consumerExecutionSessionId,
-    editSessionId: consumerEditSessionId,
-    editRevision: consumerEditRevision,
+    requestSemanticFingerprint: consumerSemanticFingerprint,
     issueId: consumerIssueId,
     taskId: consumerTaskId,
     checkId,

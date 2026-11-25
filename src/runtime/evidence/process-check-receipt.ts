@@ -1,7 +1,7 @@
 export type ProcessCheckReceiptStatus = 'passed' | 'failed' | 'timed_out' | 'cancelled';
 export type ProcessCheckReceiptRuntimeStatus = 'succeeded' | 'failed' | 'timed_out' | 'cancelled';
 
-/** Stable evidence produced by Process Runtime and consumed by current EditSession/Issue/Task flows. */
+/** Stable evidence produced by Process Runtime and consumed by current Issue/Task/check flows. */
 export interface ProcessCheckReceiptEvidence {
   schemaVersion: 1;
   receiptId: string;
@@ -9,8 +9,7 @@ export interface ProcessCheckReceiptEvidence {
   repoId: string;
   checkoutId?: string;
   executionSessionId?: string;
-  editSessionId?: string;
-  editRevision?: number;
+  requestSemanticFingerprint?: string;
   issueId?: string;
   taskId?: string;
   checkId: string;

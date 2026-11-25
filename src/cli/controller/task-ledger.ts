@@ -211,7 +211,7 @@ function statusProjection(input: {
     if (readyToIntegrate) {
       label = 'Ready to integrate';
       reason = 'Work is complete and validated; integration is the next step (not finalization wait).';
-      nextAction = `Integrate Task ${review.issueId}/${review.taskId}, then run owned cleanup for branch/worktree/edit session.`;
+      nextAction = `Integrate Task ${review.issueId}/${review.taskId}, then run owned cleanup for branch/worktree/process/lease state.`;
     } else if (integrationBlocked) {
       label = 'Integration blocked';
       reason = 'Integration cannot proceed until conflicts, ownership, or evidence blockers are resolved.';

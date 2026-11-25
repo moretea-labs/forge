@@ -38,8 +38,6 @@ import {
   workflowInputDigest,
   writeWorkflowRunCheckpoint,
 } from '../../src/runtime/control-plane/persistence/workflow-run-store';
-import { beginEditSession, applyEditOperations } from '../../src/runtime/editing/edit-session';
-import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import {
   cancelLocalBridgeJob,
   dispatchLocalBridgeJob,
@@ -1537,34 +1535,6 @@ describe('Local Execution Bridge', () => {
     expect(retiredInputBody.error).toContain('unsupported console edit fields');
     expect(retiredInputBody.error).toContain('sessionId');
     expect(retiredInputBody.error).toContain('sessionless');
-  });
-
-  test('preserves executable mode when an Edit Session replaces a shebang file', () => {
-    const root = repo();
-    const executablePath = join(root, 'src/executable.ts');
-    writeFileSync(executablePath, '#!/usr/bin/env bun\nexport const value = 1;\n');
-    chmodSync(executablePath, 0o755);
-    const session = beginEditSession(root, {
-      purpose: 'Update executable source',
-      allowedPaths: ['src/**'],
-      maxFiles: 1,
-      maxChangedLines: 5,
-    });
-    const current = readFileSync(executablePath, 'utf8');
-    const hash = new Bun.CryptoHasher('sha256').update(current).digest('hex');
-    applyEditOperations(root, getToolPolicy('controller', { repoRoot: root }), session.sessionId, [
-      {
-        type: 'replace',
-        path: 'src/executable.ts',
-        expectedSha256: hash,
-        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
-      },
-    ]);
-    expect(lstatSync(executablePath).mode & 0o111).toBe(0o111);
-    expect(readFileSync(executablePath, 'utf8')).toContain('value = 2');
-    const patch = readFileSync(join(root, '.ai/harness/edit-sessions', session.sessionId, 'changes.patch'), 'utf8');
-    expect(patch).not.toContain('old mode 100755');
-    expect(patch).not.toContain('new mode 100644');
   });
 
   test('registers and soft-removes repositories through the local-bridge API', async () => {

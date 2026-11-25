@@ -18,7 +18,6 @@ import {
   ensureRepositoryRuntimeStorage,
   ensureRepositoryRuntimeStorageBinding,
 } from '../../src/runtime/repositories/runtime-storage';
-import { beginEditSession } from '../../src/runtime/editing/edit-session';
 import { repositoryFixture } from './repository-v81-fixture';
 
 function writeRun(root: string, runId: string, status: string, marker: string): void {
@@ -78,71 +77,6 @@ function expectLegacyControllerStateNotMigrated(state: ReturnType<typeof createL
 }
 
 describe('v8.1 repository runtime storage isolation', () => {
-  test('durable EditSession refuses to create physical repository runtime storage before binding', () => {
-    const fixture = repositoryFixture();
-    try {
-      const editSource = join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'edit-sessions');
-      expect(() =>
-        beginEditSession(fixture.repoA.canonicalRoot, {
-          purpose: 'durable storage invariant',
-          allowedPaths: ['src/**'],
-          binding: {
-            repoId: fixture.repoA.repoId,
-            checkoutId: fixture.repoA.activeCheckoutId,
-            principalId: 'test-principal',
-          },
-        }),
-      ).toThrow('EDIT_SESSION_STORAGE_NOT_BOUND');
-      expect(existsSync(editSource)).toBe(false);
-
-      const wrongTarget = join(fixture.root, 'wrong-edit-session-target');
-      mkdirSync(wrongTarget, { recursive: true });
-      symlinkSync(wrongTarget, editSource, 'dir');
-      expect(() =>
-        beginEditSession(fixture.repoA.canonicalRoot, {
-          purpose: 'durable storage wrong-target invariant',
-          allowedPaths: ['src/**'],
-          binding: {
-            repoId: fixture.repoA.repoId,
-            checkoutId: fixture.repoA.activeCheckoutId,
-            principalId: 'test-principal',
-          },
-        }),
-      ).toThrow('EDIT_SESSION_STORAGE_NOT_BOUND');
-      rmSync(editSource, { force: true });
-
-      const storage = ensureRepositoryRuntimeStorageBinding(fixture.repoA, 'edit-sessions', fixture.controllerHome);
-      const editTarget = join(repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId), 'edit-sessions');
-      expect(['linked', 'already-linked', 'migrated', 'merged']).toContain(storage.status);
-      expect(lstatSync(editSource).isSymbolicLink()).toBe(true);
-      expect(realpathSync(editSource)).toBe(realpathSync(editTarget));
-    } finally {
-      fixture.cleanup();
-    }
-  });
-
-  test('migrates EditSession storage through the same Controller Home binding used by the full runtime migration', () => {
-    const fixture = repositoryFixture();
-    try {
-      const editSource = join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'edit-sessions');
-      mkdirSync(join(editSource, 'EDIT-legacy'), { recursive: true });
-      writeFileSync(
-        join(editSource, 'EDIT-legacy', 'session.json'),
-        '{"schemaVersion":3,"sessionId":"EDIT-legacy"}\n',
-        'utf-8',
-      );
-
-      const binding = ensureRepositoryRuntimeStorageBinding(fixture.repoA, 'edit-sessions', fixture.controllerHome);
-      const editTarget = join(repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId), 'edit-sessions');
-      expect(binding.status).toBe('migrated');
-      expect(lstatSync(editSource).isSymbolicLink()).toBe(true);
-      expect(realpathSync(editSource)).toBe(realpathSync(editTarget));
-      expect(readFileSync(join(editTarget, 'EDIT-legacy', 'session.json'), 'utf-8')).toContain('EDIT-legacy');
-    } finally {
-      fixture.cleanup();
-    }
-  });
-
   test('backs compatibility session/planning/security/transfer paths with Controller Home', () => {
     const fixture = repositoryFixture();
     try {
@@ -367,27 +301,6 @@ describe('v8.1 repository runtime storage isolation', () => {
       expect(lstatSync(source).isSymbolicLink()).toBe(true);
       expect(realpathSync(source)).toBe(realpathSync(target));
       expect(readFileSync(join(target, 'RUN-legacy', 'meta.json'), 'utf-8')).toContain('from-old-controller-home');
-    } finally {
-      fixture.cleanup();
-    }
-  });
-
-  test('blocks edit-session creation while an active legacy Run remains repository-local', async () => {
-    const fixture = repositoryFixture();
-    try {
-      writeRun(fixture.repoA.canonicalRoot, 'RUN-active', 'running', 'active');
-      const storage = ensureRepositoryRuntimeStorage(fixture.repoA, fixture.controllerHome);
-      const runs = storage.bindings.find((binding) => binding.name === 'runs');
-      expect(storage.readyForExecution).toBe(false);
-      expect(runs?.status).toBe('legacy-active');
-      expect(lstatSync(join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'jobs')).isSymbolicLink()).toBe(false);
-
-      const ctx = createMcpToolContext({ controllerHome: fixture.controllerHome, profile: 'controller' });
-      const result = await callMultiRepositoryTool(ctx, 'begin_edit_session', {
-        repo_id: fixture.repoA.repoId,
-      });
-      expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain('RUNTIME_STORAGE_NOT_READY');
     } finally {
       fixture.cleanup();
     }

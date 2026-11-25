@@ -117,23 +117,10 @@ function bindRun(value: Record<string, unknown>, record: RepositoryRecord): bool
   return changed;
 }
 
-function bindEditSession(value: Record<string, unknown>, record: RepositoryRecord): boolean {
-  let changed = bindOwnedField(value, 'repoId', record.repoId, `Edit Session ${String(value.sessionId ?? 'unknown')}`);
-  const checkoutId = inferredCheckoutId(value, record, `Edit Session ${String(value.sessionId ?? 'unknown')}`);
-  if (value.checkoutId !== checkoutId) {
-    value.checkoutId = checkoutId;
-    changed = true;
-  }
-  return changed;
-}
 
-function migrateJsonFile(path: string, record: RepositoryRecord, kind: 'issue' | 'run' | 'edit'): boolean {
+function migrateJsonFile(path: string, record: RepositoryRecord, kind: 'issue' | 'run'): boolean {
   const value = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
-  const changed = kind === 'issue'
-    ? bindIssue(value, record)
-    : kind === 'run'
-      ? bindRun(value, record)
-      : bindEditSession(value, record);
+  const changed = kind === 'issue' ? bindIssue(value, record) : bindRun(value, record);
   if (changed) atomicJson(path, value);
   return changed;
 }
@@ -161,11 +148,10 @@ export function bindRepositoryEntities(record: RepositoryRecord): EntityMigratio
     files: [],
     errors: [],
   };
-  const roots: Array<{ root: string; kind: 'issue' | 'run' | 'edit'; predicate: (path: string) => boolean }> = [
+  const roots: Array<{ root: string; kind: 'issue' | 'run'; predicate: (path: string) => boolean }> = [
     { root: 'tasks/issues', kind: 'issue', predicate: (path) => path.endsWith('.issue.json') },
     { root: '.ai/harness/ephemeral-issues', kind: 'issue', predicate: (path) => path.endsWith('.issue.json') },
     { root: '.ai/harness/jobs', kind: 'run', predicate: (path) => path.endsWith('/meta.json') || path.endsWith('\\meta.json') },
-    { root: '.ai/harness/edit-sessions', kind: 'edit', predicate: (path) => path.endsWith('/session.json') || path.endsWith('\\session.json') },
   ];
   for (const entry of roots) {
     for (const path of listFiles(record.canonicalRoot, entry.root, entry.predicate)) {

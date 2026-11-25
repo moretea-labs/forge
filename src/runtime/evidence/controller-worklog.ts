@@ -45,7 +45,6 @@ export interface ControllerWorklogEvent {
   taskId?: string;
   runId?: string;
   jobId?: string;
-  editSessionId?: string;
   statusFrom?: string;
   statusTo?: string;
   details?: Record<string, unknown>;
@@ -57,7 +56,6 @@ export interface WorklogFilter {
   taskId?: string;
   runId?: string;
   jobId?: string;
-  editSessionId?: string;
   since?: string;
   until?: string;
   limit?: number;
@@ -139,7 +137,6 @@ export function appendControllerWorklogEvent(
     taskId: event.taskId,
     runId: event.runId,
     jobId: event.jobId,
-    editSessionId: event.editSessionId,
     statusFrom: event.statusFrom,
     statusTo: event.statusTo,
     details: event.details,
@@ -189,7 +186,6 @@ export function listControllerWorklogEvents(
         (!filter.taskId || event.taskId === filter.taskId) &&
         (!filter.runId || event.runId === filter.runId) &&
         (!filter.jobId || event.jobId === filter.jobId) &&
-        (!filter.editSessionId || event.editSessionId === filter.editSessionId) &&
         at >= since &&
         at <= until
       );
@@ -240,7 +236,7 @@ export function exportControllerWorklog(
       "| Time | Category | Action | Scope | Summary | Actor |",
       "| --- | --- | --- | --- | --- | --- |",
       ...events.map((event) => {
-        const scope = [event.issueId, event.taskId, event.runId, event.jobId, event.editSessionId].filter(Boolean).join(" / ") || "project";
+        const scope = [event.issueId, event.taskId, event.runId, event.jobId].filter(Boolean).join(" / ") || "project";
         return `| ${markdownEscape(event.at)} | ${markdownEscape(event.category)} | ${markdownEscape(event.action)} | ${markdownEscape(scope)} | ${markdownEscape(event.summary)} | ${markdownEscape(event.actor)} |`;
       }),
       "",

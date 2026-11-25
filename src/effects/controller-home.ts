@@ -374,7 +374,6 @@ export function ensureRepositoryControllerLayout(controllerHome: string, repoId:
     'artifacts',
     'locks',
     'indexes',
-    'edit-sessions',
     'controller',
     'hook-state',
     'local-bridge',

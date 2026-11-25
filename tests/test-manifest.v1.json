@@ -531,10 +531,6 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
-    "tests/runtime/edit-session-continuity.test.ts": {
-      "module": "controller",
-      "resource": "git-worktree"
-    },
     "tests/runtime/executable-discovery.test.ts": {
       "module": "process-runtime",
       "resource": "pure"

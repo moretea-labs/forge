@@ -82,7 +82,6 @@ export interface CleanupEvidence {
   branchDeletedOrRetained: boolean;
   leasesReleased: boolean;
   runTerminal: boolean;
-  editSessionClosedOrNotCreated: boolean;
   noActiveProcess: boolean;
   noDirtyDiff: boolean;
   maintenanceWarnings?: CompletionMaintenanceWarning[];

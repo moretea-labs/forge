@@ -559,7 +559,7 @@ export async function callStatusInboxAdapter(
     const pendingHandoffCount = pendingHandoffAttention.length;
     const repositoryDeliveryBlockers = liveGit.dirty ? ['REPOSITORY_DELIVERY_TARGET_DIRTY'] : [];
     const repositoryDeliveryNextSafeAction = liveGit.dirty
-      ? 'Review the existing dirty paths and converge them through checkout/EditSession/Git authorities before integrating another candidate; never auto-stash or reset.'
+      ? 'Review the existing dirty paths and converge them through checkout/Git authorities before integrating another candidate; never auto-stash or reset.'
       : 'Use ordinary repository Git integration with current checkout, CAS and resource-lease safety; record progress/closure on the GitHub Issue.';
     const activeProcessRecords = processRuntimeResourceDiagnostics()
       .activeProcessIds.map((processId) => getProcessRecord(ctx.controllerHome, repository.repoId, processId))

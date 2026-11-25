@@ -2,7 +2,6 @@ export type ResourceOwnerKind =
   | 'execution_job'
   | 'agent_run'
   | 'work_contract'
-  | 'edit_session'
   | 'controller_generation'
   | 'runtime_slot'
   | 'repository'
@@ -18,7 +17,6 @@ export type ManagedResourceType =
   | 'worktree'
   | 'branch'
   | 'artifact'
-  | 'edit_session'
   | 'runtime_slot';
 
 export type ManagedResourceState =

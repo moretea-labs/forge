@@ -1165,7 +1165,6 @@ export function markAgentJobReviewedCompletion(
       : 'worktreeRemovedOrNotCreated',
     cleanupEvidence?.branchDeletedOrRetained || cleanupHasMaintenanceWarnings ? undefined : 'branchDeletedOrRetained',
     cleanupEvidence?.leasesReleased ? undefined : 'leasesReleased',
-    cleanupEvidence?.editSessionClosedOrNotCreated ? undefined : 'editSessionClosedOrNotCreated',
     cleanupEvidence?.noActiveProcess ? undefined : 'noActiveProcess',
     cleanupEvidence?.noDirtyDiff ? undefined : 'noDirtyDiff',
     (cleanupEvidence?.resourceBlockers?.length ?? 0) === 0 ? undefined : 'resourceBlockers',

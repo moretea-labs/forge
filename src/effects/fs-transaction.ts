@@ -609,7 +609,7 @@ export function atomicCompareAndSwapTextGroup(
 /**
  * Sessionless single-file source mutation. The expected hash is checked
  * INSIDE the existing target lock before any bytes change. Unlike the legacy
- * EditSession writer, this creates no persistent backup or editing history:
+ * retired persistent edit lifecycle, this creates no persistent backup or editing history:
  * a crash before rename leaves the old file, after rename leaves the new one.
  */
 export function atomicCompareAndSwapText(

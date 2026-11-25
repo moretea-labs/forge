@@ -422,7 +422,7 @@ function accessToolGroups(_mode: AccessMode): string[] {
     'commands_and_checks',
     'git_and_branches',
     'worktrees_and_task_runs',
-    'direct_edit_sessions',
+    'direct_edits',
     'ios_xcode_and_simulator',
     'screenshots_and_review_artifacts',
   ];

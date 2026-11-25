@@ -253,9 +253,6 @@ export interface ManagedProcessRecord {
     correlationId?: string;
     /** Controller MCP session that initiated this check, when applicable. */
     executionSessionId?: string;
-    /** Exact direct-edit session binding for verification receipts. */
-    editSessionId?: string;
-    editRevision?: number;
     /** Optional durable task identity consuming the same receipt. */
     issueId?: string;
     taskId?: string;

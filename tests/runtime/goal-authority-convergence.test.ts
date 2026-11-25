@@ -35,7 +35,6 @@ function home(): string {
 function completionReceipt(receiptKey: string, targetRevision: string) {
   return {
     receiptId: `receipt-${receiptKey}`,
-    editSessionId: `EDIT-${receiptKey}`,
     targetBranch: 'main',
     targetRevision,
     changedPaths: ['src/example.ts'],

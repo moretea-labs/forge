@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
@@ -93,6 +93,26 @@ test('sessionless Safe Patch applies atomic CAS without creating edit-session or
   expect(fx.sessions()).toHaveLength(count);
   expect(existsSync(join(fx.repoRoot, '.ai/harness/backups/fs-transaction'))).toBe(false);
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toContain('n = 2');
+});
+
+test('sessionless Safe Patch preserves executable mode on replacement (#716)', async () => {
+  const fx = fixture();
+  const executablePath = join(fx.repoRoot, 'script.sh');
+  const before = '#!/bin/sh\necho before\n';
+  writeFileSync(executablePath, before);
+  chmodSync(executablePath, 0o755);
+
+  const next = await apply(fx, {
+    type: 'replace',
+    path: 'script.sh',
+    expected_sha256: hash(before),
+    replacements: [{ old_text: 'echo before', new_text: 'echo after' }],
+  });
+
+  expect(next.isError).not.toBe(true);
+  expect(readFileSync(executablePath, 'utf8')).toContain('echo after');
+  expect(lstatSync(executablePath).mode & 0o111).toBe(0o111);
+  expect(next.payload.session).toBeUndefined();
 });
 
 test('two writers on the same file get stale evidence and preserve both edits after re-read', async () => {

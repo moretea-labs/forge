@@ -20,7 +20,6 @@ const BROWSER_SESSION_SCAN_LIMIT = 5_000;
 export const RETIRED_REPOSITORY_DISPOSABLE_CHILDREN = Object.freeze([
   'artifacts',
   'browser',
-  'edit-sessions',
   'ephemeral-issues',
   'hook-state',
   'indexes',

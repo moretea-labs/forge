@@ -135,12 +135,6 @@
       "path": ".ai/harness/jobs"
     },
     {
-      "id": "mkdir:.ai/harness/edit-sessions",
-      "kind": "mkdir",
-      "status": "planned",
-      "path": ".ai/harness/edit-sessions"
-    },
-    {
       "id": "writeFile:docs/spec.md:ifMissing",
       "kind": "writeFile",
       "status": "planned",

@@ -5305,7 +5305,7 @@ mod tests {
             }));
             assert_eq!(std::fs::read_to_string(fixture.repo_root.join("fixture.txt")).unwrap(), "after\n");
             // Single-file text edits use sessionless CAS, so they intentionally
-            // do not create the legacy repository-relative EditSession directory.
+            // do not create the legacy repository-relative edit-session directory.
             // The Repository Registry must still resolve from this caller's Controller Home.
             let repository_registry = fixture.controller_home.join("repositories.json");
             let registry: Value = serde_json::from_str(

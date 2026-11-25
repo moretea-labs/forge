@@ -251,14 +251,13 @@ export async function runPersistedCheckViaProcessRuntime(
     checkSnapshot,
     liveExecutionStateFingerprint,
   );
-  // Freeze the same exact EditSession input for both Process reuse and the
-  // Check Runner's own success cache; a fresh Process alone is insufficient.
-  const editInputFingerprint = input.verificationBinding?.editSessionId
-    ? input.requestSemanticFingerprint?.trim() : undefined;
-  const executionStateFingerprint = editInputFingerprint
-    ? createHash('sha256').update(JSON.stringify({ liveExecutionStateFingerprint: liveExecutionStateFingerprint ?? '', editInputFingerprint })).digest('hex').slice(0, 24)
+  // Freeze explicit semantic input for both Process reuse and the Check Runner's
+  // own success cache; a fresh Process alone is insufficient.
+  const semanticInputFingerprint = input.requestSemanticFingerprint?.trim();
+  const executionStateFingerprint = semanticInputFingerprint
+    ? createHash('sha256').update(JSON.stringify({ liveExecutionStateFingerprint: liveExecutionStateFingerprint ?? '', semanticInputFingerprint })).digest('hex').slice(0, 24)
     : liveExecutionStateFingerprint;
-  const semanticCheck = editInputFingerprint
+  const semanticCheck = semanticInputFingerprint
     ? controllerCheckExecutionIdentity(
         executionRoot,
         input.checkId,
@@ -330,8 +329,6 @@ export async function runPersistedCheckViaProcessRuntime(
       requestId: input.requestId,
       requestSemanticFingerprint: input.requestSemanticFingerprint,
       executionSessionId: input.verificationBinding?.executionSessionId,
-      editSessionId: input.verificationBinding?.editSessionId,
-      editRevision: input.verificationBinding?.editRevision,
       issueId: input.verificationBinding?.issueId,
       taskId: input.verificationBinding?.taskId,
       checkResultReceiptPath,

@@ -54,7 +54,6 @@ check('typescript-local', existsSync(tscPath) ? 'ok' : 'warn', existsSync(tscPat
 const ignoredState = [
   '.ai/harness/worktrees',
   '.ai/harness/backups',
-  '.ai/harness/edit-sessions',
   '.ai/harness/tmp',
   '.forge/browser',
   '.forge/ios',

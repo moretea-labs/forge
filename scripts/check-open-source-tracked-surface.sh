@@ -50,7 +50,6 @@ declare -a FORBIDDEN_PATH_GLOBS=(
   '.ai/harness/runs/*'
   '.ai/harness/artifacts/*'
   '.ai/harness/worktrees/*'
-  '.ai/harness/edit-sessions/*'
   'artifacts/*'
   'coverage/*'
   'tmp/*'

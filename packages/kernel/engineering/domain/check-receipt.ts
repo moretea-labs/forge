@@ -12,8 +12,7 @@ export interface ProcessCheckReceiptEvidence {
   repoId: string;
   checkoutId?: string;
   executionSessionId?: string;
-  editSessionId?: string;
-  editRevision?: number;
+  requestSemanticFingerprint?: string;
   issueId?: string;
   taskId?: string;
   checkId: string;
