@@ -35,7 +35,6 @@ import { registerRepository, removeRepository } from '../../src/runtime/reposito
 import { cleanupRetiredRepositoryNamespaces } from '../../src/runtime/control-plane/repository-namespace-retention';
 import { resolveGitExecutable } from '../../src/effects/git-executable';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
-import { cleanupTerminalEditSessionRecords } from '../../src/runtime/editing/edit-session';
 import { ensureRepositoryRuntimeStorage } from '../../src/runtime/repositories/runtime-storage';
 import { createSchedule, saveOccurrence } from '../../packages/kernel/scheduler/api/index';
 import { cleanupRetiredExecutionJobs, executionJobRoot } from '../../src/runtime/execution/jobs/store';
@@ -483,8 +482,8 @@ fi
     expect(report.skippedByReason.cleanup_budget_exhausted).toBeGreaterThanOrEqual(1);
   });
 
-  test('edit-session retention keeps active authority and bounds terminal Controller Home artifacts', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-edit-session-retention-'));
+  test('runtime cleanup no longer owns legacy EditSession retention (#716)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-retired-edit-session-cleanup-'));
     homes.push(root);
     const home = join(root, 'controller');
     const repositoryRoot = join(root, 'repository');
@@ -493,93 +492,42 @@ fi
     expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
-    writeFileSync(join(repositoryRoot, 'README.md'), 'edit session retention\n');
+    writeFileSync(join(repositoryRoot, 'README.md'), 'retired edit session cleanup\n');
     expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
     const repository = registerRepository({
       path: repositoryRoot,
       controllerHome: home,
-      displayName: 'edit-session-retention',
+      displayName: 'retired-edit-session-cleanup',
     });
     const storage = ensureRepositoryRuntimeStorage(repository, home);
     expect(storage.readyForExecution).toBe(true);
-    const editRoot = join(repositoryRoot, '.ai', 'harness', 'edit-sessions');
-    const nowMs = Date.now();
-    const old = new Date(nowMs - 8 * 24 * 60 * 60_000).toISOString();
-    const writeSession = (sessionId: string, status: string, workId?: string) => {
-      const dir = join(editRoot, sessionId);
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(
-        join(dir, 'session.json'),
-        JSON.stringify({
-          schemaVersion: 3,
-          sessionId,
-          purpose: sessionId,
-          status,
-          workId,
-          createdAt: old,
-          updatedAt: old,
-        }),
-      );
-      writeFileSync(join(dir, 'changes.patch'), `${sessionId}\n`);
-      return dir;
-    };
-    const stale = writeSession('EDIT-1000-stale', 'finalized');
-    const legacyWorkTagged = writeSession('EDIT-1001-protected', 'finalized', 'WORK-ACTIVE');
-    const open = writeSession('EDIT-1002-open', 'open');
 
-    const direct = cleanupTerminalEditSessionRecords(repositoryRoot, {
-      nowMs,
-      retentionMs: 24 * 60 * 60_000,
-      maxRetained: 200,
-      maxEntries: 100,
-      maxRemovals: 10,
-    });
-    expect(existsSync(stale)).toBe(false);
-    expect(existsSync(legacyWorkTagged)).toBe(false);
-    expect(existsSync(open)).toBe(true);
-    expect(direct.skippedByReason.active_work).toBeUndefined();
-    expect(direct.skippedByReason.active_session).toBe(1);
+    const legacyRoot = join(repositoryRoot, '.ai', 'harness', 'edit-sessions', 'EDIT-legacy-finalized');
+    mkdirSync(legacyRoot, { recursive: true });
+    writeFileSync(
+      join(legacyRoot, 'session.json'),
+      JSON.stringify({
+        schemaVersion: 3,
+        sessionId: 'EDIT-legacy-finalized',
+        purpose: 'legacy',
+        status: 'finalized',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    );
 
-    const central = writeSession('EDIT-1003-central', 'superseded');
-    const recentlyStarted = writeSession('EDIT-1004-recent', 'superseded');
-    const recentFile = join(recentlyStarted, 'session.json');
-    const recentlyStored = JSON.parse(readFileSync(recentFile, 'utf8')) as Record<string, unknown>;
-    recentlyStored.createdAt = new Date(nowMs - 60_000).toISOString();
-    recentlyStored.updatedAt = new Date(nowMs - 60_000).toISOString();
-    writeFileSync(recentFile, JSON.stringify(recentlyStored));
-    const oldSupersededButJustTerminal = writeSession('EDIT-1005-old-now-terminal', 'superseded');
-    const terminalFile = join(oldSupersededButJustTerminal, 'session.json');
-    const terminalStored = JSON.parse(readFileSync(terminalFile, 'utf8')) as Record<string, unknown>;
-    terminalStored.updatedAt = new Date(nowMs - 60_000).toISOString();
-    writeFileSync(terminalFile, JSON.stringify(terminalStored));
-    const scoped = cleanupTerminalEditSessionRecords(repositoryRoot, {
-      nowMs,
-      onlyStatuses: ['superseded'],
-      minCreatedAgeMs: 7 * 24 * 60 * 60_000,
-      maxRetained: 0,
-      maxEntries: 100,
-      maxRemovals: 10,
-    });
-    expect(scoped.removedSessionIds).toEqual(['EDIT-1003-central', 'EDIT-1005-old-now-terminal']);
-    expect(existsSync(recentlyStarted)).toBe(true);
-    expect(existsSync(open)).toBe(true);
     const report = cleanupControllerRuntimeState(home, {
       reason: 'manual',
-      nowMs,
+      nowMs: Date.now(),
       maxEntries: 200,
       maxRemovals: 20,
-      editSessionRetentionMs: 24 * 60 * 60_000,
-      editSessionMaxRetained: 200,
     });
-    expect(existsSync(central)).toBe(false);
-    expect(existsSync(recentlyStarted)).toBe(true);
-    expect(existsSync(legacyWorkTagged)).toBe(false);
-    expect(existsSync(open)).toBe(true);
-    expect(report.removedEditSessionPaths).toEqual([]);
-    expect(report.lifecycleMetrics.reclaimedByClass.edit_session.count).toBe(0);
-    expect(report.lifecycleMetrics.reclaimedByClass.edit_session.bytes).toBe(0);
-    expect(report.lifecycleMetrics.reclaimedByClass.edit_session.unknownByteCount).toBe(0);
+
+    expect(existsSync(legacyRoot)).toBe(true);
+    expect('removedEditSessionPaths' in report).toBe(false);
+    expect(report.lifecycleMetrics.reclaimedByClass.edit_session).toBeUndefined();
+    expect(Object.keys(report.cycle.skippedByReason).some((reason) => reason.startsWith('edit_session_'))).toBe(false);
   });
 
   test('emits versioned lifecycle reclaim metrics by resource class without changing cleanup authority', () => {

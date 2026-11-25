@@ -2,7 +2,6 @@ import { execFileSync } from 'child_process';
 import { existsSync, lstatSync, opendirSync, readFileSync, realpathSync, rmSync, type Dirent } from 'fs';
 import { basename, dirname, join, relative, resolve } from 'path';
 import { ensureControllerHome } from '../../effects/controller-home';
-import { cleanupTerminalEditSessionRecords } from '../editing/edit-session';
 import { listRepositories } from '../repositories/registry';
 import { managedPathInside, managedWorktreeStorageRoot } from '../../effects/managed-worktree-storage';
 import { migrateManagedWorkspacePhysicalDependenciesToCanonical } from '../execution/managed-workspace';
@@ -110,7 +109,6 @@ const TEMP_SCAN_LEAF_DIR_NAMES = new Set([
   'receipts',
   'events',
   'evidence',
-  'edit-sessions',
   'indexes',
   'audit',
   'local-jobs',
@@ -170,10 +168,6 @@ export interface RuntimeCleanupOptions {
   releaseRetentionGraceMs?: number;
   /** Minimum age before an abandoned runtime .staging-* directory can be reclaimed. */
   stagingReleaseRetentionGraceMs?: number;
-  /** Maximum age for terminal EditSession artifacts under EditSession-owned retention. */
-  editSessionRetentionMs?: number;
-  /** Count cap for newest terminal EditSession artifacts retained for local review/debugging. */
-  editSessionMaxRetained?: number;
   /** Grace before a removed repository may shed only explicit disposable Controller Home children. */
   repositoryNamespaceRetentionMs?: number;
   /** Minimum reclaimable SQLite free-page bytes before physical VACUUM is eligible. */
@@ -245,7 +239,6 @@ export interface RuntimeCleanupReport {
   releaseSessionCandidates: ReleaseSessionCandidateRetentionReport;
   removedScheduleOccurrencePaths: string[];
   removedScheduleDecisionPaths: string[];
-  removedEditSessionPaths: string[];
   removedRepositoryNamespacePaths: string[];
   /** Physical SQLite checkpoint/compaction receipt; row lifecycle remains domain-owned. */
   sqliteMaintenance?: ControlPlaneDatabaseMaintenanceReport;
@@ -303,12 +296,11 @@ function addReclaimMeasurement(metrics: MutableReclaimMetrics, path: string): vo
   else metrics.unknownReclaimedByteCount += 1;
 }
 
-type RemovalPhase = 'worktrees' | 'temporary' | 'scheduler' | 'edit_sessions' | 'repository_namespaces' | 'releases';
+type RemovalPhase = 'worktrees' | 'temporary' | 'scheduler' | 'repository_namespaces' | 'releases';
 const REMOVAL_PHASES: readonly RemovalPhase[] = [
   'worktrees',
   'temporary',
   'scheduler',
-  'edit_sessions',
   'repository_namespaces',
   'releases',
 ];
@@ -1136,7 +1128,6 @@ export function cleanupControllerRuntimeState(
   const dependencyBudget = createScanBudget(maxEntries);
   const tempBudget = createScanBudget(maxEntries);
   const schedulerBudget = createScanBudget(maxEntries);
-  const editSessionBudget = createScanBudget(maxEntries);
   const errors: string[] = [];
   const skippedByReason: Record<string, number> = {};
   const sequence = options.periodicSequence ?? Math.floor(nowMs / 60_000);
@@ -1157,16 +1148,6 @@ export function cleanupControllerRuntimeState(
   const schedulerHistory = {
     removedOccurrencePaths: [] as string[],
     removedDecisionPaths: [] as string[],
-    reclaimedBytes: 0,
-    unknownReclaimedByteCount: 0,
-    inspected: 0,
-    eligible: 0,
-    attempted: 0,
-    retained: 0,
-    errors: [] as string[],
-  };
-  const editSessionHistory = {
-    removedPaths: [] as string[],
     reclaimedBytes: 0,
     unknownReclaimedByteCount: 0,
     inspected: 0,
@@ -1225,45 +1206,6 @@ export function cleanupControllerRuntimeState(
         schedulerHistory.errors.push(...retained.errors.map((error) => `${repository.repoId}:${error}`));
       }
       errors.push(...schedulerHistory.errors.map((error) => `scheduler-history ${error}`));
-      continue;
-    }
-    if (phase === 'edit_sessions') {
-      for (const repository of listRepositories(home, { includeRemoved: true })) {
-        if (editSessionBudget.remaining <= 0 || removalBudget.remaining <= 0) {
-          if (editSessionBudget.remaining <= 0) editSessionBudget.exhausted = true;
-          if (removalBudget.remaining <= 0) removalBudget.exhausted = true;
-          break;
-        }
-        const retained = cleanupTerminalEditSessionRecords(repository.canonicalRoot, {
-          nowMs,
-          retentionMs: options.editSessionRetentionMs,
-          maxRetained: options.editSessionMaxRetained,
-          maxEntries: editSessionBudget.remaining,
-          maxRemovals: removalBudget.remaining,
-          sequence,
-        });
-        editSessionBudget.remaining = Math.max(0, editSessionBudget.remaining - retained.inspected);
-        editSessionBudget.inspected += retained.inspected;
-        if (retained.budgetExhausted && editSessionBudget.remaining <= 0) editSessionBudget.exhausted = true;
-        removalBudget.remaining = Math.max(0, removalBudget.remaining - retained.attempted);
-        if (retained.budgetExhausted && removalBudget.remaining <= 0) removalBudget.exhausted = true;
-        editSessionHistory.inspected += retained.inspected;
-        editSessionHistory.eligible += retained.eligible;
-        editSessionHistory.attempted += retained.attempted;
-        editSessionHistory.retained += retained.retained;
-        editSessionHistory.reclaimedBytes += retained.reclaimedBytes;
-        editSessionHistory.unknownReclaimedByteCount += retained.unknownReclaimedByteCount;
-        editSessionHistory.removedPaths.push(
-          ...retained.removedSessionIds.map(
-            (sessionId) => `repositories/${repository.repoId}/edit-sessions/${sessionId}`,
-          ),
-        );
-        Object.entries(retained.skippedByReason).forEach(([key, value]) => {
-          skippedByReason[`edit_session_${key}`] = (skippedByReason[`edit_session_${key}`] ?? 0) + value;
-        });
-        editSessionHistory.errors.push(...retained.errors.map((error) => `${repository.repoId}:${error}`));
-      }
-      errors.push(...editSessionHistory.errors.map((error) => `edit-session-history ${error}`));
       continue;
     }
     if (phase === 'repository_namespaces') {
@@ -1357,7 +1299,6 @@ export function cleanupControllerRuntimeState(
   const removedReleasePaths = releaseRetention.removedPaths.sort();
   const removedScheduleOccurrencePaths = schedulerHistory.removedOccurrencePaths.sort();
   const removedScheduleDecisionPaths = schedulerHistory.removedDecisionPaths.sort();
-  const removedEditSessionPaths = editSessionHistory.removedPaths.sort();
   const removedRepositoryNamespacePaths = repositoryNamespaceRetention.removedPaths.sort();
   let sqliteMaintenance: ControlPlaneDatabaseMaintenanceReport | undefined;
   const orphanAuditRetention = ORPHAN_AUDIT_RETENTION_ENABLED
@@ -1454,7 +1395,6 @@ export function cleanupControllerRuntimeState(
     dependencyBudget.inspected +
     tempBudget.inspected +
     schedulerBudget.inspected +
-    editSessionBudget.inspected +
     repositoryNamespaceRetention.inspected +
     releaseRetention.inspected +
     releaseSessionCandidates.inspected;
@@ -1464,7 +1404,6 @@ export function cleanupControllerRuntimeState(
     dependencyBudget.exhausted ||
     tempBudget.exhausted ||
     schedulerBudget.exhausted ||
-    editSessionBudget.exhausted ||
     removalBudget.exhausted ||
     releaseSessionCandidates.truncated ||
     (resultStoreGc?.budgetExhausted ?? false);
@@ -1506,11 +1445,6 @@ export function cleanupControllerRuntimeState(
       count: removedScheduleOccurrencePaths.length + removedScheduleDecisionPaths.length,
       bytes: schedulerHistory.reclaimedBytes,
       unknownByteCount: schedulerHistory.unknownReclaimedByteCount,
-    },
-    edit_session: {
-      count: removedEditSessionPaths.length,
-      bytes: editSessionHistory.reclaimedBytes,
-      unknownByteCount: editSessionHistory.unknownReclaimedByteCount,
     },
     repository_controller_home_namespace: {
       count: removedRepositoryNamespacePaths.length,
@@ -1576,7 +1510,6 @@ export function cleanupControllerRuntimeState(
     releaseSessionCandidates,
     removedScheduleOccurrencePaths,
     removedScheduleDecisionPaths,
-    removedEditSessionPaths,
     removedRepositoryNamespacePaths,
     sqliteMaintenance,
     resultStoreGc,
@@ -1594,7 +1527,6 @@ export function cleanupControllerRuntimeState(
         dependencyCleanup.migrated.length +
         removedTemporaryPaths.length +
         schedulerHistory.eligible +
-        editSessionHistory.eligible +
         repositoryNamespaceRetention.eligible +
         releaseRetention.eligible +
         releaseSessionCandidates.eligible,
@@ -1604,7 +1536,6 @@ export function cleanupControllerRuntimeState(
         dependencyCleanup.migrated.length +
         removedTemporaryPaths.length +
         schedulerHistory.attempted +
-        editSessionHistory.attempted +
         repositoryNamespaceRetention.attempted +
         releaseRetention.attempted +
         releaseSessionCandidates.attempted +
@@ -1616,7 +1547,6 @@ export function cleanupControllerRuntimeState(
         removedTemporaryPaths.length +
         removedScheduleOccurrencePaths.length +
         removedScheduleDecisionPaths.length +
-        removedEditSessionPaths.length +
         removedRepositoryNamespacePaths.length +
         removedReleasePaths.length +
         releaseSessionCandidates.removedPaths.length,
@@ -1624,7 +1554,6 @@ export function cleanupControllerRuntimeState(
         pidFiles.skipped.length +
         worktrees.skippedActive.length +
         schedulerHistory.retained +
-        editSessionHistory.retained +
         repositoryNamespaceRetention.retained +
         releaseRetention.retained +
         releaseSessionCandidates.retainedCount,
@@ -1637,7 +1566,6 @@ export function cleanupControllerRuntimeState(
           removedTemporaryPaths.length -
           removedScheduleOccurrencePaths.length -
           removedScheduleDecisionPaths.length -
-          removedEditSessionPaths.length -
           removedRepositoryNamespacePaths.length -
           removedReleasePaths.length -
           releaseSessionCandidates.removedPaths.length -

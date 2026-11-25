@@ -1204,7 +1204,7 @@ test('metadata-only reconciliation ignores a lease held by another checkout', ()
   releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'plugin:other-checkout');
 });
 
-test('maintenance never considers an empty reserved successor session safe garbage', () => {
+test('runtime maintenance no longer discovers reserved EditSessions after lifecycle retirement (#716)', () => {
   const fx = fixture();
   const session = beginEditSession(fx.repoRoot, {
     purpose: 'Reserved P0B session',
@@ -1219,12 +1219,7 @@ test('maintenance never considers an empty reserved successor session safe garba
     fx.controllerHome,
     { minAgeMinutes: 0, maxCandidates: 25 },
   );
-  const candidate = state.candidates.find((entry) => entry.id === session.sessionId);
-  expect(candidate).toMatchObject({
-    kind: 'stale_edit_session',
-    safe: false,
-    reason: 'EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE',
-  });
+  expect(state.candidates.find((entry) => entry.id === session.sessionId)).toBeUndefined();
   expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('open');
 });
 

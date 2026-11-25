@@ -3,13 +3,6 @@ import { basename, dirname, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { runProcess } from '../../effects/process-runner';
-import {
-  cleanupEditSession,
-  getEditSession,
-  inspectIntegratedEditSession,
-  listEditSessions,
-} from '../editing/edit-session';
-import { withRepositoryMutationExclusion } from '../resources/leases/store';
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../repositories/runtime-storage';
 import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../repositories/registry';
 import type { RepositoryRecord } from '../../core/repository/types';
@@ -67,7 +60,6 @@ export type RuntimeMaintenanceCandidateKind =
   | 'missing_job_metadata'
   | 'runtime_storage_warning'
   | 'stale_runtime_temp_entry'
-  | 'stale_edit_session'
   | 'unowned_managed_worktree'
   | 'absent_owned_resource';
 
@@ -140,7 +132,6 @@ export interface RuntimeMaintenanceSummary {
   missingJobMetadata: number;
   runtimeStorageWarnings: number;
   staleRuntimeTempEntries: number;
-  staleEditSessions: number;
   unownedManagedWorktrees: number;
   absentOwnedResources: number;
 }
@@ -299,7 +290,6 @@ function summarize(candidates: RuntimeMaintenanceCandidate[]): RuntimeMaintenanc
     missingJobMetadata: candidates.filter((candidate) => candidate.kind === 'missing_job_metadata').length,
     runtimeStorageWarnings: candidates.filter((candidate) => candidate.kind === 'runtime_storage_warning').length,
     staleRuntimeTempEntries: candidates.filter((candidate) => candidate.kind === 'stale_runtime_temp_entry').length,
-    staleEditSessions: candidates.filter((candidate) => candidate.kind === 'stale_edit_session').length,
     unownedManagedWorktrees: candidates.filter((candidate) => candidate.kind === 'unowned_managed_worktree').length,
     absentOwnedResources: candidates.filter((candidate) => candidate.kind === 'absent_owned_resource').length,
   };
@@ -1008,50 +998,6 @@ function detachOwnedManagedWorktree(
   }
 }
 
-function scanStaleEditSessionCandidates(
-  repository: RuntimeMaintenanceRepository,
-  controllerHome: string,
-  options: Required<RuntimeMaintenanceOptions>,
-): RuntimeMaintenanceCandidate[] {
-  const nowMs = Date.now();
-  const windowSize = Math.min(options.maxCandidates * 3, 500);
-  // Rotate by wall-clock minute without mutating state during a read-only
-  // maintenance preview. A bounded scan must eventually reach older sessions,
-  // even when the first window contains only unsafe legacy records.
-  const offset = Math.floor(nowMs / 60_000) * windowSize;
-  return listEditSessions(repository.canonicalRoot, windowSize, offset)
-    .filter((summary) => ['open', 'dirty', 'checked', 'check_failed'].includes(summary.status))
-    .map((session) => {
-      const updatedMs = Date.parse(session.updatedAt);
-      const ageMinutes = Number.isFinite(updatedMs) ? Math.max(0, Math.floor((nowMs - updatedMs) / 60_000)) : 0;
-      return { session, ageMinutes };
-    })
-    .filter(({ ageMinutes }) => ageMinutes >= options.minAgeMinutes)
-    .sort((left, right) => right.ageMinutes - left.ageMinutes)
-    .slice(0, options.maxCandidates)
-    .map(({ session, ageMinutes }) => {
-      let safety: { safe: boolean; reason: string };
-      try {
-        safety = inspectIntegratedEditSession(repository.canonicalRoot, session.sessionId, {
-          controllerHome,
-          repoId: repository.repoId,
-        });
-      } catch (error) {
-        safety = { safe: false, reason: error instanceof Error ? error.message : String(error) };
-      }
-      return {
-        kind: 'stale_edit_session' as const,
-        id: session.sessionId,
-        status: session.status,
-        safe: safety.safe,
-        reason: safety.reason,
-        ageMinutes,
-        suggestedAction: 'full_maintenance_pass' as const,
-        ownershipStatus: 'explicit' as const,
-      };
-    });
-}
-
 function readBoolean(input: Record<string, unknown>, snake: string, camel: string): boolean | undefined {
   if (typeof input[snake] === 'boolean') return input[snake] as boolean;
   if (typeof input[camel] === 'boolean') return input[camel] as boolean;
@@ -1101,7 +1047,6 @@ export function buildRuntimeMaintenanceStatus(
   const localJobCandidates = scanLocalJobCandidates(repository.canonicalRoot, normalized);
   const storageCandidates = runtimeStorageCandidates(storage.report);
   const tempCandidates = scanRuntimeTempCandidates(repository, normalized.maxCandidates);
-  const staleEditCandidates = scanStaleEditSessionCandidates(repository, controllerHome, normalized);
   const retainedWorktreeCandidates = scanRetainedWorktreeCandidates(
     repository,
     controllerHome,
@@ -1113,14 +1058,13 @@ export function buildRuntimeMaintenanceStatus(
     normalized.maxCandidates,
   );
   // Absent OwnedResource evidence reconciliation is cheap and unblocks #510
-  // branch/worktree census; keep it ahead of high-cardinality stale Edit Sessions
+  // branch/worktree census; keep it ahead of high-cardinality temporary entries
   // so a full candidate budget cannot hide phantom active ownership.
   const candidates = [
     ...localJobCandidates,
     ...storageCandidates,
     ...absentOwnedResourceCandidates,
     ...retainedWorktreeCandidates,
-    ...staleEditCandidates,
     ...tempCandidates,
   ].slice(0, normalized.maxCandidates);
   const summary = summarize(candidates);
@@ -1397,26 +1341,6 @@ export function applyRuntimeMaintenance(
       }
       if (candidate.kind === 'absent_owned_resource') {
         return releaseAbsentOwnedResource(repository, controllerHome, candidate);
-      }
-      if (candidate.kind === 'stale_edit_session') {
-        const cleaned = withRepositoryMutationExclusion(
-          controllerHome,
-          repository.repoId,
-          'maintenance-edit-session:' + candidate.id,
-          () =>
-            cleanupEditSession(repository.canonicalRoot, candidate.id, {
-              controllerHome,
-              repoId: repository.repoId,
-              reviewer: 'runtime-maintenance',
-              note: 'Exact integrated bytes retained; missing checks remain unverified.',
-            }),
-        );
-        const closed = ['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(cleaned.status);
-        return {
-          ...candidate,
-          applied: closed,
-          result: closed ? `edit_session_${cleaned.status}` : 'edit_session_retained_nonterminal',
-        };
       }
       return { ...candidate, applied: false, result: 'unsupported_candidate' };
     } catch (error) {
