@@ -400,7 +400,7 @@ describe('execution-speed test governance', () => {
   test('module boundary check pins committed inputs despite other Writer dirty but rejects committed violations (#714)', () => {
     const repo = temporaryRepository();
     try {
-      const debtDir = join(repo, 'docs/architecture');
+      const debtDir = join(repo, 'scripts/testing');
       const kernelDir = join(repo, 'packages/kernel/example/infrastructure');
       const scriptsDir = join(repo, 'scripts');
       mkdirSync(debtDir, { recursive: true });
@@ -415,7 +415,7 @@ describe('execution-speed test governance', () => {
       const modulePath = join(kernelDir, 'sample.ts');
       writeFileSync(modulePath, 'export const sample = true;\n');
       symlinkSync(join(ROOT, 'node_modules'), join(repo, 'node_modules'), 'dir');
-      git(repo, 'add', 'docs', 'packages', 'scripts');
+      git(repo, 'add', 'packages', 'scripts');
       git(repo, 'commit', '-qm', 'valid module boundary candidate');
       const validRevision = git(repo, 'rev-parse', 'HEAD');
 
@@ -501,18 +501,14 @@ describe('execution-speed test governance', () => {
         if (end < 0) throw new Error(`missing ${constant} definition`);
         return [...script.slice(start + marker.length, end).matchAll(/'([^']+)'/g)].map((match) => match[1]);
       };
-      const referenceNames = filenames('REFERENCE_CONFIG_FILES');
       const templateNames = filenames('CLAUDE_TEMPLATE_FILES');
-      for (const dir of ['scripts', 'assets', 'docs/reference-configs', 'assets/templates', '.claude/templates']) {
+      for (const dir of ['scripts', 'assets', 'assets/templates', '.claude/templates']) {
         mkdirSync(join(repo, dir), { recursive: true });
       }
       writeFileSync(join(repo, 'scripts/sync-generated-authority.mjs'), script);
       writeFileSync(join(repo, 'package.json'), '{"version":"1.2.3"}\n');
       writeFileSync(join(repo, 'assets/workflow-contract.v1.json'), '{"helpers":{"scripts":["fixture.sh"]}}\n');
       writeFileSync(join(repo, 'scripts/fixture.sh'), 'placeholder\n');
-      for (const name of referenceNames) {
-        writeFileSync(join(repo, 'docs/reference-configs', name), 'placeholder\n');
-      }
       for (const name of templateNames) {
         writeFileSync(
           join(repo, '.claude/templates', name),
@@ -541,13 +537,13 @@ describe('execution-speed test governance', () => {
           encoding: 'utf8',
         });
       };
-      const target = join(repo, 'docs/reference-configs/AGENTS.md');
+      const target = join(repo, 'assets/templates', templateNames[0]!);
       writeFileSync(target, 'other Writer temporary edit\n');
       expect(check('committed').status).toBe(0);
       const dirty = check('workspace');
       expect(dirty.status).toBe(1);
       expect(dirty.stderr).toContain('drift(content)');
-      git(repo, 'add', 'docs/reference-configs/AGENTS.md');
+      git(repo, 'add', target);
       git(repo, 'commit', '-qm', 'submitted invalid projection');
       const submitted = check('committed', 'HEAD');
       expect(submitted.status).toBe(1);
@@ -574,7 +570,7 @@ describe('execution-speed test governance', () => {
       timeoutMs: 2 * 60_000,
     });
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'frozen MCP tool contract')).toBe(true);
-    expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(true);
+    expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(false);
     expect(stepsFor('main')).toContainEqual({
       label: 'Recovery rollback and known-good authority',
       command: 'bun',

@@ -24,16 +24,18 @@ describe('mcp policy and paths', () => {
   test('EditSession lifecycle tools are no longer published', () => {
     const definitions = buildMcpToolDefinitions(getToolPolicy('controller'));
     const names = definitions.map((tool) => tool.name);
-    expect(names).not.toEqual(expect.arrayContaining([
-      'begin_edit_session',
-      'get_edit_session',
-      'list_edit_sessions',
-      'get_edit_session_diff',
-      'create_edit_savepoint',
-      'verify_edit_session',
-      'rollback_edit_session',
-      'finalize_edit_session',
-    ]));
+    expect(names).not.toEqual(
+      expect.arrayContaining([
+        'begin_edit_session',
+        'get_edit_session',
+        'list_edit_sessions',
+        'get_edit_session_diff',
+        'create_edit_savepoint',
+        'verify_edit_session',
+        'rollback_edit_session',
+        'finalize_edit_session',
+      ]),
+    );
     const applyPatch = definitions.find((tool) => tool.name === 'apply_patch');
     const properties =
       (applyPatch?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
@@ -72,27 +74,18 @@ describe('mcp policy and paths', () => {
     expect(normalizeMcpRelativePath('/tmp/outside').ok).toBe(false);
   });
 
-  test('controller can manage only the source-controlled project engineering contract under .forge', () => {
-    const tmp = mkdtempSync(join(tmpdir(), 'forge-mcp-project-engineering-'));
+  test('controller does not bypass .forge policy for retired engineering control files', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'forge-mcp-private-policy-'));
     try {
       mkdirSync(join(tmp, '.forge'), { recursive: true });
-      writeFileSync(join(tmp, '.forge/mcp.policy.json'), '{}');
-      writeFileSync(join(tmp, '.forge/mcp.oauth.json'), '{"token":"secret"}');
-
-      const policy = getToolPolicy('controller');
-      expect(resolveMcpPath(tmp, '.forge/project-engineering.json', policy, 'write')).toMatchObject({
-        ok: true,
-        relativePath: '.forge/project-engineering.json',
-      });
       writeFileSync(join(tmp, '.forge/project-engineering.json'), '{}');
-      expect(resolveMcpPath(tmp, '.forge/project-engineering.json', policy, 'read')).toMatchObject({
-        ok: true,
-        relativePath: '.forge/project-engineering.json',
-      });
-      expect(resolveMcpPath(tmp, '.forge/mcp.policy.json', policy, 'read')).toMatchObject({ ok: false });
-      expect(resolveMcpPath(tmp, '.forge/mcp.policy.json', policy, 'write')).toMatchObject({ ok: false });
-      expect(resolveMcpPath(tmp, '.forge/mcp.oauth.json', policy, 'read')).toMatchObject({ ok: false });
-      expect(resolveMcpPath(tmp, '.forge/mcp.oauth.json', policy, 'write')).toMatchObject({ ok: false });
+      writeFileSync(join(tmp, '.forge/mcp.policy.json'), '{}');
+      writeFileSync(join(tmp, '.forge/mcp.oauth.json'), '{"token":"[REDACTED]"}');
+      const policy = getToolPolicy('controller');
+      for (const path of ['.forge/project-engineering.json', '.forge/mcp.policy.json', '.forge/mcp.oauth.json']) {
+        expect(resolveMcpPath(tmp, path, policy, 'read')).toMatchObject({ ok: false });
+        expect(resolveMcpPath(tmp, path, policy, 'write')).toMatchObject({ ok: false });
+      }
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

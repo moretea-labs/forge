@@ -43,52 +43,17 @@ function time(minute: number): string {
   return new Date(scenarioStartedAt + minute * 60_000).toISOString();
 }
 
-function fixture(name: string, options: { knowledge?: boolean } = {}) {
+function fixture(name: string) {
   const root = mkdtempSync(join(tmpdir(), `forge-learning-loop-${name}-`));
   roots.push(root);
   const controllerHome = join(root, 'controller');
   const repoRoot = join(root, 'repo');
   ensureControllerHome(controllerHome);
-  mkdirSync(join(repoRoot, '.forge'), { recursive: true });
   mkdirSync(join(repoRoot, 'docs'), { recursive: true });
   writeFileSync(join(repoRoot, 'README.md'), 'learning loop fixture\n');
   writeFileSync(
     join(repoRoot, 'docs', 'strategy.md'),
     '小红书 推广 真实指标 经验 下一轮使用。优先使用真实发布结果，不猜测互动数据。\n',
-  );
-  writeFileSync(
-    join(repoRoot, '.forge', 'project-engineering.json'),
-    JSON.stringify(
-      {
-        schemaVersion: 1,
-        contractId: `learning-${name}`,
-        contractVersion: '1',
-        projectId: 'project-learning-loop',
-        authority: { product: ['docs/strategy.md'], architecture: [], source: ['src/**'] },
-        quality: { ux: [], performance: [], nonRegression: ['Learning evidence remains source-bound.'] },
-        checks: [],
-        journeys: [],
-        platforms: [],
-        tooling: [],
-        skillRefs: [],
-        exceptions: [],
-        ...(options.knowledge === false
-          ? {}
-          : {
-              knowledgeSources: [
-                {
-                  id: 'xhs-strategy',
-                  kind: 'repository',
-                  path: 'docs/strategy.md',
-                  required: true,
-                  applicability: { channel: 'xiaohongshu', account: 'account-a', locale: 'zh-CN' },
-                },
-              ],
-            }),
-      },
-      null,
-      2,
-    ),
   );
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
   execFileSync('git', ['config', 'user.email', 'learning-loop@example.test'], { cwd: repoRoot });
@@ -181,7 +146,7 @@ function verificationRecord(
 
 describe('connected assistant learning loops', () => {
   test('records explicit correction with direct-read evidence and recalls it through explicit repository context', async () => {
-    const fx = fixture('direct-learning', { knowledge: false });
+    const fx = fixture('direct-learning');
     const ctx = {
       controllerHome: fx.controllerHome,
       repoRoot: fx.repoRoot,
@@ -371,7 +336,7 @@ describe('connected assistant learning loops', () => {
   });
 
   test('associates and consolidates related direct learning without inventing a ControllerRound', async () => {
-    const fx = fixture('direct-learning-association', { knowledge: false });
+    const fx = fixture('direct-learning-association');
     const ctx = {
       controllerHome: fx.controllerHome,
       repoRoot: fx.repoRoot,
@@ -652,7 +617,7 @@ describe('connected assistant learning loops', () => {
   });
 
   test('rejects unavailable direct-learning evidence before writing any memory', async () => {
-    const fx = fixture('direct-learning-evidence', { knowledge: false });
+    const fx = fixture('direct-learning-evidence');
     const ctx = {
       controllerHome: fx.controllerHome,
       repoRoot: fx.repoRoot,

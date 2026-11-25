@@ -98,35 +98,6 @@ function pinRuntimeSource(root: string): void {
   process.env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV] = root;
 }
 
-function writeProjectEngineeringContract(root: string): void {
-  mkdirSync(join(root, '.forge'), { recursive: true });
-  mkdirSync(join(root, '.agents', 'skills', 'typescript-engineering'), { recursive: true });
-  writeFileSync(
-    join(root, '.agents', 'skills', 'typescript-engineering', 'SKILL.md'),
-    '# TypeScript Engineering\n\nTest fixture skill for TypeScript context closure.\n',
-  );
-  writeFileSync(
-    join(root, '.forge', 'project-engineering.json'),
-    JSON.stringify(
-      {
-        schemaVersion: 1,
-        contractId: 'context-roundtrip-engineering',
-        contractVersion: '1',
-        projectId: 'context-roundtrip',
-        authority: {},
-        quality: {},
-        checks: [],
-        journeys: [],
-        platforms: [],
-        skillRefs: ['typescript-engineering@1'],
-        tooling: [],
-      },
-      null,
-      2,
-    ),
-  );
-}
-
 function mcpContext(
   controllerHome: string,
   repository: ReturnType<typeof registerRepository>,
