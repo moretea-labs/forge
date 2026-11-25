@@ -29,7 +29,7 @@ class FakeKeyboardEvent {
   }
 }
 
-function fixture(options: { picker?: boolean; model?: boolean; reasoning?: number } = {}) {
+function fixture(options: { picker?: boolean; model?: boolean; reasoning?: number; modelText?: string; radio?: boolean; max?: string; label?: string; missingSliderValue?: boolean } = {}) {
   const state = {
     picker: options.picker ?? true,
     menuOpen: false,
@@ -40,8 +40,8 @@ function fixture(options: { picker?: boolean; model?: boolean; reasoning?: numbe
   const slider = {
     getClientRects: () => [{}],
     getAttribute(name: string) {
-      if (name === 'aria-valuenow') return String(state.reasoning);
-      if (name === 'aria-valuemax') return '2';
+      if (name === 'aria-valuenow') return options.missingSliderValue ? null : String(state.reasoning);
+      if (name === 'aria-valuemax') return options.max ?? '2';
       return null;
     },
   };
@@ -71,10 +71,10 @@ function fixture(options: { picker?: boolean; model?: boolean; reasoning?: numbe
       return name === 'aria-checked' ? String(state.model) : null;
     },
     get innerText() {
-      return 'GPT-5.6 Sol';
+      return options.modelText ?? 'GPT-5.6 Sol';
     },
     get textContent() {
-      return 'GPT-5.6 Sol';
+      return options.modelText ?? 'GPT-5.6 Sol';
     },
     click() {
       state.model = true;
@@ -82,12 +82,25 @@ function fixture(options: { picker?: boolean; model?: boolean; reasoning?: numbe
     },
   };
 
+  const high = {
+    getClientRects: () => [{}],
+    innerText: 'High',
+    getAttribute(name: string) {
+      return name === 'aria-checked' ? String(state.reasoning === 2) : null;
+    },
+    click() {
+      state.reasoning = 2;
+      state.menuOpen = false;
+    },
+  };
+
   const menu = {
     getClientRects: () => state.menuOpen ? [{}] : [],
     querySelectorAll(selector: string) {
-      return selector === '[role="menuitemradio"]' ? [option] : [];
+      return selector === '[role="menuitemradio"]' ? [option, ...(options.radio ? [high] : [])] : [];
     },
     querySelector(selector: string) {
+      if (options.radio) return null;
       if (selector === '[data-reasoning-slider="true"] [role="slider"]') return slider;
       if (selector === '[data-reasoning-slider="true"]') return row;
       return null;
@@ -102,7 +115,7 @@ function fixture(options: { picker?: boolean; model?: boolean; reasoning?: numbe
       return null;
     },
     get innerText() {
-      return state.model && state.reasoning === 2 ? '5.6 高' : '6.2 中';
+      return options.label ?? (state.model && state.reasoning === 2 ? '5.6 高' : '6.2 中');
     },
     get textContent() {
       return this.innerText;
@@ -167,6 +180,37 @@ test('automatic ChatGPT lock fails closed when the exact model picker is unavail
     reason: 'provider_model_lock_picker_ambiguous',
   });
   expect(state.menuOpen).toBe(false);
+});
+
+test('model option accepts a separate provider retirement notice', async () => {
+  const { ensure } = fixture({ modelText: 'GPT-5.6 Sol\n将于 12 月 23 日下线' });
+  expect(await ensure()).toMatchObject({ ready: true });
+});
+
+test('model option rejects a same-line extension and closes the menu', async () => {
+  const { state, ensure } = fixture({ modelText: 'GPT-5.6 Sol Plus' });
+  expect(await ensure()).toMatchObject({ ready: false });
+  expect(state.menuOpen).toBe(false);
+});
+
+test('model lock supports an exact High radio option', async () => {
+  const { state, ensure } = fixture({ radio: true });
+  expect(await ensure()).toMatchObject({ ready: true, reasoning: 'high' });
+  expect(state.reasoning).toBe(2);
+  expect(state.menuOpen).toBe(false);
+});
+
+test('model lock never proves High from missing or expanded slider ranges', async () => {
+  for (const options of [{ missingSliderValue: true }, { max: '3' }]) {
+    const { state, ensure } = fixture(options);
+    expect(await ensure()).toMatchObject({ ready: false, reason: 'provider_model_lock_reasoning_invalid' });
+    expect(state.menuOpen).toBe(false);
+  }
+});
+
+test('model lock does not accept Extra High as High in the collapsed picker', async () => {
+  const { ensure } = fixture({ label: '5.6 Extra High' });
+  expect(await ensure()).toMatchObject({ ready: false, reason: 'provider_model_lock_picker_confirmation_failed' });
 });
 
 test('unattended Forge prompts attempt model lock without making it a dispatch fence', () => {

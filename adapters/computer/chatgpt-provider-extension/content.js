@@ -257,14 +257,26 @@
         && /选择 ChatGPT 模型|Select ChatGPT model/i.test(String(node.getAttribute?.('aria-label') ?? '')));
     return buttons.length === 1 ? buttons[0] : undefined;
   };
+  // Match the exact model name; provider options may append a separate
+  // retirement/help line. Never accept a same-line model-name suffix.
+  const modelLockOptionMatches = (option) =>
+    String(option?.innerText ?? option?.textContent ?? '').trim().split(/\r?\n/, 1)[0] === CHATGPT_MODEL_LOCK_NAME;
+  const modelLockOptions = (menu) =>
+    Array.from(menu?.querySelectorAll?.('[role="menuitemradio"]') ?? []).filter(visible);
+  const modelLockHighOptions = (menu) =>
+    modelLockOptions(menu).filter((option) => /^(?:High|高)$/.test(
+      String(option.innerText ?? option.textContent ?? '').trim()));
   const modelLockMenu = () => {
     const menus = Array.from(document.querySelectorAll('[role="menu"]')).filter(visible);
-    const matches = menus.filter((menu) => {
-      const options = Array.from(menu.querySelectorAll?.('[role="menuitemradio"]') ?? []);
-      return options.some((option) => String(option.innerText ?? option.textContent ?? '').trim() === CHATGPT_MODEL_LOCK_NAME)
-        && Boolean(menu.querySelector?.('[data-reasoning-slider="true"] [role="slider"]'));
-    });
+    const matches = menus.filter((menu) =>
+      modelLockOptions(menu).some(modelLockOptionMatches)
+      && (Boolean(menu.querySelector?.('[data-reasoning-slider="true"] [role="slider"]'))
+        || modelLockHighOptions(menu).length === 1));
     return matches.length === 1 ? matches[0] : undefined;
+  };
+  const modelLockSliderValue = (slider, attribute) => {
+    const raw = slider?.getAttribute?.(attribute);
+    return typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
   };
   const closeModelLockMenu = async () => {
     const picker = modelLockPicker();
@@ -284,21 +296,25 @@
     if (!picker) return { ready: false, reason: 'provider_model_lock_picker_ambiguous' };
     if (picker.getAttribute?.('aria-expanded') !== 'true') {
       picker.click?.();
-      await modelLockWait(180);
     }
-    return modelLockMenu()
-      ? { ready: true }
-      : { ready: false, reason: 'provider_model_lock_menu_unavailable' };
+    // The menu may mount after the picker opens (especially on background tabs).
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      if (modelLockMenu()) return { ready: true };
+      await modelLockWait(120);
+    }
+    if (modelLockMenu()) return { ready: true };
+    return { ready: false, reason: 'provider_model_lock_menu_unavailable' };
   };
   const ensureGpt56High = async () => {
     const opened = await openModelLockMenu();
-    if (!opened.ready) return opened;
+    if (!opened.ready) {
+      await closeModelLockMenu();
+      return opened;
+    }
     try {
       let menu = modelLockMenu();
       if (!menu) return { ready: false, reason: 'provider_model_lock_menu_unavailable' };
-      let options = Array.from(menu.querySelectorAll?.('[role="menuitemradio"]') ?? [])
-        .filter((option) => visible(option)
-          && String(option.innerText ?? option.textContent ?? '').trim() === CHATGPT_MODEL_LOCK_NAME);
+      let options = modelLockOptions(menu).filter(modelLockOptionMatches);
       if (options.length !== 1) return { ready: false, reason: 'provider_model_lock_model_ambiguous' };
       if (options[0].getAttribute?.('aria-checked') !== 'true') {
         options[0].click?.();
@@ -307,40 +323,49 @@
         if (!reopened.ready) return reopened;
         menu = modelLockMenu();
         if (!menu) return { ready: false, reason: 'provider_model_lock_menu_unavailable' };
-        options = Array.from(menu.querySelectorAll?.('[role="menuitemradio"]') ?? [])
-          .filter((option) => visible(option)
-            && String(option.innerText ?? option.textContent ?? '').trim() === CHATGPT_MODEL_LOCK_NAME);
+        options = modelLockOptions(menu).filter(modelLockOptionMatches);
       }
       if (options.length !== 1 || options[0].getAttribute?.('aria-checked') !== 'true') {
         return { ready: false, reason: 'provider_model_lock_model_unconfirmed' };
       }
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        menu = modelLockMenu();
-        const row = menu?.querySelector?.('[data-reasoning-slider="true"]');
-        const slider = row?.querySelector?.('[role="slider"]');
-        if (!row || !slider) return { ready: false, reason: 'provider_model_lock_reasoning_unavailable' };
-        const now = Number(slider.getAttribute?.('aria-valuenow'));
-        const maximum = Number(slider.getAttribute?.('aria-valuemax'));
-        if (!Number.isFinite(now) || !Number.isFinite(maximum)) {
-          return { ready: false, reason: 'provider_model_lock_reasoning_invalid' };
+      const highChoices = modelLockHighOptions(menu);
+      if (highChoices.length === 1) {
+        if (highChoices[0].getAttribute?.('aria-checked') !== 'true') {
+          highChoices[0].click?.();
+          await modelLockWait(120);
+          const reopened = await openModelLockMenu();
+          if (!reopened.ready) return reopened;
         }
-        if (now === maximum) break;
-        if (now > maximum) return { ready: false, reason: 'provider_model_lock_reasoning_invalid' };
-        row.focus?.();
-        const init = { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true };
-        row.dispatchEvent?.(new KeyboardEvent('keydown', init));
-        row.dispatchEvent?.(new KeyboardEvent('keyup', init));
-        await modelLockWait(120);
+      } else {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          menu = modelLockMenu();
+          const row = menu?.querySelector?.('[data-reasoning-slider="true"]');
+          const slider = row?.querySelector?.('[role="slider"]');
+          if (!row || !slider) return { ready: false, reason: 'provider_model_lock_reasoning_unavailable' };
+          const now = modelLockSliderValue(slider, 'aria-valuenow');
+          const maximum = modelLockSliderValue(slider, 'aria-valuemax');
+          // The legacy three-level control has High at index 2. A newer
+          // four-level control must not silently treat Extra High as High.
+          if (!Number.isInteger(now) || now < 0 || now > 2 || maximum !== 2) {
+            return { ready: false, reason: 'provider_model_lock_reasoning_invalid' };
+          }
+          if (now === 2) break;
+          row.focus?.();
+          const init = { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true };
+          row.dispatchEvent?.(new KeyboardEvent('keydown', init));
+          row.dispatchEvent?.(new KeyboardEvent('keyup', init));
+          await modelLockWait(120);
+        }
       }
       menu = modelLockMenu();
-      const finalOption = Array.from(menu?.querySelectorAll?.('[role="menuitemradio"]') ?? [])
-        .filter((option) => visible(option)
-          && String(option.innerText ?? option.textContent ?? '').trim() === CHATGPT_MODEL_LOCK_NAME);
+      const finalOption = modelLockOptions(menu).filter(modelLockOptionMatches);
+      const finalHigh = modelLockHighOptions(menu);
       const finalSlider = menu?.querySelector?.('[data-reasoning-slider="true"] [role="slider"]');
-      const finalNow = Number(finalSlider?.getAttribute?.('aria-valuenow'));
-      const finalMax = Number(finalSlider?.getAttribute?.('aria-valuemax'));
-      if (finalOption.length !== 1 || finalOption[0].getAttribute?.('aria-checked') !== 'true'
-          || !Number.isFinite(finalNow) || !Number.isFinite(finalMax) || finalNow !== finalMax) {
+      const reasoningConfirmed = finalHigh.length === 1
+        ? finalHigh[0].getAttribute?.('aria-checked') === 'true'
+        : modelLockSliderValue(finalSlider, 'aria-valuenow') === 2
+          && modelLockSliderValue(finalSlider, 'aria-valuemax') === 2;
+      if (finalOption.length !== 1 || finalOption[0].getAttribute?.('aria-checked') !== 'true' || !reasoningConfirmed) {
         return { ready: false, reason: 'provider_model_lock_final_proof_failed' };
       }
     } finally {
@@ -349,7 +374,7 @@
     const picker = modelLockPicker();
     const label = String(picker?.innerText ?? picker?.textContent ?? '').trim();
     if (!picker || picker.getAttribute?.('aria-expanded') === 'true'
-        || !/(?:^|\s)5\.6(?:\s|$)/i.test(label) || !/(?:高|High)/i.test(label)) {
+        || !/(?:^|\s)5\.6(?:\s|$)/i.test(label) || !/(?:^|\s)(?:高|High)$/i.test(label) || /(?:Extra\s+High|极高|超高)/i.test(label)) {
       return { ready: false, reason: 'provider_model_lock_picker_confirmation_failed' };
     }
     return {
