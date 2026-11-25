@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import { loadRuntimeReleaseManifest } from './release-manifest';
 import { readRuntimeReleaseAuthority } from './release-store';
 import { readForgeRuntimeServiceConfig } from './service';
-import { resolveRuntimeOutboundProxyEnvironment, type RuntimeOutboundProxyPolicy } from '../shared/process-environment';
+import { resolveRuntimeOutboundProxyEnvironment } from '../shared/process-environment';
 
 export interface ForgeRuntimeServiceCommand {
   executable: string;
@@ -25,9 +25,11 @@ export function resolveForgeRuntimeServiceCommand(
   const releaseRoot = dirname(resolve(authority.active.manifestPath));
   const executable = join(releaseRoot, activeRuntimeReleaseManifest.entrypoint);
   if (!existsSync(executable)) throw new Error(`FORGE_RUNTIME_RELEASE_ENTRYPOINT_MISSING: ${executable}`);
-  const outboundProxyPolicy: RuntimeOutboundProxyPolicy | undefined =
-    config.outboundProxy ?? (process.platform === 'darwin' ? { mode: 'macos-system' } : undefined);
-  const runtimeEnvironment = resolveRuntimeOutboundProxyEnvironment(outboundProxyPolicy, process.env, process.platform);
+  const runtimeEnvironment = resolveRuntimeOutboundProxyEnvironment(
+    config.outboundProxy,
+    process.env,
+    process.platform,
+  );
   return {
     executable,
     args: [

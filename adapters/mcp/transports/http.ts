@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
+import { ServerResponse } from 'http';
 import { performance } from 'perf_hooks';
 import { existsSync, watch } from 'fs';
 import { dirname } from 'path';
@@ -506,18 +508,36 @@ function createMcpHttpHandler(
   sharedRuntimeProxy: CanonicalRuntimeProxy | undefined,
   legacy: 'reject' | 'stateless',
 ): { handler: ReturnType<typeof createMcpHandler>; nodeHandler: NodeMcpRequestHandler } {
+  const exchange = new AsyncLocalStorage<{ response: ServerResponse; body: unknown }>();
   const handler = createMcpHandler(
     async (requestContext) => {
       const toolContext = createMcpToolContext({
         ...baseOptions,
+        sessionId: baseOptions.sessionId ?? randomUUID(),
         principalId: principalIdFromModernRequestContext(requestContext),
       });
+      const current = exchange.getStore();
+      if (current) observeMcpHttpToolCallResponse(current.response, current.body, toolContext);
       const runtimeSchema = await resolveRuntimeSchema?.(toolContext);
       return createForgeMcpServerFromContext(toolContext, runtimeSchema, sharedRuntimeProxy);
     },
     { legacy, responseMode: 'auto' },
   );
-  return { handler, nodeHandler: toNodeHandler(handler) };
+  const nodeHandler = toNodeHandler(handler);
+  return {
+    handler,
+    nodeHandler: (req, res, body) => {
+      if (!(res instanceof ServerResponse)) return nodeHandler(req, res, body);
+      if (!mcpHttpRequestStarts.has(res)) {
+        mcpHttpRequestStarts.set(res, {
+          startedAtMs: performance.now(),
+          startedAt: new Date().toISOString(),
+          route: (req.url ?? '/mcp').split('?')[0] ?? '/mcp',
+        });
+      }
+      return exchange.run({ response: res, body }, () => nodeHandler(req, res, body));
+    },
+  };
 }
 
 export function createModernMcpHttpHandler(
@@ -752,7 +772,7 @@ export interface McpToolCallTraceRequest {
   forwardedSessionId?: string;
 }
 
-const mcpHttpRequestStarts = new WeakMap<Response, McpHttpRequestStart>();
+const mcpHttpRequestStarts = new WeakMap<ServerResponse, McpHttpRequestStart>();
 
 export function mcpToolCallTraceRequests(body: unknown): McpToolCallTraceRequest[] {
   const requests = Array.isArray(body) ? body : [body];
@@ -789,7 +809,7 @@ export function mcpToolCallTraceRequests(body: unknown): McpToolCallTraceRequest
   return traces;
 }
 
-function observeMcpHttpToolCallResponse(res: Response, body: unknown, toolContext: McpToolContext): void {
+function observeMcpHttpToolCallResponse(res: ServerResponse, body: unknown, toolContext: McpToolContext): void {
   const started = mcpHttpRequestStarts.get(res);
   if (!started) return;
 

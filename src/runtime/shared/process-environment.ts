@@ -185,9 +185,10 @@ function readMacSystemProxySnapshot(): string {
 }
 
 /**
- * Build the hosting Runtime environment from an explicit policy. Missing policy
- * retains the legacy allowlisted inherited proxy behavior; configured policies
- * never silently fall back to direct egress.
+ * Build the hosting Runtime environment. Both materialized service launches and
+ * the package runner use the current macOS system proxy by default. Other hosts
+ * retain allowlisted inherited settings; configured policies never silently
+ * fall back to direct egress.
  */
 export function resolveRuntimeOutboundProxyEnvironment(
   policy: RuntimeOutboundProxyPolicy | undefined,
@@ -196,8 +197,9 @@ export function resolveRuntimeOutboundProxyEnvironment(
   systemProxySnapshot?: string,
 ): NodeJS.ProcessEnv {
   const base = removeProxyEnvironment(runtimeAuthorityFreeEnvironment(inherited));
-  if (!policy) return { ...base, ...allowlistedProxyEnvironment(inherited) };
-  const normalized = normalizeRuntimeOutboundProxyPolicy(policy)!;
+  const selected = policy ?? (platform === 'darwin' ? { mode: 'macos-system' as const } : undefined);
+  if (!selected) return { ...base, ...allowlistedProxyEnvironment(inherited) };
+  const normalized = normalizeRuntimeOutboundProxyPolicy(selected)!;
   if (normalized.mode === 'direct') {
     return { ...base, NO_PROXY: normalizedNoProxy(normalized.noProxy) };
   }

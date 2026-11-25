@@ -101,6 +101,28 @@ describe('repository child process environment', () => {
     ).toThrow('FORGE_OUTBOUND_PROXY_URL_INVALID');
   });
 
+  test('default macOS Runtime egress uses the current system proxy, not a stale inherited endpoint', () => {
+    const resolved = resolveRuntimeOutboundProxyEnvironment(
+      undefined,
+      { HTTPS_PROXY: 'http://127.0.0.1:7890', FORGE_RELEASE_ID: 'private' },
+      'darwin',
+      'HTTPEnable : 1\nHTTPProxy : 127.0.0.1\nHTTPPort : 17890\nHTTPSEnable : 1\nHTTPSProxy : 127.0.0.1\nHTTPSPort : 17890\n',
+    );
+    expect(resolved.HTTP_PROXY).toBe('http://127.0.0.1:17890');
+    expect(resolved.HTTPS_PROXY).toBe('http://127.0.0.1:17890');
+    expect(resolved.NO_PROXY).toContain('127.0.0.1');
+    expect(resolved.FORGE_RELEASE_ID).toBeUndefined();
+  });
+
+  test('default non-macOS Runtime egress preserves the configured inherited proxy', () => {
+    const resolved = resolveRuntimeOutboundProxyEnvironment(
+      undefined,
+      { HTTPS_PROXY: 'http://127.0.0.1:7890' },
+      'linux',
+    );
+    expect(resolved.HTTPS_PROXY).toBe('http://127.0.0.1:7890');
+  });
+
   test('direct egress is explicit and clears inherited proxy variables', () => {
     const resolved = resolveRuntimeOutboundProxyEnvironment(
       {
