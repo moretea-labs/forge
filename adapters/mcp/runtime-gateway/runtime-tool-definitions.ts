@@ -1106,24 +1106,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     ['plugin_id'],
   ),
   definition(
-    'work_result_summary',
-    'Return a redacted job result summary with failure class and suggested next actions. Does not return raw stdout or stderr.',
-    {
-      repo_id: repoId,
-      job_id: { type: 'string' },
-    },
-    ['job_id'],
-  ),
-  definition(
-    'work_status_digest',
-    'Return a redacted work status digest using a neutral work_ref. Does not return raw stdout or stderr.',
-    {
-      repo_id: repoId,
-      work_ref: { type: 'string' },
-    },
-    ['work_ref'],
-  ),
-  definition(
     'model_clients_summary',
     'List enabled model clients and DeepSeek adapter configuration state. Policy remains enforced by forge.',
     {

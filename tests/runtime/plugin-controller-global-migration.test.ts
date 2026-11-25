@@ -120,7 +120,7 @@ describe('Controller-global existing Grant migration', () => {
 });
 
 describe('Controller-global historical receipt migration', () => {
-  test('moves a completed Gmail effect once without provider execution and strips retired Work fields', () => {
+  test('moves a completed Gmail effect once without provider execution and canonicalizes obsolete fields', () => {
     const home = controllerHome();
     const requestId = 'legacy-gmail-send-one';
     const receiptId = 'PLG-legacy-mail-one';
@@ -141,7 +141,7 @@ describe('Controller-global historical receipt migration', () => {
       semanticKey: oldSemantic,
       status: 'succeeded',
       createdAt: new Date().toISOString(),
-      workId: 'work-mail-legacy',
+      obsoleteField: 'discard-on-read-and-migration',
       result: { providerId: 'sent-once' },
     };
     const source = join(receiptRoot, `${receiptId}.json`);
@@ -156,6 +156,7 @@ describe('Controller-global historical receipt migration', () => {
         receiptId,
         semanticKey: oldSemantic,
         createdAt: oldReceipt.createdAt,
+        obsoleteField: 'discard-from-index',
       }),
     );
 
@@ -192,11 +193,9 @@ describe('Controller-global historical receipt migration', () => {
     expect(readFileSync(phoneSource, 'utf8')).toBe(beforeReceipt);
     expect(readFileSync(phoneIndex, 'utf8')).toBe(beforeIndex);
     const phoneContext = { repoId: oldScope, pluginId: 'computer', actionId: 'physical_device_open' };
-    const { workId: _phoneWorkId, ...phoneReceiptWithoutWork } = phoneReceipt as typeof phoneReceipt & {
-      workId?: string;
-    };
-    expect(readPluginActionReceiptForRequest(home, phoneId, phoneContext)).toMatchObject(phoneReceiptWithoutWork);
-    expect(readPluginActionReceiptForRequest(home, phoneId, phoneContext)).not.toHaveProperty('workId');
+    const { obsoleteField: _phoneObsoleteField, ...canonicalPhoneReceipt } = phoneReceipt;
+    expect(readPluginActionReceiptForRequest(home, phoneId, phoneContext)).toMatchObject(canonicalPhoneReceipt);
+    expect(readPluginActionReceiptForRequest(home, phoneId, phoneContext)).not.toHaveProperty('obsoleteField');
     writeFileSync(phoneSource, JSON.stringify({ ...phoneReceipt, receiptId: 'PLG-corrupt-identity' }));
     expect(() => readPluginActionReceiptForRequest(home, phoneId, phoneContext)).toThrow('PLUGIN_RECEIPT_LOST');
     writeFileSync(phoneSource, beforeReceipt);
@@ -213,13 +212,12 @@ describe('Controller-global historical receipt migration', () => {
       semanticKey: 'plugin-action:forge-instance:gmail:send:12345',
       result: { providerId: 'sent-once' },
     });
-    expect(migrated).not.toHaveProperty('workId');
-    expect(migrated).not.toHaveProperty('workRepoId');
+    expect(migrated).not.toHaveProperty('obsoleteField');
     expect(existsSync(source)).toBe(false);
     expect(existsSync(join(home, 'system', 'plugin-action-receipts', `${receiptId}.json`))).toBe(true);
     const index = JSON.parse(readFileSync(requestPath, 'utf8'));
     expect(index).toMatchObject({ scopeKey: 'forge-instance' });
-    expect(index).not.toHaveProperty('workRepoId');
+    expect(index).not.toHaveProperty('obsoleteField');
     expect(readPluginActionReceiptForRequest(home, requestId)).toEqual(migrated);
 
     const markerPath = join(home, 'system', 'plugin-action-receipts-migration.json');
@@ -288,8 +286,7 @@ describe('Controller-global historical receipt migration', () => {
       scopeKey: 'forge-instance',
       result: { providerId: 'sent-after-marker' },
     });
-    expect(coldRead(lateRequestId)).not.toHaveProperty('workId');
-    expect(coldRead(lateRequestId)).not.toHaveProperty('workRepoId');
+    expect(coldRead(lateRequestId)).not.toHaveProperty('obsoleteField');
     expect(existsSync(lateSource)).toBe(false);
     expect(JSON.parse(readFileSync(markerPath, 'utf8'))).toMatchObject({
       schemaVersion: 1,

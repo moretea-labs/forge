@@ -65,8 +65,6 @@ const DIRECT_HOT_READ_TOOLS = new Set([
   'get_task_run_log',
   'get_job',
   'list_jobs',
-  'work_status_digest',
-  'work_result_summary',
   'controller_ready',
   'repository_runtime_snapshot',
   'rh_status',

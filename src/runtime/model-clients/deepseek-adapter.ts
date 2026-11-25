@@ -37,7 +37,7 @@ export function buildModelClientSummary(env: NodeJS.ProcessEnv = process.env): M
       enabled: true,
       configured,
       role: 'Compatibility adapter. DeepSeek returns function calls; forge translates them into safe operations.',
-      allowedToolPrefixes: ['forge_web_', 'forge_work_', 'forge_plugin_'],
+      allowedToolPrefixes: ['forge_web_', 'forge_plugin_'],
       safetyBoundary: 'forge-policy',
       controllerModes: ['tool_call_adapter'],
       canInitiateTurns: false,
@@ -49,7 +49,7 @@ export function buildModelClientSummary(env: NodeJS.ProcessEnv = process.env): M
       enabled: true,
       configured,
       role: 'Backup primary controller for manual handoff, ChatGPT connector blockage fallback, and parallel review. It proposes forge tool calls but never executes them directly.',
-      allowedToolPrefixes: ['forge_web_', 'forge_work_', 'forge_plugin_'],
+      allowedToolPrefixes: ['forge_web_', 'forge_plugin_'],
       safetyBoundary: 'forge-policy',
       controllerModes: ['backup_primary', 'parallel_reviewer'],
       canInitiateTurns: configured,
@@ -113,19 +113,6 @@ export function deepSeekFunctionToolManifest(): Array<Record<string, unknown>> {
           type: 'object',
           properties: { plugin_id: { type: 'string' } },
           required: ['plugin_id'],
-          additionalProperties: false,
-        },
-      },
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'forge_work_status_digest',
-        description: 'Read a redacted work status digest with suggested next actions. Does not return raw stdout/stderr.',
-        parameters: {
-          type: 'object',
-          properties: { work_ref: { type: 'string' } },
-          required: ['work_ref'],
           additionalProperties: false,
         },
       },
@@ -256,16 +243,6 @@ export function prepareDeepSeekToolCall(functionName: string, functionArguments:
         functionName,
         mappedOperation: 'toolchain_plugin_summary',
         mappedArguments: { plugin_id: functionArguments.plugin_id },
-        safety,
-      };
-    case 'forge_work_result_summary':
-    case 'forge_work_status_digest':
-      return {
-        provider: 'deepseek',
-        accepted: true,
-        functionName,
-        mappedOperation: 'work_status_digest',
-        mappedArguments: { work_ref: functionArguments.work_ref ?? functionArguments.job_id },
         safety,
       };
     default:

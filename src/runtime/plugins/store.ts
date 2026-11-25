@@ -1741,16 +1741,30 @@ function pluginActionReceiptPath(controllerHome: string, scopeKey: string, recei
 }
 
 function normalizePluginActionReceipt(receipt: PluginActionReceipt): PluginActionReceipt {
-  const withoutWork = receipt;
   const scopeKey =
-    withoutWork.scopeKey?.trim() ||
-    (withoutWork.repoId === CONTROLLER_SCOPE_REPO_ID ? CONTROLLER_PLUGIN_SCOPE_KEY : withoutWork.repoId?.trim()) ||
+    receipt.scopeKey?.trim() ||
+    (receipt.repoId === CONTROLLER_SCOPE_REPO_ID ? CONTROLLER_PLUGIN_SCOPE_KEY : receipt.repoId?.trim()) ||
     '';
   if (!scopeKey) throw new Error('PLUGIN_RECEIPT_SCOPE_CORRUPT');
+  const repoId = scopeKey === CONTROLLER_PLUGIN_SCOPE_KEY ? undefined : (receipt.repoId ?? scopeKey);
   return {
-    ...withoutWork,
+    schemaVersion: 1,
+    receiptId: receipt.receiptId,
+    requestId: receipt.requestId,
     scopeKey,
-    ...(scopeKey === CONTROLLER_PLUGIN_SCOPE_KEY ? { repoId: undefined } : { repoId: withoutWork.repoId ?? scopeKey }),
+    ...(repoId ? { repoId } : {}),
+    pluginId: receipt.pluginId,
+    actionId: receipt.actionId,
+    semanticKey: receipt.semanticKey,
+    status: receipt.status,
+    ...(receipt.effectOutcome !== undefined ? { effectOutcome: receipt.effectOutcome } : {}),
+    createdAt: receipt.createdAt,
+    ...(receipt.origin !== undefined ? { origin: receipt.origin } : {}),
+    ...(receipt.authorization !== undefined ? { authorization: receipt.authorization } : {}),
+    ...(receipt.result !== undefined ? { result: receipt.result } : {}),
+    ...(receipt.error !== undefined ? { error: receipt.error } : {}),
+    ...(receipt.observationOnly !== undefined ? { observationOnly: receipt.observationOnly } : {}),
+    ...(receipt.resultDigest !== undefined ? { resultDigest: receipt.resultDigest } : {}),
   };
 }
 
@@ -1923,13 +1937,12 @@ function migrateControllerPluginActionReceipts(
 
     const semanticKey = migratedPluginSemanticKey(receipt, oldScopeKey);
     if (!semanticKey) return false;
-    const receiptWithoutWork = receipt;
-    const nextReceipt: PluginActionReceipt = {
-      ...receiptWithoutWork,
+    const nextReceipt = normalizePluginActionReceipt({
+      ...receipt,
       scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,
       repoId: undefined,
       semanticKey,
-    };
+    });
     const destinationPath = join(globalReceiptRoot, `${sanitizeFileComponent(receipt.receiptId)}.json`);
     if (sourcePath !== destinationPath) {
       const existing = rawPluginActionReceiptAt(destinationPath);
@@ -1943,17 +1956,17 @@ function migrateControllerPluginActionReceipts(
       writeJsonAtomic(destinationPath, nextReceipt);
     }
 
-    const legacyIndex = index as (PluginActionRequestIndex & { workRepoId?: unknown }) | undefined;
-    const nextIndex: PluginActionRequestIndex = legacyIndex
-      ? (() => {
-          const { workRepoId: _indexWorkRepoId, ...indexWithoutWork } = legacyIndex;
-          return {
-            ...indexWithoutWork,
-            scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,
-            repoId: undefined,
-            semanticKey,
-          };
-        })()
+    const nextIndex: PluginActionRequestIndex = index
+      ? {
+          requestId: index.requestId,
+          scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,
+          receiptId: index.receiptId,
+          semanticKey,
+          createdAt: index.createdAt,
+          ...(index.pluginId !== undefined ? { pluginId: index.pluginId } : {}),
+          ...(index.actionId !== undefined ? { actionId: index.actionId } : {}),
+          ...(index.claimOwnerPid !== undefined ? { claimOwnerPid: index.claimOwnerPid } : {}),
+        }
       : {
           requestId: receipt.requestId,
           scopeKey: CONTROLLER_PLUGIN_SCOPE_KEY,

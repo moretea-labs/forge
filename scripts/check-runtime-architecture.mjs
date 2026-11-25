@@ -2556,6 +2556,22 @@ forbid(
   'Local Bridge must never recommend retired Work lifecycle as the migration path',
 );
 requireMissing('src/runtime/control-plane/execution/work-handle-history.ts');
+for (const path of [
+  'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
+  'adapters/mcp/runtime-gateway/routing-policy.ts',
+  'src/runtime/model-clients/deepseek-adapter.ts',
+]) {
+  forbid(
+    path,
+    /work_result_summary|work_status_digest|forge_work_/,
+    'retired Work summary tools must not remain callable through MCP or model-client compatibility surfaces (#483)',
+  );
+}
+forbid(
+  'src/runtime/resources/ownership.ts',
+  /['"]work_contract['"]/,
+  'retired WorkContract cannot remain a managed-resource owner kind (#483)',
+);
 requireMissing('src/runtime/context/assistant-work-context.ts');
 requireMissing('src/runtime/control-plane/persistence/experience-store.ts');
 requireMissing('src/cli/commands/brain-assistant.ts');
@@ -2842,8 +2858,10 @@ forbid(
 // Offline Work purge completed and the purge tool itself is deleted; keep it gone.
 requireMissing('src/runtime/control-plane/persistence/retired-work-purge.ts');
 requireMissing('tests/runtime/retired-work-purge.test.ts');
-forbid(
+forbidBetween(
   'src/runtime/control-plane/persistence/sqlite-store.ts',
+  'export const REBUILDABLE_RECORD_AUDIT_NAMESPACES = [',
+  '] as const;',
   /'execution_work_validation_index'/,
   'retired Work validation index must not be registered in live audit retention policy',
 );
