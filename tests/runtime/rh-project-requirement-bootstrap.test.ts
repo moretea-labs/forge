@@ -152,6 +152,65 @@ test('rh_project exposes the single Project root and explicit child Requirement 
     parentRequirementId: 'REQ-TREE-ROOT',
     rootRequirementId: 'REQ-TREE-ROOT',
   });
+  expect(
+    structured(
+      await callRuntimeTool(ctx, 'rh_project', {
+        operation: 'requirement_create',
+        project_id: 'tree-api',
+        requirement_id: 'REQ-TREE-GRANDCHILD',
+        requirement_title: 'Grandchild',
+        requirement_outcome: 'Deliver a nested slice.',
+        requirement_parent_id: 'REQ-TREE-CHILD',
+      }),
+    ).status,
+  ).toBe('ok');
+  const detail = structured(
+    await callRuntimeTool(ctx, 'rh_project', {
+      operation: 'project_get',
+      project_id: 'tree-api',
+      detail_level: 'detail',
+    }),
+  );
+  expect(detail.data.requirementTree).toEqual({
+    complete: true,
+    offPageParentIds: [],
+    rootRequirementIds: ['REQ-TREE-ROOT'],
+    nodes: expect.arrayContaining([
+      {
+        requirementId: 'REQ-TREE-ROOT',
+        childRequirementIds: expect.arrayContaining(['REQ-TREE-CHILD', 'REQ-TREE-LEGACY']),
+      },
+      {
+        requirementId: 'REQ-TREE-CHILD',
+        parentRequirementId: 'REQ-TREE-ROOT',
+        childRequirementIds: ['REQ-TREE-GRANDCHILD'],
+      },
+      {
+        requirementId: 'REQ-TREE-GRANDCHILD',
+        parentRequirementId: 'REQ-TREE-CHILD',
+        childRequirementIds: [],
+      },
+      { requirementId: 'REQ-TREE-LEGACY', parentRequirementId: 'REQ-TREE-ROOT', childRequirementIds: [] },
+    ]),
+  });
+  const rows = detail.data.requirements as Array<{ requirementId: string }>;
+  const childOffset = rows.findIndex((row) => row.requirementId === 'REQ-TREE-CHILD');
+  expect(childOffset).toBeGreaterThanOrEqual(0);
+  const page = structured(
+    await callRuntimeTool(ctx, 'rh_project', {
+      operation: 'project_get',
+      project_id: 'tree-api',
+      detail_level: 'detail',
+      limit: 1,
+      offset: childOffset,
+    }),
+  );
+  expect(page.data.requirementTree).toEqual({
+    complete: false,
+    offPageParentIds: ['REQ-TREE-ROOT'],
+    rootRequirementIds: ['REQ-TREE-CHILD'],
+    nodes: [{ requirementId: 'REQ-TREE-CHILD', parentRequirementId: 'REQ-TREE-ROOT', childRequirementIds: [] }],
+  });
   const listed = structured(
     await callRuntimeTool(ctx, 'rh_project', { operation: 'requirement_list', project_id: 'tree-api' }),
   );

@@ -104,6 +104,51 @@ function projectTaskSummary(ctx: MultiRepositoryMcpToolContext, tasks: ReturnTyp
   return { requirementCount: tasks.length, taskStatusCounts, taskPriorityCounts, blockedTaskCount };
 }
 
+type RequirementTreeNode = {
+  requirementId: string;
+  parentRequirementId?: string;
+  childRequirementIds: string[];
+};
+
+/** A normalized tree survives the facade depth bound at arbitrary hierarchy depth. */
+function projectRequirementTree(tasks: ReturnType<typeof projectTasks>, complete: boolean) {
+  const nodes = new Map<string, RequirementTreeNode>();
+  for (const task of tasks) {
+    nodes.set(task.requirementId, {
+      requirementId: task.requirementId,
+      ...(task.parentRequirementId ? { parentRequirementId: task.parentRequirementId } : {}),
+      childRequirementIds: [],
+    });
+  }
+  const rootRequirementIds: string[] = [];
+  const offPageParentIds = new Set<string>();
+  for (const node of nodes.values()) {
+    const parent = node.parentRequirementId ? nodes.get(node.parentRequirementId) : undefined;
+    if (parent) {
+      // Fail closed on corrupted historical hierarchy.
+      const ancestors = new Set([node.requirementId]);
+      let ancestor: RequirementTreeNode | undefined = parent;
+      while (ancestor) {
+        if (ancestors.has(ancestor.requirementId)) {
+          throw new Error('PROJECT_REQUIREMENT_TREE_CYCLE:' + node.requirementId);
+        }
+        ancestors.add(ancestor.requirementId);
+        ancestor = ancestor.parentRequirementId ? nodes.get(ancestor.parentRequirementId) : undefined;
+      }
+      parent.childRequirementIds.push(node.requirementId);
+    } else {
+      rootRequirementIds.push(node.requirementId);
+      if (node.parentRequirementId) offPageParentIds.add(node.parentRequirementId);
+    }
+  }
+  return {
+    rootRequirementIds,
+    nodes: [...nodes.values()],
+    complete: complete && offPageParentIds.size === 0,
+    offPageParentIds: [...offPageParentIds],
+  };
+}
+
 function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: string, limit: number, offset: number) {
   const all = projectTasks(ctx, projectId);
   const visible = all.slice(offset, offset + limit);
@@ -127,6 +172,10 @@ function projectRequirements(ctx: MultiRepositoryMcpToolContext, projectId: stri
   };
   return {
     ...projectTaskSummary(ctx, all),
+    requirementTree: projectRequirementTree(
+      visible,
+      offset === 0 && visible.length === all.length && all.length < 1000,
+    ),
     requirements: visible.map((requirement) => ({
       requirementId: requirement.requirementId,
       revision: requirement.revision,
