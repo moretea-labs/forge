@@ -567,6 +567,10 @@
       "module": "core",
       "resource": "pure"
     },
+    "tests/runtime/event-policy.test.ts": {
+      "module": "core",
+      "resource": "pure"
+    },
     "tests/runtime/agentmail-watch-adapter.test.ts": {
       "module": "core",
       "resource": "pure"
