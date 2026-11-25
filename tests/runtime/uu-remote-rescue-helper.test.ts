@@ -421,7 +421,7 @@ describe('UU Remote rescue helper', () => {
     expect(fx.getCommand()).toContain('FORGE_RECOVERY_PARENT_SID');
     expect(fx.getCommand()).toContain('FORGE_RECOVERY_PARENT_RUN');
     const clear = fx.desktopCalls.findIndex(
-      (call) => call.action === 'desktop_key' && Array.isArray(call.args.keys) && call.args.keys.includes('ESCAPE'),
+      (call) => call.action === 'desktop_key' && Array.isArray(call.args.keys) && call.args.keys.includes('escape'),
     );
     const write = fx.desktopCalls.findIndex(
       (call) => call.action === 'desktop_clipboard_write' && call.args.text !== 'private-existing-clipboard',

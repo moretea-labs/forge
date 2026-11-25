@@ -619,7 +619,7 @@ async function runTerminalCommand(config, requestId, command, deps, options = {}
     if (options.resetPendingInput === true) {
       await deps.desktopCall(config, requestId + ':clear-pending-input', 'desktop_key', {
         interaction_id: interactionId,
-        keys: ['ESCAPE'],
+        keys: ['escape'],
       });
     }
     const clipboard = await deps.desktopCall(config, `${requestId}:clipboard-read`, 'desktop_clipboard_read', {});
@@ -630,7 +630,7 @@ async function runTerminalCommand(config, requestId, command, deps, options = {}
     await deps.sleep(options.awaitResult === false ? 2500 : 800);
     await deps.desktopCall(config, `${requestId}:return`, 'desktop_key', {
       interaction_id: interactionId,
-      keys: ['RETURN'],
+      keys: ['return'],
     });
     if (options.awaitResult === false) {
       await deps.sleep(1800);
