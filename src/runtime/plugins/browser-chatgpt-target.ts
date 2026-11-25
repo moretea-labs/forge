@@ -496,7 +496,11 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
           const inventory = await listMacOsBrowserTabs(product, this.timeoutMs, { correctFrontmost: false });
           return { entries: inventory.tabs.map((tab): TaggedTab => ({ ...tab, browserProduct: product })) };
         } catch (error) {
-          if (error instanceof AssistantPluginError && error.code === 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING')
+          if (
+            error instanceof AssistantPluginError &&
+            (error.code === 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING' ||
+              error.code === 'PLUGIN_BROWSER_NATIVE_APP_NOT_INSTALLED')
+          )
             return { entries: [] as TaggedTab[] };
           return { entries: [] as TaggedTab[], unavailableProvider: `${PROVIDER_ID}:${product}` };
         }

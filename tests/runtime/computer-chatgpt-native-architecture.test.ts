@@ -19,3 +19,9 @@ test('production ChatGPT exact-target path is native Browser attach, not an exte
   expect(target).not.toContain('ChromeExtensionChatgptConversationTargetPort');
   expect(target).not.toContain('projectComputerChatgptExtension');
 });
+
+test('optional native browser absence does not poison exact-target inventory completeness', () => {
+  const target = read('src/runtime/plugins/browser-chatgpt-target.ts');
+  expect(target).toContain("error.code === 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING'");
+  expect(target).toContain("error.code === 'PLUGIN_BROWSER_NATIVE_APP_NOT_INSTALLED'");
+});
