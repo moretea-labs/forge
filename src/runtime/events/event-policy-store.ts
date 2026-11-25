@@ -4,8 +4,12 @@ import {
   writeControlPlaneRecord,
   type ControlPlaneRecord,
 } from '../control-plane/persistence/sqlite-store';
-import { matchEventPolicy, validateEventPolicyV1, type EventPolicyV1 } from '../../../packages/kernel/events';
-import type { EventEnvelopeV1 } from '../../../packages/kernel/events/domain/event-envelope';
+import {
+  matchEventPolicy,
+  validateEventPolicyV1,
+  type EventEnvelopeV1,
+  type EventPolicyV1,
+} from '../../../packages/kernel/events';
 
 const NAMESPACE = 'event_policy';
 const SCOPE = 'global';
