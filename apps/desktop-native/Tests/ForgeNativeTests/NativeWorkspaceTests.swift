@@ -6259,3 +6259,69 @@ extension NativeWorkspaceTests {
     XCTAssertEqual(ambiguousMerge.last?.eventId, "receipt-1")
   }
 }
+
+extension NativeWorkspaceTests {
+  func testAgentActivitySummaryPrioritizesRunningAndTracksSlowestKnownCall() {
+    let events = [
+      AgentLiveActivityEvent(
+        phase: "tool", label: "read_repository_file", detail: nil,
+        status: "completed", startedAt: "2026-11-25T00:00:00.000Z",
+        completedAt: "2026-11-25T00:00:00.250Z", toolCallId: "read"
+      ),
+      AgentLiveActivityEvent(
+        phase: "tool", label: "execute_command", detail: nil,
+        status: "completed", startedAt: "2026-11-25T00:00:01.000Z",
+        completedAt: "2026-11-25T00:00:02.250Z", toolCallId: "command"
+      ),
+      AgentLiveActivityEvent(
+        phase: "tool", label: "process_get", detail: nil,
+        status: "unknown", startedAt: "2026-11-25T00:00:03.000Z",
+        completedAt: "2026-11-25T00:00:03.400Z", toolCallId: "unknown"
+      ),
+      AgentLiveActivityEvent(
+        phase: "tool", label: "process_wait", detail: nil,
+        status: "running", startedAt: "2026-11-25T00:00:04.000Z",
+        completedAt: nil, toolCallId: "running"
+      ),
+    ]
+
+    let summary = NativeWorkspace.activitySummary(events: events, reportedCount: 6)
+
+    XCTAssertEqual(summary.totalCount, 6)
+    XCTAssertEqual(summary.retainedCount, 4)
+    XCTAssertEqual(summary.runningCount, 1)
+    XCTAssertEqual(summary.issueCount, 1)
+    XCTAssertEqual(summary.slowestDurationMs ?? -1, 1_250, accuracy: 0.001)
+    XCTAssertEqual(summary.compactLabel, "调用 6 · 1 运行中")
+    XCTAssertTrue(summary.accessibilityLabel.contains("最慢已知调用 1.3 s"))
+    XCTAssertTrue(summary.accessibilityLabel.contains("保留最近 4 条调用记录"))
+  }
+
+  func testAgentActivitySummaryFallsBackToIssueSlowestAndExecutionProcessLabels() {
+    let issue = AgentLiveActivityEvent(
+      phase: "tool", label: "execute_command", detail: nil,
+      status: "failed", startedAt: "2026-11-25T00:00:00.000Z",
+      completedAt: "2026-11-25T00:00:00.600Z", toolCallId: "failed"
+    )
+    let issueSummary = NativeWorkspace.activitySummary(events: [issue], reportedCount: 1)
+    XCTAssertEqual(issueSummary.compactLabel, "调用 1 · 1 异常")
+
+    let completed = AgentLiveActivityEvent(
+      phase: "tool", label: "execute_command", detail: nil,
+      status: "completed", startedAt: "2026-11-25T00:00:00.000Z",
+      completedAt: "2026-11-25T00:00:00.600Z", toolCallId: "completed"
+    )
+    let completedSummary = NativeWorkspace.activitySummary(events: [completed], reportedCount: 1)
+    XCTAssertEqual(completedSummary.compactLabel, "调用 1 · 最慢 600 ms")
+
+    let narrativeOnly = AgentLiveActivityEvent(
+      phase: "message", label: "模型过程说明", detail: "checking",
+      status: "completed", startedAt: "2026-11-25T00:00:00.000Z",
+      completedAt: "2026-11-25T00:00:00.100Z", toolCallId: nil,
+      eventId: "message"
+    )
+    let narrativeSummary = NativeWorkspace.activitySummary(events: [narrativeOnly], reportedCount: nil)
+    XCTAssertEqual(narrativeSummary.compactLabel, "执行过程")
+    XCTAssertEqual(narrativeSummary.accessibilityLabel, "有执行记录")
+  }
+}

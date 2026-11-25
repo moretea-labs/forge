@@ -586,6 +586,10 @@ struct AgentPane: View {
                                         )
                                         HStack(spacing:8) {
                                             if message.activityEvents?.isEmpty == false {
+                                                let activitySummary = NativeWorkspace.activitySummary(
+                                                    events:message.activityEvents ?? [],
+                                                    reportedCount:message.toolActivityCount
+                                                )
                                                 Button {
                                                     if expandedMessageActivities.contains(message.id) {
                                                         expandedMessageActivities.remove(message.id)
@@ -594,7 +598,7 @@ struct AgentPane: View {
                                                     }
                                                 } label: {
                                                     HStack(spacing:5) {
-                                                        Label(message.toolActivityCount.map { "调用 \($0)" } ?? "执行过程",
+                                                        Label(activitySummary.compactLabel,
                                                               systemImage:"list.bullet.rectangle")
                                                         Image(systemName:expandedMessageActivities.contains(message.id)
                                                               ? "chevron.up" : "chevron.down")
@@ -602,9 +606,11 @@ struct AgentPane: View {
                                                     }
                                                 }
                                                 .buttonStyle(.plain)
-                                                .help(expandedMessageActivities.contains(message.id) ? "收起工具调用" : "查看工具调用")
+                                                .help(expandedMessageActivities.contains(message.id)
+                                                      ? "收起工具调用"
+                                                      : activitySummary.accessibilityLabel)
                                                 .accessibilityLabel(expandedMessageActivities.contains(message.id) ? "收起工具调用" : "查看工具调用")
-                                                .accessibilityValue(message.toolActivityCount.map { "\($0) 次工具调用" } ?? "有执行记录")
+                                                .accessibilityValue(activitySummary.accessibilityLabel)
                                             } else if let count = message.toolActivityCount, count > 0 {
                                                 Label("工具 \(count)",systemImage:"hammer")
                                                     .accessibilityLabel("\(count) 次工具调用")
@@ -723,10 +729,17 @@ struct AgentPane: View {
                                             .lineLimit(1)
                                     }
                                     Spacer(minLength:8)
-                                    if let count = model.liveActivity?.toolActivityCount, count > 0 {
-                                        Text("\(count) 次调用")
+                                    if let liveActivity = model.liveActivity, liveActivity.toolActivityCount > 0 {
+                                        let activitySummary = NativeWorkspace.activitySummary(
+                                            events:liveActivity.events ?? [],
+                                            reportedCount:liveActivity.toolActivityCount
+                                        )
+                                        Text(activitySummary.compactLabel)
                                             .font(.system(size:9.5,weight:.medium))
                                             .foregroundStyle(.tertiary)
+                                            .help(activitySummary.accessibilityLabel)
+                                            .accessibilityLabel(activitySummary.accessibilityLabel)
+                                            .accessibilityIdentifier("agent.activity.live-summary")
                                     }
                                     if let count = model.liveActivity?.events?.count, count > 4 {
                                         Button(showActivityDetails ? "收起" : "全部过程") {

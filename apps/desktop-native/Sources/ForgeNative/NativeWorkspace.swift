@@ -209,7 +209,11 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
     let measured = durationMs ?? completedAt.flatMap {
       Self.elapsedMilliseconds(startedAt: startedAt, completedAt: $0)
     }
-    guard let measured, measured.isFinite, measured > 0 else { return nil }
+    return measured.flatMap(Self.durationLabel(milliseconds:))
+  }
+
+  static func durationLabel(milliseconds measured: Double) -> String? {
+    guard measured.isFinite, measured > 0 else { return nil }
     let milliseconds = Int(measured.rounded())
     if milliseconds < 1_000 { return "\(milliseconds) ms" }
     if milliseconds < 60_000 {
@@ -261,6 +265,40 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
     "plugin_action_execute": "调用插件",
     "computer": "桌面操作",
   ]
+}
+
+struct AgentActivitySummary: Equatable {
+  let totalCount: Int
+  let retainedCount: Int
+  let runningCount: Int
+  let issueCount: Int
+  let slowestDurationMs: Double?
+
+  var compactLabel: String {
+    if totalCount == 0 { return "执行过程" }
+    if runningCount > 0 { return "调用 \(totalCount) · \(runningCount) 运行中" }
+    if issueCount > 0 { return "调用 \(totalCount) · \(issueCount) 异常" }
+    if let slowestDurationMs,
+      let duration = AgentLiveActivityEvent.durationLabel(milliseconds: slowestDurationMs)
+    {
+      return "调用 \(totalCount) · 最慢 \(duration)"
+    }
+    return "调用 \(totalCount)"
+  }
+
+  var accessibilityLabel: String {
+    if totalCount == 0 { return "有执行记录" }
+    var parts = ["共 \(totalCount) 次工具调用"]
+    if runningCount > 0 { parts.append("\(runningCount) 次正在运行") }
+    if issueCount > 0 { parts.append("\(issueCount) 次失败或结果未知") }
+    if let slowestDurationMs,
+      let duration = AgentLiveActivityEvent.durationLabel(milliseconds: slowestDurationMs)
+    {
+      parts.append("最慢已知调用 \(duration)")
+    }
+    if retainedCount < totalCount { parts.append("保留最近 \(retainedCount) 条调用记录") }
+    return parts.joined(separator: "，")
+  }
 }
 
 struct AgentLiveActivity: Codable {
@@ -6083,6 +6121,30 @@ final class NativeWorkspace: ObservableObject {
     -> String?
   {
     activityOutputPresentation(for: event)?.truncationLabel
+  }
+
+  nonisolated static func activitySummary(
+    events: [AgentLiveActivityEvent],
+    reportedCount: Int?
+  ) -> AgentActivitySummary {
+    let toolEvents = events.filter { $0.phase == "tool" }
+    let runningCount = toolEvents.filter { ["running", "output"].contains($0.status) }.count
+    let issueCount = toolEvents.filter { ["failed", "unknown"].contains($0.status) }.count
+    let slowestDurationMs = toolEvents.compactMap { event -> Double? in
+      if let duration = event.durationMs, duration.isFinite, duration > 0 { return duration }
+      guard let completedAt = event.completedAt else { return nil }
+      return AgentLiveActivityEvent.elapsedMilliseconds(
+        startedAt: event.startedAt,
+        completedAt: completedAt
+      )
+    }.max()
+    return AgentActivitySummary(
+      totalCount: max(reportedCount ?? toolEvents.count, toolEvents.count),
+      retainedCount: toolEvents.count,
+      runningCount: runningCount,
+      issueCount: issueCount,
+      slowestDurationMs: slowestDurationMs
+    )
   }
 
   nonisolated static func boundedActivityEvents(
