@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import {
   backupControlPlaneDatabase,
@@ -538,6 +538,82 @@ test('Project root Requirement uniqueness and parent hierarchy are atomic and se
     }),
   ).toThrow(/REQUIREMENT_HIERARCHY_PROJECT_MISMATCH/);
 });
+
+test('competing independent processes can bind exactly one canonical Project root', async () => {
+  const home = mkdtempSync(join('/tmp', 'forge-project-root-race-'));
+  homes.push(home);
+  const options = { controllerHome: home };
+  const projectId = 'project-root-race';
+  createProjectIdentity({
+    controllerHome: home,
+    value: { projectId, workspaceId: 'workspace-personal', displayName: 'Root race' },
+  });
+  const go = join(home, 'go');
+  const workerSource = `
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { createRequirement } from './src/runtime/control-plane/persistence/requirement-store';
+    const [home, projectId, requirementId, ready, go] = process.argv.slice(1);
+    writeFileSync(ready, 'ready');
+    const deadline = Date.now() + 5000;
+    while (!existsSync(go)) {
+      if (Date.now() > deadline) throw new Error('ROOT_RACE_START_TIMEOUT');
+      await Bun.sleep(2);
+    }
+    try {
+      const requirement = createRequirement({ controllerHome: home }, {
+        requirementId, projectId, isProjectRoot: true,
+        title: requirementId, outcomeStatement: 'Exactly one root must win.',
+      });
+      console.log(JSON.stringify({ status: 'created', requirementId: requirement.requirementId }));
+    } catch (error) {
+      console.log(JSON.stringify({ status: 'rejected', message: String(error) }));
+    }
+  `;
+  const ids = ['REQ-RACE-A', 'REQ-RACE-B'];
+  const ready = ids.map((id) => join(home, id + '.ready'));
+  const workers = ids.map((id, index) =>
+    Bun.spawn([process.execPath, '-e', workerSource, home, projectId, id, ready[index]!, go], {
+      cwd: process.cwd(),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    }),
+  );
+  try {
+    const deadline = Date.now() + 5_000;
+    while (!ready.every(existsSync)) {
+      if (Date.now() > deadline) throw new Error('ROOT_RACE_READY_TIMEOUT');
+      await Bun.sleep(5);
+    }
+    writeFileSync(go, 'go');
+    const results = await Promise.all(
+      workers.map(async (worker) => {
+        const [exitCode, stdout, stderr] = await Promise.all([
+          worker.exited,
+          new Response(worker.stdout).text(),
+          new Response(worker.stderr).text(),
+        ]);
+        if (exitCode !== 0) throw new Error(`Root race worker exited ${exitCode}: ${stderr}`);
+        return JSON.parse(stdout) as { status: string; requirementId?: string; message?: string };
+      }),
+    );
+    expect(results.filter((result) => result.status === 'created')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const winner = results.find((result) => result.status === 'created')!.requirementId!;
+    expect(results.find((result) => result.status === 'rejected')?.message).toContain(
+      `PROJECT_ROOT_REQUIREMENT_ALREADY_BOUND:${projectId}:${winner}`,
+    );
+    expect(readProjectIdentity(home, 'workspace-personal', projectId)).toMatchObject({
+      revision: 2,
+      value: { rootRequirementId: winner },
+    });
+    expect(listRequirements(options).map((record) => record.value.requirementId)).toEqual([winner]);
+    expect(readRequirement(options, winner)?.value.rootRequirementId).toBe(winner);
+    expect(readRequirement(options, ids.find((id) => id !== winner)!)).toBeUndefined();
+  } finally {
+    for (const worker of workers) if (worker.exitCode === null) worker.kill();
+    await Promise.all(workers.map((worker) => worker.exited));
+  }
+}, 15_000);
 
 test('Requirement task priority, assignee and status share one revisioned authority and board projection', () => {
   const home = mkdtempSync(join('/tmp', 'forge-requirement-task-'));
