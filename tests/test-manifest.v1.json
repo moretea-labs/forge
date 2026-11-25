@@ -575,6 +575,10 @@
       "module": "core",
       "resource": "temp-isolated"
     },
+    "tests/runtime/event-policy-preview.test.ts": {
+      "module": "core",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/model-profile.test.ts": {
       "module": "core",
       "resource": "pure"
