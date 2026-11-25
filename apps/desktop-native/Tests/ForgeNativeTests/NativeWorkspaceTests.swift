@@ -6201,6 +6201,105 @@ extension NativeWorkspaceTests {
     XCTAssertTrue(bounded.contains { $0.toolCallId == "call-running" })
   }
 
+  func testAgentLiveActivityEventPersistsEventSequence() throws {
+    let event = AgentLiveActivityEvent(
+      phase: "tool", label: "run_command", detail: "proc_fixture",
+      status: "completed", startedAt: "2026-11-25T12:00:00Z",
+      completedAt: "2026-11-25T12:00:01Z", toolCallId: "call-fixture",
+      eventSeq: 17
+    )
+    let data = try JSONEncoder().encode(event)
+    let decoded = try JSONDecoder().decode(AgentLiveActivityEvent.self, from: data)
+    XCTAssertEqual(decoded.eventSeq, 17)
+    XCTAssertEqual(decoded.toolCallId, "call-fixture")
+  }
+
+  func testApiToolProgressEventsRejectStaleSequenceAndPreserveGlobalOrder() {
+    let second = NativeWorkspace.apiToolProgressEvents(
+      [],
+      payload: [
+        "name": "read_file", "phase": "started", "toolCallId": "call-2",
+        "eventSeq": 2,
+      ],
+      now: "second-start"
+    )
+    let ordered = NativeWorkspace.apiToolProgressEvents(
+      second,
+      payload: [
+        "name": "git_status", "phase": "started", "toolCallId": "call-1",
+        "eventSeq": 1,
+      ],
+      now: "first-start"
+    )
+    XCTAssertEqual(ordered.compactMap(\.toolCallId), ["call-1", "call-2"])
+    XCTAssertEqual(ordered.compactMap(\.eventSeq), [1, 2])
+
+    let outputFirst = NativeWorkspace.apiToolProgressEvents(
+      [],
+      payload: [
+        "name": "run_command", "phase": "output", "toolCallId": "call-3",
+        "eventSeq": 4, "output": "finished command output",
+      ],
+      now: "output-at"
+    )
+    let staleStart = NativeWorkspace.apiToolProgressEvents(
+      outputFirst,
+      payload: [
+        "name": "run_command", "phase": "started", "toolCallId": "call-3",
+        "eventSeq": 3,
+      ],
+      now: "late-start"
+    )
+    XCTAssertEqual(staleStart.first?.status, "output")
+    XCTAssertEqual(staleStart.first?.eventSeq, 4)
+    XCTAssertEqual(staleStart.first?.output, "finished command output")
+
+    let unsequencedLegacyUpdate = NativeWorkspace.apiToolProgressEvents(
+      outputFirst,
+      payload: [
+        "name": "run_command", "phase": "started", "toolCallId": "call-3",
+      ],
+      now: "legacy-start"
+    )
+    XCTAssertEqual(unsequencedLegacyUpdate.first?.status, "output")
+    XCTAssertEqual(unsequencedLegacyUpdate.first?.eventSeq, 4)
+
+    let completed = NativeWorkspace.apiToolProgressEvents(
+      staleStart,
+      payload: [
+        "name": "run_command", "phase": "completed", "toolCallId": "call-3",
+        "eventSeq": 5,
+      ],
+      now: "completed-at"
+    )
+    XCTAssertEqual(completed.first?.status, "completed")
+    XCTAssertEqual(completed.first?.eventSeq, 5)
+
+    let duplicate = NativeWorkspace.apiToolProgressEvents(
+      completed,
+      payload: [
+        "name": "run_command", "phase": "failed", "toolCallId": "call-3",
+        "eventSeq": 5,
+      ],
+      now: "duplicate-at"
+    )
+    XCTAssertEqual(duplicate.first?.status, "completed")
+    XCTAssertEqual(duplicate.first?.eventSeq, 5)
+
+    let outOfOrder: [AgentLiveActivityEvent] = (1...41).reversed().map {
+      (eventNumber: Int) -> AgentLiveActivityEvent in
+      AgentLiveActivityEvent(
+        phase: "tool", label: "read_file", detail: nil,
+        status: "completed", startedAt: "start-\(eventNumber)", completedAt: "end-\(eventNumber)",
+        toolCallId: "retained-\(eventNumber)", eventSeq: eventNumber
+      )
+    }
+    let bounded = NativeWorkspace.boundedActivityEvents(outOfOrder)
+    XCTAssertEqual(bounded.count, 40)
+    XCTAssertEqual(bounded.first?.eventSeq, 2)
+    XCTAssertEqual(bounded.last?.eventSeq, 41)
+  }
+
   func testAgentToolProgressWithoutCallIdDoesNotMergeAmbiguousSameNameCalls() {
     let first = NativeWorkspace.apiToolProgressEvents(
       [],

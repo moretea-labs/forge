@@ -3266,6 +3266,7 @@ fn sequence_local_api_event(
     if let Some(object) = payload.as_object_mut() {
         let next = sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         object.insert("sequence".into(), Value::from(next));
+        object.insert("eventSeq".into(), Value::from(next));
     }
     payload
 }
@@ -6226,6 +6227,9 @@ mod tests {
         assert_eq!(first["sequence"], 1);
         assert_eq!(second["sequence"], 2);
         assert_eq!(terminal["sequence"], 3);
+        assert_eq!(first["eventSeq"], 1);
+        assert_eq!(second["eventSeq"], 2);
+        assert_eq!(terminal["eventSeq"], 3);
     }
 
     #[test]

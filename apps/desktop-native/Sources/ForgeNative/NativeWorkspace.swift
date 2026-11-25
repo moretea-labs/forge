@@ -180,6 +180,7 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
   let completedAt: String?
   let toolCallId: String?
   var eventId: String? = nil
+  var eventSeq: Int? = nil
   var output: String? = nil
   var outputTruncated: Bool? = nil
   var durationMs: Double? = nil
@@ -6246,20 +6247,38 @@ final class NativeWorkspace: ObservableObject {
     )
   }
 
+  nonisolated static func orderedActivityEvents(
+    _ events: [AgentLiveActivityEvent]
+  ) -> [AgentLiveActivityEvent] {
+    events.enumerated().sorted { lhs, rhs in
+      switch (lhs.element.eventSeq, rhs.element.eventSeq) {
+      case let (left?, right?):
+        return left == right ? lhs.offset < rhs.offset : left < right
+      case (.some, nil):
+        return true
+      case (nil, .some):
+        return false
+      case (nil, nil):
+        return lhs.offset < rhs.offset
+      }
+    }.map(\.element)
+  }
+
   nonisolated static func boundedActivityEvents(
     _ events: [AgentLiveActivityEvent],
     limit: Int = 40
   ) -> [AgentLiveActivityEvent] {
-    guard limit > 0, events.count > limit else { return events }
+    let ordered = orderedActivityEvents(events)
+    guard limit > 0, ordered.count > limit else { return ordered }
     let activeIDs = Set(
-      events.filter {
+      ordered.filter {
         $0.phase == "tool" && ["running", "output"].contains($0.status)
       }.map(\.id))
     let completedLimit = max(0, limit - activeIDs.count)
     let retainedIDs = activeIDs.union(
-      events.filter { !activeIDs.contains($0.id) }.suffix(completedLimit).map(\.id)
+      ordered.filter { !activeIDs.contains($0.id) }.suffix(completedLimit).map(\.id)
     )
-    return events.filter { retainedIDs.contains($0.id) }
+    return ordered.filter { retainedIDs.contains($0.id) }
   }
 
   nonisolated static func toolActivityCountAfterProgress(
@@ -6293,6 +6312,9 @@ final class NativeWorkspace: ObservableObject {
         ["running", "output"].contains(status) ? nil : (row["completedAt"] as? String ?? now)
       let rawOutput = row["output"] as? String
       let toolCallId = (row["toolCallId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+      let eventSeq =
+        (row["eventSeq"] as? NSNumber)?.intValue
+        ?? (row["sequence"] as? NSNumber)?.intValue
       let durationMs =
         (row["durationMs"] as? NSNumber)?.doubleValue
         ?? (row["duration_ms"] as? NSNumber)?.doubleValue
@@ -6309,6 +6331,7 @@ final class NativeWorkspace: ObservableObject {
         status: status, startedAt: startedAt, completedAt: completedAt,
         toolCallId: toolCallId,
         eventId: toolCallId == nil ? UUID().uuidString : nil,
+        eventSeq: eventSeq,
         output: rawOutput.map { String($0.prefix(2_000)) },
         outputTruncated: rawOutput.map { $0.count > 2_000 },
         durationMs: durationMs,
@@ -6330,6 +6353,16 @@ final class NativeWorkspace: ObservableObject {
     let status = transportPhase == "started" ? "running" : transportPhase
     let activeStatuses = ["running", "output"]
     let toolCallId = (payload["toolCallId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    let eventSeq =
+      (payload["eventSeq"] as? NSNumber)?.intValue
+      ?? (payload["sequence"] as? NSNumber)?.intValue
+    if let toolCallId,
+      let previous = existing.last(where: { $0.phase == "tool" && $0.toolCallId == toolCallId }),
+      let previousSeq = previous.eventSeq,
+      eventSeq.map({ $0 > previousSeq }) != true
+    {
+      return orderedActivityEvents(boundedActivityEvents(existing))
+    }
     let detail = payload["processId"] as? String ?? payload["requestId"] as? String
     let rawOutput = payload["output"] as? String
     let output = rawOutput.map { String($0.prefix(2_000)) }
@@ -6364,6 +6397,7 @@ final class NativeWorkspace: ObservableObject {
         completedAt: completedAt,
         toolCallId: toolCallId ?? started.toolCallId,
         eventId: started.eventId,
+        eventSeq: eventSeq ?? started.eventSeq,
         output: output ?? started.output,
         outputTruncated: outputTruncated ?? started.outputTruncated,
         durationMs: completedAt.flatMap {
@@ -6374,12 +6408,12 @@ final class NativeWorkspace: ObservableObject {
         serverDurationMs: serverDurationMs ?? started.serverDurationMs,
         canonicalDurationMs: canonicalDurationMs ?? started.canonicalDurationMs
       )
-      return boundedActivityEvents(events)
+      return orderedActivityEvents(boundedActivityEvents(events))
     }
     if let toolCallId,
       events.contains(where: { $0.phase == "tool" && $0.toolCallId == toolCallId })
     {
-      return boundedActivityEvents(events)
+      return orderedActivityEvents(boundedActivityEvents(events))
     }
     let ambiguous = toolCallId == nil && status != "running" && activeMatches.count > 1
     let eventStatus = ambiguous ? "unknown" : status
@@ -6391,11 +6425,12 @@ final class NativeWorkspace: ObservableObject {
         startedAt: now, completedAt: activeStatuses.contains(eventStatus) ? nil : now,
         toolCallId: toolCallId,
         eventId: toolCallId == nil ? UUID().uuidString : nil,
+        eventSeq: eventSeq,
         output: output, outputTruncated: outputTruncated,
         serverDurationMs: serverDurationMs,
         canonicalDurationMs: canonicalDurationMs
       ))
-    return boundedActivityEvents(events)
+    return orderedActivityEvents(boundedActivityEvents(events))
   }
 
   nonisolated static func finalizeFailedToolEvents(
@@ -6409,6 +6444,7 @@ final class NativeWorkspace: ObservableObject {
           phase: event.phase, label: event.label, detail: event.detail,
           status: "unknown", startedAt: event.startedAt, completedAt: now,
           toolCallId: event.toolCallId, eventId: event.eventId,
+          eventSeq: event.eventSeq,
           output: event.output, outputTruncated: event.outputTruncated,
           durationMs: event.durationMs
             ?? AgentLiveActivityEvent.elapsedMilliseconds(
@@ -6555,6 +6591,7 @@ final class NativeWorkspace: ObservableObject {
             status: receipt.status, startedAt: event.startedAt,
             completedAt: completedAt, toolCallId: receipt.toolCallId ?? event.toolCallId,
             eventId: event.eventId ?? receipt.eventId,
+            eventSeq: event.eventSeq ?? receipt.eventSeq,
             output: event.output ?? receipt.output,
             outputTruncated: event.outputTruncated ?? receipt.outputTruncated,
             durationMs: durationMs,
@@ -6570,6 +6607,7 @@ final class NativeWorkspace: ObservableObject {
             status: "unknown", startedAt: event.startedAt,
             completedAt: event.completedAt, toolCallId: event.toolCallId,
             eventId: event.eventId,
+            eventSeq: event.eventSeq,
             output: event.output, outputTruncated: event.outputTruncated,
             durationMs: event.durationMs,
             serverDurationMs: event.serverDurationMs,
@@ -6577,7 +6615,7 @@ final class NativeWorkspace: ObservableObject {
           ))
       }
     }
-    return boundedActivityEvents(result + unused)
+    return orderedActivityEvents(boundedActivityEvents(result + unused))
   }
 
   nonisolated static func appendBoundedPreview(_ current: String, delta: String, limit: Int)
