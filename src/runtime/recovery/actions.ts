@@ -34,7 +34,8 @@ export const RECOVERY_ACTIONS = {
   localJobsReconcile: {
     id: 'recovery.local_jobs_reconcile',
     title: 'Reconcile Local Jobs',
-    description: 'Terminalize stale active Local Jobs and rebuild the Local Bridge active index without invoking execute_command.',
+    description:
+      'Terminalize stale active Local Jobs and rebuild the Local Bridge active index without invoking execute_command.',
     class: 'local_jobs_reconciliation_required',
     risk: 'low',
     confirmation: 'authorization',
@@ -44,7 +45,8 @@ export const RECOVERY_ACTIONS = {
   quarantineUnreadableLocalJobs: {
     id: 'recovery.local_jobs_quarantine_unreadable',
     title: 'Quarantine unreadable Local Jobs',
-    description: 'Move malformed or missing Local Job metadata into forge quarantine so runtime storage can continue safely.',
+    description:
+      'Move malformed or missing Local Job metadata into forge quarantine so runtime storage can continue safely.',
     class: 'local_jobs_unreadable',
     risk: 'low',
     confirmation: 'authorization',
@@ -74,27 +76,19 @@ export const RECOVERY_ACTIONS = {
   cleanupApply: {
     id: 'recovery.cleanup_apply',
     title: 'Apply runtime cleanup',
-    description: 'Apply safe forge runtime cleanup candidates after explicit authorization. Does not kill processes or touch source files.',
+    description:
+      'Apply safe forge runtime cleanup candidates after explicit authorization. Does not kill processes or touch source files.',
     class: 'local_recoverable',
     risk: 'medium',
     confirmation: 'authorization',
     localOnly: true,
     boundedTo: ['forge_runtime_storage', 'forge_temp_dirs'],
   },
-  stageRuntimeRelease: {
-    id: 'recovery.stage_runtime_release',
-    title: 'Stage Runtime release',
-    description: 'Materialize one exact model-selected accepted source commit into canonical immutable Runtime release storage without changing live Runtime authority.',
-    class: 'stale_runtime_state',
-    risk: 'medium',
-    confirmation: 'authorization',
-    localOnly: true,
-    boundedTo: ['registered_repository', 'runtime_release_storage'],
-  },
   restartPrimaryConnector: {
     id: 'recovery.restart_primary_connector',
     title: 'Restart primary Connector',
-    description: 'Restart only the explicitly configured primary OAuth/Connector launchd service through standalone Recovery after local Canonical Runtime verification.',
+    description:
+      'Restart only the explicitly configured primary OAuth/Connector launchd service through standalone Recovery after local Canonical Runtime verification.',
     class: 'stale_runtime_state',
     risk: 'medium',
     confirmation: 'authorization',
@@ -148,7 +142,10 @@ export function canonicalRecoveryActionId(actionId: string): string {
   return RECOVERY_ACTION_ID_ALIASES[actionId] ?? actionId;
 }
 
-export function recoveryAuthorizationMatches(action: RecoveryActionDescriptor, authorization: string | undefined): boolean {
+export function recoveryAuthorizationMatches(
+  action: RecoveryActionDescriptor,
+  authorization: string | undefined,
+): boolean {
   if (!authorization) return false;
   return canonicalRecoveryActionId(authorization) === action.id;
 }

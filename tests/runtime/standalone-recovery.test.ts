@@ -108,6 +108,7 @@ import {
   RECOVERY_WATCHDOG_MAX_TICK_AGE_MS,
 } from '../../src/runtime/standalone-recovery/watchdog-heartbeat';
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { registerRepository, disableRepository, removeRepository } from '../../src/runtime/repositories/registry';
 import {
   acquireRuntimeOwnership,
   inspectRuntimeOwnership,
@@ -236,7 +237,11 @@ test('Recovery bounds Candidate work while reserving status capacity and releasi
       };
     },
   });
-  const heavy = execute('prepare_runtime_release_session', { request_id: 'candidate-work-a' });
+  const heavy = execute('prepare_runtime_release_session', {
+    request_id: 'candidate-work-a',
+    source_repository_id: 'repo_source_fixture',
+    expected_source_revision: 'a'.repeat(40),
+  });
   await expect(
     execute('verify_runtime_release_session_candidate', {
       request_id: 'candidate-work-b',
@@ -284,7 +289,11 @@ test('Recovery Gateway lets unrelated Connector work enter while Candidate work 
     },
   });
 
-  const candidate = execute('prepare_runtime_release_session', { request_id: 'candidate-isolated' });
+  const candidate = execute('prepare_runtime_release_session', {
+    request_id: 'candidate-isolated',
+    source_repository_id: 'repo_source_fixture',
+    expected_source_revision: 'a'.repeat(40),
+  });
   while (calls < 1) await Bun.sleep(1);
   expect(await execute('restart_primary_connector', { request_id: 'connector-independent' })).toMatchObject({
     ok: true,
@@ -1073,6 +1082,19 @@ function committedRecoverySource(root: string): string {
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 }
 
+function registerRecoverySourceRepository(home: string, sourceRoot: string, repoId: string): string {
+  const repository = registerRepository({
+    path: sourceRoot,
+    controllerHome: home,
+    displayName: 'Recovery source fixture',
+    repositoryType: 'git',
+    enabled: true,
+    repoIdOverride: repoId,
+  });
+  expect(repository.repoId).toBe(repoId);
+  return repository.repoId;
+}
+
 function recoveryInstallerStubs() {
   return {
     now: () => 1_788_650_000_000,
@@ -1198,6 +1220,8 @@ function verifiedManifest(
   home: string,
   releaseId: string,
   runtimeMarker = releaseId,
+  sourceCommit?: string,
+  sourceRepositoryId?: string,
 ): { path: string; artifactIdentity: string } {
   const releaseRoot = join(home, 'runtime', 'releases', releaseId);
   const path = join(releaseRoot, 'manifest.json');
@@ -1222,6 +1246,8 @@ function verifiedManifest(
         controllerHome: resolve(home),
         databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
         workerProtocolVersion: 1,
+        ...(sourceCommit ? { sourceCommit } : {}),
+        ...(sourceRepositoryId ? { sourceRepositoryId } : {}),
         createdAt: new Date().toISOString(),
       },
       null,
@@ -2970,6 +2996,7 @@ test('Recovery activate_runtime_release resolves release_path as an immutable re
       request_id: requestId,
       ...recoveryMutationIdentityArgs(config),
       release_path: releasePath,
+      expected_source_repository_id: 'repo_release_directory_contract',
       expected_source_revision: 'a'.repeat(40),
       expected_active_release_id: 'release-baseline',
       expected_authority_revision: 1,
@@ -2985,23 +3012,27 @@ test('normal staging materializes one exact accepted source into Stable Home wit
   const home = controllerHome();
   const sourceRoot = join(home, 'source-direct-stage');
   const sourceRevision = committedRecoverySource(sourceRoot);
+  registerRecoverySourceRepository(home, sourceRoot, 'repo_direct_stage');
+  const staleSourceRoot = join(home, 'stale-source-direct-stage');
+  committedRecoverySource(staleSourceRoot);
   const baseline = verifiedManifest(home, 'release-direct-stage-baseline');
   const before = ensureActiveRuntimeRelease(home, baseline.path);
   const config = createRecoveryConfig(home, {
-    primaryRuntimeSourceRoot: sourceRoot,
-    primaryRuntimeSourceRepositoryId: 'repo_direct_stage',
+    primaryRuntimeSourceRoot: staleSourceRoot,
+    primaryRuntimeSourceRepositoryId: 'repo_stale_stage',
   });
   let stagedFrom = '';
   let stagedHome = '';
   const result = stageConfiguredRuntimeRelease(
     config,
+    'repo_direct_stage',
     sourceRevision,
     {
       stage: (input) => {
         stagedFrom = resolve(input.sourceRoot);
         stagedHome = resolve(input.controllerHome);
         expect(stagedHome).toBe(resolve(home));
-        expect(stagedFrom).not.toBe(resolve(sourceRoot));
+        expect(realpathSync(stagedFrom)).not.toBe(realpathSync(sourceRoot));
         expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim()).toBe(
           sourceRevision,
         );
@@ -3088,6 +3119,7 @@ test('portable direct activation requires exact source fence before any Runtime 
     candidate.path,
     {},
     {
+      expectedSourceRepositoryId: 'repo_direct_fence',
       expectedSourceRevision: 'b'.repeat(40),
       expectedActiveReleaseId: authority.active.releaseId,
       expectedAuthorityRevision: authority.revision,
@@ -3095,11 +3127,48 @@ test('portable direct activation requires exact source fence before any Runtime 
   );
   expect(mismatch).toMatchObject({ ok: false, attempted: false, noOp: true });
   expect(mismatch.detail).toContain('RUNTIME_RELEASE_SOURCE_REVISION_MISMATCH');
+  const missingRepository = await activateRuntimeRelease(
+    config,
+    candidate.path,
+    {},
+    {
+      expectedSourceRevision: sourceRevision,
+    },
+  );
+  expect(missingRepository).toMatchObject({
+    ok: false,
+    attempted: false,
+    detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REPOSITORY_ID_REQUIRED',
+  });
+  const wrongSelection = await activateRuntimeRelease(
+    config,
+    candidate.path,
+    {},
+    {
+      expectedSourceRevision: sourceRevision,
+      expectedSourceRepositoryId: 'repo_unrelated',
+    },
+  );
+  expect(wrongSelection).toMatchObject({ ok: false, attempted: false });
+  expect(wrongSelection.detail).toContain('RUNTIME_RELEASE_SOURCE_REPOSITORY_MISMATCH');
+  await expect(
+    activateRuntimeRelease(
+      createRecoveryConfig(home, { primaryRuntimeSourceRepositoryId: 'repo_stale_config' }),
+      candidate.path,
+      {
+        currentUid: async () => {
+          throw new Error('explicit source accepted before lifecycle');
+        },
+      },
+      { expectedSourceRepositoryId: 'repo_direct_fence', expectedSourceRevision: sourceRevision },
+    ),
+  ).rejects.toThrow('explicit source accepted before lifecycle');
   const foreignRepository = await activateRuntimeRelease(
     createRecoveryConfig(home, { primaryRuntimeSourceRepositoryId: 'repo_unrelated' }),
     candidate.path,
     {},
     {
+      expectedSourceRepositoryId: 'repo_unrelated',
       expectedSourceRevision: sourceRevision,
       expectedActiveReleaseId: authority.active.releaseId,
       expectedAuthorityRevision: authority.revision,
@@ -3117,6 +3186,7 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
   const home = controllerHome();
   const sourceRoot = join(home, 'source');
   const sourceRevision = committedRecoverySource(sourceRoot);
+  registerRecoverySourceRepository(home, sourceRoot, 'repo_source_fixture');
   writeFileSync(join(sourceRoot, 'WORK-ONLY.md'), 'not on fetched main\n');
   execFileSync('git', ['add', 'WORK-ONLY.md'], { cwd: sourceRoot });
   execFileSync(
@@ -3147,10 +3217,17 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
     primaryRuntimeSourceRoot: sourceRoot,
     primaryRuntimeSourceRepositoryId: 'repo_source_fixture',
   });
-  expect(configuredRuntimeReleaseSourceState(config).sourceRevision).toBe(sourceRevision);
+  expect(configuredRuntimeReleaseSourceState(config)).toEqual({ configured: false });
   execFileSync('git', ['update-ref', '-d', 'refs/remotes/origin/main'], { cwd: sourceRoot });
-  expect(() => configuredRuntimeReleaseSourceState(config)).toThrow('RELEASE_SESSION_SOURCE_REVISION_UNAVAILABLE');
-  execFileSync('git', ['update-ref', 'refs/remotes/origin/main', sourceRevision], { cwd: sourceRoot });
+  expect(
+    configuredRuntimeReleaseSourceState(config, config.primaryRuntimeSourceRepositoryId, sourceRevision),
+  ).toMatchObject({
+    configured: true,
+    sourceRevision,
+  });
+  expect(() =>
+    configuredRuntimeReleaseSourceState(config, config.primaryRuntimeSourceRepositoryId, 'b'.repeat(40)),
+  ).toThrow('RELEASE_SESSION_SOURCE_REVISION_UNAVAILABLE');
   let stagedFrom = '';
   let candidateHome = '';
   let stageCalls = 0;
@@ -3174,8 +3251,8 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
         stagedFrom = input.sourceRoot;
         candidateHome = input.controllerHome;
         expect(input.sourceRepositoryId).toBe('repo_source_fixture');
-        expect(resolve(input.sourceRoot)).not.toBe(resolve(sourceRoot));
-        expect(resolve(input.dependencyRoot ?? '')).toBe(resolve(sourceRoot));
+        expect(realpathSync(input.sourceRoot)).not.toBe(realpathSync(sourceRoot));
+        expect(realpathSync(input.dependencyRoot ?? '')).toBe(realpathSync(sourceRoot));
         expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim()).toBe(
           sourceRevision,
         );
@@ -3221,6 +3298,7 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
               databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
               workerProtocolVersion: 1,
               sourceCommit: sourceRevision,
+              sourceRepositoryId: config.primaryRuntimeSourceRepositoryId,
               createdAt: '2026-08-14T00:00:00.000Z',
             },
             null,
@@ -3236,10 +3314,13 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
           artifactIdentity,
           manifestSha256: createHash('sha256').update(readFileSync(manifestPath)).digest('hex'),
           sourceCommit: sourceRevision,
+          sourceRepositoryId: config.primaryRuntimeSourceRepositoryId,
         };
       },
     },
     'recovery-gateway:stage-request-1',
+    config.primaryRuntimeSourceRepositoryId,
+    sourceRevision,
   );
   expect(stageCalls).toBe(1);
   expect(stagedFrom).not.toBe(resolve(sourceRoot));
@@ -3252,7 +3333,11 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
       phase: 'built',
       stable: { controllerHome: resolve(home) },
       candidate: { controllerHome: candidateHome },
-      candidateRelease: { releaseId: 'release-new', sourceCommit: sourceRevision },
+      candidateRelease: {
+        releaseId: 'release-new',
+        sourceCommit: sourceRevision,
+        sourceRepositoryId: config.primaryRuntimeSourceRepositoryId,
+      },
     },
   });
   expect(readRuntimeReleaseAuthority(home)).toMatchObject({
@@ -3294,6 +3379,8 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
       },
     },
     'recovery-gateway:stage-request-retry',
+    config.primaryRuntimeSourceRepositoryId,
+    sourceRevision,
   );
   expect(repeatedStageCalls).toBe(0);
   expect(repeated).toMatchObject({
@@ -3308,10 +3395,159 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
   });
 });
 
+test('Release source selection fails closed for unknown, disabled, removed and mismatched repositories before staging', () => {
+  const home = controllerHome();
+  const selectedRoot = join(home, 'source-selected');
+  const selectedRevision = committedRecoverySource(selectedRoot);
+  const selectedRepositoryId = registerRecoverySourceRepository(home, selectedRoot, 'repo_selected_source');
+
+  const disabledRoot = join(home, 'source-disabled');
+  const disabledRevision = committedRecoverySource(disabledRoot);
+  const disabledRepositoryId = registerRecoverySourceRepository(home, disabledRoot, 'repo_disabled_source');
+  disableRepository(disabledRepositoryId, home);
+
+  const removedRoot = join(home, 'source-removed');
+  const removedRevision = committedRecoverySource(removedRoot);
+  const removedRepositoryId = registerRecoverySourceRepository(home, removedRoot, 'repo_removed_source');
+  removeRepository(removedRepositoryId, home);
+
+  const otherRoot = join(home, 'source-other');
+  let otherRevision = committedRecoverySource(otherRoot);
+  writeFileSync(join(otherRoot, 'other-source.txt'), 'distinct source repository commit\n');
+  execFileSync('git', ['add', 'other-source.txt'], { cwd: otherRoot });
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.name=Forge Test',
+      '-c',
+      'user.email=forge-test@example.invalid',
+      'commit',
+      '-qm',
+      'distinct source repository revision',
+    ],
+    { cwd: otherRoot },
+  );
+  otherRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: otherRoot, encoding: 'utf8' }).trim();
+  registerRecoverySourceRepository(home, otherRoot, 'repo_other_source');
+
+  const config = createRecoveryConfig(home, {
+    primaryRuntimeSourceRoot: join(home, 'stale-configured-source'),
+    primaryRuntimeSourceRepositoryId: 'repo_stale_configured_source',
+  });
+  let stageCalls = 0;
+  const dependencies = {
+    stage: () => {
+      stageCalls += 1;
+      throw new Error('source rejection must happen before materialization');
+    },
+  };
+
+  const unknown = stageConfiguredRuntimeRelease(config, 'repo_unknown_source', selectedRevision, dependencies);
+  expect(unknown).toMatchObject({
+    ok: false,
+    attempted: false,
+    noOp: true,
+    detail: 'RELEASE_SOURCE_REPOSITORY_UNKNOWN',
+  });
+
+  const disabled = stageConfiguredRuntimeRelease(config, disabledRepositoryId, disabledRevision, dependencies);
+  expect(disabled).toMatchObject({
+    ok: false,
+    attempted: false,
+    noOp: true,
+    detail: 'RELEASE_SOURCE_REPOSITORY_DISABLED',
+  });
+
+  const removed = stageConfiguredRuntimeRelease(config, removedRepositoryId, removedRevision, dependencies);
+  expect(removed).toMatchObject({ ok: false, attempted: false, noOp: true });
+
+  const mismatched = stageConfiguredRuntimeRelease(config, selectedRepositoryId, otherRevision, dependencies);
+  expect(mismatched).toMatchObject({
+    ok: false,
+    attempted: false,
+    noOp: true,
+    detail: 'RELEASE_SESSION_SOURCE_REVISION_UNAVAILABLE',
+  });
+  expect(stageCalls).toBe(0);
+});
+
+test('ReleaseSession preparation requires an explicit source pair and no-ops when that exact pair is already active', async () => {
+  const home = controllerHome();
+  const sourceRoot = join(home, 'source-active');
+  const sourceRevision = committedRecoverySource(sourceRoot);
+  const sourceRepositoryId = registerRecoverySourceRepository(home, sourceRoot, 'repo_active_source');
+  const baseline = verifiedManifest(
+    home,
+    'release-source-already-active',
+    'release-source-already-active',
+    sourceRevision,
+    sourceRepositoryId,
+  );
+  ensureActiveRuntimeRelease(home, baseline.path);
+  const runtime = await runtimeServer();
+  writeMainToken(home);
+  startObservedRuntime(home, runtime.endpoint, 'release-source-already-active', baseline.artifactIdentity);
+  const authority = readRuntimeReleaseAuthority(home)!;
+  const config = createRecoveryConfig(home, {
+    primaryRuntimeSourceRoot: join(home, 'stale-configured-source'),
+    primaryRuntimeSourceRepositoryId: 'repo_stale_configured_source',
+  });
+
+  execFileSync('git', ['update-ref', '-d', 'refs/remotes/origin/main'], { cwd: sourceRoot });
+  expect(configuredRuntimeReleaseSourceState(config)).toEqual({ configured: false });
+  expect(configuredRuntimeReleaseSourceState(config, sourceRepositoryId, sourceRevision)).toMatchObject({
+    configured: true,
+    sourceRepositoryId,
+    sourceRevision,
+    activeSourceCommit: sourceRevision,
+    activeSourceRepositoryId: sourceRepositoryId,
+  });
+
+  let stageCalls = 0;
+  const dependencies = {
+    stage: () => {
+      stageCalls += 1;
+      throw new Error('already-active source must not build');
+    },
+  };
+  const missingSelection = await prepareConfiguredRuntimeReleaseSession(
+    config,
+    dependencies,
+    'release-source-missing-selection',
+  );
+  expect(missingSelection).toMatchObject({
+    ok: false,
+    attempted: false,
+    noOp: true,
+    detail: 'RELEASE_SOURCE_REPOSITORY_ID_REQUIRED',
+  });
+
+  const alreadyActive = await prepareConfiguredRuntimeReleaseSession(
+    config,
+    dependencies,
+    'release-source-already-active',
+    sourceRepositoryId,
+    sourceRevision,
+  );
+  expect(alreadyActive).toMatchObject({
+    ok: true,
+    attempted: false,
+    noOp: true,
+    detail: 'RELEASE_SESSION_SOURCE_ALREADY_ACTIVE: ' + sourceRepositoryId + '@' + sourceRevision,
+  });
+  expect(stageCalls).toBe(0);
+  expect(readRuntimeReleaseAuthority(home)).toMatchObject({
+    revision: authority.revision,
+    active: { releaseId: 'release-source-already-active', artifactIdentity: baseline.artifactIdentity },
+  });
+});
+
 async function candidateBuiltFixture(label: string) {
   const home = controllerHome();
   const sourceRoot = join(home, 'source');
-  committedRecoverySource(sourceRoot);
+  const sourceRevision = committedRecoverySource(sourceRoot);
+  const sourceRepositoryId = registerRecoverySourceRepository(home, sourceRoot, 'repo_' + label);
   const baseline = verifiedManifest(home, 'release-baseline-' + label);
   ensureActiveRuntimeRelease(home, baseline.path);
   const runtime = await runtimeServer();
@@ -3319,7 +3555,7 @@ async function candidateBuiltFixture(label: string) {
   startObservedRuntime(home, runtime.endpoint, 'release-baseline-' + label, baseline.artifactIdentity);
   const config = createRecoveryConfig(home, {
     primaryRuntimeSourceRoot: sourceRoot,
-    primaryRuntimeSourceRepositoryId: 'repo-' + label,
+    primaryRuntimeSourceRepositoryId: sourceRepositoryId,
   });
   const prepared = await prepareConfiguredRuntimeReleaseSession(
     config,
@@ -3350,6 +3586,7 @@ async function candidateBuiltFixture(label: string) {
               databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
               workerProtocolVersion: 1,
               sourceCommit,
+              sourceRepositoryId: input.sourceRepositoryId,
               createdAt: new Date().toISOString(),
             },
             null,
@@ -3369,6 +3606,8 @@ async function candidateBuiltFixture(label: string) {
       },
     },
     'candidate-fixture-' + label,
+    config.primaryRuntimeSourceRepositoryId,
+    sourceRevision,
   );
   return { home, config, session: prepared.releaseSession! };
 }
@@ -3705,7 +3944,8 @@ test('ReleaseSession terminalizes the session when Candidate B boot fails outsid
 test('ReleaseSession preparation reconciles terminal and orphan Candidate B lanes before capacity admission', async () => {
   const home = controllerHome();
   const sourceRoot = join(home, 'source');
-  committedRecoverySource(sourceRoot);
+  const sourceRevisionV1 = committedRecoverySource(sourceRoot);
+  const sourceRepositoryId = registerRecoverySourceRepository(home, sourceRoot, 'repo_terminal_lane_cleanup');
   const baseline = verifiedManifest(home, 'release-baseline-terminal-lane-cleanup');
   ensureActiveRuntimeRelease(home, baseline.path);
   const runtime = await runtimeServer();
@@ -3713,7 +3953,7 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
   startObservedRuntime(home, runtime.endpoint, 'release-baseline-terminal-lane-cleanup', baseline.artifactIdentity);
   const config = createRecoveryConfig(home, {
     primaryRuntimeSourceRoot: sourceRoot,
-    primaryRuntimeSourceRepositoryId: 'repo_terminal_lane_cleanup',
+    primaryRuntimeSourceRepositoryId: sourceRepositoryId,
   });
 
   let buildIndex = 0;
@@ -3741,6 +3981,7 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
           databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
           workerProtocolVersion: 1,
           sourceCommit,
+          sourceRepositoryId: input.sourceRepositoryId,
           createdAt: '2026-10-06T00:00:00.000Z',
         },
         null,
@@ -3759,7 +4000,13 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
     };
   };
 
-  const first = await prepareConfiguredRuntimeReleaseSession(config, { stage }, 'terminal-lane-cleanup-first');
+  const first = await prepareConfiguredRuntimeReleaseSession(
+    config,
+    { stage },
+    'terminal-lane-cleanup-first',
+    config.primaryRuntimeSourceRepositoryId,
+    sourceRevisionV1,
+  );
   expect(first).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
   let terminal = first.releaseSession!;
   const leakedCandidateHome = terminal.candidate.controllerHome;
@@ -3793,7 +4040,7 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
     ],
     { cwd: sourceRoot },
   );
-  execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: sourceRoot });
+  const sourceRevisionV2 = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sourceRoot, encoding: 'utf8' }).trim();
 
   const second = await prepareConfiguredRuntimeReleaseSession(
     config,
@@ -3804,6 +4051,8 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
       },
     },
     'terminal-lane-cleanup-second',
+    config.primaryRuntimeSourceRepositoryId,
+    sourceRevisionV2,
   );
   expect(second).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
   expect(second.releaseSession?.sessionId).not.toBe(terminal.sessionId);
@@ -3837,7 +4086,7 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
     ],
     { cwd: sourceRoot },
   );
-  execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: sourceRoot });
+  const sourceRevisionV3 = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sourceRoot, encoding: 'utf8' }).trim();
 
   const third = await prepareConfiguredRuntimeReleaseSession(
     config,
@@ -3848,6 +4097,8 @@ test('ReleaseSession preparation reconciles terminal and orphan Candidate B lane
       },
     },
     'orphan-lane-cleanup-third',
+    config.primaryRuntimeSourceRepositoryId,
+    sourceRevisionV3,
   );
   expect(third).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
   expect(third.releaseSession?.sessionId).not.toBe(orphan.sessionId);
@@ -4496,6 +4747,21 @@ describe('standalone recovery on canonical Runtime', () => {
       ]),
     );
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('migrate_controller_home');
+    const prepareTool = RECOVERY_TOOLS.find((tool) => tool.name === 'prepare_runtime_release_session');
+    const prepareSchema = prepareTool?.inputSchema as
+      | { required?: readonly string[]; properties?: Record<string, unknown> }
+      | undefined;
+    expect(prepareSchema?.required).toContain('request_id');
+    expect(prepareSchema?.required).toContain('source_repository_id');
+    expect(prepareSchema?.required).toContain('expected_source_revision');
+    expect(prepareSchema?.properties?.source_repository_id).toMatchObject({
+      type: 'string',
+      pattern: '^repo_[A-Za-z0-9_-]+$',
+    });
+    expect(prepareSchema?.properties?.expected_source_revision).toMatchObject({
+      type: 'string',
+      pattern: '^[a-fA-F0-9]{40}$',
+    });
     const migrateTool = RECOVERY_TOOLS.find((tool) => tool.name === 'migrate_controller_home');
     expect(migrateTool?.inputSchema.required).toEqual(
       expect.arrayContaining(['request_id', 'canonical_source_root', 'expected_source_revision']),
@@ -4514,6 +4780,7 @@ describe('standalone recovery on canonical Runtime', () => {
         'request_id',
         ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS),
         'release_path',
+        'expected_source_repository_id',
         'expected_source_revision',
         'expected_active_release_id',
         'expected_authority_revision',
@@ -4554,9 +4821,9 @@ describe('standalone recovery on canonical Runtime', () => {
     ]) {
       const tool = RECOVERY_TOOLS.find((candidate) => candidate.name === toolName);
       const schema = tool?.inputSchema as { required?: readonly string[] } | undefined;
-      expect(schema?.required).toEqual(
-        expect.arrayContaining(['request_id', ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS)]),
-      );
+      for (const requiredField of ['request_id', ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS)]) {
+        expect(schema?.required).toContain(requiredField);
+      }
     }
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).not.toContain('supervisor_status');
     expect(RECOVERY_CLI_COMMANDS).toContain('list-releases');
@@ -4640,8 +4907,8 @@ describe('standalone recovery on canonical Runtime', () => {
       artifactIdentity: cutoverAuthority.active.artifactIdentity,
       manifestSha256: cutoverAuthority.active.manifestSha256,
       treeSha256: 'a'.repeat(64),
-      sourceCommit: 'known-good-reconcile-source',
-      sourceRepositoryId: 'repo-known-good-reconcile',
+      sourceCommit: createHash('sha1').update('known-good-reconcile-source').digest('hex'),
+      sourceRepositoryId: 'repo_known_good_reconcile',
     };
     let session = createReleaseSession({
       controllerHome: home,
@@ -4649,6 +4916,7 @@ describe('standalone recovery on canonical Runtime', () => {
       stable,
       stableRelease,
       candidate,
+      sourceRepositoryId: candidateRelease.sourceRepositoryId!,
       sourceRevision: candidateRelease.sourceCommit,
     });
     session = advanceReleaseSession({
@@ -4821,8 +5089,8 @@ describe('standalone recovery on canonical Runtime', () => {
         artifactIdentity: cutoverAuthority.active.artifactIdentity,
         manifestSha256: cutoverAuthority.active.manifestSha256,
         treeSha256: 'b'.repeat(64),
-        sourceCommit: 'known-good-reject-source',
-        sourceRepositoryId: 'repo-known-good-reject',
+        sourceCommit: createHash('sha1').update('known-good-reject-source').digest('hex'),
+        sourceRepositoryId: 'repo_known_good_reject',
       };
       let session = createReleaseSession({
         controllerHome: home,
@@ -4830,6 +5098,7 @@ describe('standalone recovery on canonical Runtime', () => {
         stable,
         stableRelease,
         candidate,
+        sourceRepositoryId: candidateRelease.sourceRepositoryId!,
         sourceRevision: candidateRelease.sourceCommit,
       });
       session = advanceReleaseSession({
@@ -4989,8 +5258,8 @@ describe('standalone recovery on canonical Runtime', () => {
         artifactIdentity: cutoverAuthority.active.artifactIdentity,
         manifestSha256: cutoverAuthority.active.manifestSha256,
         treeSha256: 'b'.repeat(64),
-        sourceCommit: 'known-good-reject-source',
-        sourceRepositoryId: 'repo-known-good-reject',
+        sourceCommit: createHash('sha1').update('known-good-reject-source').digest('hex'),
+        sourceRepositoryId: 'repo_known_good_reject',
       };
       let session = createReleaseSession({
         controllerHome: home,
@@ -4998,6 +5267,7 @@ describe('standalone recovery on canonical Runtime', () => {
         stable,
         stableRelease,
         candidate,
+        sourceRepositoryId: candidateRelease.sourceRepositoryId!,
         sourceRevision: candidateRelease.sourceCommit,
       });
       session = advanceReleaseSession({
@@ -5100,6 +5370,7 @@ describe('standalone recovery on canonical Runtime', () => {
     await expect(
       dispatchRecoveryTool(config, 'activate_runtime_release', {
         request_id: 'missing-source-fence',
+        expected_source_repository_id: 'repo_missing_source_fence',
         release_path: join(home, 'runtime', 'releases', 'missing-release'),
         expected_active_release_id: 'release-baseline',
         expected_authority_revision: 1,
@@ -5107,6 +5378,7 @@ describe('standalone recovery on canonical Runtime', () => {
     ).rejects.toThrow('RECOVERY_EXPECTED_SOURCE_REVISION_REQUIRED');
     const frozenActivation = (await dispatchRecoveryTool(config, 'activate_runtime_release', {
       request_id: 'frozen-schema-client',
+      expected_source_repository_id: 'repo_frozen_schema_client',
       expected_source_revision: 'a'.repeat(40),
       release_path: join(home, 'runtime', 'releases', 'missing-release'),
       expected_active_release_id: 'release-baseline',
@@ -8062,6 +8334,7 @@ describe('standalone recovery on canonical Runtime', () => {
           sleep: async () => undefined,
         },
         {
+          expectedSourceRepositoryId: acceptedSourceRepositoryId,
           expectedSourceRevision: acceptedSourceRevision,
           expectedActiveReleaseId: authorityBefore.active.releaseId,
           expectedAuthorityRevision: authorityBefore.revision,
@@ -10125,4 +10398,182 @@ test('recovery release install still fails closed when the Recovery mutation nev
       report: () => {},
     }),
   ).rejects.toThrow('RECOVERY_OPERATION_LOCK_BUSY');
+});
+
+test('ReleaseSession preparation no-ops only when the exact selected commit and repository are already active', async () => {
+  const fixture = async (activeSourceRepositoryId: string) => {
+    const home = controllerHome();
+    const sourceRoot = join(home, 'source');
+    const sourceRevision = committedRecoverySource(sourceRoot);
+    registerRecoverySourceRepository(home, sourceRoot, 'repo_selected');
+    let activeSourceRoot = sourceRoot;
+    if (activeSourceRepositoryId !== 'repo_selected') {
+      activeSourceRoot = join(home, 'source-active');
+      execFileSync('git', ['clone', '--quiet', '--local', sourceRoot, activeSourceRoot]);
+      registerRecoverySourceRepository(home, activeSourceRoot, activeSourceRepositoryId);
+    }
+    const baseline = verifiedManifest(
+      home,
+      'release-baseline-selected-source',
+      'release-baseline-selected-source',
+      sourceRevision,
+    );
+    const manifest = JSON.parse(readFileSync(baseline.path, 'utf8')) as Record<string, unknown>;
+    manifest.sourceRepositoryId = activeSourceRepositoryId;
+    writeFileSync(baseline.path, `${JSON.stringify(manifest, null, 2)}\n`);
+    ensureActiveRuntimeRelease(home, baseline.path);
+    const runtime = await runtimeServer();
+    writeMainToken(home);
+    startObservedRuntime(home, runtime.endpoint, 'release-baseline-selected-source', baseline.artifactIdentity);
+    const config = createRecoveryConfig(home, {
+      primaryRuntimeSourceRoot: sourceRoot,
+      primaryRuntimeSourceRepositoryId: 'repo_selected',
+    });
+    return { home, config, sourceRoot, sourceRevision, baseline };
+  };
+
+  const matching = await fixture('repo_selected');
+  expect(
+    configuredRuntimeReleaseSourceState(
+      matching.config,
+      matching.config.primaryRuntimeSourceRepositoryId,
+      matching.sourceRevision,
+    ),
+  ).toMatchObject({
+    configured: true,
+    sourceRevision: matching.sourceRevision,
+    activeSourceCommit: matching.sourceRevision,
+    activeSourceRepositoryId: 'repo_selected',
+  });
+  let matchingStageCalls = 0;
+  const noOp = await prepareConfiguredRuntimeReleaseSession(
+    matching.config,
+    {
+      stage: () => {
+        matchingStageCalls += 1;
+        throw new Error('already active source must not rebuild');
+      },
+    },
+    'source-already-active-matching',
+    matching.config.primaryRuntimeSourceRepositoryId,
+    matching.sourceRevision,
+  );
+  expect(matchingStageCalls).toBe(0);
+  expect(noOp).toMatchObject({
+    ok: true,
+    attempted: false,
+    noOp: true,
+    detail: `RELEASE_SESSION_SOURCE_ALREADY_ACTIVE: repo_selected@${matching.sourceRevision}`,
+  });
+
+  const redundant = await fixture('repo_selected');
+  const alternateSourceRoot = join(redundant.home, 'source-alternate');
+  execFileSync('git', ['clone', '--quiet', '--local', redundant.sourceRoot, alternateSourceRoot]);
+  registerRecoverySourceRepository(redundant.home, alternateSourceRoot, 'repo_other');
+  const alternateSourceConfig = createRecoveryConfig(redundant.home, {
+    primaryRuntimeSourceRoot: alternateSourceRoot,
+    primaryRuntimeSourceRepositoryId: 'repo_other',
+  });
+  const candidateStage = (input: { controllerHome: string; sourceRepositoryId?: string }) => {
+    const releasePath = join(input.controllerHome, 'runtime', 'releases', 'release-redundant-source');
+    mkdirSync(releasePath, { recursive: true });
+    const runtimePath = join(releasePath, 'forge-runtime');
+    writeFileSync(runtimePath, '#!/bin/sh\n# release-redundant-source\nexit 0\n', { mode: 0o700 });
+    const artifactIdentity = `sha256:${createHash('sha256').update(readFileSync(runtimePath)).digest('hex')}`;
+    const manifestPath = join(releasePath, 'manifest.json');
+    writeFileSync(
+      manifestPath,
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          releaseId: 'release-redundant-source',
+          artifactIdentity,
+          entrypoint: 'forge-runtime',
+          futureSidecarEntrypoint: 'future-sidecar-v2',
+          arguments: [],
+          configurationSchemaVersion: 1,
+          deploymentScope: 'portable',
+          databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+          workerProtocolVersion: 1,
+          sourceCommit: redundant.sourceRevision,
+          sourceRepositoryId: input.sourceRepositoryId,
+          createdAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    writeFileSync(join(releasePath, 'future-sidecar-v2'), 'future-sidecar');
+    return {
+      controllerHome: input.controllerHome,
+      releasePath,
+      manifestPath,
+      releaseId: 'release-redundant-source',
+      artifactIdentity,
+      manifestSha256: createHash('sha256').update(readFileSync(manifestPath)).digest('hex'),
+      sourceCommit: redundant.sourceRevision,
+      sourceRepositoryId: input.sourceRepositoryId,
+    };
+  };
+  const redundantCandidate = await prepareConfiguredRuntimeReleaseSession(
+    alternateSourceConfig,
+    { stage: candidateStage },
+    'source-already-active-build-redundant-candidate',
+    alternateSourceConfig.primaryRuntimeSourceRepositoryId,
+    redundant.sourceRevision,
+  );
+  expect(redundantCandidate).toMatchObject({ ok: true, releaseSession: { phase: 'built' } });
+  const redundantCandidateHome = redundantCandidate.releaseSession!.candidate.controllerHome;
+  const retiredNoOp = await prepareConfiguredRuntimeReleaseSession(
+    redundant.config,
+    {},
+    'source-already-active-retire-redundant-candidate',
+    redundant.config.primaryRuntimeSourceRepositoryId,
+    redundant.sourceRevision,
+  );
+  expect(retiredNoOp).toMatchObject({
+    ok: true,
+    attempted: false,
+    noOp: true,
+    detail: `RELEASE_SESSION_SOURCE_ALREADY_ACTIVE: repo_selected@${redundant.sourceRevision}`,
+  });
+  expect(readReleaseSession(redundant.home, redundantCandidate.releaseSession!.sessionId)).toMatchObject({
+    phase: 'failed',
+  });
+  expect(existsSync(redundantCandidateHome)).toBe(false);
+
+  const mismatched = await fixture('repo_other');
+  expect(
+    configuredRuntimeReleaseSourceState(
+      mismatched.config,
+      mismatched.config.primaryRuntimeSourceRepositoryId,
+      mismatched.sourceRevision,
+    ),
+  ).toMatchObject({
+    activeSourceCommit: mismatched.sourceRevision,
+    activeSourceRepositoryId: 'repo_other',
+  });
+  let mismatchedStageCalls = 0;
+  const rebuild = await prepareConfiguredRuntimeReleaseSession(
+    mismatched.config,
+    {
+      stage: () => {
+        mismatchedStageCalls += 1;
+        throw new Error('repository provenance mismatch requires a rebuild');
+      },
+    },
+    'source-already-active-different-repository',
+    mismatched.config.primaryRuntimeSourceRepositoryId,
+    mismatched.sourceRevision,
+  );
+  expect(mismatchedStageCalls).toBe(1);
+  expect(rebuild).toMatchObject({
+    ok: false,
+    attempted: true,
+    detail: 'repository provenance mismatch requires a rebuild',
+    releaseSession: { phase: 'failed' },
+  });
+  expect(readRuntimeReleaseAuthority(mismatched.home)).toMatchObject({
+    active: { releaseId: mismatched.baseline.path.split('/').at(-2) },
+  });
 });

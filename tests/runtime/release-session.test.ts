@@ -1,26 +1,116 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { RELEASE_SESSION_PHASES, releaseSessionAcceptanceTimedOut, advanceReleaseSession, createReleaseSession, listCompleteReleaseSessions, listReleaseSessions, migrateReleaseSessionState, readReleaseSession, recordReleaseSessionTransaction, releaseSessionCandidateIsRetired, releaseSessionIsSoakingSupersededByStableAuthority, releaseSessionIsSoakingSupersededByFailedCutoverCompensation, type ReleaseSessionCandidateRelease, type ReleaseSessionStableRelease, type ReleaseSessionTransaction } from '../../src/runtime/release/release-session';
+import {
+  RELEASE_SESSION_PHASES,
+  releaseSessionAcceptanceTimedOut,
+  advanceReleaseSession,
+  createReleaseSession as createReleaseSessionRecord,
+  listCompleteReleaseSessions,
+  listReleaseSessions,
+  migrateReleaseSessionState,
+  readReleaseSession,
+  recordReleaseSessionTransaction,
+  releaseSessionCandidateIsRetired,
+  releaseSessionIsSoakingSupersededByStableAuthority,
+  releaseSessionIsSoakingSupersededByFailedCutoverCompensation,
+  type ReleaseSessionCandidateRelease,
+  type ReleaseSessionStableRelease,
+  type ReleaseSessionTransaction,
+} from '../../src/runtime/release/release-session';
 import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-store';
-import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
-import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
+import {
+  advanceConfiguredRuntimeRelease,
+  decideConfiguredRuntimeReleaseAction,
+  decideConfiguredRuntimeReleaseReconciliation,
+} from '../../src/runtime/release/release-coordinator';
+import {
+  cancelConfiguredRuntimeReleaseSession,
+  createRecoveryConfig,
+} from '../../src/runtime/standalone-recovery/core';
 import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runtime/root/runtime-lane';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { __resetLiveMonitorsForTests, spawnManagedProcess, waitForProcess } from '../../src/runtime/execution/process-runtime';
+import {
+  __resetLiveMonitorsForTests,
+  spawnManagedProcess,
+  waitForProcess,
+} from '../../src/runtime/execution/process-runtime';
 
 const roots: string[] = [];
-afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
+afterEach(() => {
+  while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
+});
 
-function lanes(home: string): { stable: StableExecutionLane; stableRelease: ReleaseSessionStableRelease; candidate: CandidateExecutionLane; candidateRelease: ReleaseSessionCandidateRelease } {
-  const stable: StableExecutionLane = { schemaVersion: 1, kind: 'stable', controllerHome: join(home, 'a'), serviceLabel: 'a', port: 8765, authTokenFile: join(home, 'a-token') };
-  const stableRelease: ReleaseSessionStableRelease = { authorityRevision: 7, releaseId: 'stable-a', artifactIdentity: 'sha256:stable', manifestSha256: 'stable-manifest', workerProtocolVersion: 1, releaseFencingTokenSha256: 'stable-fence' };
-  const candidate: CandidateExecutionLane = { schemaVersion: 1, kind: 'candidate', sessionId: 'release-session-12345678', controllerHome: join(home, 'b'), serviceLabel: 'b', port: 8766, authTokenFile: join(home, 'b-token'), databaseSnapshotPath: join(home, 'b', 'control-plane.sqlite'), sourceStableControllerHome: stable.controllerHome, createdAt: new Date().toISOString() };
-  const candidateRelease: ReleaseSessionCandidateRelease = { releaseId: 'candidate-b', manifestPath: join(candidate.controllerHome, 'runtime', 'releases', 'candidate-b', 'manifest.json'), artifactIdentity: 'sha256:candidate', manifestSha256: 'candidate-manifest', treeSha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', sourceCommit: 'abc123', sourceRepositoryId: 'repo' };
+const TEST_SOURCE_REPOSITORY_ID = 'repo_release_session_test';
+
+function sourceCommit(value: string): string {
+  return /^[a-f0-9]{40}$/i.test(value) ? value.toLowerCase() : createHash('sha1').update(value).digest('hex');
+}
+
+type CreateReleaseSessionTestInput = Omit<
+  Parameters<typeof createReleaseSessionRecord>[0],
+  'sourceRepositoryId' | 'sourceRevision'
+> & {
+  sourceRepositoryId?: string;
+  sourceRevision: string;
+};
+
+function createReleaseSession(input: CreateReleaseSessionTestInput) {
+  return createReleaseSessionRecord({
+    ...input,
+    sourceRepositoryId: input.sourceRepositoryId ?? TEST_SOURCE_REPOSITORY_ID,
+    sourceRevision: sourceCommit(input.sourceRevision),
+  });
+}
+
+function lanes(home: string): {
+  stable: StableExecutionLane;
+  stableRelease: ReleaseSessionStableRelease;
+  candidate: CandidateExecutionLane;
+  candidateRelease: ReleaseSessionCandidateRelease;
+} {
+  const stable: StableExecutionLane = {
+    schemaVersion: 1,
+    kind: 'stable',
+    controllerHome: join(home, 'a'),
+    serviceLabel: 'a',
+    port: 8765,
+    authTokenFile: join(home, 'a-token'),
+  };
+  const stableRelease: ReleaseSessionStableRelease = {
+    authorityRevision: 7,
+    releaseId: 'stable-a',
+    artifactIdentity: 'sha256:stable',
+    manifestSha256: 'stable-manifest',
+    workerProtocolVersion: 1,
+    releaseFencingTokenSha256: 'stable-fence',
+  };
+  const candidate: CandidateExecutionLane = {
+    schemaVersion: 1,
+    kind: 'candidate',
+    sessionId: 'release-session-12345678',
+    controllerHome: join(home, 'b'),
+    serviceLabel: 'b',
+    port: 8766,
+    authTokenFile: join(home, 'b-token'),
+    databaseSnapshotPath: join(home, 'b', 'control-plane.sqlite'),
+    sourceStableControllerHome: stable.controllerHome,
+    createdAt: new Date().toISOString(),
+  };
+  const candidateRelease: ReleaseSessionCandidateRelease = {
+    releaseId: 'candidate-b',
+    manifestPath: join(candidate.controllerHome, 'runtime', 'releases', 'candidate-b', 'manifest.json'),
+    artifactIdentity: 'sha256:candidate',
+    manifestSha256: 'candidate-manifest',
+    treeSha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    sourceCommit: sourceCommit('abc123'),
+    sourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
+  };
   return { stable, stableRelease, candidate, candidateRelease };
 }
 
@@ -29,30 +119,145 @@ describe('Recovery ReleaseSession', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-'));
     roots.push(home);
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
-    let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease, receipts: [{ id: 'build', kind: 'build', summary: 'built' }] });
-    expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified' })).toThrow('RELEASE_SESSION_STATIC_VERIFIED_LEGACY_ONLY');
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
-    expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified' })).toThrow('RELEASE_SESSION_CANDIDATE_CANARIES_INCOMPLETE');
-    expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) })).toThrow('RELEASE_SESSION_CANDIDATE_CANARIES_INCOMPLETE');
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
-    expect(readReleaseSession(home, session.sessionId)).toMatchObject({ phase: 'cutover_eligible', revision: session.revision });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'rolled_back', receipts: [{ id: 'rollback', kind: 'rollback', summary: 'Stable A restored' }] });
-    expect(readReleaseSession(home, session.sessionId)).toMatchObject({ phase: 'rolled_back', revision: session.revision });
+    let session = createReleaseSession({
+      controllerHome: home,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: sourceCommit('abc123'),
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'built',
+      candidateRelease,
+      receipts: [{ id: 'build', kind: 'build', summary: 'built' }],
+    });
+    expect(() =>
+      advanceReleaseSession({
+        controllerHome: home,
+        sessionId: session.sessionId,
+        expectedRevision: session.revision,
+        phase: 'static_verified',
+      }),
+    ).toThrow('RELEASE_SESSION_STATIC_VERIFIED_LEGACY_ONLY');
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'candidate_booted',
+    });
+    expect(() =>
+      advanceReleaseSession({
+        controllerHome: home,
+        sessionId: session.sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_verified',
+      }),
+    ).toThrow('RELEASE_SESSION_CANDIDATE_CANARIES_INCOMPLETE');
+    expect(() =>
+      advanceReleaseSession({
+        controllerHome: home,
+        sessionId: session.sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_verified',
+        receipts: ['recovery', 'mcp', 'scheduler'].map((id) => ({
+          id,
+          kind: 'candidate_canary' as const,
+          summary: id,
+        })),
+      }),
+    ).toThrow('RELEASE_SESSION_CANDIDATE_CANARIES_INCOMPLETE');
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'candidate_verified',
+      receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+        id,
+        kind: 'candidate_canary' as const,
+        summary: id,
+      })),
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'cutover_eligible',
+    });
+    expect(readReleaseSession(home, session.sessionId)).toMatchObject({
+      phase: 'cutover_eligible',
+      revision: session.revision,
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'cutover_attempting',
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'rolled_back',
+      receipts: [{ id: 'rollback', kind: 'rollback', summary: 'Stable A restored' }],
+    });
+    expect(readReleaseSession(home, session.sessionId)).toMatchObject({
+      phase: 'rolled_back',
+      revision: session.revision,
+    });
   });
 
   test('accepts an identical transaction persisted by Runtime startup migration after the activation CAS snapshot', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-race-'));
     roots.push(home);
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
-    let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
+    let session = createReleaseSession({
+      controllerHome: home,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: sourceCommit('abc123'),
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'built',
+      candidateRelease,
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'candidate_booted',
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'candidate_verified',
+      receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+        id,
+        kind: 'candidate_canary' as const,
+        summary: id,
+      })),
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'cutover_eligible',
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'cutover_attempting',
+    });
     const rollbackRelease = {
       releaseId: stableRelease.releaseId,
       artifactIdentity: stableRelease.artifactIdentity,
@@ -84,20 +289,41 @@ describe('Recovery ReleaseSession', () => {
       controllerHome: home,
       sessionId: session.sessionId,
       expectedRevision: session.revision,
-      transaction: { ...migrationTransaction, operationId: 'recovery-activate-runtime', startedAt: new Date().toISOString() },
+      transaction: {
+        ...migrationTransaction,
+        operationId: 'recovery-activate-runtime',
+        startedAt: new Date().toISOString(),
+      },
     });
     expect(activationRetry).toEqual(migrated);
     expect(activationRetry.revision).toBe(session.revision + 1);
-    expect(() => recordReleaseSessionTransaction({
-      controllerHome: home,
-      sessionId: session.sessionId,
-      expectedRevision: session.revision,
-      transaction: { ...migrationTransaction, candidateReleaseId: 'different-candidate' },
-    })).toThrow('RELEASE_SESSION_REVISION_FENCED');
+    expect(() =>
+      recordReleaseSessionTransaction({
+        controllerHome: home,
+        sessionId: session.sessionId,
+        expectedRevision: session.revision,
+        transaction: { ...migrationTransaction, candidateReleaseId: 'different-candidate' },
+      }),
+    ).toThrow('RELEASE_SESSION_REVISION_FENCED');
 
-    let acceptance = advanceReleaseSession({ controllerHome: home, sessionId: activationRetry.sessionId, expectedRevision: activationRetry.revision, phase: 'cutover_committed' });
-    acceptance = advanceReleaseSession({ controllerHome: home, sessionId: acceptance.sessionId, expectedRevision: acceptance.revision, phase: 'soaking' });
-    acceptance = advanceReleaseSession({ controllerHome: home, sessionId: acceptance.sessionId, expectedRevision: acceptance.revision, phase: 'known_good' });
+    let acceptance = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: activationRetry.sessionId,
+      expectedRevision: activationRetry.revision,
+      phase: 'cutover_committed',
+    });
+    acceptance = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: acceptance.sessionId,
+      expectedRevision: acceptance.revision,
+      phase: 'soaking',
+    });
+    acceptance = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: acceptance.sessionId,
+      expectedRevision: acceptance.revision,
+      phase: 'known_good',
+    });
     expect(acceptance.phase).toBe('known_good');
   });
 
@@ -105,7 +331,14 @@ describe('Recovery ReleaseSession', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-inventory-'));
     roots.push(home);
     const { stable, stableRelease, candidate } = lanes(home);
-    let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
+    let session = createReleaseSession({
+      controllerHome: home,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: sourceCommit('abc123'),
+    });
     expect(listReleaseSessions(home)).toMatchObject({
       inspected: 1,
       truncated: false,
@@ -119,9 +352,16 @@ describe('Recovery ReleaseSession', () => {
       sessions: [{ sessionId: candidate.sessionId, phase: 'source_frozen' }],
     });
     expect(releaseSessionCandidateIsRetired(session)).toBe(false);
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'failed' });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'failed',
+    });
     expect(releaseSessionCandidateIsRetired(session)).toBe(true);
-    expect(listCompleteReleaseSessions(home).sessions).toMatchObject([{ sessionId: candidate.sessionId, phase: 'failed' }]);
+    expect(listCompleteReleaseSessions(home).sessions).toMatchObject([
+      { sessionId: candidate.sessionId, phase: 'failed' },
+    ]);
   });
 
   test('retires a superseded Candidate B before cutover without inventing another lifecycle state', async () => {
@@ -165,11 +405,24 @@ describe('Recovery ReleaseSession', () => {
       artifactIdentity: 'sha256:candidate',
       manifestSha256: 'candidate-manifest',
       treeSha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      sourceCommit: 'abc123',
-      sourceRepositoryId: 'repo',
+      sourceCommit: sourceCommit('abc123'),
+      sourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
     };
-    let session = createReleaseSession({ controllerHome, sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
-    session = advanceReleaseSession({ controllerHome, sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
+    let session = createReleaseSession({
+      controllerHome,
+      sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: sourceCommit('abc123'),
+    });
+    session = advanceReleaseSession({
+      controllerHome,
+      sessionId,
+      expectedRevision: session.revision,
+      phase: 'built',
+      candidateRelease,
+    });
     session = advanceReleaseSession({
       controllerHome,
       sessionId,
@@ -177,11 +430,19 @@ describe('Recovery ReleaseSession', () => {
       phase: 'candidate_booted',
     });
 
-    const cancelled = await cancelConfiguredRuntimeReleaseSession(createRecoveryConfig(controllerHome), sessionId, 'test-cancel');
+    const cancelled = await cancelConfiguredRuntimeReleaseSession(
+      createRecoveryConfig(controllerHome),
+      sessionId,
+      'test-cancel',
+    );
     expect(cancelled).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'failed' } });
     expect(existsSync(candidateHome)).toBe(false);
 
-    const again = await cancelConfiguredRuntimeReleaseSession(createRecoveryConfig(controllerHome), sessionId, 'test-cancel-again');
+    const again = await cancelConfiguredRuntimeReleaseSession(
+      createRecoveryConfig(controllerHome),
+      sessionId,
+      'test-cancel-again',
+    );
     expect(again).toMatchObject({ ok: true, attempted: false, noOp: true, releaseSession: { phase: 'failed' } });
   });
 
@@ -220,13 +481,28 @@ describe('Recovery ReleaseSession', () => {
       sourceStableControllerHome: controllerHome,
       createdAt: new Date().toISOString(),
     };
-    createReleaseSession({ controllerHome, sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
+    createReleaseSession({
+      controllerHome,
+      sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: sourceCommit('abc123'),
+    });
 
-    const cancelled = await cancelConfiguredRuntimeReleaseSession(createRecoveryConfig(controllerHome), sessionId, 'test-cancel');
+    const cancelled = await cancelConfiguredRuntimeReleaseSession(
+      createRecoveryConfig(controllerHome),
+      sessionId,
+      'test-cancel',
+    );
     expect(cancelled).toMatchObject({ ok: true, attempted: true, releaseSession: { phase: 'failed' } });
     expect(existsSync(candidateHome)).toBe(false);
 
-    const again = await cancelConfiguredRuntimeReleaseSession(createRecoveryConfig(controllerHome), sessionId, 'test-cancel-again');
+    const again = await cancelConfiguredRuntimeReleaseSession(
+      createRecoveryConfig(controllerHome),
+      sessionId,
+      'test-cancel-again',
+    );
     expect(again).toMatchObject({ ok: true, attempted: false, noOp: true, releaseSession: { phase: 'failed' } });
   });
 
@@ -234,7 +510,14 @@ describe('Recovery ReleaseSession', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-singleton-'));
     roots.push(home);
     const { stable, stableRelease, candidate } = lanes(home);
-    let first = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
+    let first = createReleaseSession({
+      controllerHome: home,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: sourceCommit('abc123'),
+    });
     const second: CandidateExecutionLane = {
       ...candidate,
       sessionId: 'release-session-87654321',
@@ -243,24 +526,83 @@ describe('Recovery ReleaseSession', () => {
       port: 8767,
       databaseSnapshotPath: join(home, 'candidate-2', 'control-plane.sqlite'),
     };
-    expect(() => createReleaseSession({ controllerHome: home, sessionId: second.sessionId, stable, stableRelease, candidate: second, sourceRevision: 'def456' }))
-      .toThrow('RELEASE_SESSION_ACTIVE_EXISTS');
-    first = advanceReleaseSession({ controllerHome: home, sessionId: first.sessionId, expectedRevision: first.revision, phase: 'failed' });
+    expect(() =>
+      createReleaseSession({
+        controllerHome: home,
+        sessionId: second.sessionId,
+        stable,
+        stableRelease,
+        candidate: second,
+        sourceRevision: sourceCommit('def456'),
+      }),
+    ).toThrow('RELEASE_SESSION_ACTIVE_EXISTS');
+    first = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: first.sessionId,
+      expectedRevision: first.revision,
+      phase: 'failed',
+    });
     expect(first.phase).toBe('failed');
-    expect(() => createReleaseSession({ controllerHome: home, sessionId: second.sessionId, stable, stableRelease, candidate: second, sourceRevision: 'def456' }))
-      .not.toThrow();
+    expect(() =>
+      createReleaseSession({
+        controllerHome: home,
+        sessionId: second.sessionId,
+        stable,
+        stableRelease,
+        candidate: second,
+        sourceRevision: sourceCommit('def456'),
+      }),
+    ).not.toThrow();
   });
 
   test('recognizes only a strictly newer different Runtime authority as superseding a soaking session', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-emergency-supersession-'));
     roots.push(home);
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
-    let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
+    let session = createReleaseSession({
+      controllerHome: home,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: sourceCommit('abc123'),
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'built',
+      candidateRelease,
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'candidate_booted',
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'candidate_verified',
+      receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+        id,
+        kind: 'candidate_canary' as const,
+        summary: id,
+      })),
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'cutover_eligible',
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'cutover_attempting',
+    });
     session = recordReleaseSessionTransaction({
       controllerHome: home,
       sessionId: session.sessionId,
@@ -277,27 +619,62 @@ describe('Recovery ReleaseSession', () => {
           manifestSha256: stableRelease.manifestSha256,
           workerProtocolVersion: stableRelease.workerProtocolVersion,
           publishedAt: new Date().toISOString(),
-          databaseBackup: { path: join(home, 'rollback.sqlite'), schemaVersion: 1, createdAt: new Date().toISOString(), auditEventCount: 1, recordCount: 1, databaseSha256: 'a'.repeat(64) },
+          databaseBackup: {
+            path: join(home, 'rollback.sqlite'),
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+            auditEventCount: 1,
+            recordCount: 1,
+            databaseSha256: 'a'.repeat(64),
+          },
         },
         startedAt: new Date().toISOString(),
       },
     });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_committed' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'soaking' });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'cutover_committed',
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'soaking',
+    });
 
     // Even if the repository HEAD changes or a Git read fails, the existing
     // opt-in soaking Candidate remains its own exact rollback authority.
-    expect(decideConfiguredRuntimeReleaseReconciliation(home, () => ({
-      configured: true, sourceRevision: 'new-head', activeSourceCommit: 'old-head',
-    }))).toMatchObject({ required: true, action: 'promote_known_good', session: { sessionId: session.sessionId } });
-    expect(decideConfiguredRuntimeReleaseReconciliation(home, () => {
-      throw new Error('Git/source observation unavailable');
-    })).toMatchObject({ required: true, action: 'promote_known_good', session: { sessionId: session.sessionId } });
+    expect(
+      decideConfiguredRuntimeReleaseReconciliation(home, () => ({
+        configured: true,
+        sourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
+        sourceRevision: sourceCommit('new-head'),
+        activeSourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
+        activeSourceCommit: sourceCommit('old-head'),
+      })),
+    ).toMatchObject({ required: true, action: 'promote_known_good', session: { sessionId: session.sessionId } });
+    expect(
+      decideConfiguredRuntimeReleaseReconciliation(home, () => {
+        throw new Error('Git/source observation unavailable');
+      }),
+    ).toMatchObject({ required: true, action: 'promote_known_good', session: { sessionId: session.sessionId } });
 
-
-    const exactCandidateAtSameRevision: ReleaseSessionStableRelease = { ...stableRelease, authorityRevision: 8, releaseId: candidateRelease.releaseId, artifactIdentity: candidateRelease.artifactIdentity, manifestSha256: candidateRelease.manifestSha256 };
+    const exactCandidateAtSameRevision: ReleaseSessionStableRelease = {
+      ...stableRelease,
+      authorityRevision: 8,
+      releaseId: candidateRelease.releaseId,
+      artifactIdentity: candidateRelease.artifactIdentity,
+      manifestSha256: candidateRelease.manifestSha256,
+    };
     expect(releaseSessionIsSoakingSupersededByStableAuthority(session, exactCandidateAtSameRevision)).toBe(false);
-    expect(releaseSessionIsSoakingSupersededByStableAuthority(session, { ...exactCandidateAtSameRevision, authorityRevision: 9 })).toBe(false);
+    expect(
+      releaseSessionIsSoakingSupersededByStableAuthority(session, {
+        ...exactCandidateAtSameRevision,
+        authorityRevision: 9,
+      }),
+    ).toBe(false);
     const failedSuccessor = {
       ...session,
       phase: 'failed' as const,
@@ -320,39 +697,111 @@ describe('Recovery ReleaseSession', () => {
           manifestSha256: candidateRelease.manifestSha256,
         },
       },
-      receipts: [...session.receipts, { id: 'cutover_failed', kind: 'cutover' as const, summary: 'later candidate activation failed', recordedAt: new Date().toISOString() }],
+      receipts: [
+        ...session.receipts,
+        {
+          id: 'cutover_failed',
+          kind: 'cutover' as const,
+          summary: 'later candidate activation failed',
+          recordedAt: new Date().toISOString(),
+        },
+      ],
     };
     const restored = { ...exactCandidateAtSameRevision, authorityRevision: 10 };
     const compensated = releaseSessionIsSoakingSupersededByFailedCutoverCompensation;
     expect(compensated(session, failedSuccessor, restored, 'failed-candidate-b-activation')).toBe(true);
     expect(compensated(session, failedSuccessor, restored, 'other-transaction')).toBe(false);
-    expect(compensated(session, failedSuccessor, { ...restored, authorityRevision: 11 }, 'failed-candidate-b-activation')).toBe(false);
-    expect(compensated(session, { ...failedSuccessor, receipts: session.receipts }, restored, 'failed-candidate-b-activation')).toBe(false);
-    expect(compensated(session, {
-      ...failedSuccessor,
-      transaction: { ...failedSuccessor.transaction, rollbackRelease: { ...failedSuccessor.transaction.rollbackRelease, releaseId: 'unrelated-release' } },
-    }, restored, 'failed-candidate-b-activation')).toBe(false);
+    expect(
+      compensated(session, failedSuccessor, { ...restored, authorityRevision: 11 }, 'failed-candidate-b-activation'),
+    ).toBe(false);
+    expect(
+      compensated(
+        session,
+        { ...failedSuccessor, receipts: session.receipts },
+        restored,
+        'failed-candidate-b-activation',
+      ),
+    ).toBe(false);
+    expect(
+      compensated(
+        session,
+        {
+          ...failedSuccessor,
+          transaction: {
+            ...failedSuccessor.transaction,
+            rollbackRelease: { ...failedSuccessor.transaction.rollbackRelease, releaseId: 'unrelated-release' },
+          },
+        },
+        restored,
+        'failed-candidate-b-activation',
+      ),
+    ).toBe(false);
 
-    expect(releaseSessionIsSoakingSupersededByStableAuthority(session, { ...exactCandidateAtSameRevision, releaseId: 'emergency-release' })).toBe(false);
-    expect(releaseSessionIsSoakingSupersededByStableAuthority(session, {
-      ...exactCandidateAtSameRevision,
-      authorityRevision: 9,
-      releaseId: 'emergency-release',
-      artifactIdentity: 'sha256:emergency',
-      manifestSha256: 'emergency-manifest',
-    })).toBe(true);
+    expect(
+      releaseSessionIsSoakingSupersededByStableAuthority(session, {
+        ...exactCandidateAtSameRevision,
+        releaseId: 'emergency-release',
+      }),
+    ).toBe(false);
+    expect(
+      releaseSessionIsSoakingSupersededByStableAuthority(session, {
+        ...exactCandidateAtSameRevision,
+        authorityRevision: 9,
+        releaseId: 'emergency-release',
+        artifactIdentity: 'sha256:emergency',
+        manifestSha256: 'emergency-manifest',
+      }),
+    ).toBe(true);
   });
 
   test('permits exactly one repair successor over a soaking current-Stable predecessor and prioritizes the successor', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-successor-'));
     roots.push(home);
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
-    let predecessor = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
-    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'built', candidateRelease });
-    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'candidate_booted' });
-    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
-    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'cutover_eligible' });
-    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'cutover_attempting' });
+    let predecessor = createReleaseSession({
+      controllerHome: home,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: sourceCommit('abc123'),
+    });
+    predecessor = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: predecessor.sessionId,
+      expectedRevision: predecessor.revision,
+      phase: 'built',
+      candidateRelease,
+    });
+    predecessor = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: predecessor.sessionId,
+      expectedRevision: predecessor.revision,
+      phase: 'candidate_booted',
+    });
+    predecessor = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: predecessor.sessionId,
+      expectedRevision: predecessor.revision,
+      phase: 'candidate_verified',
+      receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+        id,
+        kind: 'candidate_canary' as const,
+        summary: id,
+      })),
+    });
+    predecessor = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: predecessor.sessionId,
+      expectedRevision: predecessor.revision,
+      phase: 'cutover_eligible',
+    });
+    predecessor = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: predecessor.sessionId,
+      expectedRevision: predecessor.revision,
+      phase: 'cutover_attempting',
+    });
     predecessor = recordReleaseSessionTransaction({
       controllerHome: home,
       sessionId: predecessor.sessionId,
@@ -369,15 +818,39 @@ describe('Recovery ReleaseSession', () => {
           manifestSha256: stableRelease.manifestSha256,
           workerProtocolVersion: stableRelease.workerProtocolVersion,
           publishedAt: new Date().toISOString(),
-          databaseBackup: { path: join(home, 'rollback.sqlite'), schemaVersion: 1, createdAt: new Date().toISOString(), auditEventCount: 1, recordCount: 1, databaseSha256: 'a'.repeat(64) },
+          databaseBackup: {
+            path: join(home, 'rollback.sqlite'),
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+            auditEventCount: 1,
+            recordCount: 1,
+            databaseSha256: 'a'.repeat(64),
+          },
         },
         startedAt: new Date().toISOString(),
       },
     });
-    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'cutover_committed' });
-    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'soaking', receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }] });
+    predecessor = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: predecessor.sessionId,
+      expectedRevision: predecessor.revision,
+      phase: 'cutover_committed',
+    });
+    predecessor = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: predecessor.sessionId,
+      expectedRevision: predecessor.revision,
+      phase: 'soaking',
+      receipts: [{ id: 'soak_started', kind: 'soak', summary: 'cutover' }],
+    });
 
-    const successorStableRelease = { ...stableRelease, authorityRevision: 8, releaseId: candidateRelease.releaseId, artifactIdentity: candidateRelease.artifactIdentity, manifestSha256: candidateRelease.manifestSha256 };
+    const successorStableRelease = {
+      ...stableRelease,
+      authorityRevision: 8,
+      releaseId: candidateRelease.releaseId,
+      artifactIdentity: candidateRelease.artifactIdentity,
+      manifestSha256: candidateRelease.manifestSha256,
+    };
     const successorCandidate: CandidateExecutionLane = {
       ...candidate,
       sessionId: 'release-session-successor-1234',
@@ -392,10 +865,17 @@ describe('Recovery ReleaseSession', () => {
       stable,
       stableRelease: successorStableRelease,
       candidate: successorCandidate,
-      sourceRevision: 'def456',
+      sourceRevision: sourceCommit('def456'),
     });
-    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'prepare', session: { sessionId: successor.sessionId } });
-    expect(decideConfiguredRuntimeReleaseReconciliation(home, () => { throw new Error('source must remain lazy'); })).toMatchObject({
+    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({
+      action: 'prepare',
+      session: { sessionId: successor.sessionId },
+    });
+    expect(
+      decideConfiguredRuntimeReleaseReconciliation(home, () => {
+        throw new Error('source must remain lazy');
+      }),
+    ).toMatchObject({
       required: true,
       reason: 'active_session',
       action: 'prepare',
@@ -408,14 +888,21 @@ describe('Recovery ReleaseSession', () => {
     Date.now = () => wallNow() + 31 * 60_000;
     try {
       expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({
-        action: 'prepare', session: { sessionId: successor.sessionId },
+        action: 'prepare',
+        session: { sessionId: successor.sessionId },
       });
-      expect(decideConfiguredRuntimeReleaseReconciliation(home, () => {
-        throw new Error('source observer stays lazy for the existing successor');
-      })).toMatchObject({
-        required: true, action: 'prepare', session: { sessionId: successor.sessionId },
+      expect(
+        decideConfiguredRuntimeReleaseReconciliation(home, () => {
+          throw new Error('source observer stays lazy for the existing successor');
+        }),
+      ).toMatchObject({
+        required: true,
+        action: 'prepare',
+        session: { sessionId: successor.sessionId },
       });
-    } finally { Date.now = wallNow; }
+    } finally {
+      Date.now = wallNow;
+    }
 
     // Damage in an inventory alone cannot grant a rollback decision when
     // the fixture has no matching *live* Runtime authority/SQLite snapshot.
@@ -423,27 +910,80 @@ describe('Recovery ReleaseSession', () => {
     writeFileSync(damagedFile, '{broken-json');
     Date.now = () => wallNow() + 31 * 60_000;
     try {
-      expect(() => decideConfiguredRuntimeReleaseReconciliation(home, () => ({ configured: false })))
-        .toThrow('RELEASE_SESSION_INVENTORY_INCOMPLETE');
-    } finally { Date.now = wallNow; rmSync(damagedFile); }
+      expect(() => decideConfiguredRuntimeReleaseReconciliation(home, () => ({ configured: false }))).toThrow(
+        'RELEASE_SESSION_INVENTORY_INCOMPLETE',
+      );
+    } finally {
+      Date.now = wallNow;
+      rmSync(damagedFile);
+    }
 
-    const thirdCandidate: CandidateExecutionLane = { ...successorCandidate, sessionId: 'release-session-third-123456', controllerHome: join(home, 'candidate-third'), serviceLabel: 'candidate-third', port: 8768, databaseSnapshotPath: join(home, 'candidate-third', 'control-plane.sqlite') };
-    expect(() => createReleaseSession({ controllerHome: home, sessionId: thirdCandidate.sessionId, stable, stableRelease: successorStableRelease, candidate: thirdCandidate, sourceRevision: 'ghi789' }))
-      .toThrow('RELEASE_SESSION_ACTIVE_EXISTS');
+    const thirdCandidate: CandidateExecutionLane = {
+      ...successorCandidate,
+      sessionId: 'release-session-third-123456',
+      controllerHome: join(home, 'candidate-third'),
+      serviceLabel: 'candidate-third',
+      port: 8768,
+      databaseSnapshotPath: join(home, 'candidate-third', 'control-plane.sqlite'),
+    };
+    expect(() =>
+      createReleaseSession({
+        controllerHome: home,
+        sessionId: thirdCandidate.sessionId,
+        stable,
+        stableRelease: successorStableRelease,
+        candidate: thirdCandidate,
+        sourceRevision: sourceCommit('ghi789'),
+      }),
+    ).toThrow('RELEASE_SESSION_ACTIVE_EXISTS');
   });
 
   test('derives the next incompatible-migration action only from durable ReleaseSession phase', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-coordinator-'));
     roots.push(home);
-    expect(decideConfiguredRuntimeReleaseAction(home)).toEqual({ action: 'prepare' });
+    expect(decideConfiguredRuntimeReleaseAction(home)).toEqual({ action: 'none' });
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
-    let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
-    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'prepare', session: { sessionId: session.sessionId } });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_candidate', session: { revision: session.revision } });
-    expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified' })).toThrow('RELEASE_SESSION_STATIC_VERIFIED_LEGACY_ONLY');
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
-    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({ action: 'verify_candidate', session: { revision: session.revision } });
+    let session = createReleaseSession({
+      controllerHome: home,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: sourceCommit('abc123'),
+    });
+    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({
+      action: 'prepare',
+      session: { sessionId: session.sessionId },
+    });
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'built',
+      candidateRelease,
+    });
+    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({
+      action: 'verify_candidate',
+      session: { revision: session.revision },
+    });
+    expect(() =>
+      advanceReleaseSession({
+        controllerHome: home,
+        sessionId: session.sessionId,
+        expectedRevision: session.revision,
+        phase: 'static_verified',
+      }),
+    ).toThrow('RELEASE_SESSION_STATIC_VERIFIED_LEGACY_ONLY');
+    session = advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'candidate_booted',
+    });
+    expect(decideConfiguredRuntimeReleaseAction(home)).toMatchObject({
+      action: 'verify_candidate',
+      session: { revision: session.revision },
+    });
   });
 
   test('automatic reconciliation reads source lazily and never replays a terminal source revision', () => {
@@ -456,12 +996,14 @@ describe('Recovery ReleaseSession', () => {
       stable,
       stableRelease,
       candidate,
-      sourceRevision: 'abc123',
+      sourceRevision: sourceCommit('abc123'),
     });
 
-    expect(decideConfiguredRuntimeReleaseReconciliation(home, () => {
-      throw new Error('source observation must stay lazy while ReleaseSession is active');
-    })).toMatchObject({
+    expect(
+      decideConfiguredRuntimeReleaseReconciliation(home, () => {
+        throw new Error('source observation must stay lazy while ReleaseSession is active');
+      }),
+    ).toMatchObject({
       required: true,
       reason: 'active_session',
       action: 'prepare',
@@ -478,20 +1020,40 @@ describe('Recovery ReleaseSession', () => {
     let sourceReads = 0;
     const terminal = decideConfiguredRuntimeReleaseReconciliation(home, () => {
       sourceReads += 1;
-      return { configured: true, sourceRevision: 'abc123', activeSourceCommit: 'older-stable' };
+      return {
+        configured: true,
+        sourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
+        sourceRevision: sourceCommit('abc123'),
+        activeSourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
+        activeSourceCommit: sourceCommit('older-stable'),
+      };
     });
     expect(sourceReads).toBe(1);
     expect(terminal).toMatchObject({
       required: false,
       reason: 'source_already_attempted',
-      session: { sessionId: session.sessionId, phase: 'failed', sourceRevision: 'abc123' },
+      session: { sessionId: session.sessionId, phase: 'failed', sourceRevision: sourceCommit('abc123') },
     });
 
-    expect(decideConfiguredRuntimeReleaseReconciliation(home, () => ({
-      configured: true,
-      sourceRevision: 'def456',
-      activeSourceCommit: 'older-stable',
-    }))).toMatchObject({ required: false, reason: 'source_mismatch' });
+    expect(
+      decideConfiguredRuntimeReleaseReconciliation(home, () => ({
+        configured: true,
+        sourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
+        sourceRevision: sourceCommit('def456'),
+        activeSourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
+        activeSourceCommit: sourceCommit('older-stable'),
+      })),
+    ).toMatchObject({ required: false, reason: 'source_mismatch' });
+
+    expect(
+      decideConfiguredRuntimeReleaseReconciliation(home, () => ({
+        configured: true,
+        sourceRepositoryId: 'repo_other',
+        sourceRevision: sourceCommit('abc123'),
+        activeSourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
+        activeSourceCommit: sourceCommit('abc123'),
+      })),
+    ).toMatchObject({ required: false, reason: 'source_mismatch' });
   });
 
   test('runs one normal release call through every immediately executable durable phase', async () => {
@@ -499,24 +1061,50 @@ describe('Recovery ReleaseSession', () => {
     roots.push(home);
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
     const config = { controllerHome: home };
+    const preparedSourceRevision = sourceCommit('abc123');
+    createReleaseSession({
+      controllerHome: home,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
+      sourceRevision: preparedSourceRevision,
+    });
     const provider = {
-      prepare: async () => {
-        let session = readReleaseSession(home, candidate.sessionId)
-          ?? createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
+      prepare: async (_config: typeof config, sourceRepositoryId: string, expectedSourceRevision: string) => {
+        expect(sourceRepositoryId).toBe(TEST_SOURCE_REPOSITORY_ID);
+        expect(expectedSourceRevision).toBe(preparedSourceRevision);
+        let session = readReleaseSession(home, candidate.sessionId)!;
         if (session.phase === 'source_frozen') {
-          session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
+          session = advanceReleaseSession({
+            controllerHome: home,
+            sessionId: session.sessionId,
+            expectedRevision: session.revision,
+            phase: 'built',
+            candidateRelease,
+          });
         }
         return { ok: true, attempted: true, detail: 'built', releaseSession: session };
       },
       verifyCandidate: async (_config: typeof config, sessionId: string) => {
         let session = readReleaseSession(home, sessionId)!;
-        session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
+        session = advanceReleaseSession({
+          controllerHome: home,
+          sessionId,
+          expectedRevision: session.revision,
+          phase: 'candidate_booted',
+        });
         session = advanceReleaseSession({
           controllerHome: home,
           sessionId,
           expectedRevision: session.revision,
           phase: 'candidate_verified',
-          receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
+          receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+            id,
+            kind: 'candidate_canary' as const,
+            summary: id,
+          })),
         });
         return { ok: true, attempted: true, detail: 'candidate', releaseSession: session };
       },
@@ -568,20 +1156,27 @@ describe('Recovery ReleaseSession', () => {
     const now = new Date().toISOString();
     const sessionDir = join(home, 'recovery', 'state', 'release-sessions');
     mkdirSync(sessionDir, { recursive: true });
-    writeFileSync(join(sessionDir, `${sessionId}.json`), `${JSON.stringify({
-      schemaVersion: 1,
-      sessionId,
-      stable,
-      stableRelease,
-      candidate,
-      candidateRelease,
-      sourceRevision: 'abc123',
-      phase: 'soaking',
-      revision: 9,
-      receipts: [],
-      createdAt: now,
-      updatedAt: now,
-    }, null, 2)}\n`);
+    writeFileSync(
+      join(sessionDir, `${sessionId}.json`),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          sessionId,
+          stable,
+          stableRelease,
+          candidate,
+          candidateRelease,
+          sourceRevision: sourceCommit('abc123'),
+          phase: 'soaking',
+          revision: 9,
+          receipts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+        null,
+        2,
+      )}\n`,
+    );
 
     const backupPath = join(home, 'runtime', 'releases', 'backups', 'stable-a.sqlite');
     const authority: RuntimeReleaseAuthority = {
@@ -652,47 +1247,62 @@ describe('Recovery ReleaseSession', () => {
     const later = '2026-09-20T01:00:00.000Z';
     const root = join(home, 'recovery', 'state', 'release-sessions');
     mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, `${firstFx.candidate.sessionId}.json`), JSON.stringify({
-      schemaVersion: 1,
-      sessionId: firstFx.candidate.sessionId,
-      stable: firstFx.stable,
-      stableRelease: firstFx.stableRelease,
-      candidate: firstFx.candidate,
-      candidateRelease: firstFx.candidateRelease,
-      sourceRevision: 'historical-a',
-      phase: 'soaking',
-      revision: 9,
-      receipts: [],
-      createdAt: now,
-      updatedAt: now,
-    }, null, 2));
-    writeFileSync(join(root, `${secondCandidateLane.sessionId}.json`), JSON.stringify({
-      schemaVersion: 1,
-      sessionId: secondCandidateLane.sessionId,
-      stable: firstFx.stable,
-      stableRelease: secondStable,
-      candidate: secondCandidateLane,
-      sourceRevision: 'historical-b',
-      phase: 'source_frozen',
-      revision: 1,
-      receipts: [],
-      createdAt: later,
-      updatedAt: later,
-    }, null, 2));
+    writeFileSync(
+      join(root, `${firstFx.candidate.sessionId}.json`),
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          sessionId: firstFx.candidate.sessionId,
+          stable: firstFx.stable,
+          stableRelease: firstFx.stableRelease,
+          candidate: firstFx.candidate,
+          candidateRelease: firstFx.candidateRelease,
+          sourceRevision: sourceCommit('historical-a'),
+          phase: 'soaking',
+          revision: 9,
+          receipts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+        null,
+        2,
+      ),
+    );
+    writeFileSync(
+      join(root, `${secondCandidateLane.sessionId}.json`),
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          sessionId: secondCandidateLane.sessionId,
+          stable: firstFx.stable,
+          stableRelease: secondStable,
+          candidate: secondCandidateLane,
+          sourceRevision: sourceCommit('historical-b'),
+          phase: 'source_frozen',
+          revision: 1,
+          receipts: [],
+          createdAt: later,
+          updatedAt: later,
+        },
+        null,
+        2,
+      ),
+    );
 
     const migrated = migrateReleaseSessionState(home);
-    expect(migrated.migratedSessionIds.sort()).toEqual([
-      firstFx.candidate.sessionId,
-      secondCandidateLane.sessionId,
-    ].sort());
+    expect(migrated.migratedSessionIds.sort()).toEqual(
+      [firstFx.candidate.sessionId, secondCandidateLane.sessionId].sort(),
+    );
     expect(readReleaseSession(home, firstFx.candidate.sessionId)).toMatchObject({
       schemaVersion: 1,
       semanticEpoch: 2,
       phase: 'known_good',
-      receipts: [{
-        id: `migration:historical-known-good:${firstFx.candidate.sessionId}`,
-        kind: 'known_good',
-      }],
+      receipts: [
+        {
+          id: `migration:historical-known-good:${firstFx.candidate.sessionId}`,
+          kind: 'known_good',
+        },
+      ],
     });
     expect(readReleaseSession(home, firstFx.candidate.sessionId)?.transaction).toBeUndefined();
   });
@@ -704,20 +1314,27 @@ describe('Recovery ReleaseSession', () => {
     const now = '2026-09-20T00:00:00.000Z';
     const root = join(home, 'recovery', 'state', 'release-sessions');
     mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, `${fx.candidate.sessionId}.json`), JSON.stringify({
-      schemaVersion: 1,
-      sessionId: fx.candidate.sessionId,
-      stable: fx.stable,
-      stableRelease: fx.stableRelease,
-      candidate: fx.candidate,
-      candidateRelease: fx.candidateRelease,
-      sourceRevision: 'historical-previous',
-      phase: 'soaking',
-      revision: 9,
-      receipts: [],
-      createdAt: now,
-      updatedAt: now,
-    }, null, 2));
+    writeFileSync(
+      join(root, `${fx.candidate.sessionId}.json`),
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          sessionId: fx.candidate.sessionId,
+          stable: fx.stable,
+          stableRelease: fx.stableRelease,
+          candidate: fx.candidate,
+          candidateRelease: fx.candidateRelease,
+          sourceRevision: sourceCommit('historical-previous'),
+          phase: 'soaking',
+          revision: 9,
+          receipts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+        null,
+        2,
+      ),
+    );
     const authority: RuntimeReleaseAuthority = {
       schemaVersion: 2,
       status: 'committed',
@@ -738,7 +1355,11 @@ describe('Recovery ReleaseSession', () => {
         manifestSha256: fx.candidateRelease.manifestSha256,
         workerProtocolVersion: 1,
         publishedAt: now,
-        databaseBackup: { path: join(home, 'runtime', 'releases', 'backups', 'previous.sqlite'), schemaVersion: 1, createdAt: now },
+        databaseBackup: {
+          path: join(home, 'runtime', 'releases', 'backups', 'previous.sqlite'),
+          schemaVersion: 1,
+          createdAt: now,
+        },
       },
       operationId: 'current-cutover',
       committedAt: now,
@@ -764,7 +1385,7 @@ describe('Recovery ReleaseSession', () => {
       stableRelease: fx.stableRelease,
       candidate: fx.candidate,
       candidateRelease: fx.candidateRelease,
-      sourceRevision: 'historical-unproven',
+      sourceRevision: sourceCommit('historical-unproven'),
       phase: 'soaking',
       revision: 9,
       receipts: [],
@@ -781,19 +1402,31 @@ describe('Recovery ReleaseSession', () => {
       manifestSha256: fx.candidateRelease.manifestSha256,
     };
     for (const [index, id] of ['release-session-branch-a-1234', 'release-session-branch-b-1234'].entries()) {
-      writeFileSync(join(root, `${id}.json`), JSON.stringify({
-        schemaVersion: 1,
-        sessionId: id,
-        stable: fx.stable,
-        stableRelease: successorStable,
-        candidate: { ...fx.candidate, sessionId: id, controllerHome: join(home, `branch-${index}`), port: fx.candidate.port + index + 1 },
-        sourceRevision: `branch-${index}`,
-        phase: 'source_frozen',
-        revision: 1,
-        receipts: [],
-        createdAt: '2026-09-20T01:00:00.000Z',
-        updatedAt: '2026-09-20T01:00:00.000Z',
-      }, null, 2));
+      writeFileSync(
+        join(root, `${id}.json`),
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            sessionId: id,
+            stable: fx.stable,
+            stableRelease: successorStable,
+            candidate: {
+              ...fx.candidate,
+              sessionId: id,
+              controllerHome: join(home, `branch-${index}`),
+              port: fx.candidate.port + index + 1,
+            },
+            sourceRevision: sourceCommit(`branch-${index}`),
+            phase: 'source_frozen',
+            revision: 1,
+            receipts: [],
+            createdAt: '2026-09-20T01:00:00.000Z',
+            updatedAt: '2026-09-20T01:00:00.000Z',
+          },
+          null,
+          2,
+        ),
+      );
     }
     const repeatedProof = migrateReleaseSessionState(home);
     expect(repeatedProof.migratedSessionIds).toContain(fx.candidate.sessionId);
@@ -813,22 +1446,39 @@ describe('Recovery ReleaseSession', () => {
     const createdAt = '2026-09-18T13:15:53.309Z';
     const updatedAt = '2026-09-20T02:03:10.216Z';
     const receipts = [
-      { id: `source:${sessionId}`, kind: 'source', recordedAt: createdAt, summary: 'source frozen at historical revision' },
-      { id: 'candidate_cancelled', kind: 'candidate_canary', recordedAt: updatedAt, summary: 'Candidate B was retired before cutover' },
+      {
+        id: `source:${sessionId}`,
+        kind: 'source',
+        recordedAt: createdAt,
+        summary: 'source frozen at historical revision',
+      },
+      {
+        id: 'candidate_cancelled',
+        kind: 'candidate_canary',
+        recordedAt: updatedAt,
+        summary: 'Candidate B was retired before cutover',
+      },
     ];
-    writeFileSync(join(root, `${sessionId}.json`), JSON.stringify({
-      schemaVersion: 2,
-      sessionId,
-      stable,
-      stableRelease,
-      candidate,
-      sourceRevision: '60dc9c2309b5e8001702f696ec1f3ed6d4b0f77e',
-      phase: 'failed',
-      revision: 2,
-      receipts,
-      createdAt,
-      updatedAt,
-    }, null, 2));
+    writeFileSync(
+      join(root, `${sessionId}.json`),
+      JSON.stringify(
+        {
+          schemaVersion: 2,
+          sessionId,
+          stable,
+          stableRelease,
+          candidate,
+          sourceRevision: sourceCommit('60dc9c2309b5e8001702f696ec1f3ed6d4b0f77e'),
+          phase: 'failed',
+          revision: 2,
+          receipts,
+          createdAt,
+          updatedAt,
+        },
+        null,
+        2,
+      ),
+    );
 
     const first = migrateReleaseSessionState(home);
     expect(first).toMatchObject({ migratedSessionIds: [sessionId], currentSessionIds: [], inspected: 1 });
@@ -836,7 +1486,7 @@ describe('Recovery ReleaseSession', () => {
       schemaVersion: 1,
       semanticEpoch: 2,
       sessionId,
-      sourceRevision: '60dc9c2309b5e8001702f696ec1f3ed6d4b0f77e',
+      sourceRevision: sourceCommit('60dc9c2309b5e8001702f696ec1f3ed6d4b0f77e'),
       phase: 'failed',
       revision: 2,
       receipts,
@@ -878,21 +1528,28 @@ describe('Recovery ReleaseSession', () => {
       rollbackRelease,
       startedAt: updatedAt,
     };
-    writeFileSync(join(root, `${sessionId}.json`), JSON.stringify({
-      schemaVersion: 2,
-      sessionId,
-      stable,
-      stableRelease,
-      candidate,
-      candidateRelease,
-      transaction,
-      sourceRevision: 'schema2-existing-transaction-revision',
-      phase: 'soaking',
-      revision: 11,
-      receipts: [],
-      createdAt: updatedAt,
-      updatedAt,
-    }, null, 2));
+    writeFileSync(
+      join(root, `${sessionId}.json`),
+      JSON.stringify(
+        {
+          schemaVersion: 2,
+          sessionId,
+          stable,
+          stableRelease,
+          candidate,
+          candidateRelease,
+          transaction,
+          sourceRevision: sourceCommit('schema2-existing-transaction-revision'),
+          phase: 'soaking',
+          revision: 11,
+          receipts: [],
+          createdAt: updatedAt,
+          updatedAt,
+        },
+        null,
+        2,
+      ),
+    );
 
     const first = migrateReleaseSessionState(home);
     expect(first).toMatchObject({ migratedSessionIds: [sessionId], currentSessionIds: [], inspected: 1 });
@@ -915,20 +1572,27 @@ describe('Recovery ReleaseSession', () => {
     const root = join(home, 'recovery', 'state', 'release-sessions');
     mkdirSync(root, { recursive: true });
     const updatedAt = '2026-09-20T00:00:00.000Z';
-    writeFileSync(join(root, `${sessionId}.json`), JSON.stringify({
-      schemaVersion: 1,
-      sessionId,
-      stable,
-      stableRelease,
-      candidate,
-      candidateRelease,
-      sourceRevision: 'abc123',
-      phase: 'known_good',
-      revision: 9,
-      receipts: [],
-      createdAt: updatedAt,
-      updatedAt,
-    }, null, 2));
+    writeFileSync(
+      join(root, `${sessionId}.json`),
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          sessionId,
+          stable,
+          stableRelease,
+          candidate,
+          candidateRelease,
+          sourceRevision: sourceCommit('abc123'),
+          phase: 'known_good',
+          revision: 9,
+          receipts: [],
+          createdAt: updatedAt,
+          updatedAt,
+        },
+        null,
+        2,
+      ),
+    );
     const rollbackRelease = {
       releaseId: stableRelease.releaseId,
       artifactIdentity: stableRelease.artifactIdentity,
@@ -982,9 +1646,11 @@ describe('Recovery ReleaseSession', () => {
       stable,
       stableRelease,
       candidate,
-      sourceRevision: 'abc123',
+      sourceRevision: sourceCommit('abc123'),
     });
-    const raw = JSON.parse(readFileSync(join(home, 'recovery', 'state', 'release-sessions', `${session.sessionId}.json`), 'utf8')) as Record<string, unknown>;
+    const raw = JSON.parse(
+      readFileSync(join(home, 'recovery', 'state', 'release-sessions', `${session.sessionId}.json`), 'utf8'),
+    ) as Record<string, unknown>;
     expect(raw.schemaVersion).toBe(1);
     expect(raw.semanticEpoch).toBe(2);
     expect(raw.sessionId).toBe(session.sessionId);
@@ -995,9 +1661,29 @@ describe('Recovery ReleaseSession', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-'));
     roots.push(home);
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
-    const session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
-    advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
-    expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'failed' })).toThrow('RELEASE_SESSION_REVISION_FENCED');
+    const session = createReleaseSession({
+      controllerHome: home,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: sourceCommit('abc123'),
+    });
+    advanceReleaseSession({
+      controllerHome: home,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'built',
+      candidateRelease,
+    });
+    expect(() =>
+      advanceReleaseSession({
+        controllerHome: home,
+        sessionId: session.sessionId,
+        expectedRevision: session.revision,
+        phase: 'failed',
+      }),
+    ).toThrow('RELEASE_SESSION_REVISION_FENCED');
   });
 
   test('ReleaseSession mutation survives Process observer interruption and same-request reattach', async () => {
@@ -1008,13 +1694,27 @@ describe('Recovery ReleaseSession', () => {
     mkdirSync(repoRoot, { recursive: true });
     ensureControllerHome(controllerHome);
     execFileSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
-    execFileSync('git', [
-      '-c', 'user.name=Forge Test',
-      '-c', 'user.email=forge@example.test',
-      '-c', 'commit.gpgsign=false',
-      'commit', '--allow-empty', '-m', 'release session process fixture',
-    ], { cwd: repoRoot, stdio: 'ignore' });
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'release-session-process-test' });
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=Forge Test',
+        '-c',
+        'user.email=forge@example.test',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'release session process fixture',
+      ],
+      { cwd: repoRoot, stdio: 'ignore' },
+    );
+    const repository = registerRepository({
+      path: repoRoot,
+      controllerHome,
+      displayName: 'release-session-process-test',
+    });
     const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
     const session = createReleaseSession({
       controllerHome,
@@ -1022,7 +1722,7 @@ describe('Recovery ReleaseSession', () => {
       stable,
       stableRelease,
       candidate,
-      sourceRevision: 'abc123',
+      sourceRevision: sourceCommit('abc123'),
     });
     const built = advanceReleaseSession({
       controllerHome,
@@ -1038,16 +1738,22 @@ describe('Recovery ReleaseSession', () => {
     const scriptPath = join(controllerHome, 'advance-release-session.ts');
     const childSource = [
       "import { appendFileSync, writeFileSync } from 'node:fs';",
-      "import { advanceReleaseSession } from " + JSON.stringify(join(process.cwd(), 'src/runtime/release/release-session.ts')) + ";",
-      "appendFileSync(" + JSON.stringify(startedPath) + ", 'started\\n');",
+      'import { advanceReleaseSession } from ' +
+        JSON.stringify(join(process.cwd(), 'src/runtime/release/release-session.ts')) +
+        ';',
+      'appendFileSync(' + JSON.stringify(startedPath) + ", 'started\\n');",
       'await new Promise((resolve) => setTimeout(resolve, 250));',
-      'const updated = advanceReleaseSession(' + JSON.stringify({
-        controllerHome,
-        sessionId: session.sessionId,
-        expectedRevision: built.revision,
-        phase: 'candidate_booted',
-      }) + ');',
-      "writeFileSync(" + JSON.stringify(resultPath) + ", JSON.stringify({ phase: updated.phase, revision: updated.revision }));",
+      'const updated = advanceReleaseSession(' +
+        JSON.stringify({
+          controllerHome,
+          sessionId: session.sessionId,
+          expectedRevision: built.revision,
+          phase: 'candidate_booted',
+        }) +
+        ');',
+      'writeFileSync(' +
+        JSON.stringify(resultPath) +
+        ', JSON.stringify({ phase: updated.phase, revision: updated.revision }));',
     ].join(String.fromCharCode(10));
     writeFileSync(scriptPath, childSource);
 
@@ -1103,12 +1809,14 @@ describe('Recovery ReleaseSession', () => {
         phase: 'candidate_booted',
         revision: built.revision + 1,
       });
-      expect(() => advanceReleaseSession({
-        controllerHome,
-        sessionId: session.sessionId,
-        expectedRevision: built.revision,
-        phase: 'candidate_booted',
-      })).toThrow('RELEASE_SESSION_REVISION_FENCED');
+      expect(() =>
+        advanceReleaseSession({
+          controllerHome,
+          sessionId: session.sessionId,
+          expectedRevision: built.revision,
+          phase: 'candidate_booted',
+        }),
+      ).toThrow('RELEASE_SESSION_REVISION_FENCED');
     } finally {
       signal.abort();
       const handle = await execution.catch(() => undefined);
@@ -1119,14 +1827,18 @@ describe('Recovery ReleaseSession', () => {
       __resetLiveMonitorsForTests();
     }
   }, 15_000);
-
 });
 
 // Old persisted deadline receipts have no authority to retire a healthy Runtime.
 test('missing acceptance proof never triggers a time-only rollback even for legacy opt-in sessions', () => {
   const start = Date.parse('2026-10-25T00:00:00Z');
   const receipts = [
-    { id: 'acceptance_timeout_policy_v1', kind: 'source' as const, recordedAt: '2026-10-24T23:00:00Z', summary: 'legacy policy' },
+    {
+      id: 'acceptance_timeout_policy_v1',
+      kind: 'source' as const,
+      recordedAt: '2026-10-24T23:00:00Z',
+      summary: 'legacy policy',
+    },
     { id: 'soak_started', kind: 'soak' as const, recordedAt: '2026-10-25T00:00:00Z', summary: 'cutover' },
   ];
   const session = { phase: 'soaking' as const, receipts };

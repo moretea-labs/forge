@@ -5,6 +5,7 @@ import {
   releaseSessionIsSoakingPredecessorOfStable,
   releaseSessionAcceptanceTimedOut,
   releaseSessionIsTerminal,
+  releaseSessionSourceRepositoryId,
   type ReleaseSession,
 } from './release-session';
 import { readRuntimeReleaseAuthority } from '../root/release-store';
@@ -39,13 +40,19 @@ export interface RuntimeReleaseProgressResult {
  * for the already-selected durable ReleaseSession phase.
  */
 export interface RuntimeReleaseProvider<C extends RuntimeReleaseContext = RuntimeReleaseContext> {
-  prepare(config: C, requestId?: string): Promise<RuntimeReleaseProgressResult>;
+  prepare(
+    config: C,
+    sourceRepositoryId?: string,
+    expectedSourceRevision?: string,
+    requestId?: string,
+  ): Promise<RuntimeReleaseProgressResult>;
   verifyCandidate(config: C, sessionId: string, requestId?: string): Promise<RuntimeReleaseProgressResult>;
   cutover(config: C, sessionId: string, requestId?: string): Promise<RuntimeReleaseProgressResult>;
   promoteKnownGood(config: C, sessionId: string, requestId?: string): Promise<RuntimeReleaseProgressResult>;
 }
 
 export type RuntimeReleaseCoordinatorAction =
+  | 'none'
   | 'prepare'
   | 'verify_candidate'
   | 'mark_cutover_eligible'
@@ -66,8 +73,11 @@ export type RuntimeReleaseReconciliationReason =
 
 export interface RuntimeReleaseSourceState {
   configured: boolean;
+  sourceRepositoryId?: string;
   sourceRevision?: string;
+  activeSourceRepositoryId?: string;
   activeSourceCommit?: string;
+  activeReleaseId?: string;
 }
 
 export type RuntimeReleaseSourceObserver = () => RuntimeReleaseSourceState;
@@ -89,10 +99,13 @@ function sameReleaseIdentity(
   left: { releaseId?: string; artifactIdentity?: string; manifestSha256?: string } | undefined,
   right: { releaseId?: string; artifactIdentity?: string; manifestSha256?: string } | undefined,
 ): boolean {
-  return Boolean(left && right
-    && left.releaseId === right.releaseId
-    && left.artifactIdentity === right.artifactIdentity
-    && left.manifestSha256 === right.manifestSha256);
+  return Boolean(
+    left &&
+      right &&
+      left.releaseId === right.releaseId &&
+      left.artifactIdentity === right.artifactIdentity &&
+      left.manifestSha256 === right.manifestSha256,
+  );
 }
 
 function completeRuntimeReleaseSessions(controllerHome: string): ReleaseSession[] {
@@ -102,53 +115,78 @@ function completeRuntimeReleaseSessions(controllerHome: string): ReleaseSession[
     // exact current cutover or successor-rollback transaction is independently
     // matched to Runtime Authority. It never authorizes successor progression.
     const expired = inventory.sessions.filter((session) => releaseSessionAcceptanceTimedOut(session, Date.now()));
-    const timedSoaks = inventory.sessions.filter((session) => session.phase === 'soaking' && hasAcceptanceTimeoutPolicy(session));
+    const timedSoaks = inventory.sessions.filter(
+      (session) => session.phase === 'soaking' && hasAcceptanceTimeoutPolicy(session),
+    );
     const authority = readRuntimeReleaseAuthority(controllerHome);
-    const sole = expired.length === 1 ? expired[0]
-      : expired.length === 0 && timedSoaks.length === 1 ? timedSoaks[0] : undefined;
+    const sole =
+      expired.length === 1 ? expired[0] : expired.length === 0 && timedSoaks.length === 1 ? timedSoaks[0] : undefined;
     const candidate = sole?.candidateRelease;
     const transaction = sole?.transaction;
-    const exactCutover = Boolean(sole && candidate && transaction && authority
-      && transaction.candidateReleaseId === candidate.releaseId
-      && sameReleaseIdentity(authority.active, candidate)
-      && authority.revision === transaction.cutoverAuthorityRevision
-      && sameReleaseIdentity(authority.previous, transaction.rollbackRelease)
-      && sameReleaseIdentity(transaction.rollbackRelease, sole.stableRelease)
-      && authority.previous?.databaseBackup?.path === transaction.rollbackRelease.databaseBackup?.path);
-    const alreadyRolledBack = Boolean(sole && candidate && authority
-      && authority.operationId.startsWith(`release-session-rollback:${sole.sessionId}:`)
-      && sameReleaseIdentity(authority.active, sole.stableRelease)
-      && sameReleaseIdentity(authority.previous, candidate));
-    const activeSuccessors = sole && candidate && authority ? inventory.sessions.filter((successor) => {
-      const next = successor.candidateRelease;
-      const nextTransaction = successor.transaction;
-      return successor.sessionId !== sole.sessionId
-        && ['cutover_attempting', 'cutover_committed', 'soaking'].includes(successor.phase)
-        && Boolean(next && nextTransaction)
-        && releaseSessionIsSoakingPredecessorOfStable(sole, successor.stableRelease)
-        && nextTransaction!.candidateReleaseId === next!.releaseId
-        && authority.revision === nextTransaction!.cutoverAuthorityRevision
-        && sameReleaseIdentity(authority.active, next)
-        && sameReleaseIdentity(authority.previous, nextTransaction!.rollbackRelease)
-        && sameReleaseIdentity(nextTransaction!.rollbackRelease, candidate);
-    }) : [];
-    const committedSuccessorRollbacks = sole && candidate && authority ? inventory.sessions.filter((successor) => {
-      const next = successor.candidateRelease;
-      const nextTransaction = successor.transaction;
-      return successor.sessionId !== sole.sessionId
-        && ['cutover_attempting', 'cutover_committed', 'soaking'].includes(successor.phase)
-        && Boolean(next && nextTransaction)
-        && releaseSessionIsSoakingPredecessorOfStable(sole, successor.stableRelease)
-        && authority.operationId.startsWith(`release-session-rollback:${successor.sessionId}:`)
-        && sameReleaseIdentity(authority.active, successor.stableRelease)
-        && sameReleaseIdentity(authority.previous, next)
-        && nextTransaction!.candidateReleaseId === next!.releaseId
-        && sameReleaseIdentity(nextTransaction!.rollbackRelease, successor.stableRelease)
-        && sameReleaseIdentity(successor.stableRelease, candidate);
-    }) : [];
-    if (!sole || (!exactCutover && !alreadyRolledBack
-      && activeSuccessors.length !== 1 && committedSuccessorRollbacks.length !== 1)) {
-      throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`);
+    const exactCutover = Boolean(
+      sole &&
+        candidate &&
+        transaction &&
+        authority &&
+        transaction.candidateReleaseId === candidate.releaseId &&
+        sameReleaseIdentity(authority.active, candidate) &&
+        authority.revision === transaction.cutoverAuthorityRevision &&
+        sameReleaseIdentity(authority.previous, transaction.rollbackRelease) &&
+        sameReleaseIdentity(transaction.rollbackRelease, sole.stableRelease) &&
+        authority.previous?.databaseBackup?.path === transaction.rollbackRelease.databaseBackup?.path,
+    );
+    const alreadyRolledBack = Boolean(
+      sole &&
+        candidate &&
+        authority &&
+        authority.operationId.startsWith(`release-session-rollback:${sole.sessionId}:`) &&
+        sameReleaseIdentity(authority.active, sole.stableRelease) &&
+        sameReleaseIdentity(authority.previous, candidate),
+    );
+    const activeSuccessors =
+      sole && candidate && authority
+        ? inventory.sessions.filter((successor) => {
+            const next = successor.candidateRelease;
+            const nextTransaction = successor.transaction;
+            return (
+              successor.sessionId !== sole.sessionId &&
+              ['cutover_attempting', 'cutover_committed', 'soaking'].includes(successor.phase) &&
+              Boolean(next && nextTransaction) &&
+              releaseSessionIsSoakingPredecessorOfStable(sole, successor.stableRelease) &&
+              nextTransaction!.candidateReleaseId === next!.releaseId &&
+              authority.revision === nextTransaction!.cutoverAuthorityRevision &&
+              sameReleaseIdentity(authority.active, next) &&
+              sameReleaseIdentity(authority.previous, nextTransaction!.rollbackRelease) &&
+              sameReleaseIdentity(nextTransaction!.rollbackRelease, candidate)
+            );
+          })
+        : [];
+    const committedSuccessorRollbacks =
+      sole && candidate && authority
+        ? inventory.sessions.filter((successor) => {
+            const next = successor.candidateRelease;
+            const nextTransaction = successor.transaction;
+            return (
+              successor.sessionId !== sole.sessionId &&
+              ['cutover_attempting', 'cutover_committed', 'soaking'].includes(successor.phase) &&
+              Boolean(next && nextTransaction) &&
+              releaseSessionIsSoakingPredecessorOfStable(sole, successor.stableRelease) &&
+              authority.operationId.startsWith(`release-session-rollback:${successor.sessionId}:`) &&
+              sameReleaseIdentity(authority.active, successor.stableRelease) &&
+              sameReleaseIdentity(authority.previous, next) &&
+              nextTransaction!.candidateReleaseId === next!.releaseId &&
+              sameReleaseIdentity(nextTransaction!.rollbackRelease, successor.stableRelease) &&
+              sameReleaseIdentity(successor.stableRelease, candidate)
+            );
+          })
+        : [];
+    if (
+      !sole ||
+      (!exactCutover && !alreadyRolledBack && activeSuccessors.length !== 1 && committedSuccessorRollbacks.length !== 1)
+    ) {
+      throw new Error(
+        `RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
+      );
     }
     // The predecessor alone owns reconciliation. A matched successor is only
     // evidence for the Recovery owner to unwind C→B before any B→A timeout.
@@ -158,33 +196,43 @@ function completeRuntimeReleaseSessions(controllerHome: string): ReleaseSession[
 }
 
 export function activeRuntimeReleaseSessions(controllerHome: string): ReleaseSession[] {
-  return completeRuntimeReleaseSessions(controllerHome)
-    .filter((session) => !releaseSessionIsTerminal(session));
+  return completeRuntimeReleaseSessions(controllerHome).filter((session) => !releaseSessionIsTerminal(session));
 }
 
 function coordinatorSession(active: ReleaseSession[]): ReleaseSession | undefined {
   if (active.length <= 1) return active[0];
   if (active.length === 2) {
-    const successors = active.filter((successor) => active.some((predecessor) =>
-      predecessor.sessionId !== successor.sessionId
-      && predecessor.sourceRevision !== successor.sourceRevision
-      && releaseSessionIsSoakingPredecessorOfStable(predecessor, successor.stableRelease)));
+    const successors = active.filter((successor) =>
+      active.some(
+        (predecessor) =>
+          predecessor.sessionId !== successor.sessionId &&
+          predecessor.sourceRevision !== successor.sourceRevision &&
+          releaseSessionIsSoakingPredecessorOfStable(predecessor, successor.stableRelease),
+      ),
+    );
     if (successors.length === 1) return successors[0];
   }
-  throw new Error(`RELEASE_SESSION_MULTIPLE_ACTIVE: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`);
+  throw new Error(
+    `RELEASE_SESSION_MULTIPLE_ACTIVE: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`,
+  );
 }
 
 function runtimeReleaseActionForSession(session: ReleaseSession): RuntimeReleaseCoordinatorAction {
   switch (session.phase) {
-    case 'source_frozen': return 'prepare';
+    case 'source_frozen':
+      return 'prepare';
     case 'built':
     case 'static_verified':
-    case 'candidate_booted': return 'verify_candidate';
-    case 'candidate_verified': return 'mark_cutover_eligible';
+    case 'candidate_booted':
+      return 'verify_candidate';
+    case 'candidate_verified':
+      return 'mark_cutover_eligible';
     case 'cutover_eligible':
     case 'cutover_attempting':
-    case 'cutover_committed': return 'cutover';
-    case 'soaking': return 'promote_known_good';
+    case 'cutover_committed':
+      return 'cutover';
+    case 'soaking':
+      return 'promote_known_good';
     case 'known_good':
     case 'rolled_back':
     case 'failed':
@@ -195,7 +243,7 @@ function runtimeReleaseActionForSession(session: ReleaseSession): RuntimeRelease
 export function decideConfiguredRuntimeReleaseAction(controllerHome: string): RuntimeReleaseCoordinatorDecision {
   const active = activeRuntimeReleaseSessions(controllerHome);
   const session = coordinatorSession(active);
-  if (!session) return { action: 'prepare' };
+  if (!session) return { action: 'none' };
   return { action: runtimeReleaseActionForSession(session), session };
 }
 
@@ -228,16 +276,22 @@ export function decideConfiguredRuntimeReleaseReconciliation(
   // ReleaseSession can progress entirely from its durable authority without
   // periodic repository/process churn in the Recovery daemon.
   const source = observeSource();
-  if (!source.configured) return session
-    ? { required: true, reason: 'active_session', action: runtimeReleaseActionForSession(session), session }
-    : { required: false, reason: 'source_not_configured' };
+  if (!source.configured)
+    return session
+      ? { required: true, reason: 'active_session', action: runtimeReleaseActionForSession(session), session }
+      : { required: false, reason: 'source_not_configured' };
+  const sourceRepositoryId = source.sourceRepositoryId?.trim();
   const sourceRevision = source.sourceRevision?.trim();
+  const activeSourceRepositoryId = source.activeSourceRepositoryId?.trim();
   const activeSourceCommit = source.activeSourceCommit?.trim();
+  if (!sourceRepositoryId) throw new Error('RELEASE_AUTOMATION_SOURCE_REPOSITORY_ID_UNKNOWN');
   if (!sourceRevision) throw new Error('RELEASE_AUTOMATION_SOURCE_REVISION_UNKNOWN');
+  if (!activeSourceRepositoryId) throw new Error('RELEASE_AUTOMATION_ACTIVE_SOURCE_REPOSITORY_ID_UNKNOWN');
   if (!activeSourceCommit) throw new Error('RELEASE_AUTOMATION_ACTIVE_SOURCE_COMMIT_UNKNOWN');
-  if (sourceRevision === activeSourceCommit) return session
-    ? { required: true, reason: 'active_session', action: runtimeReleaseActionForSession(session), session }
-    : { required: false, reason: 'source_current' };
+  if (sourceRepositoryId === activeSourceRepositoryId && sourceRevision === activeSourceCommit)
+    return session
+      ? { required: true, reason: 'active_session', action: runtimeReleaseActionForSession(session), session }
+      : { required: false, reason: 'source_current' };
 
   // An autonomous release is one attempt per immutable source revision.
   // A terminal ReleaseSession is durable evidence that this exact commit was
@@ -246,7 +300,12 @@ export function decideConfiguredRuntimeReleaseReconciliation(
   // A human can still start an explicit release; automatic retry resumes when
   // HEAD changes and therefore produces a new source revision.
   const priorAttempt = sessions
-    .filter((candidate) => releaseSessionIsTerminal(candidate) && candidate.sourceRevision === sourceRevision)
+    .filter(
+      (candidate) =>
+        releaseSessionIsTerminal(candidate) &&
+        candidate.sourceRevision === sourceRevision &&
+        releaseSessionSourceRepositoryId(candidate) === sourceRepositoryId,
+    )
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
   if (priorAttempt) {
     return { required: false, reason: 'source_already_attempted', session: priorAttempt };
@@ -279,8 +338,30 @@ export async function advanceConfiguredRuntimeReleaseStep<C extends RuntimeRelea
   const decision: RuntimeReleaseCoordinatorDecision = decideConfiguredRuntimeReleaseAction(config.controllerHome);
   const request = requestId?.trim();
   switch (decision.action) {
-    case 'prepare':
-      return provider.prepare(config, request);
+    case 'none':
+      return {
+        ok: true,
+        attempted: false,
+        noOp: true,
+        detail: 'RELEASE_SESSION_NOT_ACTIVE',
+      };
+    case 'prepare': {
+      // A source_frozen ReleaseSession owns its exact repository/commit pair.
+      // Resume that immutable identity; never consult a config fallback or
+      // re-resolve a moving branch while recovering an interrupted build.
+      const session = decision.session!;
+      const sourceRepositoryId = releaseSessionSourceRepositoryId(session);
+      if (!sourceRepositoryId) {
+        return {
+          ok: false,
+          attempted: false,
+          noOp: true,
+          detail: 'RELEASE_SESSION_SOURCE_REPOSITORY_ID_MISSING',
+          releaseSession: session,
+        };
+      }
+      return provider.prepare(config, sourceRepositoryId, session.sourceRevision, request);
+    }
     case 'verify_candidate':
       return provider.verifyCandidate(config, decision.session!.sessionId, request);
     case 'mark_cutover_eligible': {
@@ -295,7 +376,8 @@ export async function advanceConfiguredRuntimeReleaseStep<C extends RuntimeRelea
         ok: true,
         attempted: false,
         noOp: true,
-        detail: 'Durable Candidate B evidence already exists; advanced the same ReleaseSession to cutover_eligible without replaying canaries.',
+        detail:
+          'Durable Candidate B evidence already exists; advanced the same ReleaseSession to cutover_eligible without replaying canaries.',
         releaseSession: advanced,
       };
     }
@@ -336,8 +418,18 @@ export async function advanceConfiguredRuntimeRelease<C extends RuntimeReleaseCo
     allNoOp &&= result.noOp === true;
     lastResult = result;
 
-    const observedSession = result.releaseSession
-      ?? (before.session ? readReleaseSession(config.controllerHome, before.session.sessionId) : undefined);
+    if (before.action === 'none') {
+      return {
+        ...result,
+        attempted: false,
+        noOp: true,
+        releaseRun: { actions, boundary: 'terminal' },
+      };
+    }
+
+    const observedSession =
+      result.releaseSession ??
+      (before.session ? readReleaseSession(config.controllerHome, before.session.sessionId) : undefined);
 
     if (!result.ok) {
       return {

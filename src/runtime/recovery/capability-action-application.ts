@@ -17,7 +17,6 @@ export interface CapabilityRecoveryApplicationInput {
   authorization?: string;
   minAgeMinutes?: number;
   maxCandidates?: number;
-  expectedSourceRevision?: string;
   callStandaloneRecoveryTool: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>;
   recoverySnapshot: () => Promise<Record<string, unknown>>;
 }
@@ -31,7 +30,6 @@ export interface CapabilityRecoveryApplicationResult {
 }
 
 const INSTANCE_RECOVERY_ACTION_IDS = new Set([
-  'recovery.stage_runtime_release',
   'recovery.restart_primary_connector',
   'recovery.probe_again',
   'recovery.workspace_auth_login_prepare',
@@ -54,7 +52,6 @@ export class RecoveryApplicationError extends Error {
   }
 }
 
-
 export function executeRuntimeMaintenanceAction(input: {
   controllerHome: string;
   repository: RepositoryRecord;
@@ -67,7 +64,9 @@ export function executeRuntimeMaintenanceAction(input: {
 }) {
   if (!input.actionId) throw new Error('RUNTIME_MAINTENANCE_ACTION_REQUIRED');
   if (!input.confirmMaintenance || input.authorization !== input.actionId) {
-    throw new Error('RUNTIME_MAINTENANCE_AUTHORIZATION_REQUIRED: confirm_maintenance=true and authorization must match action_id.');
+    throw new Error(
+      'RUNTIME_MAINTENANCE_AUTHORIZATION_REQUIRED: confirm_maintenance=true and authorization must match action_id.',
+    );
   }
   return applyRuntimeMaintenance(input.repository, input.controllerHome, {
     actionId: input.actionId,
@@ -91,33 +90,21 @@ export async function executeCapabilityRecoveryAction(
   if (!action) throw new RecoveryApplicationError('RECOVERY_ACTION_UNKNOWN', input.actionId);
   assertRecoveryAuthorized(
     action,
-    action.confirmation === 'none'
-      ? action.id
-      : input.confirmAuthorization
-        ? input.authorization
-        : undefined,
+    action.confirmation === 'none' ? action.id : input.confirmAuthorization ? input.authorization : undefined,
   );
 
   const scope = recoveryActionScope(action.id);
-  const repository = scope === 'repository'
-    ? input.repository ?? (() => { throw new RecoveryApplicationError('RECOVERY_REPOSITORY_CONTEXT_REQUIRED', action.id); })()
-    : undefined;
+  const repository =
+    scope === 'repository'
+      ? (input.repository ??
+        (() => {
+          throw new RecoveryApplicationError('RECOVERY_REPOSITORY_CONTEXT_REQUIRED', action.id);
+        })())
+      : undefined;
 
   let payload: Record<string, unknown>;
   let affectedPaths: string[] = [];
   switch (action.id) {
-    case 'recovery.stage_runtime_release': {
-      const expectedSourceRevision = input.expectedSourceRevision?.trim();
-      if (!expectedSourceRevision || !/^[a-f0-9]{40}$/i.test(expectedSourceRevision)) {
-        throw new Error('RECOVERY_EXPECTED_SOURCE_REVISION_REQUIRED');
-      }
-      payload = await input.callStandaloneRecoveryTool('stage_runtime_release', {
-        request_id: `runtime-release-stage-${Date.now()}`,
-        expected_source_revision: expectedSourceRevision,
-      });
-      affectedPaths = ['controllerHome/runtime/releases'];
-      break;
-    }
     case 'recovery.restart_primary_connector': {
       payload = await input.callStandaloneRecoveryTool('restart_primary_connector', {
         request_id: `connector-restart-${Date.now()}`,
@@ -162,7 +149,11 @@ export async function executeCapabilityRecoveryAction(
         maxCandidates: input.maxCandidates,
         confirmCleanup: true,
       }) as unknown as Record<string, unknown>;
-      affectedPaths = ['.ai/harness/local-jobs-archive', '.ai/harness/jobs-archive', '.ai/harness/controller/acknowledged-attention.jsonl'];
+      affectedPaths = [
+        '.ai/harness/local-jobs-archive',
+        '.ai/harness/jobs-archive',
+        '.ai/harness/controller/acknowledged-attention.jsonl',
+      ];
       break;
     }
     case 'recovery.local_jobs_reconcile': {

@@ -25,6 +25,12 @@ import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runt
 const homes: string[] = [];
 const NOW = Date.parse('2026-08-11T10:00:00.000Z');
 
+const TEST_SOURCE_REPOSITORY_ID = 'repo_release_retention_test';
+
+function toSourceCommit(value: string): string {
+  return /^[a-f0-9]{40}$/i.test(value) ? value.toLowerCase() : createHash('sha1').update(value).digest('hex');
+}
+
 /**
  * Periodic maintenance runs exactly one removal phase per tick (cleanupRemovalPhaseOrder).
  * Derive the ticks that land on the `releases` phase from the production rotation instead of
@@ -248,14 +254,14 @@ describe('ReleaseSession candidate retention integration', () => {
       sourceStableControllerHome: home,
       createdAt: new Date(NOW).toISOString(),
     });
-    const release = (lane: CandidateExecutionLane, sourceCommit: string): ReleaseSessionCandidateRelease => ({
+    const release = (lane: CandidateExecutionLane, sourceCommitLabel: string): ReleaseSessionCandidateRelease => ({
       releaseId: `release-${lane.sessionId}`,
       manifestPath: join(lane.controllerHome, 'runtime', 'releases', `release-${lane.sessionId}`, 'manifest.json'),
       artifactIdentity: `artifact-${lane.sessionId}`,
       manifestSha256: `manifest-${lane.sessionId}`,
       treeSha256: 'a'.repeat(64),
-      sourceCommit,
-      sourceRepositoryId: 'repo',
+      sourceCommit: toSourceCommit(sourceCommitLabel),
+      sourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
     });
 
     const retiredLane = candidate('release-retired-12345678', 8766);
@@ -268,7 +274,8 @@ describe('ReleaseSession candidate retention integration', () => {
       stable,
       stableRelease,
       candidate: retiredLane,
-      sourceRevision: 'retired-source',
+      sourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
+      sourceRevision: toSourceCommit('retired-source'),
     });
     retired = advanceReleaseSession({
       controllerHome: home,
@@ -369,7 +376,8 @@ describe('ReleaseSession candidate retention integration', () => {
       stable,
       stableRelease,
       candidate: resumableLane,
-      sourceRevision: 'resumable-source',
+      sourceRepositoryId: TEST_SOURCE_REPOSITORY_ID,
+      sourceRevision: toSourceCommit('resumable-source'),
     });
     resumable = advanceReleaseSession({
       controllerHome: home,

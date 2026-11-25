@@ -86,34 +86,44 @@ function verifyLegacyRuntimeProcessOwnership(
 ): boolean {
   if (process.platform !== 'linux' || config.primaryRuntimeService?.platform === 'launchd') return false;
   const unitName = systemdUserUnitName(forgeRuntimeServicePaths(config.controllerHome).label);
-  const shown = spawnSync('systemctl', [
-    '--user', 'show', unitName,
-    '--property=ActiveState',
-    '--property=MainPID',
-    '--property=ControlGroup',
-  ], {
-    encoding: 'utf8',
-    timeout: 5_000,
-    maxBuffer: 8_192,
-    env: runtimeAuthorityFreeEnvironment(process.env),
-  });
+  const shown = spawnSync(
+    'systemctl',
+    ['--user', 'show', unitName, '--property=ActiveState', '--property=MainPID', '--property=ControlGroup'],
+    {
+      encoding: 'utf8',
+      timeout: 5_000,
+      maxBuffer: 8_192,
+      env: runtimeAuthorityFreeEnvironment(process.env),
+    },
+  );
   if (shown.status !== 0 || shown.error) return false;
-  const properties = Object.fromEntries(shown.stdout.split(/\r?\n/)
-    .map((line) => {
-      const separator = line.indexOf('=');
-      return separator > 0 ? [line.slice(0, separator), line.slice(separator + 1)] : undefined;
-    })
-    .filter((entry): entry is [string, string] => Boolean(entry)));
+  const properties = Object.fromEntries(
+    shown.stdout
+      .split(/\r?\n/)
+      .map((line) => {
+        const separator = line.indexOf('=');
+        return separator > 0 ? [line.slice(0, separator), line.slice(separator + 1)] : undefined;
+      })
+      .filter((entry): entry is [string, string] => Boolean(entry)),
+  );
   const mainPid = Number(properties.MainPID);
   const controlGroup = properties.ControlGroup;
-  if (properties.ActiveState !== 'active' || !Number.isInteger(mainPid) || mainPid <= 0
-    || !controlGroup?.startsWith('/')) return false;
+  if (
+    properties.ActiveState !== 'active' ||
+    !Number.isInteger(mainPid) ||
+    mainPid <= 0 ||
+    !controlGroup?.startsWith('/')
+  )
+    return false;
 
   const activeReleaseId = readRuntimeReleaseAuthority(config.controllerHome)?.active.releaseId;
   if (!activeReleaseId) return false;
   const activeReleaseRoot = join(config.controllerHome, 'runtime', 'releases', activeReleaseId) + '/';
-  if (!input.observedCommand.includes(activeReleaseRoot)
-    || !input.observedCommand.includes(`--controller-home ${config.controllerHome}`)) return false;
+  if (
+    !input.observedCommand.includes(activeReleaseRoot) ||
+    !input.observedCommand.includes(`--controller-home ${config.controllerHome}`)
+  )
+    return false;
 
   const processInServiceCgroup = (pid: number): boolean => {
     try {
@@ -139,7 +149,10 @@ function verifyLegacyRuntimeProcessOwnership(
       const stat = readFileSync(`/proc/${currentPid}/stat`, 'utf8');
       const commandEnd = stat.lastIndexOf(')');
       if (commandEnd < 0) return false;
-      const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+      const fields = stat
+        .slice(commandEnd + 1)
+        .trim()
+        .split(/\s+/);
       const parentPid = Number(fields[1]); // field 4 (ppid), after state (field 3)
       if (!Number.isInteger(parentPid) || parentPid <= 1) return false;
       currentPid = parentPid;
@@ -150,22 +163,62 @@ function verifyLegacyRuntimeProcessOwnership(
   return false;
 }
 
-async function prepareRuntimeReleaseSession(config: RecoveryConfig, requestId?: string) {
+async function prepareRuntimeReleaseSession(
+  config: RecoveryConfig,
+  sourceRepositoryId?: string,
+  expectedSourceRevision?: string,
+  requestId?: string,
+) {
+  const selectedSourceRepositoryId = sourceRepositoryId?.trim();
+  if (!selectedSourceRepositoryId) {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: 'RELEASE_SESSION_SOURCE_REPOSITORY_ID_REQUIRED',
+    };
+  }
+  try {
+    const selected = configuredRuntimeReleaseSourceState(config, selectedSourceRepositoryId, expectedSourceRevision);
+    if (!selected.configured) {
+      return {
+        ok: false,
+        attempted: false,
+        noOp: true,
+        detail: 'RELEASE_SESSION_SOURCE_IDENTITY_REQUIRED',
+      };
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
   const migration = migrateRuntimeIncarnationProcessIdentity(config.controllerHome, {
-    verifyLegacyProcessOwnership: ({ owner, incarnation, observedCommand }) => (
-      owner.runtimeInstanceId === incarnation.runtimeInstanceId
-      && verifyLegacyRuntimeProcessOwnership(config, { pid: incarnation.pid, observedCommand })
-    ),
+    verifyLegacyProcessOwnership: ({ owner, incarnation, observedCommand }) =>
+      owner.runtimeInstanceId === incarnation.runtimeInstanceId &&
+      verifyLegacyRuntimeProcessOwnership(config, { pid: incarnation.pid, observedCommand }),
   });
   if (!migration.ok) return { ok: false, attempted: false, noOp: true, detail: migration.detail };
-  return prepareConfiguredRuntimeReleaseSession(config, {}, requestId);
+  return prepareConfiguredRuntimeReleaseSession(
+    config,
+    {},
+    requestId,
+    selectedSourceRepositoryId,
+    expectedSourceRevision,
+  );
 }
 
 const RECOVERY_RUNTIME_RELEASE_PROVIDER: RuntimeReleaseProvider<RecoveryConfig> = {
-  prepare: (config, requestId) => prepareRuntimeReleaseSession(config, requestId),
-  verifyCandidate: (config, sessionId, requestId) => bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(config, sessionId, requestId),
+  prepare: (config, sourceRepositoryId, expectedSourceRevision, requestId) =>
+    prepareRuntimeReleaseSession(config, sourceRepositoryId, expectedSourceRevision, requestId),
+  verifyCandidate: (config, sessionId, requestId) =>
+    bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(config, sessionId, requestId),
   cutover: (config, sessionId, requestId) => cutoverConfiguredRuntimeReleaseSession(config, sessionId, requestId),
-  promoteKnownGood: (config, sessionId, requestId) => promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {}, requestId),
+  promoteKnownGood: (config, sessionId, requestId) =>
+    promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {}, requestId),
 };
 
 const RECOVERY_INTERNAL_TOOL_COMMAND = '__execute-recovery-tool';
@@ -194,12 +247,16 @@ function assertIndependentReleaseCliOwner(controllerHome: string): void {
   const visited = new Set<number>();
   for (let depth = 0; depth < 32 && pid > 1; depth += 1) {
     if (pid === owner.pid) {
-      throw new Error('RECOVERY_CUTOVER_REQUIRES_INDEPENDENT_OWNER: invoke the Recovery daemon/MCP, not a command owned by the primary Runtime');
+      throw new Error(
+        'RECOVERY_CUTOVER_REQUIRES_INDEPENDENT_OWNER: invoke the Recovery daemon/MCP, not a command owned by the primary Runtime',
+      );
     }
     if (visited.has(pid)) throw new Error('RECOVERY_CUTOVER_PROCESS_ANCESTRY_UNVERIFIED');
     visited.add(pid);
     const inspected = spawnSync('ps', ['-o', 'ppid=', '-p', String(pid)], {
-      encoding: 'utf8', timeout: 2_000, maxBuffer: 4 * 1024,
+      encoding: 'utf8',
+      timeout: 2_000,
+      maxBuffer: 4 * 1024,
     });
     if (inspected.status !== 0) throw new Error('RECOVERY_CUTOVER_PROCESS_ANCESTRY_UNVERIFIED');
     const parent = Number.parseInt(inspected.stdout.trim(), 10);
@@ -220,9 +277,14 @@ function controllerHome(): string {
   return resolve(home);
 }
 
-function output(value: unknown): void { process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); }
+function output(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
 
-import { runRecoveryControllerHomeMigrationWorker, scheduleRecoveryControllerHomeMigration } from './controller-home-migration';
+import {
+  runRecoveryControllerHomeMigrationWorker,
+  scheduleRecoveryControllerHomeMigration,
+} from './controller-home-migration';
 
 export const RECOVERY_CLI_COMMANDS = [
   'status',
@@ -262,7 +324,10 @@ export function recoveryRuntimeRoleFromExecutable(executable = process.execPath)
 }
 
 async function cli(): Promise<void> {
-  const command = process.argv.find((value, index) => index >= 2 && !value.startsWith('-') && process.argv[index - 1] !== '--controller-home') ?? 'status';
+  const command =
+    process.argv.find(
+      (value, index) => index >= 2 && !value.startsWith('-') && process.argv[index - 1] !== '--controller-home',
+    ) ?? 'status';
   const config = loadRecoveryConfig(controllerHome(), option('--config'));
   // Internal durable state has one current schema. Every Recovery entrypoint,
   // including gateway/watchdog startup, crosses the same migration boundary as
@@ -290,8 +355,13 @@ async function cli(): Promise<void> {
         if (Buffer.byteLength(input) > 64 * 1024) throw new Error('RECOVERY_REQUEST_TOO_LARGE');
       }
       const request = JSON.parse(input);
-      if (!request || !RECOVERY_TOOLS.some((tool) => tool.name === request.name)
-        || !request.args || typeof request.args !== 'object' || Array.isArray(request.args)) {
+      if (
+        !request ||
+        !RECOVERY_TOOLS.some((tool) => tool.name === request.name) ||
+        !request.args ||
+        typeof request.args !== 'object' ||
+        Array.isArray(request.args)
+      ) {
         throw new Error('RECOVERY_TOOL_REQUEST_INVALID');
       }
       output({ schemaVersion: 1, ok: true, value: await dispatchRecoveryTool(config, request.name, request.args) });
@@ -317,9 +387,8 @@ async function cli(): Promise<void> {
   }
   if (command === RECOVERY_INTERNAL_RELEASE_RECONCILE_COMMAND) {
     try {
-      const decision = decideConfiguredRuntimeReleaseReconciliation(
-        config.controllerHome,
-        () => configuredRuntimeReleaseSourceState(config),
+      const decision = decideConfiguredRuntimeReleaseReconciliation(config.controllerHome, () =>
+        configuredRuntimeReleaseSourceState(config),
       );
       if (!decision.required) {
         output({ schemaVersion: 1, ok: true, attempted: false, noOp: true, decision });
@@ -332,12 +401,19 @@ async function cli(): Promise<void> {
       );
       output({ schemaVersion: 1, ok: result.ok, attempted: result.attempted, decision, result });
     } catch (error) {
-      output({ schemaVersion: 1, ok: false, attempted: false, error: error instanceof Error ? error.message : String(error) });
+      output({
+        schemaVersion: 1,
+        ok: false,
+        attempted: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     return;
   }
   switch (command) {
-    case 'status': output(await runtimeStatus(config)); return;
+    case 'status':
+      output(await runtimeStatus(config));
+      return;
     case 'daemon': {
       if (process.argv.includes(RECOVERY_RELEASE_ROLE_CANARY_ARG)) {
         output({ status: 'ok', role: 'daemon', executable: basename(process.execPath) });
@@ -346,18 +422,44 @@ async function cli(): Promise<void> {
       await startRecoveryDaemon(config);
       return;
     }
-    case 'verify': output(await verifyStableRuntime(config)); return;
+    case 'verify':
+      output(await verifyStableRuntime(config));
+      return;
     case 'verify-external': {
       const verified = await verifyStableRuntime(config);
-      output({ ok: verified.probes.external_mcp_http?.ok === true, external: verified.probes.external_mcp_http, mcp: verified.probes.mcp_initialize });
+      output({
+        ok: verified.probes.external_mcp_http?.ok === true,
+        external: verified.probes.external_mcp_http,
+        mcp: verified.probes.mcp_initialize,
+      });
       return;
     }
-    case 'list-releases': output(await listReleases(config)); return;
-    case 'attest-known-good': output(await attestKnownGood(config)); return;
-    case 'rollback-previous': assertIndependentReleaseCliOwner(config.controllerHome); output(await rollbackPrevious(config)); return;
-    case 'restart-primary-runtime': assertIndependentReleaseCliOwner(config.controllerHome); output(await restartPrimaryRuntime(config, { requestId: `recovery-cli:${process.pid}:${Date.now()}` })); return;
-    case 'restart-primary-connector': output(await restartPrimaryConnector(config, { forceHealthyRestart: true, requestId: `recovery-cli:${process.pid}:${Date.now()}` })); return;
-    case 'recover-primary-runtime': assertIndependentReleaseCliOwner(config.controllerHome); output(await recoverPrimaryRuntime(config)); return;
+    case 'list-releases':
+      output(await listReleases(config));
+      return;
+    case 'attest-known-good':
+      output(await attestKnownGood(config));
+      return;
+    case 'rollback-previous':
+      assertIndependentReleaseCliOwner(config.controllerHome);
+      output(await rollbackPrevious(config));
+      return;
+    case 'restart-primary-runtime':
+      assertIndependentReleaseCliOwner(config.controllerHome);
+      output(await restartPrimaryRuntime(config, { requestId: `recovery-cli:${process.pid}:${Date.now()}` }));
+      return;
+    case 'restart-primary-connector':
+      output(
+        await restartPrimaryConnector(config, {
+          forceHealthyRestart: true,
+          requestId: `recovery-cli:${process.pid}:${Date.now()}`,
+        }),
+      );
+      return;
+    case 'recover-primary-runtime':
+      assertIndependentReleaseCliOwner(config.controllerHome);
+      output(await recoverPrimaryRuntime(config));
+      return;
     case 'activate-runtime-release': {
       assertIndependentReleaseCliOwner(config.controllerHome);
       const releasePath = option('--release-manifest') ?? option('--release-path');
@@ -365,13 +467,26 @@ async function cli(): Promise<void> {
       const expectedAuthorityRevisionRaw = option('--expected-authority-revision');
       const expectedAuthorityRevision = Number(expectedAuthorityRevisionRaw);
       if (!releasePath) throw new Error('RECOVERY_RELEASE_MANIFEST_REQUIRED: pass --release-manifest <absolute-path>');
-      if (!expectedActiveReleaseId?.trim()) throw new Error('RECOVERY_EXPECTED_ACTIVE_RELEASE_REQUIRED: run list-releases and pass --expected-active-release <release-id>');
-      if (!Number.isInteger(expectedAuthorityRevision) || expectedAuthorityRevision < 1) throw new Error('RECOVERY_EXPECTED_AUTHORITY_REVISION_REQUIRED: run list-releases and pass --expected-authority-revision <revision>');
-      output(await activateRuntimeRelease(config, releasePath, {}, {
-        requestId: `recovery-cli:${process.pid}:${Date.now()}`,
-        expectedActiveReleaseId: expectedActiveReleaseId.trim(),
-        expectedAuthorityRevision,
-      }));
+      if (!expectedActiveReleaseId?.trim())
+        throw new Error(
+          'RECOVERY_EXPECTED_ACTIVE_RELEASE_REQUIRED: run list-releases and pass --expected-active-release <release-id>',
+        );
+      if (!Number.isInteger(expectedAuthorityRevision) || expectedAuthorityRevision < 1)
+        throw new Error(
+          'RECOVERY_EXPECTED_AUTHORITY_REVISION_REQUIRED: run list-releases and pass --expected-authority-revision <revision>',
+        );
+      output(
+        await activateRuntimeRelease(
+          config,
+          releasePath,
+          {},
+          {
+            requestId: `recovery-cli:${process.pid}:${Date.now()}`,
+            expectedActiveReleaseId: expectedActiveReleaseId.trim(),
+            expectedAuthorityRevision,
+          },
+        ),
+      );
       return;
     }
     case 'release-session-status': {
@@ -382,40 +497,83 @@ async function cli(): Promise<void> {
     }
     case 'release-session-advance': {
       assertIndependentReleaseCliOwner(config.controllerHome);
-      output(await advanceConfiguredRuntimeRelease(config, RECOVERY_RUNTIME_RELEASE_PROVIDER, `recovery-cli:${process.pid}:${Date.now()}`));
+      output(
+        await advanceConfiguredRuntimeRelease(
+          config,
+          RECOVERY_RUNTIME_RELEASE_PROVIDER,
+          `recovery-cli:${process.pid}:${Date.now()}`,
+        ),
+      );
       return;
     }
-    case 'release-session-prepare': output(await prepareRuntimeReleaseSession(config, `recovery-cli:${process.pid}:${Date.now()}`)); return;
+    case 'release-session-prepare': {
+      const sourceRepositoryId = option('--source-repository-id');
+      const expectedSourceRevision = option('--expected-source-revision');
+      if (!sourceRepositoryId || !expectedSourceRevision) throw new Error('RELEASE_SESSION_SOURCE_IDENTITY_REQUIRED');
+      output(
+        await prepareRuntimeReleaseSession(
+          config,
+          sourceRepositoryId,
+          expectedSourceRevision,
+          'recovery-cli:' + process.pid + ':' + Date.now(),
+        ),
+      );
+      return;
+    }
     case 'release-session-candidate-verify': {
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
-      output(await bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(config, sessionId, `recovery-cli:${process.pid}:${Date.now()}`));
+      output(
+        await bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
+          config,
+          sessionId,
+          `recovery-cli:${process.pid}:${Date.now()}`,
+        ),
+      );
       return;
     }
     case 'release-session-cutover': {
       assertIndependentReleaseCliOwner(config.controllerHome);
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
-      output(await cutoverConfiguredRuntimeReleaseSession(config, sessionId, `recovery-cli:${process.pid}:${Date.now()}`));
+      output(
+        await cutoverConfiguredRuntimeReleaseSession(config, sessionId, `recovery-cli:${process.pid}:${Date.now()}`),
+      );
       return;
     }
     case 'release-session-cancel': {
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
-      output(await cancelConfiguredRuntimeReleaseSession(config, sessionId, `recovery-cli:${process.pid}:${Date.now()}`));
+      output(
+        await cancelConfiguredRuntimeReleaseSession(config, sessionId, `recovery-cli:${process.pid}:${Date.now()}`),
+      );
       return;
     }
     case 'release-session-rollback': {
       assertIndependentReleaseCliOwner(config.controllerHome);
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
-      output(await rollbackConfiguredRuntimeReleaseSession(config, sessionId, {}, `recovery-cli:${process.pid}:${Date.now()}`));
+      output(
+        await rollbackConfiguredRuntimeReleaseSession(
+          config,
+          sessionId,
+          {},
+          `recovery-cli:${process.pid}:${Date.now()}`,
+        ),
+      );
       return;
     }
     case 'release-session-known-good': {
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
-      output(await promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {}, `recovery-cli:${process.pid}:${Date.now()}`));
+      output(
+        await promoteConfiguredRuntimeReleaseSessionKnownGood(
+          config,
+          sessionId,
+          {},
+          `recovery-cli:${process.pid}:${Date.now()}`,
+        ),
+      );
       return;
     }
     case 'migrate-controller-home-worker': {
@@ -425,24 +583,30 @@ async function cli(): Promise<void> {
       if (!canonicalSourceRoot) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REQUIRED');
       if (!expectedSourceRevision) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REVISION_REQUIRED');
       if (!migrationRequestId) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      output(await runRecoveryControllerHomeMigrationWorker(config, {
-        requestId: migrationRequestId,
-        canonicalSourceRoot,
-        expectedSourceRevision,
-      }));
+      output(
+        await runRecoveryControllerHomeMigrationWorker(config, {
+          requestId: migrationRequestId,
+          canonicalSourceRoot,
+          expectedSourceRevision,
+        }),
+      );
       return;
     }
-    case 'restart-public-tunnel': output(await repairPublicTunnel(config)); return;
-    case 'diagnose': output(await diagnose(config)); return;
-    case 'reconnect-main': output(await reconnectMain(config)); return;
-    default: usage();
+    case 'restart-public-tunnel':
+      output(await repairPublicTunnel(config));
+      return;
+    case 'diagnose':
+      output(await diagnose(config));
+      return;
+    case 'reconnect-main':
+      output(await reconnectMain(config));
+      return;
+    default:
+      usage();
   }
 }
 
-export function resetWatchdogStateForRecoveryRelease(
-  state: WatchdogState,
-  releaseRevision: string,
-): WatchdogState {
+export function resetWatchdogStateForRecoveryRelease(state: WatchdogState, releaseRevision: string): WatchdogState {
   if (state.recoveryReleaseRevision === releaseRevision) return state;
   return {
     ...state,
@@ -482,25 +646,31 @@ async function startWatchdog(config: RecoveryConfig, daemonIdentity?: RecoveryRu
       state = saveWatchdogState(config, result.state);
       const tickCompletedAt = new Date().toISOString();
       persistHeartbeat({ lastPulseAt: tickCompletedAt, lastTickCompletedAt: tickCompletedAt, lastError: undefined });
-      process.stdout.write(JSON.stringify({
-        at: new Date().toISOString(),
-        action: result.decision.action,
-        reason: result.decision.reason,
-        failures: state.failures,
-        publicTunnelFailures: state.publicTunnelFailures ?? 0,
-        runtimeRestartAttempts: state.runtimeRestartAttempts ?? 0,
-        runtimeRestartFailures: state.runtimeRestartFailures ?? 0,
-        runtimeRestartBudgetIdentity: state.runtimeRestartBudgetIdentity,
-        runtimeHealthySince: state.runtimeHealthySince,
-        runtimeRestartBudgetExhaustedAt: state.runtimeRestartBudgetExhaustedAt,
-        primaryRuntimeRestartDetail: result.primaryRuntimeRestart?.detail,
-        primaryRuntimeRecoveryDetail: result.primaryRuntimeRecovery?.detail,
-        rollbackDetail: result.rollback?.detail,
-        publicTunnelDetail: result.publicTunnelRepair?.detail,
-        primaryConnectorRestartDetail: result.primaryConnectorRestart?.detail,
-      }) + '\n');
+      process.stdout.write(
+        JSON.stringify({
+          at: new Date().toISOString(),
+          action: result.decision.action,
+          reason: result.decision.reason,
+          failures: state.failures,
+          publicTunnelFailures: state.publicTunnelFailures ?? 0,
+          runtimeRestartAttempts: state.runtimeRestartAttempts ?? 0,
+          runtimeRestartFailures: state.runtimeRestartFailures ?? 0,
+          runtimeRestartBudgetIdentity: state.runtimeRestartBudgetIdentity,
+          runtimeHealthySince: state.runtimeHealthySince,
+          runtimeRestartBudgetExhaustedAt: state.runtimeRestartBudgetExhaustedAt,
+          primaryRuntimeRestartDetail: result.primaryRuntimeRestart?.detail,
+          primaryRuntimeRecoveryDetail: result.primaryRuntimeRecovery?.detail,
+          rollbackDetail: result.rollback?.detail,
+          publicTunnelDetail: result.publicTunnelRepair?.detail,
+          primaryConnectorRestartDetail: result.primaryConnectorRestart?.detail,
+        }) + '\n',
+      );
     } catch (error) {
-      state = saveWatchdogState(config, { ...state, failures: state.failures + 1, firstFailureAt: state.firstFailureAt ?? Date.now() });
+      state = saveWatchdogState(config, {
+        ...state,
+        failures: state.failures + 1,
+        firstFailureAt: state.firstFailureAt ?? Date.now(),
+      });
       const detail = error instanceof Error ? error.message : String(error);
       const failedAt = new Date().toISOString();
       persistHeartbeat({ lastPulseAt: failedAt, lastTickFailedAt: failedAt, lastError: detail.slice(0, 500) });
@@ -529,7 +699,10 @@ function html(response: ServerResponse, status: number, payload: string): void {
 function setCorsHeaders(response: ServerResponse): void {
   response.setHeader('access-control-allow-origin', '*');
   response.setHeader('access-control-allow-methods', 'GET, POST, DELETE, OPTIONS');
-  response.setHeader('access-control-allow-headers', 'authorization, content-type, mcp-session-id, mcp-protocol-version');
+  response.setHeader(
+    'access-control-allow-headers',
+    'authorization, content-type, mcp-session-id, mcp-protocol-version',
+  );
   response.setHeader('access-control-expose-headers', 'www-authenticate, mcp-session-id');
 }
 
@@ -566,32 +739,225 @@ function mutationInputSchema(
 }
 
 export const RECOVERY_TOOLS = [
-  { name: 'runtime_status', description: 'Read canonical Runtime ownership, readiness, endpoint, release observation, and exact Recovery machine identity.', inputSchema: { type: 'object', additionalProperties: false } },
-  { name: 'list_recovery_history', description: 'Read a bounded sanitized tail of canonical standalone Recovery audit events.', inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 50 } }, additionalProperties: false } },
-  { name: 'list_releases', description: 'Read active, previous, and known-good whole-Runtime release evidence.', inputSchema: { type: 'object', additionalProperties: false } },
-  { name: 'verify_stable_runtime', description: 'Run independent stable runtime verification.', inputSchema: { type: 'object', additionalProperties: false } },
-  { name: 'verify_external_runtime', description: 'Verify the external primary MCP endpoint.', inputSchema: { type: 'object', additionalProperties: false } },
-  { name: 'attest_known_good', description: 'Record the active release as known-good only after full independent verification succeeds.', inputSchema: mutationInputSchema() },
-  { name: 'rollback_previous', description: 'While Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup.', inputSchema: mutationInputSchema() },
-  { name: 'restart_primary_runtime', description: 'Recover the canonical Runtime against the caller-observed active release and authority revision. Healthy Runtime is a no-op unless force_healthy_restart is explicitly true; restart actions are attributed and verified.', inputSchema: mutationInputSchema({ expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 }, force_healthy_restart: { type: 'boolean' }, expected_runtime_instance_id: { type: 'string', minLength: 8, maxLength: 128 } }, ['expected_active_release_id', 'expected_authority_revision']) },
-  { name: 'restart_primary_connector', description: 'Explicitly restart the configured primary OAuth/Connector service, including when endpoint probes pass, only after exact Recovery machine identity and local Canonical Runtime verification succeed; verify the listener and public endpoint again afterward.', inputSchema: mutationInputSchema() },
-  { name: 'recover_primary_runtime', description: 'Stop the canonical Runtime, restore the attested previous whole-Runtime release and SQLite backup, restart it, and require verification.', inputSchema: mutationInputSchema() },
-  { name: 'stage_runtime_release', description: 'Materialize one model-selected accepted source commit into canonical immutable Runtime release storage without changing Runtime authority, SQLite, or services.', inputSchema: mutationInputSchema({ expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' } }, ['expected_source_revision']) },
-  { name: 'activate_runtime_release', description: 'Activate one canonical staged immutable Runtime release only if its source commit and caller-observed active release/authority revision are still exact. Reverse activation of current.previous is rejected; use rollback_previous/recover_primary_runtime instead.', inputSchema: mutationInputSchema({ release_path: { type: 'string', minLength: 8, maxLength: 1024, description: 'Absolute path to the staged immutable Runtime release directory.' }, expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' }, expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, ['release_path', 'expected_source_revision', 'expected_active_release_id', 'expected_authority_revision']) },
-  { name: 'pin_runtime_release', description: 'Pin one extant legacy/home-bound immutable Runtime release so retention preserves it for explicit Runtime-only recovery activation. Portable source candidates are rejected and must use ReleaseSession.', inputSchema: mutationInputSchema({ release_path: { type: 'string', minLength: 8, maxLength: 1024, description: 'Absolute path to the immutable Runtime release directory or manifest.' } }, ['release_path']) },
-  { name: 'unpin_runtime_release', description: 'Remove the explicit stable Runtime retention pin without deleting or activating any release.', inputSchema: mutationInputSchema() },
-  { name: 'activate_pinned_runtime_release', description: 'Activate the explicitly pinned legacy/home-bound Runtime release without restoring an older SQLite backup; portable source candidates are rejected and must use ReleaseSession.', inputSchema: mutationInputSchema({ expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 }, expected_authority_revision: { type: 'integer', minimum: 1 } }, ['expected_active_release_id', 'expected_authority_revision']) },
-  { name: 'release_session_status', description: 'Read one durable ReleaseSession and its exact Stable A/Candidate B phase and evidence.', inputSchema: { type: 'object', properties: { session_id: { type: 'string', minLength: 8, maxLength: 120 } }, required: ['session_id'], additionalProperties: false } },
-  { name: 'advance_runtime_release_session', description: 'Run the single active normal Runtime ReleaseSession autonomously through all immediately executable phases until known-good or a genuine provider/safety boundary. ReleaseSession remains the sole durable progression authority and no Work is created per phase.', inputSchema: mutationInputSchema() },
-  { name: 'prepare_runtime_release_session', description: 'Freeze configured source and Stable A authority, create isolated Candidate B, and build a portable byte-identifiable Runtime artifact without stopping Stable A.', inputSchema: mutationInputSchema() },
-  { name: 'verify_runtime_release_session_candidate', description: 'Boot Candidate B in its isolated ControllerHome/service/port, run whole-Runtime and Recovery restart canaries, and mark the session cutover-eligible while Stable A stays active.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
-  { name: 'cutover_runtime_release_session', description: 'Perform the single fenced cutover attempt for a cutover-eligible ReleaseSession using the byte-identical verified Candidate B artifact. Failed cutover restores exact Stable A and terminalizes without retry.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
-  { name: 'cancel_runtime_release_session', description: 'Retire a superseded or rejected Candidate B before cutover, terminalizing the ReleaseSession with the existing failed state and leaving Stable A unchanged.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
-  { name: 'rollback_runtime_release_session', description: 'Abort the exact in-flight ReleaseSession activation transaction and restore its frozen Stable A whole-Runtime release plus SQLite backup.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
-  { name: 'promote_runtime_release_session_known_good', description: 'After committed cutover soak, require strict whole-Runtime verification, exact rollback transaction evidence, and a recoverable release+SQLite+service bundle before terminalizing the ReleaseSession known-good.', inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']) },
-  { name: 'migrate_controller_home', description: 'Schedule a Linux-only standalone Recovery transaction that relocates this Forge installation to the stable user-level Controller Home, reinstalls immutable Runtime/Connector/Recovery owners, verifies them, and rolls back on failure.', inputSchema: mutationInputSchema({ canonical_source_root: { type: 'string', minLength: 1, maxLength: 1024 }, expected_source_revision: { type: 'string', minLength: 7, maxLength: 80 } }, ['canonical_source_root', 'expected_source_revision']) },
-  { name: 'restart_public_tunnel', description: 'Restart the explicitly configured public tunnel only after exact Recovery machine identity and local runtime verification succeeds and the external endpoint is unavailable.', inputSchema: mutationInputSchema() },
-  { name: 'reconnect_primary_connector', description: 'Check canonical Runtime Gateway and primary MCP reconnection readiness without publishing a release.', inputSchema: { type: 'object', additionalProperties: false } },
+  {
+    name: 'runtime_status',
+    description:
+      'Read canonical Runtime ownership, readiness, endpoint, release observation, and exact Recovery machine identity.',
+    inputSchema: { type: 'object', additionalProperties: false },
+  },
+  {
+    name: 'list_recovery_history',
+    description: 'Read a bounded sanitized tail of canonical standalone Recovery audit events.',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'integer', minimum: 1, maximum: 50 } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_releases',
+    description: 'Read active, previous, and known-good whole-Runtime release evidence.',
+    inputSchema: { type: 'object', additionalProperties: false },
+  },
+  {
+    name: 'verify_stable_runtime',
+    description: 'Run independent stable runtime verification.',
+    inputSchema: { type: 'object', additionalProperties: false },
+  },
+  {
+    name: 'verify_external_runtime',
+    description: 'Verify the external primary MCP endpoint.',
+    inputSchema: { type: 'object', additionalProperties: false },
+  },
+  {
+    name: 'attest_known_good',
+    description: 'Record the active release as known-good only after full independent verification succeeds.',
+    inputSchema: mutationInputSchema(),
+  },
+  {
+    name: 'rollback_previous',
+    description:
+      'While Canonical Runtime is stopped, atomically restore its attested previous whole-Runtime release and SQLite backup.',
+    inputSchema: mutationInputSchema(),
+  },
+  {
+    name: 'restart_primary_runtime',
+    description:
+      'Recover the canonical Runtime against the caller-observed active release and authority revision. Healthy Runtime is a no-op unless force_healthy_restart is explicitly true; restart actions are attributed and verified.',
+    inputSchema: mutationInputSchema(
+      {
+        expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 },
+        expected_authority_revision: { type: 'integer', minimum: 1 },
+        force_healthy_restart: { type: 'boolean' },
+        expected_runtime_instance_id: { type: 'string', minLength: 8, maxLength: 128 },
+      },
+      ['expected_active_release_id', 'expected_authority_revision'],
+    ),
+  },
+  {
+    name: 'restart_primary_connector',
+    description:
+      'Explicitly restart the configured primary OAuth/Connector service, including when endpoint probes pass, only after exact Recovery machine identity and local Canonical Runtime verification succeed; verify the listener and public endpoint again afterward.',
+    inputSchema: mutationInputSchema(),
+  },
+  {
+    name: 'recover_primary_runtime',
+    description:
+      'Stop the canonical Runtime, restore the attested previous whole-Runtime release and SQLite backup, restart it, and require verification.',
+    inputSchema: mutationInputSchema(),
+  },
+  {
+    name: 'stage_runtime_release',
+    description:
+      'Materialize one exact source repository/commit pair selected by the caller into canonical immutable Runtime release storage without changing Runtime authority, SQLite, or services.',
+    inputSchema: mutationInputSchema(
+      {
+        source_repository_id: { type: 'string', pattern: '^repo_[A-Za-z0-9_-]+$' },
+        expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' },
+      },
+      ['source_repository_id', 'expected_source_revision'],
+    ),
+  },
+  {
+    name: 'activate_runtime_release',
+    description:
+      'Activate one canonical staged immutable Runtime release only if its exact source repository/commit pair and caller-observed active release/authority revision are still exact. Reverse activation of current.previous is rejected; use rollback_previous/recover_primary_runtime instead.',
+    inputSchema: mutationInputSchema(
+      {
+        release_path: {
+          type: 'string',
+          minLength: 8,
+          maxLength: 1024,
+          description: 'Absolute path to the staged immutable Runtime release directory.',
+        },
+        expected_source_repository_id: { type: 'string', pattern: '^repo_[A-Za-z0-9_-]+$' },
+        expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' },
+        expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 },
+        expected_authority_revision: { type: 'integer', minimum: 1 },
+      },
+      [
+        'release_path',
+        'expected_source_repository_id',
+        'expected_source_revision',
+        'expected_active_release_id',
+        'expected_authority_revision',
+      ],
+    ),
+  },
+  {
+    name: 'pin_runtime_release',
+    description:
+      'Pin one extant legacy/home-bound immutable Runtime release so retention preserves it for explicit Runtime-only recovery activation. Portable source candidates are rejected and must use ReleaseSession.',
+    inputSchema: mutationInputSchema(
+      {
+        release_path: {
+          type: 'string',
+          minLength: 8,
+          maxLength: 1024,
+          description: 'Absolute path to the immutable Runtime release directory or manifest.',
+        },
+      },
+      ['release_path'],
+    ),
+  },
+  {
+    name: 'unpin_runtime_release',
+    description: 'Remove the explicit stable Runtime retention pin without deleting or activating any release.',
+    inputSchema: mutationInputSchema(),
+  },
+  {
+    name: 'activate_pinned_runtime_release',
+    description:
+      'Activate the explicitly pinned legacy/home-bound Runtime release without restoring an older SQLite backup; portable source candidates are rejected and must use ReleaseSession.',
+    inputSchema: mutationInputSchema(
+      {
+        expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 },
+        expected_authority_revision: { type: 'integer', minimum: 1 },
+      },
+      ['expected_active_release_id', 'expected_authority_revision'],
+    ),
+  },
+  {
+    name: 'release_session_status',
+    description: 'Read one durable ReleaseSession and its exact Stable A/Candidate B phase and evidence.',
+    inputSchema: {
+      type: 'object',
+      properties: { session_id: { type: 'string', minLength: 8, maxLength: 120 } },
+      required: ['session_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'advance_runtime_release_session',
+    description:
+      'Run the single active normal Runtime ReleaseSession autonomously through all immediately executable phases until known-good or a genuine provider/safety boundary. ReleaseSession remains the sole durable progression authority and no Work is created per phase.',
+    inputSchema: mutationInputSchema(),
+  },
+  {
+    name: 'prepare_runtime_release_session',
+    description:
+      'Prepare Candidate B only from the exact caller-selected registered source repository and commit. Never falls back to RecoveryConfig or origin/main; returns a no-op when that exact source identity is already active.',
+    inputSchema: mutationInputSchema(
+      {
+        source_repository_id: { type: 'string', pattern: '^repo_[A-Za-z0-9_-]+$' },
+        expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' },
+      },
+      ['source_repository_id', 'expected_source_revision'],
+    ),
+  },
+  {
+    name: 'verify_runtime_release_session_candidate',
+    description:
+      'Boot Candidate B in its isolated ControllerHome/service/port, run whole-Runtime and Recovery restart canaries, and mark the session cutover-eligible while Stable A stays active.',
+    inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']),
+  },
+  {
+    name: 'cutover_runtime_release_session',
+    description:
+      'Perform the single fenced cutover attempt for a cutover-eligible ReleaseSession using the byte-identical verified Candidate B artifact. Failed cutover restores exact Stable A and terminalizes without retry.',
+    inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']),
+  },
+  {
+    name: 'cancel_runtime_release_session',
+    description:
+      'Retire a superseded or rejected Candidate B before cutover, terminalizing the ReleaseSession with the existing failed state and leaving Stable A unchanged.',
+    inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']),
+  },
+  {
+    name: 'rollback_runtime_release_session',
+    description:
+      'Abort the exact in-flight ReleaseSession activation transaction and restore its frozen Stable A whole-Runtime release plus SQLite backup.',
+    inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']),
+  },
+  {
+    name: 'promote_runtime_release_session_known_good',
+    description:
+      'After committed cutover soak, require strict whole-Runtime verification, exact rollback transaction evidence, and a recoverable release+SQLite+service bundle before terminalizing the ReleaseSession known-good.',
+    inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']),
+  },
+  {
+    name: 'migrate_controller_home',
+    description:
+      'Schedule a Linux-only standalone Recovery transaction that relocates this Forge installation to the stable user-level Controller Home, reinstalls immutable Runtime/Connector/Recovery owners, verifies them, and rolls back on failure.',
+    inputSchema: mutationInputSchema(
+      {
+        canonical_source_root: { type: 'string', minLength: 1, maxLength: 1024 },
+        expected_source_revision: { type: 'string', minLength: 7, maxLength: 80 },
+      },
+      ['canonical_source_root', 'expected_source_revision'],
+    ),
+  },
+  {
+    name: 'restart_public_tunnel',
+    description:
+      'Restart the explicitly configured public tunnel only after exact Recovery machine identity and local runtime verification succeeds and the external endpoint is unavailable.',
+    inputSchema: mutationInputSchema(),
+  },
+  {
+    name: 'reconnect_primary_connector',
+    description: 'Check canonical Runtime Gateway and primary MCP reconnection readiness without publishing a release.',
+    inputSchema: { type: 'object', additionalProperties: false },
+  },
 ] as const;
 
 const RECOVERY_OAUTH_SCOPE = 'forge';
@@ -604,7 +970,7 @@ const RECOVERY_MAX_PENDING_OAUTH_CODES_PER_CLIENT = 32;
 const RECOVERY_ACCESS_TOKEN_EXPIRES_IN_SECONDS = 10 * 365 * 24 * 60 * 60;
 const TOOL_SECURITY_SCHEMES = [{ type: 'oauth2', scopes: [RECOVERY_OAUTH_SCOPE] }] as const;
 const SUPPORTED_TOKEN_AUTH_METHODS = ['client_secret_basic', 'client_secret_post', 'none'] as const;
-type TokenAuthMethod = typeof SUPPORTED_TOKEN_AUTH_METHODS[number];
+type TokenAuthMethod = (typeof SUPPORTED_TOKEN_AUTH_METHODS)[number];
 
 type PendingOAuthCode = {
   clientId: string;
@@ -634,11 +1000,12 @@ export function recoveryOAuthClientRegistrationIdentity(
 ): { clientId: string; owner: 'recovery_verifier' | 'external' } {
   const requestedClientId = typeof body.client_id === 'string' && body.client_id.trim() ? body.client_id.trim() : '';
   if (requestedClientId === RECOVERY_VERIFIER_OAUTH_CLIENT_ID) {
-    const validVerifierMetadata = body.client_name === RECOVERY_VERIFIER_OAUTH_CLIENT_NAME
-      && stringArray(body.redirect_uris).includes(RECOVERY_VERIFIER_OAUTH_REDIRECT_URI)
-      && body.token_endpoint_auth_method === 'none'
-      && stringArray(body.grant_types).includes('authorization_code')
-      && stringArray(body.response_types).includes('code');
+    const validVerifierMetadata =
+      body.client_name === RECOVERY_VERIFIER_OAUTH_CLIENT_NAME &&
+      stringArray(body.redirect_uris).includes(RECOVERY_VERIFIER_OAUTH_REDIRECT_URI) &&
+      body.token_endpoint_auth_method === 'none' &&
+      stringArray(body.grant_types).includes('authorization_code') &&
+      stringArray(body.response_types).includes('code');
     if (!validVerifierMetadata) throw new Error('RECOVERY_OAUTH_VERIFIER_CLIENT_METADATA_INVALID');
     return { clientId: RECOVERY_VERIFIER_OAUTH_CLIENT_ID, owner: 'recovery_verifier' };
   }
@@ -661,7 +1028,10 @@ function reserveRecoveryOAuthCodeCapacity(
     }
     return oldest ? codes.delete(oldest.code) : false;
   };
-  while ([...codes.values()].filter((pending) => pending.clientId === clientId).length >= RECOVERY_MAX_PENDING_OAUTH_CODES_PER_CLIENT) {
+  while (
+    [...codes.values()].filter((pending) => pending.clientId === clientId).length >=
+    RECOVERY_MAX_PENDING_OAUTH_CODES_PER_CLIENT
+  ) {
     if (!evictOldest((pending) => pending.clientId === clientId)) break;
   }
   while (codes.size >= RECOVERY_MAX_PENDING_OAUTH_CODES) {
@@ -675,7 +1045,10 @@ function readBody(request: IncomingMessage): Promise<string> {
     request.setEncoding('utf8');
     request.on('data', (chunk: string) => {
       body += chunk;
-      if (Buffer.byteLength(body) > 64 * 1024) { request.destroy(); reject(new Error('RECOVERY_REQUEST_TOO_LARGE')); }
+      if (Buffer.byteLength(body) > 64 * 1024) {
+        request.destroy();
+        reject(new Error('RECOVERY_REQUEST_TOO_LARGE'));
+      }
     });
     request.on('end', () => resolveBody(body));
     request.on('error', reject);
@@ -683,8 +1056,13 @@ function readBody(request: IncomingMessage): Promise<string> {
 }
 
 function requestUrl(request: IncomingMessage): URL {
-  const host = String(request.headers['x-forwarded-host'] ?? request.headers.host ?? '').split(',')[0].trim() || '127.0.0.1';
-  const forwardedProto = String(request.headers['x-forwarded-proto'] ?? '').split(',')[0].trim();
+  const host =
+    String(request.headers['x-forwarded-host'] ?? request.headers.host ?? '')
+      .split(',')[0]
+      .trim() || '127.0.0.1';
+  const forwardedProto = String(request.headers['x-forwarded-proto'] ?? '')
+    .split(',')[0]
+    .trim();
   const proto = forwardedProto || (/^(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?$/i.test(host) ? 'http' : 'https');
   return new URL(request.url ?? '/', `${proto}://${host}`);
 }
@@ -695,7 +1073,10 @@ function publicOrigin(request: IncomingMessage, config?: Pick<RecoveryConfig, 'r
   return `${url.protocol}//${url.host}`;
 }
 
-function recoveryAuthorizationServer(request: IncomingMessage, config: Pick<RecoveryConfig, 'recoveryPublicUrl'>): string {
+function recoveryAuthorizationServer(
+  request: IncomingMessage,
+  config: Pick<RecoveryConfig, 'recoveryPublicUrl'>,
+): string {
   return `${publicOrigin(request, config)}/recovery`;
 }
 
@@ -710,7 +1091,10 @@ function recoveryResource(request: IncomingMessage, config: Pick<RecoveryConfig,
   return `${publicOrigin(request, config)}${resourcePathFromRequest(request)}`;
 }
 
-function recoveryAuthorizationServerMetadata(request: IncomingMessage, config: Pick<RecoveryConfig, 'recoveryPublicUrl'>): Record<string, unknown> {
+function recoveryAuthorizationServerMetadata(
+  request: IncomingMessage,
+  config: Pick<RecoveryConfig, 'recoveryPublicUrl'>,
+): Record<string, unknown> {
   const origin = publicOrigin(request, config);
   const authorizationServer = recoveryAuthorizationServer(request, config);
   return {
@@ -726,7 +1110,10 @@ function recoveryAuthorizationServerMetadata(request: IncomingMessage, config: P
   };
 }
 
-function recoveryProtectedResourceMetadata(request: IncomingMessage, config: Pick<RecoveryConfig, 'recoveryPublicUrl'>): Record<string, unknown> {
+function recoveryProtectedResourceMetadata(
+  request: IncomingMessage,
+  config: Pick<RecoveryConfig, 'recoveryPublicUrl'>,
+): Record<string, unknown> {
   const origin = publicOrigin(request, config);
   return {
     resource: recoveryResource(request, config),
@@ -737,7 +1124,10 @@ function recoveryProtectedResourceMetadata(request: IncomingMessage, config: Pic
   };
 }
 
-export function recoveryWwwAuthenticate(request: IncomingMessage, config: Pick<RecoveryConfig, 'recoveryPublicUrl'>): string {
+export function recoveryWwwAuthenticate(
+  request: IncomingMessage,
+  config: Pick<RecoveryConfig, 'recoveryPublicUrl'>,
+): string {
   const metadata = `${publicOrigin(request, config)}/.well-known/oauth-protected-resource${resourcePathFromRequest(request)}`;
   return `Bearer error="invalid_token", error_description="Missing Authorization header", resource_metadata="${metadata}"`;
 }
@@ -755,7 +1145,8 @@ export function classifyRecoveryMcpRequest(
   if (!matchesAnyPath(request.url, ['/mcp', '/recovery/mcp'])) return 'not_mcp';
   const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
   if (!expectedToken || !supplied || !secureEqual(supplied, expectedToken)) return 'auth_required';
-  if (request.method !== 'POST' && request.method !== 'GET' && request.method !== 'DELETE') return 'method_not_supported';
+  if (request.method !== 'POST' && request.method !== 'GET' && request.method !== 'DELETE')
+    return 'method_not_supported';
   return 'mcp';
 }
 
@@ -792,7 +1183,9 @@ function parseBasicClientCredentials(request: IncomingMessage): { clientId: stri
 }
 
 function tokenAuthMethod(value: unknown): TokenAuthMethod {
-  return SUPPORTED_TOKEN_AUTH_METHODS.includes(value as TokenAuthMethod) ? value as TokenAuthMethod : 'client_secret_basic';
+  return SUPPORTED_TOKEN_AUTH_METHODS.includes(value as TokenAuthMethod)
+    ? (value as TokenAuthMethod)
+    : 'client_secret_basic';
 }
 
 function escapeHtml(value: unknown): string {
@@ -840,29 +1233,35 @@ function codeChallengeMatches(verifier: string, challenge: string | undefined, m
 
 function isOAuthMetadataPath(request: IncomingMessage): boolean {
   const path = requestUrl(request).pathname;
-  return path === '/.well-known/oauth-authorization-server'
-    || path === '/.well-known/openid-configuration'
-    || path === '/oauth-authorization-server'
-    || path === '/openid-configuration'
-    || path === '/.well-known/oauth-authorization-server/recovery'
-    || path === '/.well-known/openid-configuration/recovery'
-    || path === '/recovery/.well-known/oauth-authorization-server'
-    || path === '/recovery/.well-known/openid-configuration';
+  return (
+    path === '/.well-known/oauth-authorization-server' ||
+    path === '/.well-known/openid-configuration' ||
+    path === '/oauth-authorization-server' ||
+    path === '/openid-configuration' ||
+    path === '/.well-known/oauth-authorization-server/recovery' ||
+    path === '/.well-known/openid-configuration/recovery' ||
+    path === '/recovery/.well-known/oauth-authorization-server' ||
+    path === '/recovery/.well-known/openid-configuration'
+  );
 }
 
 function isProtectedResourceMetadataPath(request: IncomingMessage): boolean {
   const path = requestUrl(request).pathname;
-  return path === '/.well-known/oauth-protected-resource'
-    || path === '/.well-known/oauth-protected-resource/mcp'
-    || path === '/.well-known/oauth-protected-resource/recovery/mcp'
-    || path === '/oauth-protected-resource'
-    || path === '/oauth-protected-resource/mcp'
-    || path === '/oauth-protected-resource/recovery/mcp'
-    || path === '/recovery/.well-known/oauth-protected-resource';
+  return (
+    path === '/.well-known/oauth-protected-resource' ||
+    path === '/.well-known/oauth-protected-resource/mcp' ||
+    path === '/.well-known/oauth-protected-resource/recovery/mcp' ||
+    path === '/oauth-protected-resource' ||
+    path === '/oauth-protected-resource/mcp' ||
+    path === '/oauth-protected-resource/recovery/mcp' ||
+    path === '/recovery/.well-known/oauth-protected-resource'
+  );
 }
 
 function isAuthorizePath(request: IncomingMessage): boolean {
-  return requestUrl(request).pathname === '/oauth/authorize' || requestUrl(request).pathname === '/recovery/oauth/authorize';
+  return (
+    requestUrl(request).pathname === '/oauth/authorize' || requestUrl(request).pathname === '/recovery/oauth/authorize'
+  );
 }
 
 function isTokenPath(request: IncomingMessage): boolean {
@@ -870,7 +1269,9 @@ function isTokenPath(request: IncomingMessage): boolean {
 }
 
 function isRegisterPath(request: IncomingMessage): boolean {
-  return requestUrl(request).pathname === '/oauth/register' || requestUrl(request).pathname === '/recovery/oauth/register';
+  return (
+    requestUrl(request).pathname === '/oauth/register' || requestUrl(request).pathname === '/recovery/oauth/register'
+  );
 }
 
 function requestId(value: unknown): string | undefined {
@@ -878,12 +1279,20 @@ function requestId(value: unknown): string | undefined {
 }
 
 function mutationResponse(config: RecoveryConfig, payload: unknown): Record<string, unknown> {
-  const result = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload as Record<string, unknown> : { result: payload };
+  const result =
+    payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : { result: payload };
   return { ...result, identity: recoveryMachineIdentity(config) };
 }
 
-function assertRecoveryGatewayMutationIdentity(config: RecoveryConfig, args: Record<string, unknown>): RecoveryMachineIdentity {
-  const suppliedFields = RECOVERY_MUTATION_IDENTITY_FIELDS.filter((field) => typeof args[field] === 'string' && String(args[field]).trim());
+function assertRecoveryGatewayMutationIdentity(
+  config: RecoveryConfig,
+  args: Record<string, unknown>,
+): RecoveryMachineIdentity {
+  const suppliedFields = RECOVERY_MUTATION_IDENTITY_FIELDS.filter(
+    (field) => typeof args[field] === 'string' && String(args[field]).trim(),
+  );
   if (suppliedFields.length === 0) return recoveryMachineIdentity(config);
   return assertRecoveryMutationIdentity(config, args);
 }
@@ -895,10 +1304,14 @@ export async function dispatchRecoveryTool(
   dependencies: { recoverPrimaryRuntime?: typeof recoverPrimaryRuntime } = {},
 ): Promise<unknown> {
   switch (name) {
-    case 'runtime_status': return runtimeStatus(config);
-    case 'list_recovery_history': return listRecoveryHistory(config, typeof args.limit === 'number' ? args.limit : 20);
-    case 'list_releases': return listReleases(config);
-    case 'verify_stable_runtime': return verifyStableRuntime(config);
+    case 'runtime_status':
+      return runtimeStatus(config);
+    case 'list_recovery_history':
+      return listRecoveryHistory(config, typeof args.limit === 'number' ? args.limit : 20);
+    case 'list_releases':
+      return listReleases(config);
+    case 'verify_stable_runtime':
+      return verifyStableRuntime(config);
     case 'verify_external_runtime': {
       const verified = await verifyStableRuntime(config);
       const externalConfigured = Boolean(config.publicMcpUrl);
@@ -923,27 +1336,46 @@ export async function dispatchRecoveryTool(
       const restartRequestId = requestId(args.request_id);
       if (!restartRequestId) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      if (typeof args.expected_active_release_id !== 'string' || !args.expected_active_release_id.trim()
-        || !Number.isSafeInteger(args.expected_authority_revision) || (args.expected_authority_revision as number) < 1) {
+      if (
+        typeof args.expected_active_release_id !== 'string' ||
+        !args.expected_active_release_id.trim() ||
+        !Number.isSafeInteger(args.expected_authority_revision) ||
+        (args.expected_authority_revision as number) < 1
+      ) {
         throw new Error('RECOVERY_RUNTIME_RESTART_AUTHORITY_FENCE_REQUIRED');
       }
-      if (args.force_healthy_restart !== undefined && typeof args.force_healthy_restart !== 'boolean') throw new Error('RECOVERY_RUNTIME_RESTART_FORCE_INVALID');
-      if (args.force_healthy_restart === true && (typeof args.expected_runtime_instance_id !== 'string'
-        || args.expected_runtime_instance_id.length < 8 || args.expected_runtime_instance_id.length > 128)) {
+      if (args.force_healthy_restart !== undefined && typeof args.force_healthy_restart !== 'boolean')
+        throw new Error('RECOVERY_RUNTIME_RESTART_FORCE_INVALID');
+      if (
+        args.force_healthy_restart === true &&
+        (typeof args.expected_runtime_instance_id !== 'string' ||
+          args.expected_runtime_instance_id.length < 8 ||
+          args.expected_runtime_instance_id.length > 128)
+      ) {
         throw new Error('RECOVERY_RUNTIME_RESTART_INSTANCE_FENCE_REQUIRED');
       }
-      return mutationResponse(config, await restartPrimaryRuntime(config, {
-        requestId: `recovery-gateway:${restartRequestId}`,
-        expectedRuntimeInstanceId: args.force_healthy_restart === true ? (args.expected_runtime_instance_id as string) : undefined,
-        forceHealthyRestart: args.force_healthy_restart === true,
-        expectedActiveReleaseId: args.expected_active_release_id.trim(),
-        expectedAuthorityRevision: args.expected_authority_revision as number,
-      }));
+      return mutationResponse(
+        config,
+        await restartPrimaryRuntime(config, {
+          requestId: `recovery-gateway:${restartRequestId}`,
+          expectedRuntimeInstanceId:
+            args.force_healthy_restart === true ? (args.expected_runtime_instance_id as string) : undefined,
+          forceHealthyRestart: args.force_healthy_restart === true,
+          expectedActiveReleaseId: args.expected_active_release_id.trim(),
+          expectedAuthorityRevision: args.expected_authority_revision as number,
+        }),
+      );
     }
     case 'restart_primary_connector': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      return mutationResponse(config, await restartPrimaryConnector(config, { requestId: `recovery-gateway:${args.request_id}`, forceHealthyRestart: true }));
+      return mutationResponse(
+        config,
+        await restartPrimaryConnector(config, {
+          requestId: `recovery-gateway:${args.request_id}`,
+          forceHealthyRestart: true,
+        }),
+      );
     }
     case 'recover_primary_runtime': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
@@ -954,32 +1386,75 @@ export async function dispatchRecoveryTool(
     case 'stage_runtime_release': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      if (typeof args.expected_source_revision !== 'string' || !/^[a-f0-9]{40}$/i.test(args.expected_source_revision.trim())) throw new Error('RECOVERY_EXPECTED_SOURCE_REVISION_REQUIRED');
-      return mutationResponse(config, stageConfiguredRuntimeRelease(config, args.expected_source_revision.trim(), {}, `recovery-gateway:${args.request_id}`));
+      if (
+        typeof args.source_repository_id !== 'string' ||
+        !/^repo_[A-Za-z0-9_-]+$/.test(args.source_repository_id.trim())
+      )
+        throw new Error('RECOVERY_SOURCE_REPOSITORY_ID_REQUIRED');
+      if (
+        typeof args.expected_source_revision !== 'string' ||
+        !/^[a-f0-9]{40}$/i.test(args.expected_source_revision.trim())
+      )
+        throw new Error('RECOVERY_EXPECTED_SOURCE_REVISION_REQUIRED');
+      return mutationResponse(
+        config,
+        stageConfiguredRuntimeRelease(
+          config,
+          args.source_repository_id.trim(),
+          args.expected_source_revision.trim(),
+          {},
+          'recovery-gateway:' + args.request_id,
+        ),
+      );
     }
     case 'activate_runtime_release': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      if (typeof args.release_path !== 'string' || !args.release_path.trim()) throw new Error('RECOVERY_RELEASE_PATH_REQUIRED');
-      if (typeof args.expected_source_revision !== 'string' || !/^[a-f0-9]{40}$/i.test(args.expected_source_revision.trim())) throw new Error('RECOVERY_EXPECTED_SOURCE_REVISION_REQUIRED');
-      if (typeof args.expected_active_release_id !== 'string' || !args.expected_active_release_id.trim()) throw new Error('RECOVERY_EXPECTED_ACTIVE_RELEASE_REQUIRED');
-      if (!Number.isInteger(args.expected_authority_revision) || Number(args.expected_authority_revision) < 1) throw new Error('RECOVERY_EXPECTED_AUTHORITY_REVISION_REQUIRED');
+      if (typeof args.release_path !== 'string' || !args.release_path.trim())
+        throw new Error('RECOVERY_RELEASE_PATH_REQUIRED');
+      if (
+        typeof args.expected_source_repository_id !== 'string' ||
+        !/^repo_[A-Za-z0-9_-]+$/.test(args.expected_source_repository_id.trim())
+      )
+        throw new Error('RECOVERY_SOURCE_REPOSITORY_ID_REQUIRED');
+      if (
+        typeof args.expected_source_revision !== 'string' ||
+        !/^[a-f0-9]{40}$/i.test(args.expected_source_revision.trim())
+      )
+        throw new Error('RECOVERY_EXPECTED_SOURCE_REVISION_REQUIRED');
+      if (typeof args.expected_active_release_id !== 'string' || !args.expected_active_release_id.trim())
+        throw new Error('RECOVERY_EXPECTED_ACTIVE_RELEASE_REQUIRED');
+      if (!Number.isInteger(args.expected_authority_revision) || Number(args.expected_authority_revision) < 1)
+        throw new Error('RECOVERY_EXPECTED_AUTHORITY_REVISION_REQUIRED');
       const releasePath = args.release_path.trim();
       const manifestPath = basename(releasePath) === 'manifest.json' ? releasePath : join(releasePath, 'manifest.json');
-      return mutationResponse(config, await activateRuntimeRelease(config, manifestPath, {}, {
-        requestId: `recovery-gateway:${args.request_id}`,
-        expectedSourceRevision: args.expected_source_revision.trim(),
-        expectedActiveReleaseId: args.expected_active_release_id.trim(),
-        expectedAuthorityRevision: Number(args.expected_authority_revision),
-      }));
+      return mutationResponse(
+        config,
+        await activateRuntimeRelease(
+          config,
+          manifestPath,
+          {},
+          {
+            requestId: 'recovery-gateway:' + args.request_id,
+            expectedSourceRepositoryId: args.expected_source_repository_id.trim(),
+            expectedSourceRevision: args.expected_source_revision.trim(),
+            expectedActiveReleaseId: args.expected_active_release_id.trim(),
+            expectedAuthorityRevision: Number(args.expected_authority_revision),
+          },
+        ),
+      );
     }
     case 'pin_runtime_release': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      if (typeof args.release_path !== 'string' || !args.release_path.trim()) throw new Error('RECOVERY_RELEASE_PATH_REQUIRED');
+      if (typeof args.release_path !== 'string' || !args.release_path.trim())
+        throw new Error('RECOVERY_RELEASE_PATH_REQUIRED');
       const releasePath = args.release_path.trim();
       const manifestPath = basename(releasePath) === 'manifest.json' ? releasePath : join(releasePath, 'manifest.json');
-      return mutationResponse(config, await pinRuntimeRelease(config, manifestPath, `recovery-gateway:${args.request_id}`));
+      return mutationResponse(
+        config,
+        await pinRuntimeRelease(config, manifestPath, `recovery-gateway:${args.request_id}`),
+      );
     }
     case 'unpin_runtime_release': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
@@ -989,64 +1464,145 @@ export async function dispatchRecoveryTool(
     case 'activate_pinned_runtime_release': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      if (typeof args.expected_active_release_id !== 'string' || !args.expected_active_release_id.trim()) throw new Error('RECOVERY_EXPECTED_ACTIVE_RELEASE_REQUIRED');
-      if (!Number.isInteger(args.expected_authority_revision) || Number(args.expected_authority_revision) < 1) throw new Error('RECOVERY_EXPECTED_AUTHORITY_REVISION_REQUIRED');
-      return mutationResponse(config, await activatePinnedRuntimeRelease(config, {}, {
-        requestId: `recovery-gateway:${args.request_id}`,
-        expectedActiveReleaseId: args.expected_active_release_id.trim(),
-        expectedAuthorityRevision: Number(args.expected_authority_revision),
-      }));
+      if (typeof args.expected_active_release_id !== 'string' || !args.expected_active_release_id.trim())
+        throw new Error('RECOVERY_EXPECTED_ACTIVE_RELEASE_REQUIRED');
+      if (!Number.isInteger(args.expected_authority_revision) || Number(args.expected_authority_revision) < 1)
+        throw new Error('RECOVERY_EXPECTED_AUTHORITY_REVISION_REQUIRED');
+      return mutationResponse(
+        config,
+        await activatePinnedRuntimeRelease(
+          config,
+          {},
+          {
+            requestId: `recovery-gateway:${args.request_id}`,
+            expectedActiveReleaseId: args.expected_active_release_id.trim(),
+            expectedAuthorityRevision: Number(args.expected_authority_revision),
+          },
+        ),
+      );
     }
     case 'release_session_status': {
-      if (typeof args.session_id !== 'string' || !args.session_id.trim()) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
+      if (typeof args.session_id !== 'string' || !args.session_id.trim())
+        throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
       return readReleaseSession(config.controllerHome, args.session_id.trim()) ?? null;
     }
     case 'advance_runtime_release_session': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      return mutationResponse(config, await advanceConfiguredRuntimeRelease(config, RECOVERY_RUNTIME_RELEASE_PROVIDER, `recovery-gateway:${args.request_id}`));
+      return mutationResponse(
+        config,
+        await advanceConfiguredRuntimeRelease(
+          config,
+          RECOVERY_RUNTIME_RELEASE_PROVIDER,
+          `recovery-gateway:${args.request_id}`,
+        ),
+      );
     }
     case 'prepare_runtime_release_session': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      return mutationResponse(config, await prepareRuntimeReleaseSession(config, `recovery-gateway:${args.request_id}`));
+      if (
+        typeof args.source_repository_id !== 'string' ||
+        !/^repo_[A-Za-z0-9_-]+$/.test(args.source_repository_id.trim())
+      ) {
+        throw new Error('RELEASE_SESSION_SOURCE_REPOSITORY_ID_REQUIRED');
+      }
+      if (
+        typeof args.expected_source_revision !== 'string' ||
+        !/^[a-f0-9]{40}$/i.test(args.expected_source_revision.trim())
+      ) {
+        throw new Error('RELEASE_SESSION_SOURCE_REVISION_REQUIRED');
+      }
+      return mutationResponse(
+        config,
+        await prepareRuntimeReleaseSession(
+          config,
+          args.source_repository_id.trim(),
+          args.expected_source_revision.trim(),
+          'recovery-gateway:' + args.request_id,
+        ),
+      );
     }
     case 'verify_runtime_release_session_candidate': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      if (typeof args.session_id !== 'string' || !args.session_id.trim()) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
-      return mutationResponse(config, await bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(config, args.session_id.trim(), `recovery-gateway:${args.request_id}`));
+      if (typeof args.session_id !== 'string' || !args.session_id.trim())
+        throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
+      return mutationResponse(
+        config,
+        await bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
+          config,
+          args.session_id.trim(),
+          `recovery-gateway:${args.request_id}`,
+        ),
+      );
     }
     case 'cutover_runtime_release_session': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      if (typeof args.session_id !== 'string' || !args.session_id.trim()) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
-      return mutationResponse(config, await cutoverConfiguredRuntimeReleaseSession(config, args.session_id.trim(), `recovery-gateway:${args.request_id}`));
+      if (typeof args.session_id !== 'string' || !args.session_id.trim())
+        throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
+      return mutationResponse(
+        config,
+        await cutoverConfiguredRuntimeReleaseSession(
+          config,
+          args.session_id.trim(),
+          `recovery-gateway:${args.request_id}`,
+        ),
+      );
     }
     case 'cancel_runtime_release_session': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      if (typeof args.session_id !== 'string' || !args.session_id.trim()) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
-      return mutationResponse(config, await cancelConfiguredRuntimeReleaseSession(config, args.session_id.trim(), `recovery-gateway:${args.request_id}`));
+      if (typeof args.session_id !== 'string' || !args.session_id.trim())
+        throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
+      return mutationResponse(
+        config,
+        await cancelConfiguredRuntimeReleaseSession(
+          config,
+          args.session_id.trim(),
+          `recovery-gateway:${args.request_id}`,
+        ),
+      );
     }
     case 'rollback_runtime_release_session': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      if (typeof args.session_id !== 'string' || !args.session_id.trim()) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
-      return mutationResponse(config, await rollbackConfiguredRuntimeReleaseSession(config, args.session_id.trim(), {}, `recovery-gateway:${args.request_id}`));
+      if (typeof args.session_id !== 'string' || !args.session_id.trim())
+        throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
+      return mutationResponse(
+        config,
+        await rollbackConfiguredRuntimeReleaseSession(
+          config,
+          args.session_id.trim(),
+          {},
+          `recovery-gateway:${args.request_id}`,
+        ),
+      );
     }
     case 'promote_runtime_release_session_known_good': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      if (typeof args.session_id !== 'string' || !args.session_id.trim()) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
-      return mutationResponse(config, await promoteConfiguredRuntimeReleaseSessionKnownGood(config, args.session_id.trim(), {}, `recovery-gateway:${args.request_id}`));
+      if (typeof args.session_id !== 'string' || !args.session_id.trim())
+        throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
+      return mutationResponse(
+        config,
+        await promoteConfiguredRuntimeReleaseSessionKnownGood(
+          config,
+          args.session_id.trim(),
+          {},
+          `recovery-gateway:${args.request_id}`,
+        ),
+      );
     }
     case 'migrate_controller_home': {
       const migrationRequestId = requestId(args.request_id);
       if (!migrationRequestId) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
       assertRecoveryGatewayMutationIdentity(config, args);
-      if (typeof args.canonical_source_root !== 'string' || !args.canonical_source_root.trim()) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REQUIRED');
-      if (typeof args.expected_source_revision !== 'string' || !args.expected_source_revision.trim()) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REVISION_REQUIRED');
+      if (typeof args.canonical_source_root !== 'string' || !args.canonical_source_root.trim())
+        throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REQUIRED');
+      if (typeof args.expected_source_revision !== 'string' || !args.expected_source_revision.trim())
+        throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REVISION_REQUIRED');
       return scheduleRecoveryControllerHomeMigration(config, {
         requestId: migrationRequestId,
         canonicalSourceRoot: args.canonical_source_root.trim(),
@@ -1058,8 +1614,10 @@ export async function dispatchRecoveryTool(
       assertRecoveryGatewayMutationIdentity(config, args);
       return mutationResponse(config, await repairPublicTunnel(config));
     }
-    case 'reconnect_primary_connector': return reconnectMain(config);
-    default: throw new Error('RECOVERY_TOOL_NOT_FOUND');
+    case 'reconnect_primary_connector':
+      return reconnectMain(config);
+    default:
+      throw new Error('RECOVERY_TOOL_NOT_FOUND');
   }
 }
 
@@ -1068,7 +1626,10 @@ export async function dispatchRecoveryTool(
  * that keeps failing without progressing (same session, phase, and revision)
  * must not fork a full Recovery executable every interval forever.
  */
-function releaseReconciliationFingerprint(decision: { action?: unknown; session?: { sessionId?: unknown; phase?: unknown; revision?: unknown } }): string {
+function releaseReconciliationFingerprint(decision: {
+  action?: unknown;
+  session?: { sessionId?: unknown; phase?: unknown; revision?: unknown };
+}): string {
   return [
     typeof decision.action === 'string' ? decision.action : 'none',
     typeof decision.session?.sessionId === 'string' ? decision.session.sessionId : 'none',
@@ -1098,7 +1659,10 @@ export function nextReleaseReconcileBackoff(
   return {
     fingerprint: nextFingerprint,
     consecutiveFailures,
-    delayMs: Math.min(RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS * 2 ** (consecutiveFailures - 1), RECOVERY_AUTOMATIC_RELEASE_FAILURE_BACKOFF_MAX_MS),
+    delayMs: Math.min(
+      RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS * 2 ** (consecutiveFailures - 1),
+      RECOVERY_AUTOMATIC_RELEASE_FAILURE_BACKOFF_MAX_MS,
+    ),
   };
 }
 
@@ -1111,10 +1675,11 @@ async function runAutomaticReleaseReconciliationStep(
   // a healthy/current source does not fork a complete Recovery executable every
   // fifteen seconds merely to rediscover the same result. The short-lived child
   // remains the mutation boundary whenever a durable release action is needed.
-  const decision = selectedDecision ?? decideConfiguredRuntimeReleaseReconciliation(
-    config.controllerHome,
-    () => configuredRuntimeReleaseSourceState(config),
-  );
+  const decision =
+    selectedDecision ??
+    decideConfiguredRuntimeReleaseReconciliation(config.controllerHome, () =>
+      configuredRuntimeReleaseSourceState(config),
+    );
   observed.fingerprint = decision.required ? releaseReconciliationFingerprint(decision) : undefined;
   if (!decision.required) return;
 
@@ -1137,9 +1702,13 @@ async function runAutomaticReleaseReconciliationStep(
     throw new Error(`RECOVERY_AUTOMATIC_RELEASE_STEP_FAILED: ${detail.slice(0, 500)}`);
   }
   let envelope: unknown;
-  try { envelope = JSON.parse(result.stdout); }
-  catch { throw new Error('RECOVERY_AUTOMATIC_RELEASE_PROTOCOL_INVALID'); }
-  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) throw new Error('RECOVERY_AUTOMATIC_RELEASE_PROTOCOL_INVALID');
+  try {
+    envelope = JSON.parse(result.stdout);
+  } catch {
+    throw new Error('RECOVERY_AUTOMATIC_RELEASE_PROTOCOL_INVALID');
+  }
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope))
+    throw new Error('RECOVERY_AUTOMATIC_RELEASE_PROTOCOL_INVALID');
   const parsed = envelope as {
     ok?: unknown;
     attempted?: unknown;
@@ -1148,28 +1717,28 @@ async function runAutomaticReleaseReconciliationStep(
     result?: { detail?: unknown };
   };
   if (parsed.ok !== true) {
-    const detail = typeof parsed.error === 'string'
-      ? parsed.error
-      : typeof parsed.result?.detail === 'string'
-        ? parsed.result.detail
-        : 'automatic release reconciliation failed';
+    const detail =
+      typeof parsed.error === 'string'
+        ? parsed.error
+        : typeof parsed.result?.detail === 'string'
+          ? parsed.result.detail
+          : 'automatic release reconciliation failed';
     throw new Error(`RECOVERY_AUTOMATIC_RELEASE_STEP_FAILED: ${detail.slice(0, 500)}`);
   }
   if (parsed.decision?.action) {
-    process.stdout.write(JSON.stringify({
-      at: new Date().toISOString(),
-      action: 'automatic_release_reconcile',
-      reason: parsed.decision?.reason,
-      releaseAction: parsed.decision?.action,
-    }) + '\n');
+    process.stdout.write(
+      JSON.stringify({
+        at: new Date().toISOString(),
+        action: 'automatic_release_reconcile',
+        reason: parsed.decision?.reason,
+        releaseAction: parsed.decision?.action,
+      }) + '\n',
+    );
   }
 }
 
 /** New soaking candidates cannot inherit the generic 15-minute error backoff. */
-export function boundReleaseReconcileDelayForAcceptance(
-  delayMs: number,
-  deadlinePending: boolean,
-): number {
+export function boundReleaseReconcileDelayForAcceptance(delayMs: number, deadlinePending: boolean): number {
   return deadlinePending ? Math.min(delayMs, RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS) : delayMs;
 }
 
@@ -1185,17 +1754,20 @@ async function startAutomaticReleaseReconciliation(config: RecoveryConfig): Prom
       // cap even when a legal successor is the current coordinator target.
       // Incomplete inventories must also avoid the generic long backoff.
       try {
-        acceptanceDeadlinePending = activeRuntimeReleaseSessions(config.controllerHome)
-          .some((item) => item.phase === 'soaking'
-            && item.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1'));
-      } catch { acceptanceDeadlinePending = true; }
-      const decision = decideConfiguredRuntimeReleaseReconciliation(
-        config.controllerHome,
-        () => configuredRuntimeReleaseSourceState(config),
+        acceptanceDeadlinePending = activeRuntimeReleaseSessions(config.controllerHome).some(
+          (item) =>
+            item.phase === 'soaking' && item.receipts.some((receipt) => receipt.id === 'acceptance_timeout_policy_v1'),
+        );
+      } catch {
+        acceptanceDeadlinePending = true;
+      }
+      const decision = decideConfiguredRuntimeReleaseReconciliation(config.controllerHome, () =>
+        configuredRuntimeReleaseSourceState(config),
       );
       observed.fingerprint = decision.required ? releaseReconciliationFingerprint(decision) : undefined;
-      acceptanceDeadlinePending ||= decision.session?.phase === 'soaking'
-        && decision.session.receipts.some((r) => r.id === 'acceptance_timeout_policy_v1');
+      acceptanceDeadlinePending ||=
+        decision.session?.phase === 'soaking' &&
+        decision.session.receipts.some((r) => r.id === 'acceptance_timeout_policy_v1');
       // ReleaseSession cutover owns the one Connector drain/quietness fence.
       // A read-only busy pre-gate here would prevent that drain from ever
       // starting under sustained MCP traffic, starving the verified candidate.
@@ -1219,8 +1791,9 @@ async function startAutomaticReleaseReconciliation(config: RecoveryConfig): Prom
     // Safety deadline has priority over generic exponential failure backoff.
     // Bound every reconciliation attempt to at most 15 seconds while an opted-in
     // Candidate B is soaking, even when the same provider error repeats.
-    await new Promise((resolveSleep) => setTimeout(resolveSleep,
-      boundReleaseReconcileDelayForAcceptance(backoff.delayMs, acceptanceDeadlinePending)));
+    await new Promise((resolveSleep) =>
+      setTimeout(resolveSleep, boundReleaseReconcileDelayForAcceptance(backoff.delayMs, acceptanceDeadlinePending)),
+    );
   }
 }
 
@@ -1234,7 +1807,9 @@ async function startRecoveryDaemon(config: RecoveryConfig): Promise<void> {
   // no listening gateway.
   const backgroundTimer = setTimeout(() => {
     void startAutomaticReleaseReconciliation(config).catch((error) => {
-      process.stderr.write(`Recovery release driver failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.stderr.write(
+        `Recovery release driver failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
       process.exit(1);
     });
     if (config.installProfile !== 'manual') {
@@ -1250,12 +1825,15 @@ async function startRecoveryDaemon(config: RecoveryConfig): Promise<void> {
 }
 
 /** Bounded children extend the existing Recovery execution boundary, never its mutation authority. */
-export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
-  releasePath?: string;
-  runChild?: typeof runBoundedChild;
-  /** Observation budget only; it never shortens the activation child execution budget. */
-  activationObservationMs?: number;
-} = {}): (name: string, args: Record<string, unknown>) => Promise<unknown> {
+export function createRecoveryToolExecutor(
+  config: RecoveryConfig,
+  options: {
+    releasePath?: string;
+    runChild?: typeof runBoundedChild;
+    /** Observation budget only; it never shortens the activation child execution budget. */
+    activationObservationMs?: number;
+  } = {},
+): (name: string, args: Record<string, unknown>) => Promise<unknown> {
   // Resolve/verify the immutable executable once at Gateway startup, not by
   // synchronously hashing the Recovery binary on every HTTP tool request.
   const releasePath = options.releasePath ?? readCurrentRecoveryRelease(config.controllerHome)?.releasePath;
@@ -1266,10 +1844,10 @@ export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
   let activeActivation = 0;
   let activeCandidateWork = 0;
   const usesCandidateWorkCapacity = (name: string): boolean =>
-    name === 'stage_runtime_release'
-    || name === 'prepare_runtime_release_session'
-    || name === 'verify_runtime_release_session_candidate'
-    || name === 'advance_runtime_release_session';
+    name === 'stage_runtime_release' ||
+    name === 'prepare_runtime_release_session' ||
+    name === 'verify_runtime_release_session_candidate' ||
+    name === 'advance_runtime_release_session';
   type ActivationTask = {
     fingerprint: string;
     startedAt: string;
@@ -1286,7 +1864,8 @@ export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
     recoveryRequestId: `recovery-gateway:${rawRequestId}`,
     startedAt,
     identity: recoveryMachineIdentity(config),
-    detail: 'Runtime activation continues under the existing Recovery mutation authority; observation detached before terminal completion.',
+    detail:
+      'Runtime activation continues under the existing Recovery mutation authority; observation detached before terminal completion.',
     reconcile: {
       mode: 'repeat_same_request' as const,
       tool: 'activate_runtime_release',
@@ -1295,25 +1874,40 @@ export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
   });
 
   const executeChild = async (name: string, input: string, status: boolean): Promise<unknown> => {
-    const result = await runChild(join(releasePath, 'forge-recovery'),
-      [RECOVERY_INTERNAL_TOOL_COMMAND, '--controller-home', config.controllerHome], {
+    const result = await runChild(
+      join(releasePath, 'forge-recovery'),
+      [RECOVERY_INTERNAL_TOOL_COMMAND, '--controller-home', config.controllerHome],
+      {
         input,
         timeoutMs: status ? 10_000 : 15 * 60_000,
         maxOutputBytes: 1024 * 1024,
         forwardSignals: false,
         env: runtimeAuthorityFreeEnvironment(process.env),
-      });
+      },
+    );
     if (result.status !== 0 || result.failureCode || result.timedOut) {
       // The child may have crossed a mutation boundary. Never automatically
       // retry/re-key a failed observation; the existing lock/journal decides.
-      throw new Error(`RECOVERY_TOOL_OUTCOME_UNKNOWN: ${result.failureCode ?? 'worker failed'}; inspect the existing request before retrying a mutation.`);
+      throw new Error(
+        `RECOVERY_TOOL_OUTCOME_UNKNOWN: ${result.failureCode ?? 'worker failed'}; inspect the existing request before retrying a mutation.`,
+      );
     }
     let envelope;
-    try { envelope = JSON.parse(result.stdout); }
-    catch { throw new Error('RECOVERY_TOOL_OUTCOME_UNKNOWN: invalid worker response; inspect the existing request before retrying a mutation.'); }
-    if (envelope?.schemaVersion !== 1 || typeof envelope.ok !== 'boolean'
-      || (envelope.ok && !Object.hasOwn(envelope, 'value'))) {
-      throw new Error('RECOVERY_TOOL_OUTCOME_UNKNOWN: invalid worker response; inspect the existing request before retrying a mutation.');
+    try {
+      envelope = JSON.parse(result.stdout);
+    } catch {
+      throw new Error(
+        'RECOVERY_TOOL_OUTCOME_UNKNOWN: invalid worker response; inspect the existing request before retrying a mutation.',
+      );
+    }
+    if (
+      envelope?.schemaVersion !== 1 ||
+      typeof envelope.ok !== 'boolean' ||
+      (envelope.ok && !Object.hasOwn(envelope, 'value'))
+    ) {
+      throw new Error(
+        'RECOVERY_TOOL_OUTCOME_UNKNOWN: invalid worker response; inspect the existing request before retrying a mutation.',
+      );
     }
     if (!envelope.ok) throw new Error(typeof envelope.error === 'string' ? envelope.error : 'RECOVERY_TOOL_FAILED');
     return envelope.value;
@@ -1331,7 +1925,10 @@ export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
       const fingerprint = createHash('sha256').update(input).digest('hex');
       const existing = activationTasks.get(rawRequestId);
       if (existing) {
-        if (existing.fingerprint !== fingerprint) throw new Error('RECOVERY_REQUEST_ID_CONFLICT: activate_runtime_release arguments changed for the same request_id');
+        if (existing.fingerprint !== fingerprint)
+          throw new Error(
+            'RECOVERY_REQUEST_ID_CONFLICT: activate_runtime_release arguments changed for the same request_id',
+          );
         if (existing.state === 'succeeded') return existing.value;
         if (existing.state === 'failed') throw existing.error ?? new Error('RECOVERY_TOOL_FAILED');
         return activationRunning(rawRequestId, existing.startedAt);
@@ -1344,7 +1941,8 @@ export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
         }
         throw new Error('RECOVERY_BUSY: execution capacity reached; no operation was started.');
       }
-      if (activeActivation >= 1) throw new Error('RECOVERY_BUSY: execution capacity reached; no operation was started.');
+      if (activeActivation >= 1)
+        throw new Error('RECOVERY_BUSY: execution capacity reached; no operation was started.');
 
       activeActivation += 1;
       const task: ActivationTask = {
@@ -1360,18 +1958,20 @@ export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
       }
 
       const execution = executeChild(name, input, false);
-      void execution.then(
-        (value) => {
-          task.state = 'succeeded';
-          task.value = value;
-        },
-        (error) => {
-          task.state = 'failed';
-          task.error = error instanceof Error ? error : new Error(String(error));
-        },
-      ).finally(() => {
-        activeActivation = Math.max(0, activeActivation - 1);
-      });
+      void execution
+        .then(
+          (value) => {
+            task.state = 'succeeded';
+            task.value = value;
+          },
+          (error) => {
+            task.state = 'failed';
+            task.error = error instanceof Error ? error : new Error(String(error));
+          },
+        )
+        .finally(() => {
+          activeActivation = Math.max(0, activeActivation - 1);
+        });
 
       const observed = await Promise.race([
         execution.then(
@@ -1407,7 +2007,13 @@ export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
 
 async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRuntimeIdentity): Promise<void> {
   const gateway = config.gateway;
-  if (!gateway || gateway.host !== '127.0.0.1' || !Number.isInteger(gateway.port) || gateway.port < 1024 || gateway.port > 65535) {
+  if (
+    !gateway ||
+    gateway.host !== '127.0.0.1' ||
+    !Number.isInteger(gateway.port) ||
+    gateway.port < 1024 ||
+    gateway.port > 65535
+  ) {
     throw new Error('RECOVERY_GATEWAY_CONFIG_INVALID');
   }
   let runtimeIdentity: RecoveryRuntimeIdentity | undefined = daemonIdentity;
@@ -1425,7 +2031,24 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
   const recoveryMcp = new RecoveryMcpServer({
     tools: recoveryTools,
     dispatchTool: async (name, args, context) => {
-      if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'restart_primary_connector' || name === 'recover_primary_runtime' || name === 'stage_runtime_release' || name === 'activate_runtime_release' || name === 'pin_runtime_release' || name === 'unpin_runtime_release' || name === 'activate_pinned_runtime_release' || name === 'prepare_runtime_release_session' || name === 'verify_runtime_release_session_candidate' || name === 'cutover_runtime_release_session' || name === 'promote_runtime_release_session_known_good' || name === 'migrate_controller_home' || name === 'restart_public_tunnel') {
+      if (
+        name === 'attest_known_good' ||
+        name === 'rollback_previous' ||
+        name === 'restart_primary_runtime' ||
+        name === 'restart_primary_connector' ||
+        name === 'recover_primary_runtime' ||
+        name === 'stage_runtime_release' ||
+        name === 'activate_runtime_release' ||
+        name === 'pin_runtime_release' ||
+        name === 'unpin_runtime_release' ||
+        name === 'activate_pinned_runtime_release' ||
+        name === 'prepare_runtime_release_session' ||
+        name === 'verify_runtime_release_session_candidate' ||
+        name === 'cutover_runtime_release_session' ||
+        name === 'promote_runtime_release_session_known_good' ||
+        name === 'migrate_controller_home' ||
+        name === 'restart_public_tunnel'
+      ) {
         const now = Date.now();
         const window = (recentMutations.get(context.remoteAddress) ?? []).filter((entry) => now - entry.at < 60_000);
         const mutationRequestId = requestId(args.request_id);
@@ -1447,10 +2070,7 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
       return;
     }
     if (request.method === 'GET' && matchesAnyPath(request.url, ['/health', '/recovery/health'])) {
-      const watchdog = observeRecoveryWatchdogHealth(
-        config.controllerHome,
-        config.installProfile !== 'manual',
-      );
+      const watchdog = observeRecoveryWatchdogHealth(config.controllerHome, config.installProfile !== 'manual');
       json(response, 200, {
         status: watchdog.ok ? 'ok' : 'degraded',
         service: 'forge-standalone-recovery',
@@ -1459,35 +2079,53 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
           detail: watchdog.detail,
           pulseAgeMs: 'pulseAgeMs' in watchdog ? watchdog.pulseAgeMs : undefined,
           tickAgeMs: 'tickAgeMs' in watchdog ? watchdog.tickAgeMs : undefined,
-          releaseRevision: 'runtimeIdentity' in watchdog ? watchdog.runtimeIdentity?.releaseRevision : runtimeIdentity?.releaseRevision,
+          releaseRevision:
+            'runtimeIdentity' in watchdog
+              ? watchdog.runtimeIdentity?.releaseRevision
+              : runtimeIdentity?.releaseRevision,
           pid: 'runtimeIdentity' in watchdog ? watchdog.runtimeIdentity?.pid : runtimeIdentity?.pid,
         },
         version: FORGE_VERSION,
-        ...(runtimeIdentity ? {
-          releasePath: runtimeIdentity.releasePath,
-          releaseRevision: runtimeIdentity.releaseRevision,
-          sourceCommit: runtimeIdentity.sourceCommit,
-          manifestSha256: runtimeIdentity.manifestSha256,
-        } : {}),
+        ...(runtimeIdentity
+          ? {
+              releasePath: runtimeIdentity.releasePath,
+              releaseRevision: runtimeIdentity.releaseRevision,
+              sourceCommit: runtimeIdentity.sourceCommit,
+              manifestSha256: runtimeIdentity.manifestSha256,
+            }
+          : {}),
         requests: {
           draining: recoveryGatewayIsDraining(config.controllerHome),
           activeMcpRequests,
-          ...(latestMcpActivityAt !== undefined ? { latestMcpActivityAgeMs: Math.max(0, Date.now() - latestMcpActivityAt) } : {}),
+          ...(latestMcpActivityAt !== undefined
+            ? { latestMcpActivityAgeMs: Math.max(0, Date.now() - latestMcpActivityAt) }
+            : {}),
         },
       });
       return;
     }
-    if (request.method === 'GET' && isProtectedResourceMetadataPath(request)) { json(response, 200, recoveryProtectedResourceMetadata(request, config)); return; }
-    if (request.method === 'GET' && isOAuthMetadataPath(request)) { json(response, 200, recoveryAuthorizationServerMetadata(request, config)); return; }
+    if (request.method === 'GET' && isProtectedResourceMetadataPath(request)) {
+      json(response, 200, recoveryProtectedResourceMetadata(request, config));
+      return;
+    }
+    if (request.method === 'GET' && isOAuthMetadataPath(request)) {
+      json(response, 200, recoveryAuthorizationServerMetadata(request, config));
+      return;
+    }
     if ((request.method === 'GET' || request.method === 'POST') && isAuthorizePath(request)) {
-      const params = request.method === 'GET'
-        ? requestUrl(request).searchParams
-        : parseUrlEncoded(await readBody(request));
+      const params =
+        request.method === 'GET' ? requestUrl(request).searchParams : parseUrlEncoded(await readBody(request));
       const redirectUri = params.get('redirect_uri');
       const clientId = params.get('client_id');
       const responseType = params.get('response_type');
-      if (!redirectUri || !clientId || responseType !== 'code') { json(response, 400, { error: 'invalid_request' }); return; }
-      if (request.method === 'GET') { html(response, 200, renderAuthorizeForm(params)); return; }
+      if (!redirectUri || !clientId || responseType !== 'code') {
+        json(response, 400, { error: 'invalid_request' });
+        return;
+      }
+      if (request.method === 'GET') {
+        html(response, 200, renderAuthorizeForm(params));
+        return;
+      }
       const expectedPassphrase = readMcpServiceOAuthPassphrase(config.controllerHome);
       const suppliedPassphrase = params.get('passphrase') ?? '';
       if (!expectedPassphrase || !secureEqual(suppliedPassphrase, expectedPassphrase)) {
@@ -1518,14 +2156,19 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
       let body: Record<string, unknown> = {};
       try {
         const raw = await readBody(request);
-        body = raw.trim() ? JSON.parse(raw) as Record<string, unknown> : {};
-      } catch { /* tolerate minimal DCR clients */ }
+        body = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      } catch {
+        /* tolerate minimal DCR clients */
+      }
       let registrationIdentity: ReturnType<typeof recoveryOAuthClientRegistrationIdentity>;
       try {
         registrationIdentity = recoveryOAuthClientRegistrationIdentity(body);
       } catch (error) {
         auditGateway({ oauth: 'register', outcome: 'invalid_client_metadata' });
-        json(response, 400, { error: 'invalid_client_metadata', error_description: error instanceof Error ? error.message : String(error) });
+        json(response, 400, {
+          error: 'invalid_client_metadata',
+          error_description: error instanceof Error ? error.message : String(error),
+        });
         return;
       }
       const { clientId, owner } = registrationIdentity;
@@ -1539,7 +2182,12 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
         owner,
         createdAt: Date.now(),
       });
-      auditGateway({ oauth: 'register', outcome: reused ? 'reused' : 'created', client_owner: owner, token_endpoint_auth_method: authMethod });
+      auditGateway({
+        oauth: 'register',
+        outcome: reused ? 'reused' : 'created',
+        client_owner: owner,
+        token_endpoint_auth_method: authMethod,
+      });
       json(response, 201, {
         ...body,
         client_id: clientId,
@@ -1574,14 +2222,24 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
       const redirectUri = params.get('redirect_uri') ?? '';
       const verifier = params.get('code_verifier') ?? '';
       const pending = code ? oauthCodes.get(code) : undefined;
-      if (!code || !pending || pending.clientId !== clientId || pending.redirectUri !== redirectUri || Date.now() - pending.createdAt > RECOVERY_OAUTH_CODE_TTL_MS) {
+      if (
+        !code ||
+        !pending ||
+        pending.clientId !== clientId ||
+        pending.redirectUri !== redirectUri ||
+        Date.now() - pending.createdAt > RECOVERY_OAUTH_CODE_TTL_MS
+      ) {
         auditGateway({ oauth: 'token', outcome: 'invalid_grant' });
         json(response, 400, { error: 'invalid_grant' });
         return;
       }
       const registeredClient = oauthClients.get(clientId);
       if (registeredClient?.clientSecret && !secureEqual(clientSecret, registeredClient.clientSecret)) {
-        auditGateway({ oauth: 'token', outcome: 'invalid_client', token_endpoint_auth_method: registeredClient.tokenEndpointAuthMethod });
+        auditGateway({
+          oauth: 'token',
+          outcome: 'invalid_client',
+          token_endpoint_auth_method: registeredClient.tokenEndpointAuthMethod,
+        });
         response.setHeader('www-authenticate', 'Basic realm="forge-recovery-oauth"');
         json(response, 401, { error: 'invalid_client' });
         return;
@@ -1608,8 +2266,15 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
       return;
     }
     const mcpRequest = classifyRecoveryMcpRequest(request, gatewayToken(config));
-    if (mcpRequest === 'not_mcp' || mcpRequest === 'method_not_supported') { json(response, 404, { error: 'NOT_FOUND' }); return; }
-    if (mcpRequest === 'auth_required') { response.setHeader('www-authenticate', recoveryWwwAuthenticate(request, config)); json(response, 401, recoveryUnauthorizedBody()); return; }
+    if (mcpRequest === 'not_mcp' || mcpRequest === 'method_not_supported') {
+      json(response, 404, { error: 'NOT_FOUND' });
+      return;
+    }
+    if (mcpRequest === 'auth_required') {
+      response.setHeader('www-authenticate', recoveryWwwAuthenticate(request, config));
+      json(response, 401, recoveryUnauthorizedBody());
+      return;
+    }
     if (recoveryGatewayIsDraining(config.controllerHome)) {
       response.setHeader('retry-after', '1');
       json(response, 503, { error: 'RECOVERY_DRAINING' });
@@ -1617,8 +2282,16 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
     }
     let body: unknown;
     if (request.method === 'POST') {
-      if (!/^application\/json(?:\s*;|$)/i.test(String(request.headers['content-type'] ?? ''))) { json(response, 415, { error: 'RECOVERY_CONTENT_TYPE_REQUIRED' }); return; }
-      try { body = JSON.parse(await readBody(request)); } catch { json(response, 400, rpcError(null, -32700, 'Invalid JSON.')); return; }
+      if (!/^application\/json(?:\s*;|$)/i.test(String(request.headers['content-type'] ?? ''))) {
+        json(response, 415, { error: 'RECOVERY_CONTENT_TYPE_REQUIRED' });
+        return;
+      }
+      try {
+        body = JSON.parse(await readBody(request));
+      } catch {
+        json(response, 400, rpcError(null, -32700, 'Invalid JSON.'));
+        return;
+      }
     }
     activeMcpRequests += 1;
     latestMcpActivityAt = Date.now();
@@ -1637,14 +2310,22 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
       if (response.writableEnded || response.destroyed) settle();
     }
   });
-  await new Promise<void>((resolveListen, reject) => { server.once('error', reject); server.listen(gateway.port, gateway.host, () => resolveListen()); });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once('error', reject);
+    server.listen(gateway.port, gateway.host, () => resolveListen());
+  });
   runtimeIdentity ??= writeRecoveryRuntimeIdentity(config.controllerHome, 'gateway');
-  process.stdout.write(JSON.stringify({ status: 'ready', host: gateway.host, port: gateway.port, runtimeIdentity }) + '\n');
+  process.stdout.write(
+    JSON.stringify({ status: 'ready', host: gateway.host, port: gateway.port, runtimeIdentity }) + '\n',
+  );
 }
 
-const isDirectExecution = import.meta.main === true
-  || Boolean(process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href);
+const isDirectExecution =
+  import.meta.main === true || Boolean(process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href);
 
 if (isDirectExecution) {
-  void cli().catch((error) => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });
+  void cli().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
 }

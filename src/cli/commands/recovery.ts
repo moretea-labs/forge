@@ -871,12 +871,20 @@ export function buildRecoveryCommand(): Command {
   command
     .command('prepare-runtime-release-session')
     .description(
-      'Freeze the configured Runtime source and build one immutable release into the canonical durable ReleaseSession',
+      'Build Candidate B from one exact caller-selected registered repository/commit pair into the canonical durable ReleaseSession',
     )
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
-    .action(async (opts: { controllerHome: string }) => {
+    .requiredOption('--source-repository-id <repoId>', 'Enabled, non-removed Repository Registry identity')
+    .requiredOption('--expected-source-revision <sha>', 'Exact 40-character Git commit in that registered repository')
+    .action(async (opts: { controllerHome: string; sourceRepositoryId: string; expectedSourceRevision: string }) => {
       const home = resolveControllerHome(opts.controllerHome);
-      const result = await prepareConfiguredRuntimeReleaseSession(loadRecoveryConfig(home));
+      const result = await prepareConfiguredRuntimeReleaseSession(
+        loadRecoveryConfig(home),
+        {},
+        undefined,
+        opts.sourceRepositoryId,
+        opts.expectedSourceRevision,
+      );
       output(result);
       if (!result.ok) process.exitCode = 1;
     });
@@ -925,6 +933,10 @@ export function buildRecoveryCommand(): Command {
     )
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .requiredOption('--release-manifest <path>', 'Absolute manifest.json of the staged immutable Runtime release')
+    .requiredOption(
+      '--expected-source-repository-id <repoId>',
+      'Exact registered Repository Registry identity for the staged source',
+    )
     .requiredOption('--expected-source-revision <sha>', 'Exact accepted 40-hex source commit')
     .requiredOption('--expected-active-release-id <id>', 'Active Runtime release observed before activation')
     .requiredOption(
@@ -935,6 +947,7 @@ export function buildRecoveryCommand(): Command {
       async (opts: {
         controllerHome: string;
         releaseManifest: string;
+        expectedSourceRepositoryId: string;
         expectedSourceRevision: string;
         expectedActiveReleaseId: string;
         expectedAuthorityRevision: string;
@@ -942,6 +955,7 @@ export function buildRecoveryCommand(): Command {
         const home = resolveControllerHome(opts.controllerHome);
         const authorityRevision = Number(opts.expectedAuthorityRevision);
         if (
+          !/^repo_[A-Za-z0-9_-]+$/.test(opts.expectedSourceRepositoryId) ||
           !/^[a-f0-9]{40}$/i.test(opts.expectedSourceRevision) ||
           !Number.isInteger(authorityRevision) ||
           authorityRevision < 1
@@ -953,6 +967,7 @@ export function buildRecoveryCommand(): Command {
           resolve(opts.releaseManifest),
           {},
           {
+            expectedSourceRepositoryId: opts.expectedSourceRepositoryId,
             expectedSourceRevision: opts.expectedSourceRevision,
             expectedActiveReleaseId: opts.expectedActiveReleaseId,
             expectedAuthorityRevision: authorityRevision,

@@ -70,6 +70,8 @@ import {
   writePackageRuntimeSystemdUserService,
 } from '../root/package-runtime-service';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
+import type { RuntimeReleaseSourceState as ConfiguredRuntimeReleaseSourceState } from '../release/release-coordinator';
+import { getRepository, selectRepositoryCheckout } from '../repositories/registry';
 import {
   assertRuntimeReleaseExecutionCanaries,
   assertRuntimeReleaseFiles,
@@ -135,6 +137,7 @@ import {
   recordReleaseSessionTransaction,
   releaseSessionCandidateIsRetired,
   releaseSessionAcceptanceTimedOut,
+  releaseSessionSourceRepositoryId,
   releaseSessionIsSoakingPredecessorOfStable,
   releaseSessionIsSoakingSupersededByStableAuthority,
   releaseSessionIsSoakingSupersededByFailedCutoverCompensation,
@@ -2295,6 +2298,7 @@ export interface RuntimeReleaseActivationGuard {
   expectedAuthorityRevision?: number | null;
   /** Active release observed when the caller decided to activate; null means the caller observed no active release. */
   expectedActiveReleaseId?: string | null;
+  expectedSourceRepositoryId?: string;
   expectedSourceRevision?: string;
   /** Explicit incompatible-migration path may bind activation to one isolated Recovery ReleaseSession. */
   releaseSessionId?: string;
@@ -4114,6 +4118,7 @@ function runtimeBehaviorEquivalent(leftManifestPath: string, rightManifestPath: 
 function validateRuntimeReleaseCandidate(
   config: RecoveryConfig,
   manifestPath: string,
+  selectedSourceRepositoryId?: string,
 ): { manifest: RuntimeReleaseManifest; releaseRoot: string; manifestPath: string } {
   if (!isAbsolute(manifestPath))
     throw new Error('RUNTIME_RELEASE_CANDIDATE_PATH_REQUIRED: an absolute release manifest path is required');
@@ -4132,7 +4137,7 @@ function validateRuntimeReleaseCandidate(
       'RUNTIME_RELEASE_CANDIDATE_PATH_INVALID: manifest must be the canonical immutable release under this Controller Home',
     );
   }
-  const expectedRepositoryId = config.primaryRuntimeSourceRepositoryId?.trim();
+  const expectedRepositoryId = selectedSourceRepositoryId?.trim() ?? config.primaryRuntimeSourceRepositoryId?.trim();
   if (
     manifest.deploymentScope === 'portable' &&
     expectedRepositoryId &&
@@ -4170,7 +4175,7 @@ async function activateRuntimeReleaseInternal(
 ): Promise<RuntimeReleaseActivationResult> {
   let candidate: { manifest: RuntimeReleaseManifest; releaseRoot: string; manifestPath: string };
   try {
-    candidate = validateRuntimeReleaseCandidate(config, candidateManifestPath);
+    candidate = validateRuntimeReleaseCandidate(config, candidateManifestPath, guard.expectedSourceRepositoryId);
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'runtime release candidate validation failed';
     audit(config, 'runtime_release_activation_candidate_invalid', {
@@ -4200,6 +4205,23 @@ async function activateRuntimeReleaseInternal(
         detail: `RUNTIME_RELEASE_SOURCE_REVISION_MISMATCH: expected ${expectedSourceRevision}, got ${candidate.manifest.sourceCommit}`,
       };
     }
+  }
+  const expectedSourceRepositoryId = guard.expectedSourceRepositoryId?.trim();
+  if (
+    candidate.manifest.deploymentScope === 'portable' &&
+    !guard.requiredPinnedReleaseRevision &&
+    !guard.releaseSessionId?.trim() &&
+    !expectedSourceRepositoryId
+  ) {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REPOSITORY_ID_REQUIRED',
+    };
+  }
+  if (expectedSourceRepositoryId && !/^repo_[A-Za-z0-9_-]+$/.test(expectedSourceRepositoryId)) {
+    return { ok: false, attempted: false, noOp: true, detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REPOSITORY_ID_INVALID' };
   }
   if (
     candidate.manifest.deploymentScope === 'portable' &&
@@ -4237,7 +4259,9 @@ async function activateRuntimeReleaseInternal(
       bound.releaseId !== candidate.manifest.releaseId ||
       bound.artifactIdentity !== candidate.manifest.artifactIdentity ||
       bound.manifestSha256 !== observedManifestSha256 ||
-      bound.treeSha256 !== observedTreeSha256
+      bound.treeSha256 !== observedTreeSha256 ||
+      session.sourceRevision !== candidate.manifest.sourceCommit ||
+      releaseSessionSourceRepositoryId(session) !== candidate.manifest.sourceRepositoryId
     ) {
       return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_IDENTITY_MISMATCH' };
     }
@@ -4922,50 +4946,136 @@ export async function activatePinnedRuntimeRelease(
   });
 }
 
-function configuredSourceRevision(sourceRoot: string): string {
+function configuredSourceRevision(sourceRoot: string, expectedSourceRevision?: string): string {
+  const revision = expectedSourceRevision?.trim().toLowerCase() ?? '';
+  if (!revision) throw new Error('RELEASE_SESSION_SOURCE_REVISION_REQUIRED');
+  if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error('RELEASE_SESSION_SOURCE_REVISION_INVALID');
+
   const env = {
     ...runtimeAuthorityFreeEnvironment(process.env),
     PATH: recoveryCommandPath(),
   };
-  // The fetched integration main is the source authority, not this checkout's
-  // moving HEAD (which can belong to an unrelated Work). Keep the resolved SHA
-  // frozen in the existing ReleaseSession; the checkout only supplies Git
-  // objects/dependencies to the detached immutable source snapshot. Fail closed
-  // without origin/main rather than silently releasing a development branch.
-  const head = spawnSync('git', ['-C', sourceRoot, 'rev-parse', '--verify', 'refs/remotes/origin/main^{commit}'], {
+  // A release is built only from the exact commit selected by the caller or
+  // already frozen in its ReleaseSession. Never infer a release source from
+  // HEAD, origin/main, or another moving ref.
+  const selected = spawnSync('git', ['-C', sourceRoot, 'rev-parse', '--verify', revision + '^{commit}'], {
     encoding: 'utf8',
     env,
     timeout: 10_000,
   });
-  const revision = (head.stdout ?? '').trim();
-  if (head.status !== 0 || !/^[a-f0-9]{40}$/i.test(revision)) {
+  const resolved = (selected.stdout ?? '').trim().toLowerCase();
+  if (selected.status !== 0 || resolved !== revision) {
     throw new Error('RELEASE_SESSION_SOURCE_REVISION_UNAVAILABLE');
   }
   return revision;
 }
 
-export interface ConfiguredRuntimeReleaseSourceState {
-  configured: boolean;
-  sourceRevision?: string;
-  activeSourceCommit?: string;
-  activeReleaseId?: string;
+export interface RuntimeReleaseSourceSelection {
+  sourceRepositoryId: string;
+  sourceRoot: string;
+  sourceRevision: string;
+}
+
+function resolveRuntimeReleaseSourceRepository(
+  controllerHome: string,
+  sourceRepositoryId?: string,
+): Pick<RuntimeReleaseSourceSelection, 'sourceRepositoryId' | 'sourceRoot'> {
+  const selectedRepositoryId = sourceRepositoryId?.trim() ?? '';
+  if (!selectedRepositoryId) throw new Error('RELEASE_SOURCE_REPOSITORY_ID_REQUIRED');
+  if (!/^repo_[A-Za-z0-9_-]+$/.test(selectedRepositoryId)) {
+    throw new Error('RELEASE_SOURCE_REPOSITORY_ID_INVALID');
+  }
+
+  let repository: ReturnType<typeof getRepository>;
+  try {
+    repository = getRepository(selectedRepositoryId, controllerHome);
+  } catch {
+    throw new Error('RELEASE_SOURCE_REPOSITORY_UNKNOWN');
+  }
+  if (!repository.enabled || repository.disabledAt || repository.removedAt) {
+    throw new Error('RELEASE_SOURCE_REPOSITORY_DISABLED');
+  }
+  if (repository.repositoryType !== 'git' && repository.repositoryType !== 'local-git') {
+    throw new Error('RELEASE_SOURCE_REPOSITORY_TYPE_UNSUPPORTED');
+  }
+
+  let selectedCheckout: ReturnType<typeof selectRepositoryCheckout>;
+  try {
+    selectedCheckout = selectRepositoryCheckout(repository, repository.activeCheckoutId);
+  } catch {
+    throw new Error('RELEASE_SOURCE_REPOSITORY_CHECKOUT_UNAVAILABLE');
+  }
+  const checkoutRoot = selectedCheckout.canonicalRoot?.trim();
+  if (!checkoutRoot || !existsSync(checkoutRoot)) {
+    throw new Error('RELEASE_SOURCE_REPOSITORY_ROOT_UNAVAILABLE');
+  }
+
+  let sourceRoot: string;
+  try {
+    sourceRoot = realpathSync(checkoutRoot);
+    if (!statSync(sourceRoot).isDirectory()) throw new Error('not a directory');
+  } catch {
+    throw new Error('RELEASE_SOURCE_REPOSITORY_ROOT_UNAVAILABLE');
+  }
+
+  const env = {
+    ...runtimeAuthorityFreeEnvironment(process.env),
+    PATH: recoveryCommandPath(),
+  };
+  const topLevel = spawnSync('git', ['-C', sourceRoot, 'rev-parse', '--show-toplevel'], {
+    encoding: 'utf8',
+    env,
+    timeout: 10_000,
+  });
+  let canonicalTopLevel = '';
+  try {
+    if (topLevel.status === 0) canonicalTopLevel = realpathSync((topLevel.stdout ?? '').trim());
+  } catch {
+    canonicalTopLevel = '';
+  }
+  if (topLevel.status !== 0 || !canonicalTopLevel || canonicalTopLevel !== sourceRoot) {
+    throw new Error('RELEASE_SOURCE_REPOSITORY_ROOT_MISMATCH');
+  }
+
+  return { sourceRepositoryId: selectedRepositoryId, sourceRoot };
+}
+
+export function resolveRuntimeReleaseSourceSelection(
+  controllerHome: string,
+  sourceRepositoryId?: string,
+  expectedSourceRevision?: string,
+): RuntimeReleaseSourceSelection {
+  const repository = resolveRuntimeReleaseSourceRepository(controllerHome, sourceRepositoryId);
+  return {
+    ...repository,
+    sourceRevision: configuredSourceRevision(repository.sourceRoot, expectedSourceRevision),
+  };
 }
 
 /**
- * Read the two immutable identities used only to decide whether automatic
- * release reconciliation is warranted. This does not create or advance a
- * ReleaseSession and therefore never becomes release intent authority.
+ * Validate one caller-selected repository/commit pair and observe the active
+ * Runtime's immutable source provenance. This never creates or advances a session.
  */
-export function configuredRuntimeReleaseSourceState(config: RecoveryConfig): ConfiguredRuntimeReleaseSourceState {
-  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
-  if (!sourceRoot) return { configured: false };
+export function configuredRuntimeReleaseSourceState(
+  config: RecoveryConfig,
+  sourceRepositoryId?: string,
+  expectedSourceRevision?: string,
+): ConfiguredRuntimeReleaseSourceState {
+  if (!sourceRepositoryId?.trim() || !expectedSourceRevision?.trim()) return { configured: false };
+  const selected = resolveRuntimeReleaseSourceSelection(
+    config.controllerHome,
+    sourceRepositoryId,
+    expectedSourceRevision,
+  );
   const authority = readRuntimeReleaseAuthority(config.controllerHome);
   if (!authority) throw new Error('RELEASE_AUTOMATION_ACTIVE_RELEASE_AUTHORITY_UNKNOWN');
   const manifest = loadRuntimeReleaseManifest(authority.active.manifestPath, config.controllerHome);
   return {
     configured: true,
-    sourceRevision: configuredSourceRevision(sourceRoot),
+    sourceRepositoryId: selected.sourceRepositoryId,
+    sourceRevision: selected.sourceRevision,
     activeSourceCommit: manifest.sourceCommit?.trim() || undefined,
+    activeSourceRepositoryId: manifest.sourceRepositoryId?.trim() || undefined,
     activeReleaseId: authority.active.releaseId,
   };
 }
@@ -5053,42 +5163,35 @@ export interface ConfiguredRuntimeStageResult {
 
 export function stageConfiguredRuntimeRelease(
   config: RecoveryConfig,
+  sourceRepositoryId: string,
   expectedSourceRevision: string,
   dependencies: Pick<ConfiguredRuntimeActivationDependencies, 'stage'> = {},
   requestId?: string,
 ): ConfiguredRuntimeStageResult {
-  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
-  if (!sourceRoot)
+  let selection: RuntimeReleaseSourceSelection;
+  try {
+    selection = resolveRuntimeReleaseSourceSelection(config.controllerHome, sourceRepositoryId, expectedSourceRevision);
+  } catch (error) {
     return {
       ok: false,
       attempted: false,
       noOp: true,
-      detail: 'primary Runtime source root is not configured in standalone Recovery',
+      detail: error instanceof Error ? error.message : String(error),
     };
-  const sourceRepositoryId = config.primaryRuntimeSourceRepositoryId?.trim();
-  if (!sourceRepositoryId)
-    return {
-      ok: false,
-      attempted: false,
-      noOp: true,
-      detail: 'primary Runtime source repository id is not configured in standalone Recovery',
-    };
-  const sourceRevision = expectedSourceRevision.trim();
-  if (!/^[a-f0-9]{40}$/i.test(sourceRevision)) {
-    return { ok: false, attempted: false, noOp: true, detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REVISION_INVALID' };
   }
+  const { sourceRoot, sourceRepositoryId: selectedSourceRepositoryId, sourceRevision } = selection;
   try {
     const staged = withRuntimeReleaseSourceSnapshot({ sourceRoot, sourceRevision }, (frozenSourceRoot) =>
       (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({
         controllerHome: config.controllerHome,
         sourceRoot: frozenSourceRoot,
         dependencyRoot: sourceRoot,
-        sourceRepositoryId,
+        sourceRepositoryId: selectedSourceRepositoryId,
       }),
     );
     assertRuntimeReleaseFiles(staged);
     assertRuntimeReleaseExecutionCanaries(staged.manifestPath, config.controllerHome);
-    if (staged.sourceCommit !== sourceRevision || staged.sourceRepositoryId !== sourceRepositoryId) {
+    if (staged.sourceCommit !== sourceRevision || staged.sourceRepositoryId !== selectedSourceRepositoryId) {
       throw new Error('RUNTIME_RELEASE_STAGED_SOURCE_IDENTITY_MISMATCH');
     }
     const release = {
@@ -5099,13 +5202,13 @@ export function stageConfiguredRuntimeRelease(
       manifestSha256: staged.manifestSha256,
       treeSha256: runtimeReleaseTreeSha256(staged.releasePath),
       sourceCommit: staged.sourceCommit,
-      sourceRepositoryId,
+      sourceRepositoryId: selectedSourceRepositoryId,
     };
     audit(config, 'runtime_release_staged', {
       ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
       releaseId: release.releaseId,
       sourceCommit: release.sourceCommit,
-      sourceRepositoryId,
+      sourceRepositoryId: selectedSourceRepositoryId,
       artifactIdentity: release.artifactIdentity,
       manifestSha256: release.manifestSha256,
       treeSha256: release.treeSha256,
@@ -5121,7 +5224,7 @@ export function stageConfiguredRuntimeRelease(
     audit(config, 'runtime_release_stage_failed', {
       ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
       sourceCommit: sourceRevision,
-      sourceRepositoryId,
+      sourceRepositoryId: selectedSourceRepositoryId,
       detail: detail.slice(0, 500),
     });
     return { ok: false, attempted: true, detail };
@@ -5134,23 +5237,25 @@ export async function prepareConfiguredRuntimeReleaseSession(
   config: RecoveryConfig,
   dependencies: Pick<ConfiguredRuntimeActivationDependencies, 'stage' | 'materializeCandidateLane'> = {},
   requestId?: string,
+  sourceRepositoryId?: string,
+  expectedSourceRevision?: string,
 ): Promise<ConfiguredRuntimeActivationResult> {
-  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
-  if (!sourceRoot)
+  let selection: RuntimeReleaseSourceSelection;
+  try {
+    selection = resolveRuntimeReleaseSourceSelection(config.controllerHome, sourceRepositoryId, expectedSourceRevision);
+  } catch (error) {
     return {
       ok: false,
       attempted: false,
       noOp: true,
-      detail: 'primary Runtime source root is not configured in standalone Recovery',
+      detail: error instanceof Error ? error.message : String(error),
     };
-  const sourceRepositoryId = config.primaryRuntimeSourceRepositoryId?.trim();
-  if (!sourceRepositoryId)
-    return {
-      ok: false,
-      attempted: false,
-      noOp: true,
-      detail: 'primary Runtime source repository id is not configured in standalone Recovery',
-    };
+  }
+  const {
+    sourceRoot,
+    sourceRepositoryId: selectedSourceRepositoryId,
+    sourceRevision: selectedSourceRevision,
+  } = selection;
 
   const verifiedStable = await verifyStableRuntime(config);
   if (!verifiedStable.ok) {
@@ -5166,7 +5271,6 @@ export async function prepareConfiguredRuntimeReleaseSession(
     async () => {
       const stable = readStableExecutionLane(config.controllerHome);
       const stableRelease = stableReleaseSessionIdentity(config);
-      const sourceRevision = configuredSourceRevision(sourceRoot);
 
       // ReleaseSession owns semantic progression. This Recovery lock serializes only
       // physical preparation. Resume the exact source_frozen session after an
@@ -5178,6 +5282,38 @@ export async function prepareConfiguredRuntimeReleaseSession(
           attempted: false,
           noOp: true,
           detail: `RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',') || 'none'}`,
+        };
+      }
+      const unresolvedCutover = inventory.sessions.find(
+        (existing) => existing.phase === 'cutover_attempting' || existing.phase === 'cutover_committed',
+      );
+      if (unresolvedCutover) {
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail:
+            'RELEASE_SESSION_PREPARE_REQUIRES_RECONCILIATION: ' +
+            unresolvedCutover.sessionId +
+            ':' +
+            unresolvedCutover.phase,
+          releaseSession: unresolvedCutover,
+        };
+      }
+      const unresolvedSoak = inventory.sessions.find(
+        (existing) =>
+          existing.phase === 'soaking' &&
+          existing.sourceRevision === selectedSourceRevision &&
+          releaseSessionSourceRepositoryId(existing) === selectedSourceRepositoryId &&
+          releaseSessionIsSoakingPredecessorOfStable(existing, stableRelease),
+      );
+      if (unresolvedSoak) {
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: 'RELEASE_SESSION_PREPARE_REQUIRES_SOAK_RESOLUTION: ' + unresolvedSoak.sessionId,
+          releaseSession: unresolvedSoak,
         };
       }
       await reconcileOrphanCandidateLanes(config, stable, inventory.sessions);
@@ -5202,7 +5338,8 @@ export async function prepareConfiguredRuntimeReleaseSession(
           existing.phase === 'cutover_eligible';
         if (
           preparationReusablePhase &&
-          existing.sourceRevision === sourceRevision &&
+          existing.sourceRevision === selectedSourceRevision &&
+          releaseSessionSourceRepositoryId(existing) === selectedSourceRepositoryId &&
           sameStableReleaseSessionIdentity(existing.stableRelease, stableRelease)
         ) {
           if (resumableMatchingSession) {
@@ -5227,7 +5364,11 @@ export async function prepareConfiguredRuntimeReleaseSession(
         }
         if (existing.phase === 'soaking') {
           const candidateIsCurrentStable = releaseSessionIsSoakingPredecessorOfStable(existing, stableRelease);
-          if (candidateIsCurrentStable && existing.sourceRevision === sourceRevision) {
+          if (
+            candidateIsCurrentStable &&
+            existing.sourceRevision === selectedSourceRevision &&
+            releaseSessionSourceRepositoryId(existing) === selectedSourceRepositoryId
+          ) {
             return {
               ok: false as const,
               attempted: false,
@@ -5331,6 +5472,41 @@ export async function prepareConfiguredRuntimeReleaseSession(
         if (!superseded.ok) return superseded;
       }
 
+      const sourceState = configuredRuntimeReleaseSourceState(
+        config,
+        selectedSourceRepositoryId,
+        selectedSourceRevision,
+      );
+      if (
+        sourceState.activeSourceCommit === selectedSourceRevision &&
+        sourceState.activeSourceRepositoryId === selectedSourceRepositoryId
+      ) {
+        if (resumableMatchingSession) {
+          const retired = await cancelReleaseSessionUnderLock(
+            config,
+            resumableMatchingSession,
+            'selected source commit and repository are already active in Stable A',
+          );
+          if (!retired.ok) return retired;
+          return {
+            ...retired,
+            noOp: false,
+            detail:
+              'RELEASE_SESSION_SOURCE_ALREADY_ACTIVE: ' +
+              selectedSourceRepositoryId +
+              '@' +
+              selectedSourceRevision +
+              '; redundant pre-cutover Candidate B was retired',
+          };
+        }
+        return {
+          ok: true as const,
+          attempted: false,
+          noOp: true,
+          detail: 'RELEASE_SESSION_SOURCE_ALREADY_ACTIVE: ' + selectedSourceRepositoryId + '@' + selectedSourceRevision,
+        };
+      }
+
       if (resumableMatchingSession && resumableMatchingSession.phase !== 'source_frozen') {
         return {
           ok: true as const,
@@ -5391,7 +5567,8 @@ export async function prepareConfiguredRuntimeReleaseSession(
           stable,
           stableRelease,
           candidate: candidateLane,
-          sourceRevision,
+          sourceRepositoryId: selectedSourceRepositoryId,
+          sourceRevision: selectedSourceRevision,
         });
       }
       return {
@@ -5399,7 +5576,8 @@ export async function prepareConfiguredRuntimeReleaseSession(
           session,
           candidateLane,
           stableRelease,
-          sourceRevision,
+          sourceRepositoryId: selectedSourceRepositoryId,
+          sourceRevision: selectedSourceRevision,
         },
       };
     },
@@ -5410,7 +5588,13 @@ export async function prepareConfiguredRuntimeReleaseSession(
   }
   if (!('buildContext' in locked.value)) return locked.value;
 
-  const { session: frozenSession, candidateLane, stableRelease, sourceRevision } = locked.value.buildContext;
+  const {
+    session: frozenSession,
+    candidateLane,
+    stableRelease,
+    sourceRepositoryId: frozenSourceRepositoryId,
+    sourceRevision,
+  } = locked.value.buildContext;
   const sessionId = frozenSession.sessionId;
 
   // Building Candidate B is isolated work. Serialize it only inside Candidate B's
@@ -5433,11 +5617,12 @@ export async function prepareConfiguredRuntimeReleaseSession(
             controllerHome: candidateLane.controllerHome,
             sourceRoot: frozenSourceRoot,
             dependencyRoot: sourceRoot,
-            sourceRepositoryId,
+            sourceRepositoryId: frozenSourceRepositoryId,
           }),
         );
         assertRuntimeReleaseFiles(staged);
-        if (staged.sourceCommit !== sourceRevision) throw new Error('RELEASE_SESSION_SOURCE_CHANGED_DURING_BUILD');
+        if (staged.sourceCommit !== sourceRevision || staged.sourceRepositoryId !== frozenSourceRepositoryId)
+          throw new Error('RELEASE_SESSION_SOURCE_IDENTITY_CHANGED_DURING_BUILD');
         const candidateRelease: ReleaseSessionCandidateRelease = {
           releaseId: staged.releaseId,
           manifestPath: staged.manifestPath,
@@ -5445,7 +5630,7 @@ export async function prepareConfiguredRuntimeReleaseSession(
           manifestSha256: staged.manifestSha256,
           treeSha256: runtimeReleaseTreeSha256(staged.releasePath),
           sourceCommit: staged.sourceCommit,
-          ...(staged.sourceRepositoryId ? { sourceRepositoryId: staged.sourceRepositoryId } : {}),
+          sourceRepositoryId: frozenSourceRepositoryId,
         };
         return { ok: true as const, staged, candidateRelease };
       } catch (error) {
@@ -5466,7 +5651,12 @@ export async function prepareConfiguredRuntimeReleaseSession(
 
   if (!candidateBuild.value.ok) {
     const detail = candidateBuild.value.detail;
-    audit(config, 'release_session_candidate_build_failed', { sessionId, sourceRevision, detail });
+    audit(config, 'release_session_candidate_build_failed', {
+      sessionId,
+      sourceRepositoryId: frozenSourceRepositoryId,
+      sourceRevision,
+      detail,
+    });
     const failed = await withLock(
       config,
       {
@@ -5567,6 +5757,7 @@ export async function prepareConfiguredRuntimeReleaseSession(
       });
       audit(config, 'release_session_candidate_built', {
         sessionId,
+        sourceRepositoryId: frozenSourceRepositoryId,
         sourceRevision,
         stableReleaseId: stableRelease.releaseId,
         stableAuthorityRevision: stableRelease.authorityRevision,
@@ -7190,6 +7381,8 @@ export async function cutoverConfiguredRuntimeReleaseSession(
               ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
               expectedAuthorityRevision: session.stableRelease.authorityRevision,
               expectedActiveReleaseId: session.stableRelease.releaseId,
+              expectedSourceRepositoryId: releaseSessionSourceRepositoryId(session),
+              expectedSourceRevision: session.sourceRevision,
               releaseSessionId: session.sessionId,
             },
             releaseSessionLock,

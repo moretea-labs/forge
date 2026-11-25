@@ -24,4 +24,6 @@ A task is complete only when the relevant diff, checks, integrated revision, and
 
 Forge Runtime releases are built from a clean canonical source tree. Source commit, immutable manifest, service registration, active whole-release authority, database compatibility, Worker protocol, and the running Runtime identity must agree exactly.
 
+A ReleaseSession must be given an explicitly selected registered source repository and exact 40-hex commit; Recovery never substitutes a configured source or moving `HEAD` or `origin/main`. Preparing the same source identity already active is an idempotent no-op. Advancing without an active session never prepares a new candidate.
+
 Continue with [Execution Lifecycle](Execution-Lifecycle), [Security Model](Security-Model), and [Runtime Architecture](Runtime-Architecture).

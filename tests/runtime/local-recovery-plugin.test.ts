@@ -1,24 +1,59 @@
 import { describe, expect, test } from 'bun:test';
+import { executeCapabilityRecoveryAction } from '../../src/runtime/recovery/capability-action-application';
 // @ts-expect-error The managed external provider is intentionally plain ESM and validated at its JSON protocol boundary.
-import { ensureSourceRepositoryProvenance, executeAction, validateProviderConfig } from '../../scripts/forge-local-recovery-helper.mjs';
+import { executeAction, validateProviderConfig } from '../../scripts/forge-local-recovery-helper.mjs';
 
 describe('local_recovery managed transport provider', () => {
+  test('generic capability recovery cannot stage a release without the standalone source-selection contract', async () => {
+    await expect(
+      executeCapabilityRecoveryAction({
+        controllerHome: '/tmp/controller',
+        actionId: 'recovery.stage_runtime_release',
+        reason: 'fixture',
+        confirmAuthorization: true,
+        callStandaloneRecoveryTool: async () => {
+          throw new Error('must not stage');
+        },
+        recoverySnapshot: async () => ({}),
+      }),
+    ).rejects.toThrow('RECOVERY_ACTION_UNKNOWN');
+  });
   test('accepts only an absolute Controller Home and no provider endpoint overrides', () => {
-    expect(validateProviderConfig({ controllerHome: '/tmp/controller' })).toEqual({ controllerHome: '/tmp/controller' });
+    expect(validateProviderConfig({ controllerHome: '/tmp/controller' })).toEqual({
+      controllerHome: '/tmp/controller',
+    });
     expect(() => validateProviderConfig({ controllerHome: 'relative' })).toThrow(/absolute controllerHome/);
-    expect(() => validateProviderConfig({ controllerHome: '/tmp/controller', endpoint: 'http://127.0.0.1:1' })).toThrow(/accepts only controllerHome/);
+    expect(() => validateProviderConfig({ controllerHome: '/tmp/controller', endpoint: 'http://127.0.0.1:1' })).toThrow(
+      /accepts only controllerHome/,
+    );
   });
 
   test('read actions delegate exactly to existing Recovery MCP tools with no caller arguments', async () => {
-    const calls: unknown[] = [];
+    const calls: Array<{ controllerHome: string; name: string; args: object }> = [];
     const callRecoveryTool = async (controllerHome: string, name: string, args: object) => {
       calls.push({ controllerHome, name, args });
       return { ok: true, name };
     };
-    await expect(executeAction('runtime_status', {}, { controllerHome: '/tmp/controller' }, { callRecoveryTool, requestId: 'request-read-1' }))
-      .resolves.toEqual({ ok: true, name: 'runtime_status' });
-    await executeAction('list_releases', {}, { controllerHome: '/tmp/controller' }, { callRecoveryTool, requestId: 'request-read-2' });
-    await executeAction('verify_stable_runtime', {}, { controllerHome: '/tmp/controller' }, { callRecoveryTool, requestId: 'request-read-3' });
+    await expect(
+      executeAction(
+        'runtime_status',
+        {},
+        { controllerHome: '/tmp/controller' },
+        { callRecoveryTool, requestId: 'request-read-1' },
+      ),
+    ).resolves.toEqual({ ok: true, name: 'runtime_status' });
+    await executeAction(
+      'list_releases',
+      {},
+      { controllerHome: '/tmp/controller' },
+      { callRecoveryTool, requestId: 'request-read-2' },
+    );
+    await executeAction(
+      'verify_stable_runtime',
+      {},
+      { controllerHome: '/tmp/controller' },
+      { callRecoveryTool, requestId: 'request-read-3' },
+    );
     expect(calls).toEqual([
       { controllerHome: '/tmp/controller', name: 'runtime_status', args: {} },
       { controllerHome: '/tmp/controller', name: 'list_releases', args: {} },
@@ -26,145 +61,143 @@ describe('local_recovery managed transport provider', () => {
     ]);
   });
 
-  test('exact source staging and explicit migration advance delegate with provider-owned request identity', async () => {
-    const calls: unknown[] = [];
+  test('exact source selection, staging, and ReleaseSession advance delegate with provider-owned request identity', async () => {
+    const calls: Array<{ controllerHome: string; name: string; args: object }> = [];
     const callRecoveryTool = async (controllerHome: string, name: string, args: object) => {
       calls.push({ controllerHome, name, args });
       return { ok: true, staged: { releaseId: 'candidate' } };
     };
     const sourceRevision = 'a'.repeat(40);
-    const result = await executeAction('stage_runtime_release', { expected_source_revision: sourceRevision }, { controllerHome: '/tmp/controller' }, {
-      callRecoveryTool,
-      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' }),
-      getRepository: () => ({ repoId: 'repo_fixture', enabled: true, canonicalRoot: '/tmp' }),
-      findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_fixture' }),
-      requestId: 'stage-release-1',
-    });
+    const result = await executeAction(
+      'stage_runtime_release',
+      { source_repository_id: 'repo_fixture', expected_source_revision: sourceRevision },
+      { controllerHome: '/tmp/controller' },
+      {
+        callRecoveryTool,
+        loadRecoveryConfig: () => ({
+          controllerHome: '/tmp/controller',
+          primaryRuntimeSourceRoot: '/tmp',
+          primaryRuntimeSourceRepositoryId: 'repo_fixture',
+        }),
+        getRepository: () => ({ repoId: 'repo_fixture', enabled: true, canonicalRoot: '/tmp' }),
+        findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_fixture' }),
+        requestId: 'stage-release-1',
+      },
+    );
     expect(result).toEqual({ ok: true, staged: { releaseId: 'candidate' } });
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ controllerHome: '/tmp/controller', name: 'stage_runtime_release' });
-    expect((calls[0] as any).args).toEqual({ expected_source_revision: sourceRevision, request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/) });
-
-    await executeAction('advance_runtime_release_session', {}, { controllerHome: '/tmp/controller' }, {
-      callRecoveryTool,
-      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' }),
-      getRepository: () => ({ repoId: 'repo_fixture', enabled: true, canonicalRoot: '/tmp' }),
-      findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_fixture' }),
-      requestId: 'release-advance-1',
+    expect(calls[0]?.args).toEqual({
+      source_repository_id: 'repo_fixture',
+      expected_source_revision: sourceRevision,
+      request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/),
     });
-    expect(calls).toHaveLength(2);
-    expect(calls[1]).toMatchObject({ controllerHome: '/tmp/controller', name: 'advance_runtime_release_session' });
-    expect((calls[1] as any).args).toEqual({ request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/) });
+
+    await executeAction(
+      'prepare_runtime_release_session',
+      { source_repository_id: 'repo_fixture', expected_source_revision: sourceRevision.toUpperCase() },
+      { controllerHome: '/tmp/controller' },
+      {
+        callRecoveryTool,
+        loadRecoveryConfig: () => ({
+          controllerHome: '/tmp/controller',
+          primaryRuntimeSourceRoot: '/tmp',
+          primaryRuntimeSourceRepositoryId: 'repo_fixture',
+        }),
+        getRepository: () => ({ repoId: 'repo_fixture', enabled: true, canonicalRoot: '/tmp' }),
+        findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_fixture' }),
+        requestId: 'release-prepare-1',
+      },
+    );
+    expect(calls[1]).toMatchObject({ controllerHome: '/tmp/controller', name: 'prepare_runtime_release_session' });
+    expect(calls[1]?.args).toEqual({
+      source_repository_id: 'repo_fixture',
+      expected_source_revision: sourceRevision,
+      request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/),
+    });
+
+    await executeAction(
+      'advance_runtime_release_session',
+      {},
+      { controllerHome: '/tmp/controller' },
+      {
+        callRecoveryTool,
+        loadRecoveryConfig: () => ({
+          controllerHome: '/tmp/controller',
+          primaryRuntimeSourceRoot: '/tmp',
+          primaryRuntimeSourceRepositoryId: 'repo_fixture',
+        }),
+        getRepository: () => ({ repoId: 'repo_fixture', enabled: true, canonicalRoot: '/tmp' }),
+        findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_fixture' }),
+        requestId: 'release-advance-1',
+      },
+    );
+    expect(calls).toHaveLength(3);
+    expect(calls[2]).toMatchObject({ controllerHome: '/tmp/controller', name: 'advance_runtime_release_session' });
+    expect(calls[2]?.args).toEqual({ request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/) });
+
+    await expect(
+      executeAction('prepare_runtime_release_session', {}, { controllerHome: '/tmp/controller' }, { callRecoveryTool }),
+    ).rejects.toThrow('expected_source_revision must be one exact 40-hex Git commit.');
+    await expect(
+      executeAction(
+        'advance_runtime_release_session',
+        { expected_source_revision: sourceRevision },
+        { controllerHome: '/tmp/controller' },
+        { callRecoveryTool },
+      ),
+    ).rejects.toThrow(
+      'Local Recovery actions accept no caller endpoint, path, command, token, release, source, or tunnel arguments.',
+    );
   });
 
-  test('backfills only missing source repository provenance from the registered source-root owner', () => {
-    const writes: unknown[] = [];
-    const result = ensureSourceRepositoryProvenance('/tmp/controller', {
-      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/workspace/source' }),
-      findRegisteredRepositoryByCheckoutRoot: (root: string, controllerHome: string) => {
-        expect(root).toBe('/workspace/source');
-        expect(controllerHome).toBe('/tmp/controller');
-        return { repoId: 'repo_fixture' };
+  test('explicit source selection overrides stale config and never repairs config during advance', async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const source = { source_repository_id: 'repo_selected', expected_source_revision: 'a'.repeat(40) };
+    const injected = {
+      callRecoveryTool: async (_home: string, name: string, args: Record<string, unknown>) => {
+        calls.push({ name, args });
+        return { ok: true };
       },
-      createRecoveryConfig: (controllerHome: string, patch: object) => {
-        writes.push({ controllerHome, patch });
-        return { controllerHome, primaryRuntimeSourceRoot: '/workspace/source', primaryRuntimeSourceRepositoryId: 'repo_fixture' };
+      loadRecoveryConfig: () => {
+        throw new Error('source must not be inferred from config');
       },
-    });
-    expect(result.primaryRuntimeSourceRepositoryId).toBe('repo_fixture');
-    expect(writes).toEqual([{ controllerHome: '/tmp/controller', patch: { primaryRuntimeSourceRoot: '/workspace/source', primaryRuntimeSourceRepositoryId: 'repo_fixture' } }]);
-
-    let persisted = false;
-    const existing = ensureSourceRepositoryProvenance('/tmp/controller', {
-      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_existing' }),
-      getRepository: () => ({ repoId: 'repo_existing', enabled: true, canonicalRoot: '/tmp' }),
-      findRegisteredRepositoryByCheckoutRoot: () => { throw new Error('root owner lookup must not run when repoId authority exists'); },
-      createRecoveryConfig: () => { persisted = true; return {}; },
-    });
-    expect(existing.primaryRuntimeSourceRepositoryId).toBe('repo_existing');
-    expect(existing.primaryRuntimeSourceRoot).toBe('/tmp');
-    expect(persisted).toBe(false);
+      createRecoveryConfig: () => {
+        throw new Error('advance must not repair config');
+      },
+    };
+    for (const action of ['stage_runtime_release', 'prepare_runtime_release_session']) {
+      await executeAction(action, source, { controllerHome: '/tmp/controller' }, injected);
+      expect(calls.at(-1)?.args).toMatchObject(source);
+    }
+    await executeAction('advance_runtime_release_session', {}, { controllerHome: '/tmp/controller' }, injected);
+    expect(calls.at(-1)?.args).toEqual({ request_id: expect.stringMatching(/^local-recovery:[a-f0-9]{32}$/) });
   });
 
-  test('projects an existing different source root back to the authoritative repository canonical root', () => {
-    const writes: unknown[] = [];
-    const result = ensureSourceRepositoryProvenance('/tmp/controller', {
-      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_expected' }),
-      getRepository: () => ({ repoId: 'repo_expected', enabled: true, canonicalRoot: '/var' }),
-      findRegisteredRepositoryByCheckoutRoot: () => { throw new Error('root owner lookup must not run when repoId authority exists'); },
-      createRecoveryConfig: (controllerHome: string, patch: object) => {
-        writes.push({ controllerHome, patch });
-        return { controllerHome, primaryRuntimeSourceRoot: '/var', primaryRuntimeSourceRepositoryId: 'repo_expected' };
-      },
-    });
-    expect(result).toMatchObject({ primaryRuntimeSourceRoot: '/var', primaryRuntimeSourceRepositoryId: 'repo_expected' });
-    expect(writes).toEqual([{
-      controllerHome: '/tmp/controller',
-      patch: { primaryRuntimeSourceRoot: '/var', primaryRuntimeSourceRepositoryId: 'repo_expected' },
-    }]);
-  });
-
-  test('repairs a stale configured source root from the authoritative registered repository id', () => {
-    const writes: unknown[] = [];
-    const result = ensureSourceRepositoryProvenance('/tmp/controller', {
-      loadRecoveryConfig: () => ({
-        controllerHome: '/tmp/controller',
-        primaryRuntimeSourceRoot: '/tmp/deleted-transient-forge-worktree',
-        primaryRuntimeSourceRepositoryId: 'repo_fixture',
-      }),
-      getRepository: (repoId: string, controllerHome: string) => {
-        expect(repoId).toBe('repo_fixture');
-        expect(controllerHome).toBe('/tmp/controller');
-        return { repoId, enabled: true, canonicalRoot: '/tmp' };
-      },
-      createRecoveryConfig: (controllerHome: string, patch: object) => {
-        writes.push({ controllerHome, patch });
-        return { controllerHome, primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' };
-      },
-    });
-    expect(result).toMatchObject({ primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' });
-    expect(writes).toEqual([{
-      controllerHome: '/tmp/controller',
-      patch: { primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' },
-    }]);
-  });
-
-  test('fails closed when configured repository authority or its canonical root is unavailable', () => {
-    expect(() => ensureSourceRepositoryProvenance('/tmp/controller', {
-      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp/stale', primaryRuntimeSourceRepositoryId: 'repo_missing' }),
-      getRepository: () => { throw new Error('repository not found'); },
-    })).toThrow(/source repository id is not one enabled registered repository/);
-
-    expect(() => ensureSourceRepositoryProvenance('/tmp/controller', {
-      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp/stale', primaryRuntimeSourceRepositoryId: 'repo_disabled' }),
-      getRepository: () => ({ repoId: 'repo_disabled', enabled: false, canonicalRoot: '/tmp' }),
-    })).toThrow(/source repository id is not one enabled registered repository/);
-
-    expect(() => ensureSourceRepositoryProvenance('/tmp/controller', {
-      loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp/stale', primaryRuntimeSourceRepositoryId: 'repo_missing_root' }),
-      getRepository: () => ({ repoId: 'repo_missing_root', enabled: true, canonicalRoot: '/tmp/forge-canonical-root-that-does-not-exist' }),
-    })).toThrow(/canonical root is unavailable/);
-  });
-
-  test('stage accepts only one exact source revision and rejects every other caller-controlled mutation parameter', async () => {
+  test('stage requires an explicit repository/commit pair and rejects every other caller-controlled mutation parameter', async () => {
     let called = false;
-    const callRecoveryTool = async () => { called = true; return {}; };
+    const callRecoveryTool = async () => {
+      called = true;
+      return {};
+    };
     for (const input of [
       {},
       { expected_source_revision: 'not-a-sha' },
+      { expected_source_revision: 'a'.repeat(40) },
+      { source_repository_id: '../path', expected_source_revision: 'a'.repeat(40) },
       { source_root: '/tmp/source' },
       { release_path: '/tmp/release' },
       { endpoint: 'http://127.0.0.1:1' },
       { command: ['forge-recovery'] },
       { request_id: 'caller-owned' },
     ]) {
-      await expect(executeAction('stage_runtime_release', input, { controllerHome: '/tmp/controller' }, { callRecoveryTool }))
-        .rejects.toThrow();
+      await expect(
+        executeAction('stage_runtime_release', input, { controllerHome: '/tmp/controller' }, { callRecoveryTool }),
+      ).rejects.toThrow();
     }
     expect(called).toBe(false);
   });
 });
-
 
 test('Local Recovery MCP client uses one authenticated loopback session and closes it', async () => {
   // @ts-expect-error The managed external provider is intentionally plain ESM and validated at its JSON protocol boundary.
@@ -172,9 +205,15 @@ test('Local Recovery MCP client uses one authenticated loopback session and clos
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const headers = (extra: Record<string, string> = {}) => new Headers(extra);
   const responses = [
-    new Response('data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}\n\n', { status: 200, headers: headers({ 'content-type': 'text/event-stream', 'mcp-session-id': 'session-local-recovery' }) }),
+    new Response('data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}\n\n', {
+      status: 200,
+      headers: headers({ 'content-type': 'text/event-stream', 'mcp-session-id': 'session-local-recovery' }),
+    }),
     new Response('', { status: 202 }),
-    new Response('data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\\"ok\\":true,\\"source\\":\\"recovery\\"}"}]}}\n\n', { status: 200, headers: headers({ 'content-type': 'text/event-stream' }) }),
+    new Response(
+      'data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\\"ok\\":true,\\"source\\":\\"recovery\\"}"}]}}\n\n',
+      { status: 200, headers: headers({ 'content-type': 'text/event-stream' }) },
+    ),
     new Response('', { status: 204 }),
   ];
   const fakeFetch = async (url: string | URL | Request, init: RequestInit = {}) => {
@@ -183,11 +222,20 @@ test('Local Recovery MCP client uses one authenticated loopback session and clos
     if (!next) throw new Error('unexpected fetch');
     return next;
   };
-  const result = await callRecoveryTool('/tmp/controller', 'prepare_runtime_release_session', { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' }, {
-    loadRecoveryConfig: () => ({ schemaVersion: 1, controllerHome: '/tmp/controller', gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: '/ignored' } }),
-    gatewayToken: () => 'x'.repeat(32),
-    fetch: fakeFetch,
-  });
+  const result = await callRecoveryTool(
+    '/tmp/controller',
+    'prepare_runtime_release_session',
+    { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' },
+    {
+      loadRecoveryConfig: () => ({
+        schemaVersion: 1,
+        controllerHome: '/tmp/controller',
+        gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: '/ignored' },
+      }),
+      gatewayToken: () => 'x'.repeat(32),
+      fetch: fakeFetch,
+    },
+  );
   expect(result).toEqual({ ok: true, source: 'recovery' });
   expect(requests.map((entry) => entry.init.method)).toEqual(['POST', 'POST', 'POST', 'DELETE']);
   expect(requests.every((entry) => entry.url === 'http://127.0.0.1:8787/recovery/mcp')).toBe(true);
@@ -196,12 +244,17 @@ test('Local Recovery MCP client uses one authenticated loopback session and clos
   const call = JSON.parse(String(requests[2]!.init.body));
   expect(initialize.method).toBe('initialize');
   expect(notification.method).toBe('notifications/initialized');
-  expect(call).toMatchObject({ method: 'tools/call', params: { name: 'prepare_runtime_release_session', arguments: { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' } } });
+  expect(call).toMatchObject({
+    method: 'tools/call',
+    params: {
+      name: 'prepare_runtime_release_session',
+      arguments: { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' },
+    },
+  });
   expect((requests[0]!.init.headers as Record<string, string>).authorization).toBe(`Bearer ${'x'.repeat(32)}`);
   expect((requests[2]!.init.headers as Record<string, string>)['mcp-session-id']).toBe('session-local-recovery');
   expect((requests[3]!.init.headers as Record<string, string>)['mcp-session-id']).toBe('session-local-recovery');
 });
-
 
 test('Local Recovery MCP client supports stateless Recovery transport without requiring a session id', async () => {
   // @ts-expect-error The managed external provider is intentionally plain ESM and validated at its JSON protocol boundary.
@@ -209,9 +262,15 @@ test('Local Recovery MCP client supports stateless Recovery transport without re
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const headers = (extra: Record<string, string> = {}) => new Headers(extra);
   const responses = [
-    new Response('data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}\n\n', { status: 200, headers: headers({ 'content-type': 'text/event-stream' }) }),
+    new Response('data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}\n\n', {
+      status: 200,
+      headers: headers({ 'content-type': 'text/event-stream' }),
+    }),
     new Response('', { status: 202 }),
-    new Response('data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\\"ok\\":true,\\"stateless\\":true}"}]}}\n\n', { status: 200, headers: headers({ 'content-type': 'text/event-stream' }) }),
+    new Response(
+      'data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\\"ok\\":true,\\"stateless\\":true}"}]}}\n\n',
+      { status: 200, headers: headers({ 'content-type': 'text/event-stream' }) },
+    ),
   ];
   const fakeFetch = async (url: string | URL | Request, init: RequestInit = {}) => {
     requests.push({ url: String(url), init });
@@ -219,11 +278,20 @@ test('Local Recovery MCP client supports stateless Recovery transport without re
     if (!next) throw new Error('unexpected fetch');
     return next;
   };
-  const result = await callRecoveryTool('/tmp/controller', 'runtime_status', {}, {
-    loadRecoveryConfig: () => ({ schemaVersion: 1, controllerHome: '/tmp/controller', gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: '/tmp/token' } }),
-    gatewayToken: () => 'x'.repeat(32),
-    fetch: fakeFetch,
-  });
+  const result = await callRecoveryTool(
+    '/tmp/controller',
+    'runtime_status',
+    {},
+    {
+      loadRecoveryConfig: () => ({
+        schemaVersion: 1,
+        controllerHome: '/tmp/controller',
+        gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: '/tmp/token' },
+      }),
+      gatewayToken: () => 'x'.repeat(32),
+      fetch: fakeFetch,
+    },
+  );
   expect(result).toEqual({ ok: true, stateless: true });
   expect(requests.map((entry) => entry.init.method)).toEqual(['POST', 'POST', 'POST']);
   expect((requests[1]!.init.headers as Record<string, string>)['mcp-session-id']).toBeUndefined();
@@ -235,9 +303,15 @@ test('Local Recovery MCP client preserves Recovery tool errors instead of parsin
   const { callRecoveryTool } = await import('../../scripts/forge-local-recovery-helper.mjs');
   const headers = (extra: Record<string, string> = {}) => new Headers(extra);
   const responses = [
-    new Response('data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}\n\n', { status: 200, headers: headers({ 'content-type': 'text/event-stream', 'mcp-session-id': 'session-local-recovery-error' }) }),
+    new Response('data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}\n\n', {
+      status: 200,
+      headers: headers({ 'content-type': 'text/event-stream', 'mcp-session-id': 'session-local-recovery-error' }),
+    }),
     new Response('', { status: 202 }),
-    new Response('data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"RELEASE_SESSION_STABLE_RUNTIME_NOT_VERIFIED\"}]}}\n\n', { status: 200, headers: headers({ 'content-type': 'text/event-stream' }) }),
+    new Response(
+      'data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"RELEASE_SESSION_STABLE_RUNTIME_NOT_VERIFIED\"}]}}\n\n',
+      { status: 200, headers: headers({ 'content-type': 'text/event-stream' }) },
+    ),
     new Response('', { status: 204 }),
   ];
   const fakeFetch = async () => {
@@ -245,11 +319,22 @@ test('Local Recovery MCP client preserves Recovery tool errors instead of parsin
     if (!next) throw new Error('unexpected fetch');
     return next;
   };
-  await expect(callRecoveryTool('/tmp/controller', 'prepare_runtime_release_session', { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' }, {
-    loadRecoveryConfig: () => ({ schemaVersion: 1, controllerHome: '/tmp/controller', gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: '/tmp/token' } }),
-    gatewayToken: () => 'x'.repeat(32),
-    fetch: fakeFetch,
-  })).rejects.toThrow('RELEASE_SESSION_STABLE_RUNTIME_NOT_VERIFIED');
+  await expect(
+    callRecoveryTool(
+      '/tmp/controller',
+      'prepare_runtime_release_session',
+      { request_id: 'local-recovery:0123456789abcdef0123456789abcdef' },
+      {
+        loadRecoveryConfig: () => ({
+          schemaVersion: 1,
+          controllerHome: '/tmp/controller',
+          gateway: { host: '127.0.0.1', port: 8787, bearerTokenFile: '/tmp/token' },
+        }),
+        gatewayToken: () => 'x'.repeat(32),
+        fetch: fakeFetch,
+      },
+    ),
+  ).rejects.toThrow('RELEASE_SESSION_STABLE_RUNTIME_NOT_VERIFIED');
 });
 
 test('ReleaseSession actions expose only the exact session id and provider-owned mutation identity', async () => {
@@ -261,7 +346,10 @@ test('ReleaseSession actions expose only the exact session id and provider-owned
   const providerConfig = { controllerHome: '/tmp/controller' };
   const sessionId = 'release-session-fixture-1234';
 
-  await executeAction('release_session_status', { session_id: sessionId }, providerConfig, { callRecoveryTool, requestId: 'session-status' });
+  await executeAction('release_session_status', { session_id: sessionId }, providerConfig, {
+    callRecoveryTool,
+    requestId: 'session-status',
+  });
   for (const actionId of [
     'verify_runtime_release_session_candidate',
     'cutover_runtime_release_session',
@@ -269,7 +357,10 @@ test('ReleaseSession actions expose only the exact session id and provider-owned
     'rollback_runtime_release_session',
     'promote_runtime_release_session_known_good',
   ]) {
-    await executeAction(actionId, { session_id: sessionId }, providerConfig, { callRecoveryTool, requestId: `request-${actionId}` });
+    await executeAction(actionId, { session_id: sessionId }, providerConfig, {
+      callRecoveryTool,
+      requestId: `request-${actionId}`,
+    });
   }
 
   expect(calls[0]).toEqual({
@@ -285,12 +376,27 @@ test('ReleaseSession actions expose only the exact session id and provider-owned
     });
   }
 
-  await expect(executeAction('release_session_status', { session_id: sessionId, endpoint: 'http://127.0.0.1:1' }, providerConfig, { callRecoveryTool }))
-    .rejects.toThrow(/accept only session_id/);
-  await expect(executeAction('cutover_runtime_release_session', { session_id: sessionId, request_id: 'caller-owned' }, providerConfig, { callRecoveryTool }))
-    .rejects.toThrow(/accept only session_id/);
-  await expect(executeAction('verify_runtime_release_session_static', { session_id: sessionId }, providerConfig, { callRecoveryTool }))
-    .rejects.toThrow(/Unsupported Local Recovery action/);
-  await expect(executeAction('verify_runtime_release_session_candidate', { session_id: 'short' }, providerConfig, { callRecoveryTool }))
-    .rejects.toThrow(/8 to 120/);
+  await expect(
+    executeAction('release_session_status', { session_id: sessionId, endpoint: 'http://127.0.0.1:1' }, providerConfig, {
+      callRecoveryTool,
+    }),
+  ).rejects.toThrow(/accept only session_id/);
+  await expect(
+    executeAction(
+      'cutover_runtime_release_session',
+      { session_id: sessionId, request_id: 'caller-owned' },
+      providerConfig,
+      { callRecoveryTool },
+    ),
+  ).rejects.toThrow(/accept only session_id/);
+  await expect(
+    executeAction('verify_runtime_release_session_static', { session_id: sessionId }, providerConfig, {
+      callRecoveryTool,
+    }),
+  ).rejects.toThrow(/Unsupported Local Recovery action/);
+  await expect(
+    executeAction('verify_runtime_release_session_candidate', { session_id: 'short' }, providerConfig, {
+      callRecoveryTool,
+    }),
+  ).rejects.toThrow(/8 to 120/);
 });

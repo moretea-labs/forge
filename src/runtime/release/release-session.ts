@@ -41,6 +41,12 @@ export interface ReleaseSessionCandidateRelease {
   sourceRepositoryId?: string;
 }
 
+export function releaseSessionSourceRepositoryId(
+  session: Pick<ReleaseSession, 'sourceRepositoryId' | 'candidateRelease'>,
+): string | undefined {
+  return session.sourceRepositoryId?.trim() || session.candidateRelease?.sourceRepositoryId?.trim() || undefined;
+}
+
 export interface ReleaseSessionReceipt {
   id: string;
   kind: 'source' | 'build' | 'static_gate' | 'candidate_canary' | 'cutover' | 'soak' | 'known_good' | 'rollback';
@@ -74,20 +80,22 @@ function sameReleaseSessionTransactionIdentity(
   left: ReleaseSessionTransaction,
   right: ReleaseSessionTransaction,
 ): boolean {
-  return left.schemaVersion === right.schemaVersion
-    && left.candidateReleaseId === right.candidateReleaseId
-    && left.cutoverAuthorityRevision === right.cutoverAuthorityRevision
-    && left.rollbackRelease.releaseId === right.rollbackRelease.releaseId
-    && left.rollbackRelease.artifactIdentity === right.rollbackRelease.artifactIdentity
-    && left.rollbackRelease.manifestPath === right.rollbackRelease.manifestPath
-    && left.rollbackRelease.manifestSha256 === right.rollbackRelease.manifestSha256
-    && left.rollbackRelease.workerProtocolVersion === right.rollbackRelease.workerProtocolVersion
-    && left.rollbackRelease.publishedAt === right.rollbackRelease.publishedAt
-    && left.rollbackRelease.databaseBackup?.path === right.rollbackRelease.databaseBackup?.path
-    && left.rollbackRelease.databaseBackup?.schemaVersion === right.rollbackRelease.databaseBackup?.schemaVersion
-    && left.rollbackRelease.databaseBackup?.createdAt === right.rollbackRelease.databaseBackup?.createdAt
-    && left.rollbackRelease.databaseBackup?.auditEventCount === right.rollbackRelease.databaseBackup?.auditEventCount
-    && left.rollbackRelease.databaseBackup?.recordCount === right.rollbackRelease.databaseBackup?.recordCount;
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    left.candidateReleaseId === right.candidateReleaseId &&
+    left.cutoverAuthorityRevision === right.cutoverAuthorityRevision &&
+    left.rollbackRelease.releaseId === right.rollbackRelease.releaseId &&
+    left.rollbackRelease.artifactIdentity === right.rollbackRelease.artifactIdentity &&
+    left.rollbackRelease.manifestPath === right.rollbackRelease.manifestPath &&
+    left.rollbackRelease.manifestSha256 === right.rollbackRelease.manifestSha256 &&
+    left.rollbackRelease.workerProtocolVersion === right.rollbackRelease.workerProtocolVersion &&
+    left.rollbackRelease.publishedAt === right.rollbackRelease.publishedAt &&
+    left.rollbackRelease.databaseBackup?.path === right.rollbackRelease.databaseBackup?.path &&
+    left.rollbackRelease.databaseBackup?.schemaVersion === right.rollbackRelease.databaseBackup?.schemaVersion &&
+    left.rollbackRelease.databaseBackup?.createdAt === right.rollbackRelease.databaseBackup?.createdAt &&
+    left.rollbackRelease.databaseBackup?.auditEventCount === right.rollbackRelease.databaseBackup?.auditEventCount &&
+    left.rollbackRelease.databaseBackup?.recordCount === right.rollbackRelease.databaseBackup?.recordCount
+  );
 }
 
 export interface ReleaseSession {
@@ -101,6 +109,8 @@ export interface ReleaseSession {
   candidate: CandidateExecutionLane;
   candidateRelease?: ReleaseSessionCandidateRelease;
   transaction?: ReleaseSessionTransaction;
+  /** Exact registered source repository selected when this session was created. */
+  sourceRepositoryId?: string;
   sourceRevision: string;
   phase: ReleaseSessionPhase;
   revision: number;
@@ -137,7 +147,11 @@ function validSessionId(value: string): string {
 
 function writeSession(path: string, session: ReleaseSession): void {
   const content = `${JSON.stringify(session, null, 2)}\n`;
-  assertStorageHeadroom(path, { operation: 'release_session_write', requiredBytes: Buffer.byteLength(content), reserveBytes: 16 * 1024 * 1024 });
+  assertStorageHeadroom(path, {
+    operation: 'release_session_write',
+    requiredBytes: Buffer.byteLength(content),
+    reserveBytes: 16 * 1024 * 1024,
+  });
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   writeFileSync(temporary, content, { encoding: 'utf8', mode: 0o600 });
@@ -146,43 +160,55 @@ function writeSession(path: string, session: ReleaseSession): void {
 }
 
 function sameStableRelease(session: Pick<ReleaseSession, 'stableRelease'>, release: RuntimePublishedRelease): boolean {
-  return release.releaseId === session.stableRelease.releaseId
-    && release.artifactIdentity === session.stableRelease.artifactIdentity
-    && release.manifestSha256 === session.stableRelease.manifestSha256
-    && release.workerProtocolVersion === session.stableRelease.workerProtocolVersion;
+  return (
+    release.releaseId === session.stableRelease.releaseId &&
+    release.artifactIdentity === session.stableRelease.artifactIdentity &&
+    release.manifestSha256 === session.stableRelease.manifestSha256 &&
+    release.workerProtocolVersion === session.stableRelease.workerProtocolVersion
+  );
 }
 
 function validTransaction(session: ReleaseSession): boolean {
   const transaction = session.transaction;
   if (!transaction) return !['cutover_committed', 'soaking'].includes(session.phase);
   const rollback = transaction.rollbackRelease;
-  return transaction.schemaVersion === 1
-    && Boolean(transaction.operationId?.trim())
-    && Boolean(session.candidateRelease)
-    && transaction.candidateReleaseId === session.candidateRelease!.releaseId
-    && Number.isInteger(transaction.cutoverAuthorityRevision)
-    && transaction.cutoverAuthorityRevision > session.stableRelease.authorityRevision
-    && Number.isFinite(Date.parse(transaction.startedAt))
-    && sameStableRelease(session, rollback)
-    && Boolean(rollback.manifestPath?.trim())
-    && Number.isFinite(Date.parse(rollback.publishedAt))
-    && Boolean(rollback.databaseBackup)
-    && resolve(rollback.databaseBackup!.path) === rollback.databaseBackup!.path
-    && Number.isInteger(rollback.databaseBackup!.schemaVersion)
-    && rollback.databaseBackup!.schemaVersion > 0
-    && Number.isFinite(Date.parse(rollback.databaseBackup!.createdAt));
+  return (
+    transaction.schemaVersion === 1 &&
+    Boolean(transaction.operationId?.trim()) &&
+    Boolean(session.candidateRelease) &&
+    transaction.candidateReleaseId === session.candidateRelease!.releaseId &&
+    Number.isInteger(transaction.cutoverAuthorityRevision) &&
+    transaction.cutoverAuthorityRevision > session.stableRelease.authorityRevision &&
+    Number.isFinite(Date.parse(transaction.startedAt)) &&
+    sameStableRelease(session, rollback) &&
+    Boolean(rollback.manifestPath?.trim()) &&
+    Number.isFinite(Date.parse(rollback.publishedAt)) &&
+    Boolean(rollback.databaseBackup) &&
+    resolve(rollback.databaseBackup!.path) === rollback.databaseBackup!.path &&
+    Number.isInteger(rollback.databaseBackup!.schemaVersion) &&
+    rollback.databaseBackup!.schemaVersion > 0 &&
+    Number.isFinite(Date.parse(rollback.databaseBackup!.createdAt))
+  );
 }
 
 function assertCurrentSession(value: ReleaseSession, sessionId: string): ReleaseSession {
   if (
-    value.schemaVersion !== 1
-    || value.semanticEpoch !== 2
-    || value.sessionId !== sessionId
-    || !RELEASE_SESSION_PHASES.includes(value.phase)
-    || !Number.isInteger(value.revision)
-    || value.revision < 1
-    || !validTransaction(value)
-  ) throw new Error('RELEASE_SESSION_INVALID');
+    value.schemaVersion !== 1 ||
+    value.semanticEpoch !== 2 ||
+    value.sessionId !== sessionId ||
+    !RELEASE_SESSION_PHASES.includes(value.phase) ||
+    !Number.isInteger(value.revision) ||
+    value.revision < 1 ||
+    !/^[a-f0-9]{40}$/i.test(value.sourceRevision) ||
+    (value.sourceRepositoryId !== undefined && !/^repo_[A-Za-z0-9_-]+$/.test(value.sourceRepositoryId)) ||
+    (value.candidateRelease?.sourceRepositoryId !== undefined &&
+      !/^repo_[A-Za-z0-9_-]+$/.test(value.candidateRelease.sourceRepositoryId)) ||
+    (value.sourceRepositoryId !== undefined &&
+      value.candidateRelease !== undefined &&
+      value.sourceRepositoryId !== value.candidateRelease.sourceRepositoryId) ||
+    !validTransaction(value)
+  )
+    throw new Error('RELEASE_SESSION_INVALID');
   return value;
 }
 
@@ -204,11 +230,15 @@ type TransitionalReleaseSessionV2 = Omit<ReleaseSession, 'schemaVersion' | 'sema
 
 type MigratableReleaseSession = ReleaseSession | LegacyReleaseSessionV1 | TransitionalReleaseSessionV2;
 
-function releaseIdentityKey(release: {
-  releaseId?: string;
-  artifactIdentity?: string;
-  manifestSha256?: string;
-} | undefined): string | undefined {
+function releaseIdentityKey(
+  release:
+    | {
+        releaseId?: string;
+        artifactIdentity?: string;
+        manifestSha256?: string;
+      }
+    | undefined,
+): string | undefined {
   const releaseId = release?.releaseId?.trim() || '';
   const artifactIdentity = release?.artifactIdentity?.trim() || '';
   const manifestSha256 = release?.manifestSha256?.trim() || '';
@@ -217,20 +247,20 @@ function releaseIdentityKey(release: {
 }
 
 function basicMigratableSessionShape(raw: MigratableReleaseSession, id: string): boolean {
-  const schemaSupported = (raw.schemaVersion === 1 && (raw.semanticEpoch === undefined || raw.semanticEpoch === 1 || raw.semanticEpoch === 2))
-    || (raw.schemaVersion === 2 && raw.semanticEpoch === undefined);
-  return schemaSupported
-    && raw.sessionId === id
-    && RELEASE_SESSION_PHASES.includes(raw.phase)
-    && Number.isFinite(Date.parse(raw.createdAt))
-    && Number.isFinite(Date.parse(raw.updatedAt));
+  const schemaSupported =
+    (raw.schemaVersion === 1 &&
+      (raw.semanticEpoch === undefined || raw.semanticEpoch === 1 || raw.semanticEpoch === 2)) ||
+    (raw.schemaVersion === 2 && raw.semanticEpoch === undefined);
+  return (
+    schemaSupported &&
+    raw.sessionId === id &&
+    RELEASE_SESSION_PHASES.includes(raw.phase) &&
+    Number.isFinite(Date.parse(raw.createdAt)) &&
+    Number.isFinite(Date.parse(raw.updatedAt))
+  );
 }
 
-function historicalAcceptanceReceipt(
-  sessionId: string,
-  recordedAt: string,
-  proof: string,
-): ReleaseSessionReceipt {
+function historicalAcceptanceReceipt(sessionId: string, recordedAt: string, proof: string): ReleaseSessionReceipt {
   return {
     id: `migration:historical-known-good:${sessionId}`,
     kind: 'known_good',
@@ -248,7 +278,9 @@ export function migrateReleaseSessionState(
   const authority = dependencies.readAuthority?.();
   const migratedSessionIds: string[] = [];
   const currentSessionIds: string[] = [];
-  const names = readdirSync(root).filter((name) => name.endsWith('.json')).sort();
+  const names = readdirSync(root)
+    .filter((name) => name.endsWith('.json'))
+    .sort();
   const parsed = names.map((name) => {
     const id = name.slice(0, -'.json'.length);
     const path = sessionPath(controllerHome, validSessionId(id));
@@ -274,15 +306,15 @@ export function migrateReleaseSessionState(
     if (raw.schemaVersion === 1 && raw.semanticEpoch === 2) {
       let current = raw as ReleaseSession;
       if (
-        !current.transaction
-        && current.phase === 'cutover_attempting'
-        && current.candidateRelease
-        && authority?.active.releaseId === current.candidateRelease.releaseId
-        && authority.active.artifactIdentity === current.candidateRelease.artifactIdentity
-        && authority.previous?.databaseBackup
-        && authority.previous.releaseId === current.stableRelease.releaseId
-        && authority.previous.artifactIdentity === current.stableRelease.artifactIdentity
-        && authority.previous.manifestSha256 === current.stableRelease.manifestSha256
+        !current.transaction &&
+        current.phase === 'cutover_attempting' &&
+        current.candidateRelease &&
+        authority?.active.releaseId === current.candidateRelease.releaseId &&
+        authority.active.artifactIdentity === current.candidateRelease.artifactIdentity &&
+        authority.previous?.databaseBackup &&
+        authority.previous.releaseId === current.stableRelease.releaseId &&
+        authority.previous.artifactIdentity === current.stableRelease.artifactIdentity &&
+        authority.previous.manifestSha256 === current.stableRelease.manifestSha256
       ) {
         current = {
           ...current,
@@ -306,17 +338,13 @@ export function migrateReleaseSessionState(
       }
       continue;
     }
-    const legacyV1 = raw.schemaVersion === 1
-      && (raw.semanticEpoch === undefined || raw.semanticEpoch === 1);
-    const transitionalV2 = raw.schemaVersion === 2
-      && raw.semanticEpoch === undefined;
+    const legacyV1 = raw.schemaVersion === 1 && (raw.semanticEpoch === undefined || raw.semanticEpoch === 1);
+    const transitionalV2 = raw.schemaVersion === 2 && raw.semanticEpoch === undefined;
     if ((!legacyV1 && !transitionalV2) || !basicMigratableSessionShape(raw, id)) {
       throw new Error(`RELEASE_SESSION_MIGRATION_UNSUPPORTED_SCHEMA: ${id}`);
     }
 
-    let transaction: ReleaseSessionTransaction | undefined = 'transaction' in raw
-      ? raw.transaction
-      : undefined;
+    let transaction: ReleaseSessionTransaction | undefined = 'transaction' in raw ? raw.transaction : undefined;
     let migratedPhase = raw.phase;
     let migratedReceipts = raw.receipts;
     const candidateKey = releaseIdentityKey(raw.candidateRelease);
@@ -325,13 +353,13 @@ export function migrateReleaseSessionState(
       const candidate = raw.candidateRelease;
       const previous = authority?.previous;
       if (
-        candidateIsActive
-        && candidate
-        && authority
-        && previous?.databaseBackup
-        && previous.releaseId === raw.stableRelease.releaseId
-        && previous.artifactIdentity === raw.stableRelease.artifactIdentity
-        && previous.manifestSha256 === raw.stableRelease.manifestSha256
+        candidateIsActive &&
+        candidate &&
+        authority &&
+        previous?.databaseBackup &&
+        previous.releaseId === raw.stableRelease.releaseId &&
+        previous.artifactIdentity === raw.stableRelease.artifactIdentity &&
+        previous.manifestSha256 === raw.stableRelease.manifestSha256
       ) {
         transaction = {
           schemaVersion: 1,
@@ -347,16 +375,18 @@ export function migrateReleaseSessionState(
         // not invent obsolete rollback state for already-terminal sessions.
       } else if (raw.phase === 'soaking' && candidateKey && !candidateIsActive) {
         const updatedAtMs = Date.parse(raw.updatedAt);
-        const successors = (stableSuccessors.get(candidateKey) ?? [])
-          .filter((entry) => entry.sessionId !== id && Date.parse(entry.createdAt) >= updatedAtMs);
+        const successors = (stableSuccessors.get(candidateKey) ?? []).filter(
+          (entry) => entry.sessionId !== id && Date.parse(entry.createdAt) >= updatedAtMs,
+        );
         const previousAuthorityProof = Boolean(previousKey && candidateKey === previousKey);
         if (successors.length === 0 && !previousAuthorityProof) {
           throw new Error(`RELEASE_SESSION_MIGRATION_HISTORICAL_ACCEPTANCE_UNPROVEN: ${id}`);
         }
         migratedPhase = 'known_good';
-        const proof = successors.length > 0
-          ? `${successors.length} later ReleaseSession attempt(s) use exact Candidate B as Stable A; first=${successors[0]!.sessionId}`
-          : 'current RuntimeReleaseAuthority.previous references Candidate B';
+        const proof =
+          successors.length > 0
+            ? `${successors.length} later ReleaseSession attempt(s) use exact Candidate B as Stable A; first=${successors[0]!.sessionId}`
+            : 'current RuntimeReleaseAuthority.previous references Candidate B';
         const receiptId = `migration:historical-known-good:${id}`;
         migratedReceipts = raw.receipts.some((receipt) => receipt.id === receiptId)
           ? raw.receipts
@@ -365,14 +395,17 @@ export function migrateReleaseSessionState(
         throw new Error(`RELEASE_SESSION_MIGRATION_AUTHORITY_MISMATCH: ${id}`);
       }
     }
-    const migrated = assertCurrentSession({
-      ...raw,
-      schemaVersion: 1,
-      semanticEpoch: 2,
-      phase: migratedPhase,
-      receipts: migratedReceipts,
-      ...(transaction ? { transaction } : {}),
-    } as ReleaseSession, id);
+    const migrated = assertCurrentSession(
+      {
+        ...raw,
+        schemaVersion: 1,
+        semanticEpoch: 2,
+        phase: migratedPhase,
+        receipts: migratedReceipts,
+        ...(transaction ? { transaction } : {}),
+      } as ReleaseSession,
+      id,
+    );
     writeSession(path, migrated);
     migratedSessionIds.push(id);
   }
@@ -438,7 +471,13 @@ export function listCompleteReleaseSessions(controllerHome: string): ReleaseSess
     .filter((name) => name.endsWith('.json'))
     .sort();
   const directory = statSync(root);
-  const revision = [directory.mtimeMs, directory.ctimeMs, names.length, names[0] ?? '', names[names.length - 1] ?? ''].join(':');
+  const revision = [
+    directory.mtimeMs,
+    directory.ctimeMs,
+    names.length,
+    names[0] ?? '',
+    names[names.length - 1] ?? '',
+  ].join(':');
   const cacheKey = resolve(root);
   const cached = completeReleaseSessionInventoryCache.get(cacheKey);
   if (cached?.revision === revision) return copyReleaseSessionInventory(cached.inventory);
@@ -501,11 +540,7 @@ export function listReleaseSessions(
   };
 }
 
-const RELEASE_SESSION_TERMINAL_PHASES = new Set<ReleaseSessionPhase>([
-  'known_good',
-  'rolled_back',
-  'failed',
-]);
+const RELEASE_SESSION_TERMINAL_PHASES = new Set<ReleaseSessionPhase>(['known_good', 'rolled_back', 'failed']);
 
 const RELEASE_SESSION_CANDIDATE_RETIRED_PHASES = new Set<ReleaseSessionPhase>([
   'soaking',
@@ -531,14 +566,16 @@ export function releaseSessionIsSoakingPredecessorOfStable(
 ): boolean {
   const candidate = session.candidateRelease;
   const transaction = session.transaction;
-  return session.phase === 'soaking'
-    && Boolean(candidate)
-    && Boolean(transaction)
-    && transaction!.candidateReleaseId === candidate!.releaseId
-    && transaction!.cutoverAuthorityRevision === stableRelease.authorityRevision
-    && candidate!.releaseId === stableRelease.releaseId
-    && candidate!.artifactIdentity === stableRelease.artifactIdentity
-    && candidate!.manifestSha256 === stableRelease.manifestSha256;
+  return (
+    session.phase === 'soaking' &&
+    Boolean(candidate) &&
+    Boolean(transaction) &&
+    transaction!.candidateReleaseId === candidate!.releaseId &&
+    transaction!.cutoverAuthorityRevision === stableRelease.authorityRevision &&
+    candidate!.releaseId === stableRelease.releaseId &&
+    candidate!.artifactIdentity === stableRelease.artifactIdentity &&
+    candidate!.manifestSha256 === stableRelease.manifestSha256
+  );
 }
 
 /**
@@ -555,15 +592,18 @@ export function releaseSessionIsSoakingSupersededByStableAuthority(
   const candidate = session.candidateRelease;
   const transaction = session.transaction;
   if (
-    session.phase !== 'soaking'
-    || !candidate
-    || !transaction
-    || transaction.candidateReleaseId !== candidate.releaseId
-    || stableRelease.authorityRevision <= transaction.cutoverAuthorityRevision
-  ) return false;
-  return candidate.releaseId !== stableRelease.releaseId
-    || candidate.artifactIdentity !== stableRelease.artifactIdentity
-    || candidate.manifestSha256 !== stableRelease.manifestSha256;
+    session.phase !== 'soaking' ||
+    !candidate ||
+    !transaction ||
+    transaction.candidateReleaseId !== candidate.releaseId ||
+    stableRelease.authorityRevision <= transaction.cutoverAuthorityRevision
+  )
+    return false;
+  return (
+    candidate.releaseId !== stableRelease.releaseId ||
+    candidate.artifactIdentity !== stableRelease.artifactIdentity ||
+    candidate.manifestSha256 !== stableRelease.manifestSha256
+  );
 }
 
 /**
@@ -583,25 +623,33 @@ export function releaseSessionIsSoakingSupersededByFailedCutoverCompensation(
   const failed = failedSuccessor.transaction;
   const successor = failedSuccessor.candidateRelease;
   if (
-    predecessor.phase !== 'soaking' || failedSuccessor.phase !== 'failed'
-    || !prior || !candidate || !failed || !successor
-    || prior.candidateReleaseId !== candidate.releaseId
-    || failed.candidateReleaseId !== successor.releaseId
-    || !failedSuccessor.receipts.some((receipt) => receipt.id === 'cutover_failed')
-    || !currentOperationId || currentOperationId !== failed.operationId
-    || failedSuccessor.stableRelease.authorityRevision !== prior.cutoverAuthorityRevision
-    || failed.cutoverAuthorityRevision !== prior.cutoverAuthorityRevision + 1
-    || current.authorityRevision !== failed.cutoverAuthorityRevision + 1
-  ) return false;
-  return failedSuccessor.stableRelease.releaseId === candidate.releaseId
-    && failedSuccessor.stableRelease.artifactIdentity === candidate.artifactIdentity
-    && failedSuccessor.stableRelease.manifestSha256 === candidate.manifestSha256
-    && failed.rollbackRelease.releaseId === candidate.releaseId
-    && failed.rollbackRelease.artifactIdentity === candidate.artifactIdentity
-    && failed.rollbackRelease.manifestSha256 === candidate.manifestSha256
-    && current.releaseId === candidate.releaseId
-    && current.artifactIdentity === candidate.artifactIdentity
-    && current.manifestSha256 === candidate.manifestSha256;
+    predecessor.phase !== 'soaking' ||
+    failedSuccessor.phase !== 'failed' ||
+    !prior ||
+    !candidate ||
+    !failed ||
+    !successor ||
+    prior.candidateReleaseId !== candidate.releaseId ||
+    failed.candidateReleaseId !== successor.releaseId ||
+    !failedSuccessor.receipts.some((receipt) => receipt.id === 'cutover_failed') ||
+    !currentOperationId ||
+    currentOperationId !== failed.operationId ||
+    failedSuccessor.stableRelease.authorityRevision !== prior.cutoverAuthorityRevision ||
+    failed.cutoverAuthorityRevision !== prior.cutoverAuthorityRevision + 1 ||
+    current.authorityRevision !== failed.cutoverAuthorityRevision + 1
+  )
+    return false;
+  return (
+    failedSuccessor.stableRelease.releaseId === candidate.releaseId &&
+    failedSuccessor.stableRelease.artifactIdentity === candidate.artifactIdentity &&
+    failedSuccessor.stableRelease.manifestSha256 === candidate.manifestSha256 &&
+    failed.rollbackRelease.releaseId === candidate.releaseId &&
+    failed.rollbackRelease.artifactIdentity === candidate.artifactIdentity &&
+    failed.rollbackRelease.manifestSha256 === candidate.manifestSha256 &&
+    current.releaseId === candidate.releaseId &&
+    current.artifactIdentity === candidate.artifactIdentity &&
+    current.manifestSha256 === candidate.manifestSha256
+  );
 }
 
 /**
@@ -619,6 +667,7 @@ export function createReleaseSession(input: {
   stable: StableExecutionLane;
   stableRelease: ReleaseSessionStableRelease;
   candidate: CandidateExecutionLane;
+  sourceRepositoryId: string;
   sourceRevision: string;
 }): ReleaseSession {
   const sessionId = validSessionId(input.sessionId);
@@ -629,15 +678,24 @@ export function createReleaseSession(input: {
     throw new Error(`RELEASE_SESSION_INVENTORY_INCOMPLETE: invalid=${inventory.invalidSessionFiles.join(',')}`);
   }
   const active = inventory.sessions.filter((session) => !releaseSessionIsTerminal(session));
-  const sourceRevision = input.sourceRevision.trim();
-  const allowedRepairPredecessor = active.length === 1
-    && active[0] !== undefined
-    && releaseSessionIsSoakingPredecessorOfStable(active[0], input.stableRelease)
-    && active[0].sourceRevision !== sourceRevision;
-  if (active.length > 0 && !allowedRepairPredecessor) {
-    throw new Error(`RELEASE_SESSION_ACTIVE_EXISTS: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`);
+  const sourceRepositoryId = input.sourceRepositoryId.trim();
+  const sourceRevision = input.sourceRevision.trim().toLowerCase();
+  if (!/^repo_[A-Za-z0-9_-]+$/.test(sourceRepositoryId)) {
+    throw new Error('RELEASE_SESSION_SOURCE_REPOSITORY_ID_REQUIRED');
   }
-  if (resolve(input.stable.controllerHome) === resolve(input.candidate.controllerHome)) throw new Error('RELEASE_SESSION_LANE_COLLISION');
+  if (!/^[a-f0-9]{40}$/.test(sourceRevision)) throw new Error('RELEASE_SESSION_SOURCE_REVISION_INVALID');
+  const allowedRepairPredecessor =
+    active.length === 1 &&
+    active[0] !== undefined &&
+    releaseSessionIsSoakingPredecessorOfStable(active[0], input.stableRelease) &&
+    (active[0].sourceRevision !== sourceRevision || releaseSessionSourceRepositoryId(active[0]) !== sourceRepositoryId);
+  if (active.length > 0 && !allowedRepairPredecessor) {
+    throw new Error(
+      `RELEASE_SESSION_ACTIVE_EXISTS: ${active.map((session) => `${session.sessionId}:${session.phase}`).join(',')}`,
+    );
+  }
+  if (resolve(input.stable.controllerHome) === resolve(input.candidate.controllerHome))
+    throw new Error('RELEASE_SESSION_LANE_COLLISION');
   const timestamp = new Date().toISOString();
   const session: ReleaseSession = {
     schemaVersion: 1,
@@ -646,26 +704,36 @@ export function createReleaseSession(input: {
     stable: input.stable,
     stableRelease: input.stableRelease,
     candidate: input.candidate,
+    sourceRepositoryId,
     sourceRevision,
     phase: 'source_frozen',
     revision: 1,
     receipts: [
-      { id: `source:${sessionId}`, kind: 'source', recordedAt: timestamp, summary: `source frozen at ${input.sourceRevision.trim()}` },
+      {
+        id: 'source:' + sessionId,
+        kind: 'source',
+        recordedAt: timestamp,
+        summary: 'source frozen from ' + sourceRepositoryId + ' at ' + sourceRevision,
+      },
     ],
     createdAt: timestamp,
     updatedAt: timestamp,
   };
-  if (!session.sourceRevision) throw new Error('RELEASE_SESSION_SOURCE_REVISION_REQUIRED');
+  if (session.sourceRepositoryId && !/^repo_[A-Za-z0-9_-]+$/.test(session.sourceRepositoryId)) {
+    throw new Error('RELEASE_SESSION_SOURCE_REPOSITORY_ID_INVALID');
+  }
+  if (!/^[a-f0-9]{40}$/i.test(session.sourceRevision)) throw new Error('RELEASE_SESSION_SOURCE_REVISION_INVALID');
   if (
-    !Number.isInteger(session.stableRelease.authorityRevision)
-    || session.stableRelease.authorityRevision < 1
-    || !session.stableRelease.releaseId
-    || !session.stableRelease.artifactIdentity
-    || !session.stableRelease.manifestSha256
-    || !Number.isInteger(session.stableRelease.workerProtocolVersion)
-    || session.stableRelease.workerProtocolVersion < 1
-    || !session.stableRelease.releaseFencingTokenSha256
-  ) throw new Error('RELEASE_SESSION_STABLE_RELEASE_IDENTITY_INVALID');
+    !Number.isInteger(session.stableRelease.authorityRevision) ||
+    session.stableRelease.authorityRevision < 1 ||
+    !session.stableRelease.releaseId ||
+    !session.stableRelease.artifactIdentity ||
+    !session.stableRelease.manifestSha256 ||
+    !Number.isInteger(session.stableRelease.workerProtocolVersion) ||
+    session.stableRelease.workerProtocolVersion < 1 ||
+    !session.stableRelease.releaseFencingTokenSha256
+  )
+    throw new Error('RELEASE_SESSION_STABLE_RELEASE_IDENTITY_INVALID');
   writeSession(path, session);
   return session;
 }
@@ -675,7 +743,18 @@ function receiptIds(session: ReleaseSession, kind: ReleaseSessionReceipt['kind']
 }
 
 function assertTransition(session: ReleaseSession, phase: ReleaseSessionPhase): void {
-  const order: ReleaseSessionPhase[] = ['source_frozen', 'built', 'static_verified', 'candidate_booted', 'candidate_verified', 'cutover_eligible', 'cutover_attempting', 'cutover_committed', 'soaking', 'known_good'];
+  const order: ReleaseSessionPhase[] = [
+    'source_frozen',
+    'built',
+    'static_verified',
+    'candidate_booted',
+    'candidate_verified',
+    'cutover_eligible',
+    'cutover_attempting',
+    'cutover_committed',
+    'soaking',
+    'known_good',
+  ];
   if (session.phase === 'failed' || session.phase === 'rolled_back' || session.phase === 'known_good') {
     throw new Error('RELEASE_SESSION_TERMINAL');
   }
@@ -694,10 +773,17 @@ function assertTransition(session: ReleaseSession, phase: ReleaseSessionPhase): 
   if (phase === 'built' && !session.candidateRelease) {
     throw new Error('RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED');
   }
-  if (phase === 'candidate_verified' && [...REQUIRED_CANDIDATE_CANARIES].some((id) => !receiptIds(session, 'candidate_canary').has(id))) {
+  if (
+    phase === 'candidate_verified' &&
+    [...REQUIRED_CANDIDATE_CANARIES].some((id) => !receiptIds(session, 'candidate_canary').has(id))
+  ) {
     throw new Error('RELEASE_SESSION_CANDIDATE_CANARIES_INCOMPLETE');
   }
-  if (phase === 'cutover_eligible' && (session.stable.controllerHome === session.candidate.controllerHome || session.stable.port === session.candidate.port)) {
+  if (
+    phase === 'cutover_eligible' &&
+    (session.stable.controllerHome === session.candidate.controllerHome ||
+      session.stable.port === session.candidate.port)
+  ) {
     throw new Error('RELEASE_SESSION_LANE_COLLISION');
   }
 }
@@ -715,7 +801,8 @@ export function recordReleaseSessionTransaction(input: {
 }): ReleaseSession {
   const current = readReleaseSession(input.controllerHome, input.sessionId);
   if (!current) throw new Error('RELEASE_SESSION_MISSING');
-  if (current.phase !== 'cutover_attempting') throw new Error(`RELEASE_SESSION_TRANSACTION_REQUIRES_CUTOVER_ATTEMPTING: ${current.phase}`);
+  if (current.phase !== 'cutover_attempting')
+    throw new Error(`RELEASE_SESSION_TRANSACTION_REQUIRES_CUTOVER_ATTEMPTING: ${current.phase}`);
   // Runtime startup migration and the Recovery activation writer are two
   // legitimate physical writers for this one bounded transaction. If the
   // migration already persisted the exact transaction, accept its durable
@@ -748,19 +835,31 @@ export function advanceReleaseSession(input: {
   if (!current) throw new Error('RELEASE_SESSION_MISSING');
   if (current.revision !== input.expectedRevision) throw new Error('RELEASE_SESSION_REVISION_FENCED');
   const recordedAt = new Date().toISOString();
-  const receipts = [...current.receipts, ...(input.receipts ?? []).map((receipt) => ({ ...receipt, recordedAt }))].slice(-64);
+  const receipts = [
+    ...current.receipts,
+    ...(input.receipts ?? []).map((receipt) => ({ ...receipt, recordedAt })),
+  ].slice(-64);
   const candidateRelease = input.candidateRelease ?? current.candidateRelease;
-  if (candidateRelease && (
-    !candidateRelease.releaseId
-    || !candidateRelease.manifestPath
-    || !candidateRelease.artifactIdentity
-    || !candidateRelease.manifestSha256
-    || !/^[a-f0-9]{64}$/i.test(candidateRelease.treeSha256)
-    || candidateRelease.sourceCommit !== current.sourceRevision
-  )) throw new Error('RELEASE_SESSION_CANDIDATE_RELEASE_IDENTITY_INVALID');
+  if (
+    candidateRelease &&
+    (!candidateRelease.releaseId ||
+      !candidateRelease.manifestPath ||
+      !candidateRelease.artifactIdentity ||
+      !candidateRelease.manifestSha256 ||
+      !/^[a-f0-9]{64}$/i.test(candidateRelease.treeSha256) ||
+      candidateRelease.sourceCommit !== current.sourceRevision ||
+      (releaseSessionSourceRepositoryId(current) !== undefined &&
+        candidateRelease.sourceRepositoryId !== releaseSessionSourceRepositoryId(current)))
+  )
+    throw new Error('RELEASE_SESSION_CANDIDATE_RELEASE_IDENTITY_INVALID');
   const proposed: ReleaseSession = { ...current, ...(candidateRelease ? { candidateRelease } : {}), receipts };
   assertTransition(proposed, input.phase);
-  const next: ReleaseSession = { ...proposed, phase: input.phase, revision: current.revision + 1, updatedAt: recordedAt };
+  const next: ReleaseSession = {
+    ...proposed,
+    phase: input.phase,
+    revision: current.revision + 1,
+    updatedAt: recordedAt,
+  };
   writeSession(sessionPath(input.controllerHome, current.sessionId), next);
   return next;
 }
