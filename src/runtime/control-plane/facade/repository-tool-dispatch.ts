@@ -438,6 +438,7 @@ export async function callRepositoryTool(
     const repoIdValue = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
     switch (name) {
       case 'read_repository_file': {
+        const startedAt = performance.now();
         const repository = resolveRepositorySelection({
           repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
           checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
@@ -458,7 +459,9 @@ export async function callRepositoryTool(
           session,
         );
         const redacted = redactSensitiveText(range.content);
-        return result({ ...range, content: redacted.text, redactions: redacted.redactions });
+        return result(
+          withResponseMeta({ ...range, content: redacted.text, redactions: redacted.redactions }, startedAt),
+        );
       }
       case 'repository_register': {
         const startedAt = performance.now();
@@ -623,6 +626,7 @@ export async function callRepositoryTool(
         });
       }
       case 'repository_git_status': {
+        const startedAt = performance.now();
         const repository = resolveRepositorySelection({
           repoId: repoIdValue || undefined,
           checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
@@ -633,29 +637,40 @@ export async function callRepositoryTool(
           args.refresh !== false
             ? await writeRepositoryGitStatusSample(controllerHome, repository)
             : readRepositoryGitStatusSample(controllerHome, repository.repoId, repository.activeCheckoutId);
-        return result({
-          status: status ?? {
-            repoId: repository.repoId,
-            checkoutId: repository.activeCheckoutId,
-            sampleSource: 'daemon-sample',
-            sampled: false,
-            observedAt: null,
-            staleAgeMs: null,
-            message: 'No cached Git status snapshot exists. Omit refresh=false to read the current Git status.',
-          },
-        });
+        return result(
+          withResponseMeta(
+            {
+              status: status ?? {
+                repoId: repository.repoId,
+                checkoutId: repository.activeCheckoutId,
+                sampleSource: 'daemon-sample',
+                sampled: false,
+                observedAt: null,
+                staleAgeMs: null,
+                message: 'No cached Git status snapshot exists. Omit refresh=false to read the current Git status.',
+              },
+            },
+            startedAt,
+          ),
+        );
       }
 
       case 'repository_git_diff': {
+        const startedAt = performance.now();
         const repository = resolveRepositorySelection({
           repoId: repoIdValue || undefined,
           checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
           controllerHome,
           allowSoleRepository: true,
         });
-        return result({
-          diff: repositoryGitDiff(repository, { staged: args.staged, paths: args.paths, maxBytes: args.max_bytes }),
-        });
+        return result(
+          withResponseMeta(
+            {
+              diff: repositoryGitDiff(repository, { staged: args.staged, paths: args.paths, maxBytes: args.max_bytes }),
+            },
+            startedAt,
+          ),
+        );
       }
       case 'repository_git_create_branch': {
         const repository = resolveRepositorySelection({
@@ -741,19 +756,25 @@ export async function callRepositoryTool(
         });
       }
       case 'repository_git_commit': {
+        const startedAt = performance.now();
         const repository = resolveRepositorySelection({
           repoId: repoIdValue || undefined,
           checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
           controllerHome,
           allowSoleRepository: true,
         });
-        return result({
-          commit: repositoryGitCommit(controllerHome, repository, {
-            message: args.message,
-            paths: args.paths,
-            allowEmpty: args.allow_empty,
-          }),
-        });
+        return result(
+          withResponseMeta(
+            {
+              commit: repositoryGitCommit(controllerHome, repository, {
+                message: args.message,
+                paths: args.paths,
+                allowEmpty: args.allow_empty,
+              }),
+            },
+            startedAt,
+          ),
+        );
       }
       case 'repository_git_finish_workflow': {
         const repository = resolveRepositorySelection({
@@ -772,19 +793,26 @@ export async function callRepositoryTool(
         });
       }
       case 'repository_safe_patch_plan': {
+        const startedAt = performance.now();
         const repository = resolveRepositorySelection({
           repoId: repoIdValue || undefined,
           checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
           controllerHome,
           allowSoleRepository: true,
         });
-        return result({
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
-          plan: buildSafePatchPlan(repository, { operations: args.operations, chunkSize: args.chunk_size }),
-        });
+        return result(
+          withResponseMeta(
+            {
+              repoId: repository.repoId,
+              checkoutId: repository.activeCheckoutId,
+              plan: buildSafePatchPlan(repository, { operations: args.operations, chunkSize: args.chunk_size }),
+            },
+            startedAt,
+          ),
+        );
       }
       case 'repository_safe_patch_apply': {
+        const startedAt = performance.now();
         const repository = resolveRepositorySelectionWithoutWorkAuthority(controllerHome, args, repoIdValue, caller);
         const patchPaths = extractPatchPaths(args.operations);
         const explicitLegacyValidation = Boolean(
@@ -854,7 +882,8 @@ export async function callRepositoryTool(
               : undefined,
           suggestedNextActions: digest.suggestedNextActions,
         };
-        return atomic.status === 'applied' ? result(payload) : { ...result(payload), isError: true };
+        const response = result(withResponseMeta(payload, startedAt));
+        return atomic.status === 'applied' ? response : { ...response, isError: true };
       }
       case 'execute_command': {
         if (args.scope !== undefined && args.scope !== 'repository')

@@ -1749,6 +1749,34 @@ describe('repository MCP command tools', () => {
       git(repoRoot, ['commit', '-m', 'init']);
       const repository = registerRepository({ path: repoRoot, controllerHome });
 
+      const read = await json(
+        callRepositoryTool(controllerHome, 'read_repository_file', {
+          repo_id: repository.repoId,
+          path: 'app.txt',
+          start_line: 1,
+          end_line: 2,
+        }),
+      );
+      expect(read.responseMeta?.serverDurationMs).toBeGreaterThanOrEqual(0);
+
+      const status = await json(
+        callRepositoryTool(controllerHome, 'repository_git_status', {
+          repo_id: repository.repoId,
+          refresh: true,
+        }),
+      );
+      expect(status.responseMeta?.serverDurationMs).toBeGreaterThanOrEqual(0);
+
+      const plan = await json(
+        callRepositoryTool(controllerHome, 'repository_safe_patch_plan', {
+          repo_id: repository.repoId,
+          operations: [
+            { type: 'replace', path: 'app.txt', replacements: [{ old_text: 'alpha', new_text: 'alpha-1' }] },
+          ],
+        }),
+      );
+      expect(plan.responseMeta?.serverDurationMs).toBeGreaterThanOrEqual(0);
+
       const applied = await json(
         callRepositoryTool(controllerHome, 'repository_safe_patch_apply', {
           repo_id: repository.repoId,
@@ -1768,6 +1796,7 @@ describe('repository MCP command tools', () => {
       expect(applied.groups).toHaveLength(2);
       expect(applied.reviewEvidence.receipts).toHaveLength(2);
       expect(applied.reviewEvidence.next).toContain('no EditSession');
+      expect(applied.responseMeta?.serverDurationMs).toBeGreaterThanOrEqual(0);
       expect(existsSync(join(repoRoot, '.ai/harness/edit-sessions'))).toBe(false);
       expect(readFileSync(join(repoRoot, 'app.txt'), 'utf-8')).toBe('alpha-1\nbeta-1\n');
 
@@ -1782,6 +1811,7 @@ describe('repository MCP command tools', () => {
       expect(failed.status).toBe('failed');
       expect(failed.failures[0].code).toBe('REPLACEMENT_TEXT_NOT_FOUND');
       expect(failed.failures[0].context.focus).toContain('alpha-1');
+      expect(failed.responseMeta?.serverDurationMs).toBeGreaterThanOrEqual(0);
     } finally {
       if (priorHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
       else process.env.FORGE_CONTROLLER_HOME = priorHome;
@@ -1850,6 +1880,7 @@ describe('repository MCP command tools', () => {
         }),
       );
       expect(diff.diff.patch).toContain('structured');
+      expect(diff.responseMeta?.serverDurationMs).toBeGreaterThanOrEqual(0);
       const ctx = createMcpToolContext({ repo: repoRoot, controllerHome, profile: 'controller' });
       const canonicalDiff = await callCoreCapabilityAdapter(ctx, 'capability_execute', {
         repo_id: repository.repoId,
@@ -1869,6 +1900,7 @@ describe('repository MCP command tools', () => {
       );
       expect(commit.commit.committed).toBe(true);
       expect(commit.commit.after.clean).toBe(true);
+      expect(commit.responseMeta?.serverDurationMs).toBeGreaterThanOrEqual(0);
 
       const finish = await json(
         callRepositoryTool(controllerHome, 'repository_git_finish_workflow', {
