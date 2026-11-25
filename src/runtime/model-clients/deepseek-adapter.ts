@@ -90,7 +90,13 @@ export function buildModelControlPlaneSummary(env: NodeJS.ProcessEnv = process.e
     backupControllers: ['deepseek-backup-controller', 'local-gui'],
     activeController: 'chatgpt-mcp',
     handoffSupported: true,
-    handoffReasons: ['manual', 'chatgpt_platform_blocked', 'chatgpt_unavailable', 'parallel_review', 'local_gui_request'],
+    handoffReasons: [
+      'manual',
+      'chatgpt_platform_blocked',
+      'chatgpt_unavailable',
+      'parallel_review',
+      'local_gui_request',
+    ],
     concurrencyPolicy: {
       readonlyShared: true,
       workspaceWriteRequiresLease: true,
@@ -140,8 +146,10 @@ export function deepSeekControllerManifest(): Record<string, unknown> {
 
 function normalizeHandoffReason(reason: unknown): DeepSeekHandoffReason {
   const value = typeof reason === 'string' ? reason : '';
-  return ['manual', 'chatgpt_platform_blocked', 'chatgpt_unavailable', 'parallel_review', 'local_gui_request'].includes(value)
-    ? value as DeepSeekHandoffReason
+  return ['manual', 'chatgpt_platform_blocked', 'chatgpt_unavailable', 'parallel_review', 'local_gui_request'].includes(
+    value,
+  )
+    ? (value as DeepSeekHandoffReason)
     : 'manual';
 }
 
@@ -150,11 +158,20 @@ function boundedText(value: unknown, fallback: string, max = 1200): string {
   return (text || fallback).slice(0, max);
 }
 
-export function prepareDeepSeekControllerHandoff(input: DeepSeekControllerHandoffInput = {}, env: NodeJS.ProcessEnv = process.env): DeepSeekControllerHandoffPacket {
+export function prepareDeepSeekControllerHandoff(
+  input: DeepSeekControllerHandoffInput = {},
+  env: NodeJS.ProcessEnv = process.env,
+): DeepSeekControllerHandoffPacket {
   const reason = normalizeHandoffReason(input.reason);
   const objective = boundedText(input.objective, 'Continue forge supervision through the backup controller.');
-  const blockedTool = typeof input.blockedToolName === 'string' && input.blockedToolName.trim() ? input.blockedToolName.trim() : undefined;
-  const safeError = typeof input.recentSafeError === 'string' && input.recentSafeError.trim() ? input.recentSafeError.trim().slice(0, 240) : undefined;
+  const blockedTool =
+    typeof input.blockedToolName === 'string' && input.blockedToolName.trim()
+      ? input.blockedToolName.trim()
+      : undefined;
+  const safeError =
+    typeof input.recentSafeError === 'string' && input.recentSafeError.trim()
+      ? input.recentSafeError.trim().slice(0, 240)
+      : undefined;
   const configured = deepSeekConfigured(env);
   const availableFunctionNames = deepSeekFunctionToolManifest()
     .map((tool) => (tool.function as { name?: unknown } | undefined)?.name)
@@ -167,7 +184,8 @@ export function prepareDeepSeekControllerHandoff(input: DeepSeekControllerHandof
     reason,
     objective,
     ...(typeof input.repoId === 'string' && input.repoId ? { repoId: input.repoId } : {}),
-    currentController: typeof input.currentController === 'string' && input.currentController ? input.currentController : 'chatgpt-mcp',
+    currentController:
+      typeof input.currentController === 'string' && input.currentController ? input.currentController : 'chatgpt-mcp',
     safety: {
       executesToolsDirectly: false,
       requiresForgePolicy: true,
@@ -204,7 +222,10 @@ function deepSeekControllerSystemPrompt(handoff: DeepSeekControllerHandoffPacket
   ].join('\n');
 }
 
-export function prepareDeepSeekControllerRequest(input: DeepSeekControllerRequestInput = {}, env: NodeJS.ProcessEnv = process.env): DeepSeekControllerRequestPreview {
+export function prepareDeepSeekControllerRequest(
+  input: DeepSeekControllerRequestInput = {},
+  env: NodeJS.ProcessEnv = process.env,
+): DeepSeekControllerRequestPreview {
   const handoff = prepareDeepSeekControllerHandoff(input, env);
   const model = boundedText(input.model, env.FORGE_DEEPSEEK_MODEL || DEFAULT_DEEPSEEK_MODEL, 80);
   const userMessage = boundedText(input.userMessage, input.objective || handoff.objective, 2000);
@@ -229,7 +250,10 @@ export function prepareDeepSeekControllerRequest(input: DeepSeekControllerReques
   };
 }
 
-export function prepareDeepSeekToolCall(functionName: string, functionArguments: Record<string, unknown>): DeepSeekPreparedToolCall {
+export function prepareDeepSeekToolCall(
+  functionName: string,
+  functionArguments: Record<string, unknown>,
+): DeepSeekPreparedToolCall {
   const safety = {
     executesLocally: false as const,
     requiresForgePolicy: true as const,

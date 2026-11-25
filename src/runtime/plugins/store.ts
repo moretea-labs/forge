@@ -70,9 +70,7 @@ export function pluginProviderIsInternal(controllerHome: string, pluginId: strin
 
 function assertPublicPlugin(controllerHome: string, pluginId: string): void {
   if (!pluginProviderIsInternal(controllerHome, pluginId)) return;
-  throw new Error(
-    `PLUGIN_PROVIDER_NOT_PUBLIC: ${pluginId} is an internal Computer provider. Use the computer plugin.`,
-  );
+  throw new Error(`PLUGIN_PROVIDER_NOT_PUBLIC: ${pluginId} is an internal Computer provider. Use the computer plugin.`);
 }
 
 function listPluginAdapters(controllerHome: string): AssistantPluginAdapter[] {
