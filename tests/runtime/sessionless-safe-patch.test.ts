@@ -764,6 +764,228 @@ test('cross-file recovery fails closed before rollback when any crashed path div
   expect(fx.sessions()).toHaveLength(0);
 });
 
+test('single-file Safe Patch recovers an overlapping crashed multi-file group before editing (#716)', async () => {
+  const fx = fixture();
+  const secondPath = 'second-single-recovery.ts';
+  const sourcePath = join(fx.repoRoot, 'source.ts');
+  const secondAbsolute = join(fx.repoRoot, secondPath);
+  const sourceBefore = fx.initial;
+  const secondBefore = 'export const second = 1;\n';
+  const sourceAfter = sourceBefore.replace('n = 1', 'n = 2');
+  const secondAfter = secondBefore.replace('second = 1', 'second = 2');
+  writeFileSync(secondAbsolute, secondBefore);
+
+  const transactionRoot = join(fx.repoRoot, SAFE_PATCH_TRANSACTION_ROOT);
+  const transactionPath = join(transactionRoot, 'single-crash-fixture');
+  mkdirSync(transactionPath, { recursive: true });
+  writeFileSync(join(transactionPath, '001.before'), sourceBefore);
+  writeFileSync(join(transactionPath, '001.after'), sourceAfter);
+  writeFileSync(join(transactionPath, '002.before'), secondBefore);
+  writeFileSync(join(transactionPath, '002.after'), secondAfter);
+  writeFileSync(
+    join(transactionPath, 'manifest.json'),
+    JSON.stringify(
+      {
+        protocol: 1,
+        kind: 'safe-patch-text-group',
+        transactionId: 'single-crash-fixture',
+        createdAt: new Date().toISOString(),
+        status: 'committing',
+        entries: [
+          {
+            path: 'source.ts',
+            beforeSha256: hash(sourceBefore),
+            afterSha256: hash(sourceAfter),
+            beforeSnapshot: '001.before',
+            afterSnapshot: '001.after',
+            mode: 0o644,
+          },
+          {
+            path: secondPath,
+            beforeSha256: hash(secondBefore),
+            afterSha256: hash(secondAfter),
+            beforeSnapshot: '002.before',
+            afterSnapshot: '002.after',
+            mode: 0o644,
+          },
+        ],
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+  writeFileSync(sourcePath, sourceAfter);
+
+  const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        replacements: [{ old_text: 'n = 1', new_text: 'n = 3' }],
+      },
+    ],
+  });
+
+  expect(response?.isError).not.toBe(true);
+  expect(readFileSync(sourcePath, 'utf8')).toBe(sourceBefore.replace('n = 1', 'n = 3'));
+  expect(readFileSync(secondAbsolute, 'utf8')).toBe(secondBefore);
+  expect(existsSync(transactionPath)).toBe(false);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('multi-file recovery validates every before snapshot before restoring any target (#716)', () => {
+  const fx = fixture();
+  const secondPath = 'second-corrupt-snapshot.ts';
+  const sourcePath = join(fx.repoRoot, 'source.ts');
+  const secondAbsolute = join(fx.repoRoot, secondPath);
+  const sourceBefore = fx.initial;
+  const secondBefore = 'export const second = 1;\n';
+  const sourceAfter = sourceBefore.replace('n = 1', 'n = 2');
+  const secondAfter = secondBefore.replace('second = 1', 'second = 2');
+  writeFileSync(secondAbsolute, secondAfter);
+
+  const transactionRoot = join(fx.repoRoot, SAFE_PATCH_TRANSACTION_ROOT);
+  const transactionPath = join(transactionRoot, 'corrupt-snapshot-fixture');
+  mkdirSync(transactionPath, { recursive: true });
+  writeFileSync(join(transactionPath, '001.before'), sourceBefore);
+  writeFileSync(join(transactionPath, '001.after'), sourceAfter);
+  writeFileSync(join(transactionPath, '002.before'), 'corrupt before image\n');
+  writeFileSync(join(transactionPath, '002.after'), secondAfter);
+  writeFileSync(
+    join(transactionPath, 'manifest.json'),
+    JSON.stringify(
+      {
+        protocol: 1,
+        kind: 'safe-patch-text-group',
+        transactionId: 'corrupt-snapshot-fixture',
+        createdAt: new Date().toISOString(),
+        status: 'committing',
+        entries: [
+          {
+            path: 'source.ts',
+            beforeSha256: hash(sourceBefore),
+            afterSha256: hash(sourceAfter),
+            beforeSnapshot: '001.before',
+            afterSnapshot: '001.after',
+            mode: 0o644,
+          },
+          {
+            path: secondPath,
+            beforeSha256: hash(secondBefore),
+            afterSha256: hash(secondAfter),
+            beforeSnapshot: '002.before',
+            afterSnapshot: '002.after',
+            mode: 0o644,
+          },
+        ],
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+  writeFileSync(sourcePath, sourceAfter);
+
+  expect(() => recoverPendingAtomicTextGroups(fx.repoRoot, ['source.ts'])).toThrow(
+    'SAFE_PATCH_TRANSACTION_SNAPSHOT_INVALID: second-corrupt-snapshot.ts',
+  );
+  expect(readFileSync(sourcePath, 'utf8')).toBe(sourceAfter);
+  expect(readFileSync(secondAbsolute, 'utf8')).toBe(secondAfter);
+  expect(existsSync(transactionPath)).toBe(true);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('recovery conflict is isolated to its semantic group while independent group still applies (#716)', async () => {
+  const fx = fixture();
+  const peerPath = 'transaction-peer.ts';
+  const independentPath = 'independent-after-recovery-conflict.ts';
+  const sourcePath = join(fx.repoRoot, 'source.ts');
+  const peerAbsolute = join(fx.repoRoot, peerPath);
+  const independentAbsolute = join(fx.repoRoot, independentPath);
+  const sourceBefore = fx.initial;
+  const sourceAfter = sourceBefore.replace('n = 1', 'n = 2');
+  const peerBefore = 'export const peer = 1;\n';
+  const independentBefore = 'export const independent = 1;\n';
+  const sourceDiverged = 'export const source = "changed outside transaction";\n';
+  writeFileSync(peerAbsolute, peerBefore);
+  writeFileSync(independentAbsolute, independentBefore);
+
+  const transactionRoot = join(fx.repoRoot, SAFE_PATCH_TRANSACTION_ROOT);
+  const transactionPath = join(transactionRoot, 'conflicted-group-fixture');
+  mkdirSync(transactionPath, { recursive: true });
+  writeFileSync(join(transactionPath, '001.before'), sourceBefore);
+  writeFileSync(join(transactionPath, '001.after'), sourceAfter);
+  writeFileSync(join(transactionPath, '002.before'), peerBefore);
+  writeFileSync(join(transactionPath, '002.after'), peerBefore.replace('peer = 1', 'peer = 2'));
+  writeFileSync(
+    join(transactionPath, 'manifest.json'),
+    JSON.stringify(
+      {
+        protocol: 1,
+        kind: 'safe-patch-text-group',
+        transactionId: 'conflicted-group-fixture',
+        createdAt: new Date().toISOString(),
+        status: 'committing',
+        entries: [
+          {
+            path: 'source.ts',
+            beforeSha256: hash(sourceBefore),
+            afterSha256: hash(sourceAfter),
+            beforeSnapshot: '001.before',
+            afterSnapshot: '001.after',
+            mode: 0o644,
+          },
+          {
+            path: peerPath,
+            beforeSha256: hash(peerBefore),
+            afterSha256: hash(peerBefore.replace('peer = 1', 'peer = 2')),
+            beforeSnapshot: '002.before',
+            afterSnapshot: '002.after',
+            mode: 0o644,
+          },
+        ],
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+  writeFileSync(sourcePath, sourceDiverged);
+
+  const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        semantic_group: 'conflicted-recovery-group',
+        replacements: [{ old_text: 'changed outside transaction', new_text: 'n = 3' }],
+      },
+      {
+        type: 'replace',
+        path: independentPath,
+        semantic_group: 'independent-group',
+        replacements: [{ old_text: 'independent = 1', new_text: 'independent = 2' }],
+      },
+    ],
+  });
+
+  expect(response?.isError).toBe(true);
+  expect(response?.structuredContent).toMatchObject({
+    status: 'partial',
+    changedFiles: [independentPath],
+    groups: [
+      { groupId: 'conflicted-recovery-group', status: 'failed', changedFiles: [] },
+      { groupId: 'independent-group', status: 'applied', changedFiles: [independentPath] },
+    ],
+  });
+  expect(readFileSync(sourcePath, 'utf8')).toBe(sourceDiverged);
+  expect(readFileSync(independentAbsolute, 'utf8')).toBe(
+    independentBefore.replace('independent = 1', 'independent = 2'),
+  );
+  expect(existsSync(transactionPath)).toBe(true);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
 test('unsupported cross-file semantic group is rejected before mutation while independent group continues (#716)', async () => {
   const fx = fixture();
   const groupedCreate = 'grouped-create.ts';

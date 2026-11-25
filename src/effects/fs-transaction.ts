@@ -377,13 +377,13 @@ function removeSafePatchTransaction(root: string, transactionPath: string): void
   fsyncDirectory(root);
 }
 
-function restoreTextSnapshot(targetPath: string, snapshotPath: string, mode: number): void {
+function restoreTextSnapshot(targetPath: string, snapshotContent: string, mode: number): void {
   const temporary = resolve(
     dirname(targetPath),
     '.' + basename(targetPath) + '.' + process.pid + '.' + Date.now() + '.rollback.tmp',
   );
   try {
-    writeFileDurably(temporary, readFileSync(snapshotPath, 'utf-8'), mode);
+    writeFileDurably(temporary, snapshotContent, mode);
     renameSync(temporary, targetPath);
     fsyncDirectory(dirname(targetPath));
   } finally {
@@ -419,11 +419,22 @@ function rollbackAtomicTextGroupTransactionLocked(
         'SAFE_PATCH_TRANSACTION_RECOVERY_CONFLICT: ' + entry.path + ' diverged from both transaction images',
       );
     }
-    return { entry, targetPath, currentSha256 };
+    if (currentSha256 !== entry.beforeSha256) {
+      const snapshotPath = resolve(transactionPath, entry.beforeSnapshot);
+      const beforeContent = readFileSync(snapshotPath, 'utf-8');
+      const snapshotSha256 = createHash('sha256').update(beforeContent).digest('hex');
+      if (snapshotSha256 !== entry.beforeSha256) {
+        throw new Error('SAFE_PATCH_TRANSACTION_SNAPSHOT_INVALID: ' + entry.path);
+      }
+      return { entry, targetPath, currentSha256, beforeContent };
+    }
+    return { entry, targetPath, currentSha256, beforeContent: undefined };
   });
+  // Validate every before-image before restoring the first target. A corrupt
+  // later snapshot must never leave an otherwise recoverable group half-rolled-back.
   for (const state of states) {
-    if (state.currentSha256 !== state.entry.afterSha256) continue;
-    restoreTextSnapshot(state.targetPath, resolve(transactionPath, state.entry.beforeSnapshot), state.entry.mode);
+    if (state.currentSha256 !== state.entry.afterSha256 || state.beforeContent === undefined) continue;
+    restoreTextSnapshot(state.targetPath, state.beforeContent, state.entry.mode);
   }
   removeSafePatchTransaction(root, transactionPath);
 }

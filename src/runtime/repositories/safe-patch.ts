@@ -9,6 +9,7 @@ import {
   atomicCompareAndSwapText,
   atomicCompareAndSwapTextGroup,
   atomicCreateText,
+  recoverPendingAtomicTextGroups,
 } from '../../effects/fs-transaction';
 import { globMatches, resolveMcpPath } from '../safe-tooling/path-policy';
 import type { RepositoryRecord } from '../../core/repository/types';
@@ -955,6 +956,19 @@ function executeSessionlessMutationGroup(
   plan: SafePatchPlan,
   allowedPaths?: unknown,
 ): SessionlessSafePatchResult {
+  if (group.operations.length > 1) {
+    try {
+      recoverPendingTextTransactionsForOperations(repository, group.operations, allowedPaths);
+    } catch (error) {
+      return semanticGroupFailure(
+        plan,
+        group,
+        groupIndex,
+        'APPLY_FAILED',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
   if (group.operations.length === 1) {
     try {
       return remapSingleOperationGroup(
@@ -1027,6 +1041,27 @@ function executeSessionlessMutationGroup(
     plan,
     groupIndex,
   );
+}
+
+function recoverPendingTextTransactionsForOperations(
+  repository: RepositoryRecord,
+  operations: readonly NormalizedOperation[],
+  allowedPaths?: unknown,
+): number {
+  const paths = new Set<string>();
+  for (const operation of operations) {
+    const rawPaths = operation.type === 'move' ? [operation.path, operation.toPath] : [operation.path];
+    for (const rawPath of rawPaths) {
+      if (!rawPath) continue;
+      try {
+        paths.add(resolveSessionlessPath(repository, rawPath, allowedPaths));
+      } catch {
+        // Invalid or out-of-scope operations are rejected by their normal
+        // semantic-group preflight; they must not prevent independent groups.
+      }
+    }
+  }
+  return paths.size > 0 ? recoverPendingAtomicTextGroups(repository.canonicalRoot, [...paths]) : 0;
 }
 
 export function applySessionlessMutationBatch(
@@ -1125,6 +1160,7 @@ export function applySessionlessSafePatch(
   }
   const operation = operations[0]!;
   const path = resolveSessionlessPath(repository, operation.path, input.allowedPaths);
+  recoverPendingTextTransactionsForOperations(repository, operations, input.allowedPaths);
 
   const plan = buildSafePatchPlan(repository, { operations, chunkSize: 1 });
   if (operation.type === 'create') return applySessionlessCreate(repository, path, operation, plan);
