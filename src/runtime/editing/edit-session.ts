@@ -1210,6 +1210,64 @@ export function reconcileOpenEditSessions(
  * Read-only maintenance preview. A safe result means the selected metadata-only
  * cleanup can complete without rewriting source or bypassing approval.
  */
+function blobHashAtRevision(repoRoot: string, revision: string, path: string): string | undefined {
+  const blob = runProcess('git', ['show', revision + ':' + path], {
+    cwd: repoRoot,
+    timeoutMs: 10_000,
+    maxOutputBytes: 4 * 1024 * 1024,
+    structuredStdout: true,
+  });
+  return blob.ok ? hash(blob.stdout) : undefined;
+}
+
+function historicalIntegrationCommit(repoRoot: string, operation: EditSessionOperationRecord): string | undefined {
+  const history = runProcess('git', ['rev-list', '--max-count=2048', 'HEAD', '--', operation.path], {
+    cwd: repoRoot,
+    timeoutMs: 20_000,
+    maxOutputBytes: 256 * 1024,
+  });
+  if (!history.ok) return undefined;
+  for (const commit of history.stdout.split(/\r?\n/).filter(Boolean)) {
+    const ancestry = runProcess('git', ['rev-list', '--parents', '-n', '1', commit], {
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 8 * 1024,
+    });
+    if (!ancestry.ok) continue;
+    const [, ...parents] = ancestry.stdout.trim().split(/\s+/);
+    const afterSha256 = blobHashAtRevision(repoRoot, commit, operation.path);
+    if (parents.length === 0 && operation.type === 'create' && operation.afterSha256 === afterSha256) return commit;
+    for (const parent of parents) {
+      const beforeSha256 = blobHashAtRevision(repoRoot, parent, operation.path);
+      if (operation.type === 'delete') {
+        if (operation.beforeSha256 === beforeSha256 && afterSha256 === undefined) return commit;
+        continue;
+      }
+      if (operation.type === 'create') {
+        if (beforeSha256 === undefined && operation.afterSha256 === afterSha256) return commit;
+        continue;
+      }
+      if (
+        operation.beforeSha256 === beforeSha256 &&
+        operation.afterSha256 !== undefined &&
+        operation.afterSha256 === afterSha256
+      )
+        return commit;
+    }
+  }
+  return undefined;
+}
+
+function historicalIntegrationCommits(repoRoot: string, session: EditSession): string[] | undefined {
+  const commits = new Set<string>();
+  for (const operation of latestOperations(session).values()) {
+    const commit = historicalIntegrationCommit(repoRoot, operation);
+    if (!commit) return undefined;
+    commits.add(commit);
+  }
+  return [...commits];
+}
+
 function committedAfterImageFailure(
   repoRoot: string,
   session: EditSession,
@@ -1314,19 +1372,20 @@ export function inspectIntegratedEditSession(
     const head = gitRevision(repoRoot);
     if (!head || !session.baseRevision || head === session.baseRevision)
       return reject('EDIT_SESSION_RECONCILIATION_COMMITTED_HEAD_REQUIRED');
-    if (
-      !runProcess('git', ['merge-base', '--is-ancestor', session.baseRevision, head], {
-        cwd: repoRoot,
-        timeoutMs: 10_000,
-        maxOutputBytes: 1024,
-      }).ok
-    )
-      return reject('EDIT_SESSION_RECONCILIATION_NOT_DESCENDANT');
+    const descendant = runProcess('git', ['merge-base', '--is-ancestor', session.baseRevision, head], {
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 1024,
+    }).ok;
+    const historicalCommits = descendant ? undefined : historicalIntegrationCommits(repoRoot, session);
+    if (!descendant && !historicalCommits) return reject('EDIT_SESSION_RECONCILIATION_NOT_DESCENDANT');
     const committedFailure = committedAfterImageFailure(repoRoot, session);
     if (committedFailure) return reject(committedFailure);
     return {
       safe: true,
-      reason: 'EDIT_SESSION_LEGACY_COMMITTED_METADATA_ONLY',
+      reason: historicalCommits
+        ? 'EDIT_SESSION_LEGACY_COMMITTED_TRANSITION_METADATA_ONLY'
+        : 'EDIT_SESSION_LEGACY_COMMITTED_METADATA_ONLY',
       unverifiedChecks: session.requestedChecks.filter(
         (id) => !session.checkResults.some((result) => result.checkId === id && result.ok),
       ),
@@ -1465,7 +1524,7 @@ export function cleanupEditSession(
       repoId: input.repoId,
     });
     if (!initialInspection.safe) throw new Error(initialInspection.reason);
-    if (initialInspection.reason === 'EDIT_SESSION_LEGACY_COMMITTED_METADATA_ONLY') {
+    if (initialInspection.reason.startsWith('EDIT_SESSION_LEGACY_COMMITTED_')) {
       return markEditSessionReconciledUnverified(repoRoot, session, initialInspection, input);
     }
   }

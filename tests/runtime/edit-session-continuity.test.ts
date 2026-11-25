@@ -1903,6 +1903,86 @@ test('legacy exact committed after-images retire as reconciled-unverified withou
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 2;\n');
 });
 
+test('legacy non-descendant history retires only when current main contains the exact before-to-after transition', () => {
+  const fx = fixture();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Legacy history rewrite with exact integrated transition',
+    allowedPaths: ['source.ts'],
+  });
+  applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [
+    {
+      type: 'replace',
+      path: 'source.ts',
+      expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    },
+  ]);
+  const sessionFile = join(fx.repoRoot, '.ai/harness/edit-sessions', session.sessionId, 'session.json');
+  const stored = JSON.parse(readFileSync(sessionFile, 'utf8')) as Record<string, unknown>;
+  stored.updatedAt = new Date(Date.now() - 48 * 60 * 60_000).toISOString();
+  writeFileSync(sessionFile, JSON.stringify(stored));
+
+  writeFileSync(join(fx.repoRoot, 'source.ts'), fx.initial);
+  expect(spawnSync('git', ['checkout', '--orphan', 'rewritten'], { cwd: fx.repoRoot }).status).toBe(0);
+  writeFileSync(join(fx.repoRoot, 'source.ts'), fx.initial);
+  spawnSync('git', ['add', '--', 'source.ts'], { cwd: fx.repoRoot });
+  expect(spawnSync('git', ['commit', '-qm', 'rewritten parent'], { cwd: fx.repoRoot }).status).toBe(0);
+  writeFileSync(join(fx.repoRoot, 'source.ts'), 'export const value = 2;\n');
+  spawnSync('git', ['add', '--', 'source.ts'], { cwd: fx.repoRoot });
+  expect(spawnSync('git', ['commit', '-qm', 'rewritten exact transition'], { cwd: fx.repoRoot }).status).toBe(0);
+
+  const input = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+  expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, input)).toMatchObject({
+    safe: true,
+    reason: 'EDIT_SESSION_LEGACY_COMMITTED_TRANSITION_METADATA_ONLY',
+  });
+  const cleaned = cleanupEditSession(fx.repoRoot, session.sessionId, {
+    ...input,
+    reviewer: 'runtime-maintenance',
+  });
+  expect(cleaned.status).toBe('reconciled_unverified');
+  expect(cleaned.verifiedAt).toBeUndefined();
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 2;\n');
+});
+
+test('legacy non-descendant history remains protected when only the final bytes match', () => {
+  const fx = fixture();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Legacy history rewrite without provenance',
+    allowedPaths: ['source.ts'],
+  });
+  applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [
+    {
+      type: 'replace',
+      path: 'source.ts',
+      expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    },
+  ]);
+  const sessionFile = join(fx.repoRoot, '.ai/harness/edit-sessions', session.sessionId, 'session.json');
+  const stored = JSON.parse(readFileSync(sessionFile, 'utf8')) as Record<string, unknown>;
+  stored.updatedAt = new Date(Date.now() - 48 * 60 * 60_000).toISOString();
+  writeFileSync(sessionFile, JSON.stringify(stored));
+
+  writeFileSync(join(fx.repoRoot, 'source.ts'), fx.initial);
+  expect(spawnSync('git', ['checkout', '--orphan', 'rewritten-without-transition'], { cwd: fx.repoRoot }).status).toBe(
+    0,
+  );
+  writeFileSync(join(fx.repoRoot, 'source.ts'), 'export const value = 2;\n');
+  spawnSync('git', ['add', '--', 'source.ts'], { cwd: fx.repoRoot });
+  expect(spawnSync('git', ['commit', '-qm', 'rewritten final bytes only'], { cwd: fx.repoRoot }).status).toBe(0);
+
+  const input = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+  expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, input)).toMatchObject({
+    safe: false,
+    reason: 'EDIT_SESSION_RECONCILIATION_NOT_DESCENDANT',
+  });
+  expect(() => cleanupEditSession(fx.repoRoot, session.sessionId, input)).toThrow(
+    'EDIT_SESSION_RECONCILIATION_NOT_DESCENDANT',
+  );
+  expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('dirty');
+});
+
 test('legacy EditSessions retire as superseded metadata only when their original bytes are gone', () => {
   const fx = fixture();
   const session = beginEditSession(fx.repoRoot, {
