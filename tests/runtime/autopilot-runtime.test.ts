@@ -98,6 +98,23 @@ const executeCommandDefinition=[{
 }];
 
 describe('Requirement Autopilot',() => {
+  test('persists GlobalScheduler dispatch provenance on the durable AutopilotRun', () => {
+    const fx = fixture('scheduler-dispatch-source');
+    const run = createAutopilotRun(fx.controllerHome, {
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      requirementId: 'REQ-AUTO',
+      requirementRevision: 1,
+      grantId: 'grant-scheduler-test',
+      policy: defaultAutopilotPolicy({ provider: 'joycode' }),
+      dispatchSource: 'global_scheduler',
+    });
+
+    expect(run.value.dispatchSource).toBe('global_scheduler');
+    expect(readAutopilotRun(fx.controllerHome, fx.repository.repoId, 'REQ-AUTO')?.value.dispatchSource)
+      .toBe('global_scheduler');
+  });
+
   test('distinguishes accepted Process handles from terminal command evidence',() => {
     expect(autopilotPendingProcess({structuredContent:{accepted:true,status:'running',processId:'proc_test_123',timeoutMs:300_000}}))
       .toEqual({pending:true,processId:'proc_test_123',timeoutMs:300_000});

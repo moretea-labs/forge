@@ -14,7 +14,7 @@ import {
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { GlobalScheduler } from '../../src/runtime/control-plane/global-scheduler/scheduler';
+import { GlobalScheduler, readSchedulerHealthSnapshot } from '../../src/runtime/control-plane/global-scheduler/scheduler';
 import { readRepositoryGitStatusSample } from '../../src/runtime/projections/git-status-sampler';
 import type { SchedulerPeriodicCleanupSpawnResult } from '../../src/runtime/control-plane/global-scheduler/periodic-cleanup-process';
 import {
@@ -1185,6 +1185,46 @@ fi
     }
     expect(launches).toBe(1);
     expect(inlineCleanupCalls).toBe(0);
+  });
+
+  test('canonical scheduler runs grant-bounded Requirement dispatch on the existing cadence', async () => {
+    const home = controllerHome();
+    let dispatchCalls = 0;
+    const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 }, {
+      requirementDispatch: () => {
+        dispatchCalls += 1;
+        return {
+          selection: {
+            schemaVersion: 1,
+            generatedAt: new Date().toISOString(),
+            candidates: [],
+            ready: [],
+            counts: { ready: 0, blocked: 0, waiting_for_user: 0, done: 0, cancelled: 0, unknown: 0 },
+          },
+          hostSlots: 0,
+          activeLoopsAtStart: 0,
+          startedRequirementIds: [],
+          resumedRequirementIds: [],
+          decisions: [],
+        };
+      },
+    });
+    const internal = scheduler as unknown as {
+      runtimeCleanup: () => void;
+      processGc: () => { ok: boolean };
+      repositoryList: () => Array<{ repoId: string; enabled: boolean; canonicalRoot: string; removedAt?: string }>;
+      editValidationReconcile: () => Promise<{ errors: unknown[] }>;
+    };
+    internal.runtimeCleanup = () => undefined;
+    internal.processGc = () => ({ ok: true });
+    internal.repositoryList = () => [];
+    internal.editValidationReconcile = async () => ({ errors: [] });
+
+    await scheduler.tick();
+    await scheduler.tick();
+
+    expect(dispatchCalls).toBe(1);
+    expect(readSchedulerHealthSnapshot(home)?.lastDispatchAt).toBeDefined();
   });
 
   test('production periodic maintenance invokes the canonical Runtime cleanup owner', async () => {

@@ -1,6 +1,7 @@
 import type { ProjectIdentity } from '../../../../packages/kernel/identity/api/index';
 import {
   REQUIREMENT_PRIORITIES,
+  currentRequirementSemanticRevision,
   listRequirements,
   readRequirement,
   type Requirement,
@@ -23,6 +24,8 @@ export interface RequirementDispatchCandidate {
   projectId: string;
   workspaceId: string;
   requirementId: string;
+  repoId?: string;
+  requirementRevision: number;
   title: string;
   persistedState: RequirementState;
   readiness: RequirementDispatchReadiness;
@@ -99,6 +102,8 @@ function classifyRequirement(input: {
     projectId: input.project.projectId,
     workspaceId: input.project.workspaceId,
     requirementId: input.requirement.requirementId,
+    ...(input.requirement.repoId ? { repoId: input.requirement.repoId } : {}),
+    requirementRevision: currentRequirementSemanticRevision(input.requirement),
     title: input.requirement.title,
     persistedState: input.requirement.state,
     readiness,
@@ -170,9 +175,10 @@ export function selectCrossProjectRequirementCandidates(input: {
   // full of urgent-but-blocked Requirements must never hide lower-priority
   // runnable work beyond the diagnostic candidate limit.
   for (const candidate of candidates) counts[candidate.readiness] += 1;
-  const ready = candidates
-    .filter((candidate) => candidate.readiness === 'ready')
-    .slice(0, limit);
+  // Keep the full runnable sequence for dispatch. Applying the diagnostic
+  // page limit here would let hundreds of ungranted-but-ready candidates hide
+  // a lower-ranked Requirement that already has an exact Autopilot grant.
+  const ready = candidates.filter((candidate) => candidate.readiness === 'ready');
   return {
     schemaVersion: 1,
     generatedAt: input.now?.() ?? new Date().toISOString(),

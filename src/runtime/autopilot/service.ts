@@ -45,6 +45,15 @@ export function activeAutopilotGrant(controllerHome: string, repoId: string, req
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
 }
 
+/** Runtime-local liveness only; the durable AutopilotRun remains the recovery authority. */
+export function isAutopilotLoopActive(controllerHome: string, repoId: string, requirementId: string): boolean {
+  return activeLoops.has(loopKey(controllerHome, repoId, requirementId));
+}
+
+export function activeAutopilotLoopCount(): number {
+  return activeLoops.size;
+}
+
 
 function policyFromGrant(constraints: Record<string, unknown>): AutopilotPolicy {
   const provider = constraints.provider === 'joycode' ? 'joycode' : 'deepseek';
@@ -240,6 +249,7 @@ export function startAutopilot(input: {
   controllerHome: string;
   repoId: string;
   requirementId: string;
+  dispatchSource?: 'explicit' | 'global_scheduler';
   dependencies?: AutopilotRunnerDependencies;
 }) {
   const requirementRecord = readRequirement({ controllerHome: input.controllerHome }, input.requirementId);
@@ -254,6 +264,8 @@ export function startAutopilot(input: {
   const checkoutId = String(enrolled.checkoutId ?? '').trim();
   if (!checkoutId) throw new Error('AUTOPILOT_GRANT_CHECKOUT_MISSING');
   const policy = policyFromGrant(enrolled as Record<string, unknown>);
+  const key = loopKey(input.controllerHome, input.repoId, input.requirementId);
+  if (activeLoops.has(key)) throw new Error('AUTOPILOT_ALREADY_RUNNING');
   const apiKey = providerApiKey(policy, input.dependencies?.apiKey);
   const run = createAutopilotRun(input.controllerHome, {
     repoId: input.repoId,
@@ -262,6 +274,7 @@ export function startAutopilot(input: {
     requirementRevision: requirement.revision,
     grantId: grant.grantId,
     policy,
+    dispatchSource: input.dispatchSource ?? 'explicit',
   });
   launch(input.controllerHome,input.repoId,input.requirementId,grant.grantId,requirement.revision,{...input.dependencies,apiKey});
   return run;

@@ -17,6 +17,10 @@ import {
   runSchedulerValidationReconciliation,
 } from './maintenance';
 import { tickSchedules } from '../../workflow/schedules/engine';
+import {
+  dispatchAuthorizedCrossProjectRequirements,
+  type CrossProjectAutopilotDispatchResult,
+} from '../../autopilot/cross-project-dispatch';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 import {
   refreshSchedulerRepositoryProjections,
@@ -91,6 +95,8 @@ export interface SchedulerRuntimeBinding {
   isolatePeriodicCleanup?: boolean;
   /** Canonical Runtime treats a tick failure as a whole-Runtime failure. */
   fatalOnTickError?: boolean;
+  /** Test seam for the existing Requirement dispatch stage; production uses the canonical Autopilot adapter. */
+  requirementDispatch?: typeof dispatchAuthorizedCrossProjectRequirements;
 }
 
 export class GlobalScheduler {
@@ -102,6 +108,9 @@ export class GlobalScheduler {
   private readonly periodicCleanupExecutable?: string;
   private readonly isolatePeriodicCleanup: boolean;
   private readonly fatalOnTickError: boolean;
+  private requirementDispatch = dispatchAuthorizedCrossProjectRequirements;
+  private lastRequirementDispatch = 0;
+  private lastDispatchAt?: string;
   private lastScheduleTick = 0;
   private lastReconcile = 0;
   private lastPersistedAt = 0;
@@ -128,6 +137,7 @@ export class GlobalScheduler {
     this.periodicCleanupExecutable = runtime.periodicCleanupExecutable ? resolve(runtime.periodicCleanupExecutable) : undefined;
     this.isolatePeriodicCleanup = runtime.isolatePeriodicCleanup === true;
     this.fatalOnTickError = runtime.fatalOnTickError === true;
+    this.requirementDispatch = runtime.requirementDispatch ?? dispatchAuthorizedCrossProjectRequirements;
   }
 
   private persistState(force = false): void {
@@ -139,6 +149,7 @@ export class GlobalScheduler {
       lastHeartbeatAt: this.lastHeartbeatAt,
       heartbeatTimeoutMs: this.config.heartbeatTimeoutMs,
       lastTickAt: this.lastTickAt,
+      lastDispatchAt: this.lastDispatchAt,
       lastReconcileAt: this.lastReconcileAt,
     }, now);
   }
@@ -224,6 +235,35 @@ export class GlobalScheduler {
       });
       this.lastReconcile = now;
       this.lastReconcileAt = new Date(now).toISOString();
+    }
+    // Dispatch Requirements before best-effort Git projection sampling. A
+    // stale/slow projection for one repository must not starve independent
+    // authorized Requirements in this scheduler cycle.
+    // Requirement dispatch reuses the existing Runtime Scheduler. Only exact,
+    // unexpired user-issued Autopilot grants may start a loop; blocked or
+    // unauthorized candidates are local decisions and never stop the scan.
+    if (now - this.lastRequirementDispatch >= SCHEDULE_TICK_INTERVAL_MS) {
+      this.lastRequirementDispatch = now;
+      this.lastDispatchAt = new Date(now).toISOString();
+      try {
+        const dispatch: CrossProjectAutopilotDispatchResult = this.requirementDispatch({
+          controllerHome: this.controllerHome,
+          repositories,
+          nowMs: now,
+        });
+        if (dispatch.startedRequirementIds.length > 0 || dispatch.resumedRequirementIds.length > 0) {
+          console.info(
+            '[forge scheduler] Requirement Autopilot dispatch:',
+            `started=${dispatch.startedRequirementIds.length}`,
+            `resumed=${dispatch.resumedRequirementIds.length}`,
+            `ready=${dispatch.selection.ready.length}`,
+            `capacity=${dispatch.hostSlots}`,
+          );
+        }
+      } catch (error) {
+        console.error('[forge scheduler] Requirement dispatch deferred:', error);
+      }
+      this.persistState(true);
     }
     // Refresh only on actual invalidation. Idle repositories are not Git
     // polling targets; callers request fresh Git state when they need it.

@@ -27,6 +27,8 @@ export interface AutopilotRun {
   requirementId: string;
   requirementRevision: number;
   grantId: string;
+  /** Durable provenance for whether this Run was started explicitly or by the existing GlobalScheduler. */
+  dispatchSource?: 'explicit' | 'global_scheduler';
   status: AutopilotRunStatus;
   policy: AutopilotPolicy;
   usage: AutopilotUsage;

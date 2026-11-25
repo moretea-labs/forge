@@ -62,6 +62,7 @@ export function createAutopilotRun(
     requirementRevision: number;
     grantId: string;
     policy: AutopilotPolicy;
+    dispatchSource?: 'explicit' | 'global_scheduler';
     now?: Date;
   },
 ): ControlPlaneRecord<AutopilotRun> {
@@ -78,6 +79,7 @@ export function createAutopilotRun(
     requirementId: input.requirementId,
     requirementRevision: input.requirementRevision,
     grantId: input.grantId,
+    ...(input.dispatchSource ? { dispatchSource: input.dispatchSource } : {}),
     status: 'running',
     policy: input.policy,
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, turns: 0, toolCalls: 0 },

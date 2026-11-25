@@ -176,10 +176,8 @@ describe('cross-project Requirement dispatch selection (refs #707)', () => {
         now: () => '2026-09-03T00:10:00.000Z',
         limit: 1,
       });
-      expect(limited.candidates.map((entry) => entry.requirementId)).toEqual([
-        'REQ-BLOCKED-URGENT',
-      ]);
-      expect(limited.ready.map((entry) => entry.requirementId)).toEqual(['REQ-URGENT']);
+      expect(limited.candidates.map((entry) => entry.requirementId)).toEqual(['REQ-BLOCKED-URGENT']);
+      expect(limited.ready.map((entry) => entry.requirementId)).toEqual(['REQ-URGENT', 'REQ-DEP']);
       expect(limited.counts).toEqual({
         ready: 2,
         blocked: 2,
