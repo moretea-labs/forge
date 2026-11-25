@@ -65,13 +65,10 @@ const FAST_OPERATIONS = new Set<string>([
   'git_stage_paths',
   'git_commit_paths',
   'apply_patch',
-  'apply_edit_operations',
 ]);
 
 const DURABLE_OPERATIONS = new Set<string>([
   'run_check',
-  'verify_edit_session',
-  'finish_edit_session',
   'publish_issue_to_github',
   'release_gate',
   'runtime_recovery',
@@ -90,8 +87,20 @@ const WRITE_OPERATIONS = new Set([
   'repository_safe_patch_apply',
   'git_stage_paths',
   'git_commit_paths',
-  'apply_edit_operations',
   'repository_git_commit',
+]);
+
+const RETIRED_EDIT_SESSION_OPERATIONS = new Set([
+  'begin_edit_session',
+  'get_edit_session',
+  'list_edit_sessions',
+  'get_edit_session_diff',
+  'apply_edit_operations',
+  'create_edit_savepoint',
+  'verify_edit_session',
+  'rollback_edit_session',
+  'finalize_edit_session',
+  'finish_edit_session',
 ]);
 
 const DESTRUCTIVE_HINTS = [
@@ -306,6 +315,22 @@ export function routeExecution(input: RouteExecutionInput): ExecutionDecision {
   const operation = String(input.operation || 'unknown');
   const requested = input.mode ?? 'auto';
   const scopedPaths = [...(input.paths ?? []), ...(input.patchPaths ?? [])];
+
+  if (RETIRED_EDIT_SESSION_OPERATIONS.has(operation)) {
+    return decisionBase(
+      {
+        mode: 'reject',
+        reasons: ['edit_session_operation_retired'],
+        risk: 'readonly',
+        estimatedClass: 'short',
+        requiresIsolation: false,
+        requiresRecovery: false,
+        rejectCode: 'EDIT_SESSION_RETIRED',
+        effects: { ...READONLY_EFFECTS },
+      },
+      operation,
+    );
+  }
 
   if (requested === 'durable') {
     return decisionBase(

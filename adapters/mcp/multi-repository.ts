@@ -75,23 +75,11 @@ type RepositoryRuntimeStorageSummary = Pick<
   'readyForExecution' | 'usesStableRoot' | 'warnings'
 >;
 
-const EXECUTION_STORAGE_TOOLS = new Set([
-  'begin_edit_session',
-  'apply_edit_operations',
-  'create_edit_savepoint',
-  'rollback_edit_session',
-  'finalize_edit_session',
-  'verify_edit_session',
-  'submit_local_bridge_job',
-  'execute_local_bridge_job',
-]);
+const EXECUTION_STORAGE_TOOLS = new Set(['submit_local_bridge_job', 'execute_local_bridge_job']);
 
-// Legacy edit mutations lock inside withLegacyEditMutation, including the
-// canonical Process-lease check. Do not acquire this physical lock a second time.
-// The former repository-wide ControllerLock wrapper for verify_edit_session and
-// Local Bridge job submission is retired (#713): those tools no longer mutate
-// source, and holding the repository lock made every concurrent Process source
-// write lease fail with `repository-writer` for the whole call.
+// Local Bridge job submission no longer takes a repository-wide writer lock:
+// it does not mutate source, and holding the repository lock made concurrent
+// Process source-write leases fail with `repository-writer` for the whole call.
 
 function repositoryForExplicitPath(path: string, controllerHome: string): RepositoryRecord | undefined {
   const selectedPath = (() => {

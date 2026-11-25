@@ -14,7 +14,6 @@ import {
   loadControllerProjectState,
   saveControllerProjectState,
 } from '../../src/cli/controller/project-state';
-import { finishEditSession } from '../../src/cli/controller/completion-orchestrator';
 
 const REPO_ID = 'repo_cutover_cli';
 const ISSUE_ID = 'ISS-20260802-7E1D69';
@@ -222,9 +221,6 @@ describe('legacy control-plane cutover', () => {
       expect(() => saveControllerProjectState(repoRoot, { issueCreationMode: 'open' })).toThrow(
         'LEGACY_PROJECT_STATE_WRITES_RETIRED',
       );
-      expect(() => finishEditSession(repoRoot, { sessionId: 'EDIT-MISSING' })).toThrow(
-        'LEGACY_EDIT_SESSION_COMPLETION_RETIRED',
-      );
       expect(readFileSync(issuePath, 'utf8')).toBe(before);
 
       // Once the repo is registered, the repo-local projection is not authority:
@@ -288,7 +284,6 @@ describe('legacy control-plane cutover', () => {
   });
 });
 
-
 test('legacy task readiness does not gate independent tasks on declared directory overlap', () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-readiness-independent-'));
   const previousControllerHome = process.env.FORGE_CONTROLLER_HOME;
@@ -296,20 +291,49 @@ test('legacy task readiness does not gate independent tasks on declared director
     process.env.FORGE_CONTROLLER_HOME = join(repoRoot, 'controller-home');
     const foreignRun = join(repoRoot, '.ai/harness/jobs/foreign-run');
     mkdirSync(foreignRun, { recursive: true });
-    writeFileSync(join(foreignRun, 'meta.json'), JSON.stringify({
-      runId: 'foreign-run', issueId: 'OTHER', taskId: 'T1', status: 'running',
-      executionClass: 'medium_risk_change', allowedPaths: ['src/**'],
-    }));
+    writeFileSync(
+      join(foreignRun, 'meta.json'),
+      JSON.stringify({
+        runId: 'foreign-run',
+        issueId: 'OTHER',
+        taskId: 'T1',
+        status: 'running',
+        executionClass: 'medium_risk_change',
+        allowedPaths: ['src/**'],
+      }),
+    );
     const fixtureId = 'ISS-20261124-READINESS';
     const task = (id: string, overrides: Record<string, unknown> = {}) => ({
-      id, title: id, objective: 'Fixture task', status: 'ready', risk: 'medium',
-      dependsOn: [], allowedPaths: [], forbiddenPaths: [], checks: [], acceptanceCriteria: [],
-      notes: [], runIds: [], createdAt: NOW, updatedAt: NOW, ...overrides,
+      id,
+      title: id,
+      objective: 'Fixture task',
+      status: 'ready',
+      risk: 'medium',
+      dependsOn: [],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      acceptanceCriteria: [],
+      notes: [],
+      runIds: [],
+      createdAt: NOW,
+      updatedAt: NOW,
+      ...overrides,
     });
     const issue = {
-      schemaVersion: 5, id: fixtureId, slug: 'readiness', title: 'Independent changes',
-      kind: 'feature', status: 'planned', summary: '', goals: [], nonGoals: [],
-      acceptanceCriteria: [], relatedArtifacts: [], createdAt: NOW, updatedAt: NOW,
+      schemaVersion: 5,
+      id: fixtureId,
+      slug: 'readiness',
+      title: 'Independent changes',
+      kind: 'feature',
+      status: 'planned',
+      summary: '',
+      goals: [],
+      nonGoals: [],
+      acceptanceCriteria: [],
+      relatedArtifacts: [],
+      createdAt: NOW,
+      updatedAt: NOW,
       tasks: [
         task('T1', { allowedPaths: ['src/a.ts'] }),
         task('T2', { dependsOn: ['T1'], status: 'planned' }),
@@ -322,8 +346,12 @@ test('legacy task readiness does not gate independent tasks on declared director
     const independent = inspectTaskReadiness(repoRoot, issue.id, 'T1');
     expect(independent.ready).toBe(true);
     expect(independent.blockers.map((entry) => entry.code)).not.toContain('ACTIVE_SCOPE_CONFLICT');
-    expect(inspectTaskReadiness(repoRoot, issue.id, 'T2').blockers.map((entry) => entry.code)).toContain('PENDING_DEPENDENCY');
-    expect(inspectTaskReadiness(repoRoot, issue.id, 'T3').blockers.map((entry) => entry.code)).toContain('DESTRUCTIVE_APPROVAL_REQUIRED');
+    expect(inspectTaskReadiness(repoRoot, issue.id, 'T2').blockers.map((entry) => entry.code)).toContain(
+      'PENDING_DEPENDENCY',
+    );
+    expect(inspectTaskReadiness(repoRoot, issue.id, 'T3').blockers.map((entry) => entry.code)).toContain(
+      'DESTRUCTIVE_APPROVAL_REQUIRED',
+    );
   } finally {
     if (previousControllerHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
     else process.env.FORGE_CONTROLLER_HOME = previousControllerHome;

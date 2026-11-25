@@ -1377,10 +1377,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     // A useful Context operation completes before any synchronization attempt.
     const independent = await callRuntimeTool(fx.ctx, 'rh_context', {
       repo_id: fx.repository.repoId,
-      operation: 'search',
-      query: 'gateway routing fixture',
-      known_paths: ['README.md'],
-      structural_context: 'off',
+      operation: 'get',
     });
     expect(independent?.isError).not.toBe(true);
 
@@ -1973,6 +1970,29 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
         }).mode,
       ).toBe('fast');
       expect(isFastEligibleTool('execute_command', { command: [...command] })).toBe(true);
+    }
+  });
+
+  test('retired EditSession aliases reject instead of escalating through generic durable routing (#716)', () => {
+    for (const operation of [
+      'begin_edit_session',
+      'get_edit_session',
+      'list_edit_sessions',
+      'get_edit_session_diff',
+      'apply_edit_operations',
+      'create_edit_savepoint',
+      'verify_edit_session',
+      'rollback_edit_session',
+      'finalize_edit_session',
+      'finish_edit_session',
+    ]) {
+      expect(routeExecution({ operation })).toMatchObject({
+        mode: 'reject',
+        rejectCode: 'EDIT_SESSION_RETIRED',
+        reasons: ['edit_session_operation_retired'],
+      });
+      expect(routeExecution({ operation, mode: 'durable' }).mode).toBe('reject');
+      expect(isFastEligibleTool(operation)).toBe(false);
     }
   });
 

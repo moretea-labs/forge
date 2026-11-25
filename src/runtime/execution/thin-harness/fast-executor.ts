@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, statSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
-import { dirname, join } from 'path';
+import { existsSync, statSync } from 'fs';
+import { join } from 'path';
 import { applySessionlessMutationBatch, isSessionlessTextEditBatch } from '../../repositories/safe-patch';
 import {
   executeRepositoryCommandAsync,
@@ -438,7 +438,7 @@ function ownershipOptionsFor(
     // retain their exact index/ref claim; source-only edits must not serialize
     // against another Writer's short Git critical section (#713).
     mutatesGitIndex:
-      !['apply_patch', 'repository_safe_patch_apply', 'apply_edit_operations'].includes(operation) &&
+      !['apply_patch', 'repository_safe_patch_apply'].includes(operation) &&
       (decision.effects.mutatesWorkspace || decision.effects.mutatesGitRefs),
   };
 }
@@ -524,7 +524,6 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
   const isExplicitWriteOp = [
     'apply_patch',
     'repository_safe_patch_apply',
-    'apply_edit_operations',
     'stage_paths',
     'git_stage_paths',
     'commit_paths',
@@ -731,11 +730,7 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
         resultPayload = await trace.measure('executionMs', async () =>
           asyncGitDiff(root, ctx.repository.repoId, ctx.repository.activeCheckoutId, request.input, timeoutMs, signal),
         );
-      } else if (
-        operation === 'apply_patch' ||
-        operation === 'repository_safe_patch_apply' ||
-        operation === 'apply_edit_operations'
-      ) {
+      } else if (operation === 'apply_patch' || operation === 'repository_safe_patch_apply') {
         helpers?.assert();
         if (signal?.aborted) throw new Error('CANCELLED: ownership or request aborted');
         const allowed = request.allowedPaths ?? stringList(request.input.allowed_paths);
