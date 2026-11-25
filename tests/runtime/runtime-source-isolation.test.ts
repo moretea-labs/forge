@@ -897,6 +897,30 @@ printf '{"ok":true}\\n'
     expect(typeof observedData.readiness?.diagnostics?.semantics?.maintenanceCandidateCount).toBe('number');
   });
 
+  test('rh_context rejects the retired source-search operation', async () => {
+    const business = tempRoot('forge-context-retired-search-');
+    const controllerHome = tempRoot('forge-home-context-retired-search-');
+    initGitRepo(business, 'context-retired-search');
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Retired Context Search' });
+
+    const payload = structured(
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+        repo_id: repository.repoId,
+        operation: 'search',
+        query: 'ready',
+      }),
+    );
+
+    expect(payload.status).toBe('failed');
+    expect(payload.data).toEqual({
+      tool: 'rh_context',
+      operation: 'search',
+      allowedOperations: ['list', 'get'],
+    });
+    expect(payload.warnings).toContain('invalid_operation: rh_context does not support "search"');
+  });
+
   test('rh_context get audits learned memory within current Project and Workspace scopes', async () => {
     const business = tempRoot('forge-context-knowledge-audit-');
     const controllerHome = tempRoot('forge-home-context-knowledge-audit-');
