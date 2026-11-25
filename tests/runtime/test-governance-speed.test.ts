@@ -570,7 +570,9 @@ describe('execution-speed test governance', () => {
       timeoutMs: 2 * 60_000,
     });
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'frozen MCP tool contract')).toBe(true);
-    expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(false);
+    expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(
+      false,
+    );
     expect(stepsFor('main')).toContainEqual({
       label: 'Recovery rollback and known-good authority',
       command: 'bun',
