@@ -569,10 +569,15 @@ describe('execution-speed test governance', () => {
       args: ['scripts/check-candidate-module-boundaries.ts'],
       timeoutMs: 2 * 60_000,
     });
-    expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'frozen MCP tool contract')).toBe(true);
-    expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(
-      false,
-    );
+    const mainSteps = stepsFor('main');
+    expect(mainSteps.some((step) => !('gate' in step) && step.label === 'frozen MCP tool contract')).toBe(true);
+    expect(mainSteps.some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(false);
+    const mainCommandSurface = mainSteps
+      .filter((step) => !('gate' in step))
+      .flatMap((step) => [step.label, step.command, ...step.args])
+      .join(' ');
+    expect(mainCommandSurface).not.toContain('check:architecture-sync');
+    expect(mainCommandSurface).not.toContain('check:quality-harness');
     expect(stepsFor('main')).toContainEqual({
       label: 'Recovery rollback and known-good authority',
       command: 'bun',
