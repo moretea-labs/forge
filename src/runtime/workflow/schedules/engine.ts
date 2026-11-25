@@ -30,6 +30,10 @@ import { listUserRequests } from '../../../../packages/kernel/identity/api/index
 import { classifyScheduledBrowserObservation, executeScheduledBrowserProbe } from './browser-probe';
 import { executeSupervisorHealthcheck } from './supervisor-health';
 import { executeScheduledGithubIssueWatch } from './github-issue-watch';
+import {
+  githubIssueWatchEventPayload,
+  normalizeGithubIssueWatchObservation,
+} from '../../events/adapters/github-issue-watch';
 import type {
   RepositorySchedule,
   ScheduleDecisionType,
@@ -394,11 +398,27 @@ export async function evaluateSchedule(
     try {
       const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
       const observation = await executeScheduledGithubIssueWatch({ repoRoot: repository.canonicalRoot, args, observedAt: timestamp });
+      const githubRepository = typeof args.github_repository === 'string' ? args.github_repository : '';
+      const eventObservation = {
+        repository: githubRepository,
+        scheduleId: schedule.scheduleId,
+        occurrenceId,
+        changedOpenIssues: observation.changedOpenIssues,
+      };
+      const eventEnvelopes = normalizeGithubIssueWatchObservation(eventObservation, { receivedAt: timestamp });
+      const githubIssuePayloads = Object.fromEntries(
+        observation.changedOpenIssues.map((issue) => [
+          String(issue.number),
+          githubIssueWatchEventPayload(githubRepository, issue),
+        ]),
+      );
       const evidence = occurrenceDecisionEvidence({
-        githubRepository: typeof args.github_repository === 'string' ? args.github_repository : undefined,
+        githubRepository: githubRepository || undefined,
         observationStatus: observation.status,
         observedIssueCount: observation.issues.length,
         changedIssueNumbers: observation.changedOpenIssues.map((issue) => issue.number),
+        eventEnvelopes,
+        githubIssuePayloads,
       });
       const persistObservation = () => updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => {
         if (current.action.operation !== GITHUB_ISSUE_WATCH_OPERATION) throw new Error('SCHEDULE_ACTION_CHANGED_DURING_GITHUB_OBSERVATION');

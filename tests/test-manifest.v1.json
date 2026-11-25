@@ -571,6 +571,10 @@
       "module": "core",
       "resource": "pure"
     },
+    "tests/runtime/github-issue-watch-adapter.test.ts": {
+      "module": "core",
+      "resource": "pure"
+    },
     "tests/runtime/facade-contracts.test.ts": {
       "module": "workflow",
       "resource": "pure"
