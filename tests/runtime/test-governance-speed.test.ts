@@ -573,8 +573,7 @@ describe('execution-speed test governance', () => {
     expect(mainSteps.some((step) => !('gate' in step) && step.label === 'frozen MCP tool contract')).toBe(true);
     expect(mainSteps.some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(false);
     const mainCommandSurface = mainSteps
-      .filter((step) => !('gate' in step))
-      .flatMap((step) => [step.label, step.command, ...step.args])
+      .flatMap((step) => ('gate' in step ? [] : [step.label, step.command, ...step.args]))
       .join(' ');
     expect(mainCommandSurface).not.toContain('check:architecture-sync');
     expect(mainCommandSurface).not.toContain('check:quality-harness');
