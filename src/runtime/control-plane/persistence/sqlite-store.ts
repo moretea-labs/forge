@@ -1660,8 +1660,8 @@ function pruneRebuildableRecordAuditRows(
   const cursorScope = persisted?.scope ?? '';
   const cursorKey = persisted?.record_key ?? '';
   // Depth-first selection: reclaim the fattest retained chains first. A
-  // lexicographic cursor alone parked on already-bounded work_contract rows and
-  // never revisited newly allowlisted process_recovery_index tails (#377).
+  // lexicographic cursor alone can park on already-bounded rows and fail to
+  // revisit newly allowlisted process_recovery_index tails (#377).
   // Floor advances make the same record reappear until keepTail is reached, so
   // no lexicographic resume cursor is required for correctness.
   void cursorNamespace;
