@@ -32,6 +32,10 @@
       "modules": ["core", "repository"]
     },
     {
+      "prefix": "packages/kernel/events/",
+      "modules": ["core"]
+    },
+    {
       "prefix": "src/effects/controller-locks.ts",
       "modules": ["controller", "process-runtime", "repository"]
     },
@@ -558,6 +562,10 @@
     "tests/runtime/external-unix-socket.test.ts": {
       "module": "controller",
       "resource": "process-tree"
+    },
+    "tests/runtime/event-envelope.test.ts": {
+      "module": "core",
+      "resource": "pure"
     },
     "tests/runtime/facade-contracts.test.ts": {
       "module": "workflow",
