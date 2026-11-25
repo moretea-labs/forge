@@ -144,5 +144,11 @@ describe('Event Policy v1', () => {
         allowedActions: [{ ...policy.allowedActions[0], permission: 'admin' as never }],
       }),
     ).toThrow('EVENT_POLICY_PERMISSION_INVALID');
+    expect(() =>
+      validateEventPolicyV1({
+        ...policy,
+        allowedActions: [{ actionId: 'mail.send_reply', permission: 'external_write', requiresApproval: false }],
+      }),
+    ).toThrow('EVENT_POLICY_SENSITIVE_ACTION_APPROVAL_REQUIRED');
   });
 });

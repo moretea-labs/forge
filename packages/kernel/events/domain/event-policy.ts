@@ -114,6 +114,8 @@ function validateActions(value: unknown): EventPolicyV1['allowedActions'] {
     if (typeof action.permission !== 'string' || !PERMISSIONS.has(action.permission as EventPolicyPermission))
       throw new Error('EVENT_POLICY_PERMISSION_INVALID');
     if (typeof action.requiresApproval !== 'boolean') throw new Error('EVENT_POLICY_APPROVAL_INVALID');
+    if ((action.permission === 'external_write' || action.permission === 'destructive') && !action.requiresApproval)
+      throw new Error('EVENT_POLICY_SENSITIVE_ACTION_APPROVAL_REQUIRED');
     return {
       actionId: action.actionId,
       permission: action.permission as EventPolicyPermission,
