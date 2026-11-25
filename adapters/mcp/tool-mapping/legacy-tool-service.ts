@@ -871,9 +871,27 @@ export async function callMcpTool(
       case 'apply_patch': {
         if (ctx.policy.profile !== 'controller')
           return errorResult('TOOL_DISABLED', 'apply_patch requires the controller profile');
-        const unsupportedArguments = Object.keys(args).filter(
-          (key) => !['operations', 'allowed_paths', 'refresh_fingerprints'].includes(key),
-        );
+        const supportedArguments = new Set([
+          'operations',
+          'allowed_paths',
+          'refresh_fingerprints',
+          // Multi-repository routing resolves these before the legacy tool
+          // service and deliberately preserves the selected identity.
+          'repo_id',
+          'checkout_id',
+          // Public Gateway execution metadata is transport/routing context,
+          // not part of the Semantic Mutation Planner contract.
+          'request_id',
+          'apply_mode',
+          'wait',
+          'wait_ms',
+          'admission_timeout_ms',
+          'queue_timeout_ms',
+          'execution_timeout_ms',
+          'interactive_wait_ms',
+          'cognition_settlement',
+        ]);
+        const unsupportedArguments = Object.keys(args).filter((key) => !supportedArguments.has(key));
         if (unsupportedArguments.length > 0) {
           const message = 'unsupported apply_patch arguments: ' + unsupportedArguments.join(', ');
           audit(ctx, name, 'blocked', args, undefined, message);

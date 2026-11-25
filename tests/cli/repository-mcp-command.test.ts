@@ -27,7 +27,7 @@ import {
   repositoryGitSwitchBranch,
 } from '../../src/runtime/repositories/structured-git';
 import { callRuntimeTool, runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tools';
-import { createMcpToolContext } from '../../adapters/mcp/multi-repository';
+import { callMultiRepositoryTool, createMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { controllerExposureSnapshot } from '../../adapters/mcp/toolset';
 import { getCoreCapabilityExecutionSchema } from '../../src/runtime/control-plane/facade/capability-registry';
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
@@ -1579,6 +1579,49 @@ describe('repository MCP command tools', () => {
         await cleanupWorkspace([workspace, controllerHome, repoRoot]);
         rmSync(workspace, { recursive: true, force: true });
       }
+    }
+  });
+
+  test('multi-repository apply_patch accepts injected repository and gateway metadata (#716)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'forge-multi-repo-apply-patch-metadata-'));
+    const controllerHome = join(workspace, 'controller-home');
+    const repoRoot = join(workspace, 'repo');
+    try {
+      mkdirSync(repoRoot, { recursive: true });
+      git(repoRoot, ['init', '-b', 'main']);
+      git(repoRoot, ['config', 'user.name', 'Forge Test']);
+      git(repoRoot, ['config', 'user.email', 'forge-test@example.com']);
+      writeFileSync(join(repoRoot, 'app.txt'), 'before\n');
+      git(repoRoot, ['add', 'app.txt']);
+      git(repoRoot, ['commit', '-m', 'init']);
+      const registered = registerRepository({ path: repoRoot, controllerHome });
+      const ctx = createMcpToolContext({ controllerHome, profile: 'controller' });
+
+      const applied = await callMultiRepositoryTool(ctx, 'apply_patch', {
+        repo_id: registered.repoId,
+        checkout_id: registered.activeCheckoutId,
+        request_id: 'forge716-metadata-route',
+        apply_mode: 'sync',
+        operations: [
+          {
+            type: 'replace',
+            path: 'app.txt',
+            replacements: [{ old_text: 'before', new_text: 'after' }],
+          },
+        ],
+      });
+
+      expect(applied.isError).not.toBe(true);
+      expect(applied.structuredContent).toMatchObject({
+        status: 'applied',
+        sessionless: true,
+        createdSession: false,
+        repoId: registered.repoId,
+      });
+      expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
     }
   });
 
