@@ -490,9 +490,10 @@ export function buildHostRecoveryDispatchCommand(action) {
       `$parentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; Write-Output ('FORGE_RECOVERY_PARENT_SID|' + $parentSid); & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $recoveryScript 'task_install'; Write-Output ('FORGE_RECOVERY_TASK_INSTALL_EXIT|' + [string]$LASTEXITCODE); $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; $entry=(Get-ItemProperty -LiteralPath $runKey -Name 'ForgeIndependentRecoveryWSL' -ErrorAction SilentlyContinue).ForgeIndependentRecoveryWSL; Write-Output ('FORGE_RECOVERY_PARENT_RUN|' + $(if($entry){'present'}else{'missing'}))`
     );
   }
+  const argumentLine = `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${recoveryScript} ${recoveryAction}`;
   return (
     prefix +
-    `Start-Process -WindowStyle Hidden -FilePath $powershell -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$recoveryScript,'${recoveryAction}')`
+    `$arguments='${argumentLine}'; Start-Process -WindowStyle Hidden -FilePath $powershell -ArgumentList $arguments`
   );
 }
 
@@ -626,7 +627,7 @@ async function runTerminalCommand(config, requestId, command, deps, options = {}
     clipboardCaptured = true;
     await deps.desktopCall(config, `${requestId}:clipboard-command`, 'desktop_clipboard_write', { text: command });
     await deps.desktopCall(config, `${requestId}:paste`, 'desktop_paste', { interaction_id: interactionId });
-    if (options.awaitResult === false) await deps.sleep(900);
+    await deps.sleep(options.awaitResult === false ? 2500 : 800);
     await deps.desktopCall(config, `${requestId}:return`, 'desktop_key', {
       interaction_id: interactionId,
       keys: ['RETURN'],

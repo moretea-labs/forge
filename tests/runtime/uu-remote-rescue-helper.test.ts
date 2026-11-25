@@ -448,8 +448,10 @@ describe('UU Remote rescue helper', () => {
       requestId: 'host-tunnel-1',
     });
     expect(fx.getCommand()).toContain(String.raw`C:\ProgramData\ForgeRecovery\ForgeRecovery.ps1`);
-    expect(fx.getCommand()).toContain("'tunnel_restart'");
-    expect(fx.getCommand()).not.toContain("'full_recover'");
+    expect(fx.getCommand()).toContain('tunnel_restart');
+    expect(fx.getCommand()).not.toContain('full_recover');
+    expect(fx.getCommand()).toContain('-ArgumentList $arguments');
+    expect(fx.getCommand()).not.toContain('-ArgumentList @(');
     expect(result).toMatchObject({
       dispatch: {
         accepted: true,
@@ -465,7 +467,9 @@ describe('UU Remote rescue helper', () => {
     const fx = fixture();
     const result = await executeAction('host_full_recover_dispatch', {}, config, { ...fx, requestId: 'host-full-1' });
     expect(fx.getCommand()).toContain(String.raw`C:\ProgramData\ForgeRecovery\ForgeRecovery.ps1`);
-    expect(fx.getCommand()).toContain("'full_recover'");
+    expect(fx.getCommand()).toContain('full_recover');
+    expect(fx.getCommand()).toContain('-ArgumentList $arguments');
+    expect(fx.getCommand()).not.toContain('-ArgumentList @(');
     expect(result).toMatchObject({
       dispatch: {
         accepted: true,
