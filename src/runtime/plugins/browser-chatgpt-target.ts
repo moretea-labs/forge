@@ -40,6 +40,8 @@ const LEGACY_BROWSER_OWNER_PREFIX = 'forge-browser-owned:';
 const BROWSER_PREFERENCE_RECORD = 'chatgpt.browser-preference';
 const BROWSER_PREFERENCE_KEY = 'default';
 const BROWSER_CREATE_COOLDOWN_MS = 60_000;
+const FRESH_ROOT_INHERITED_DRAFT_WINDOW_MS = 180_000;
+const SUPERVISOR_BOOTSTRAP_KEY = /^supervisor:([A-Za-z0-9._-]+):/;
 
 const BROWSER_PREFERENCE_IDENTITY = {
   surfaceType: 'browser-page' as const,
@@ -332,7 +334,12 @@ export async function dispatchMacOsChatgptPrompt(
     if (expectedTarget.namespace === 'chatgpt.conversation') {
       return parts.at(-2) === 'c' && parts.at(-1) === expectedTarget.conversationId;
     }
-    const expectedParts = new URL(expectedTarget.projectUrl).pathname.split('/').filter(Boolean);
+    const expectedUrl = new URL(expectedTarget.projectUrl);
+    if (expectedUrl.pathname === '/' || expectedUrl.pathname === '') {
+      return (currentUrl.pathname === '/' || currentUrl.pathname === '')
+        && !currentUrl.search && !currentUrl.hash;
+    }
+    const expectedParts = expectedUrl.pathname.split('/').filter(Boolean);
     const projectId = (segments) => /^g-p-[a-z0-9]+/i.exec(segments[1] || '')?.[0];
     return parts[0] === 'g' && expectedParts[0] === 'g'
       && Boolean(projectId(parts)) && projectId(parts) === projectId(expectedParts)
@@ -707,6 +714,67 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     return await observeMacOsChatgptPage(page, options);
   }
 
+  private async sanitizeFreshRootBootstrap(
+    identity: ComputerChatgptBootstrapIdentity,
+    record: ComputerSurfaceTarget,
+    page: ComputerChatgptNativePage,
+  ): Promise<void> {
+    if (identity.projectUrl !== 'https://chatgpt.com/') return;
+    const lane = SUPERVISOR_BOOTSTRAP_KEY.exec(identity.bootstrapKey)?.[1];
+    if (!lane) return;
+    const createdAt = Date.parse(record.createdAt);
+    if (!Number.isFinite(createdAt) || Date.now() - createdAt > FRESH_ROOT_INHERITED_DRAFT_WINDOW_MS) return;
+
+    await this.prepareProviderOwnedPage(record, page);
+    const result = await page.evaluate<{ status: string; foreignProject?: string }>(`(() => {
+      const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
+      const current = new URL(String(location.href || ''));
+      if (current.protocol !== 'https:' || current.hostname !== 'chatgpt.com'
+          || (current.pathname !== '/' && current.pathname !== '') || current.search || current.hash)
+        return { status: 'not_root' };
+      const root = Array.from(document.querySelectorAll('main')).filter(visible).pop() || document;
+      const composer = [
+        'div#prompt-textarea[contenteditable="true"]',
+        '#prompt-textarea[contenteditable="true"]',
+        '[data-testid="composer-text-input"][contenteditable="true"]',
+        'div[role="textbox"][contenteditable="true"]',
+      ].flatMap((selector) => Array.from(root.querySelectorAll(selector))).find(visible);
+      if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { status: 'composer_missing' };
+      const stop = Array.from(root.querySelectorAll(
+        '[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label="Stop"], button[aria-label="Stop generating"], button[aria-label="停止"], button[aria-label="停止生成"]'
+      )).some(visible);
+      if (stop) return { status: 'generating' };
+      const transcript = root.querySelectorAll(
+        '[data-testid^="conversation-turn-"], [data-message-author-role], [data-chatgpt-search-unit-key], [data-content-search-unit-key], .rich-text-user-turn'
+      );
+      if (transcript.length) return { status: 'has_transcript' };
+      const text = String((composer.innerText ?? composer.textContent ?? '') || '').trim();
+      if (!text) return { status: 'empty' };
+      const marker = /^\\[forge-supervisor project=([A-Za-z0-9._-]+) run=([a-f0-9]{16,64})\\]/.exec(text);
+      if (!marker) return { status: 'unrecognized_draft' };
+      const expectedLane = ${JSON.stringify(lane)};
+      if (marker[1] === expectedLane) return { status: 'same_lane_draft' };
+
+      composer.focus({ preventScroll: true });
+      const selection = window.getSelection();
+      if (!selection) return { status: 'selection_unavailable', foreignProject: marker[1] };
+      const range = document.createRange();
+      range.selectNodeContents(composer);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      const deleted = document.execCommand('delete', false, null);
+      composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+      const after = String((composer.innerText ?? composer.textContent ?? '') || '').trim();
+      return {
+        status: deleted && after === '' ? 'foreign_supervisor_draft_cleared' : 'clear_unconfirmed',
+        foreignProject: marker[1],
+      };
+    })()`);
+
+    if (result.status === 'clear_unconfirmed')
+      throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_INHERITED_DRAFT_CLEAR_UNCONFIRMED');
+  }
+
   private target(
     identity: ComputerChatgptTargetIdentity,
     record: ComputerSurfaceTarget,
@@ -1011,7 +1079,14 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     }
     let record = this.upsert(identity, 'provider_owned');
     const cached = this.pages.get(record.targetId);
-    if (cached) return { state: 'ready', target: this.target(identity, record, cached) };
+    if (cached) {
+      try {
+        await this.sanitizeFreshRootBootstrap(identity, record, cached);
+      } catch (error) {
+        return failure(error, 'COMPUTER_CHATGPT_BOOTSTRAP_DRAFT_ISOLATION_FAILED');
+      }
+      return { state: 'ready', target: this.target(identity, record, cached) };
+    }
 
     const binding = record.providerBinding;
     const boundProduct = productForBinding(binding);
@@ -1023,6 +1098,7 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
           tabId: binding.tabId,
         });
         this.pages.set(record.targetId, page);
+        await this.sanitizeFreshRootBootstrap(identity, record, page);
         return { state: 'ready', target: this.target(identity, record, page) };
       } catch (error) {
         if (!boundTabProvenGone(error)) {
@@ -1046,6 +1122,7 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
         `bootstrap:${bootstrapKey}:${projectUrl}`,
       );
       record = await this.bind(identity, record, page, 'provider_owned');
+      await this.sanitizeFreshRootBootstrap(identity, record, page);
       this.rememberBrowser(page.tabRef());
       return { state: 'ready', target: this.target(identity, record, page) };
     } catch (error) {

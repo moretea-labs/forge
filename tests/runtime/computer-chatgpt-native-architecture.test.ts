@@ -25,3 +25,15 @@ test('optional native browser absence does not poison exact-target inventory com
   expect(target).toContain("error.code === 'PLUGIN_BROWSER_NATIVE_APP_NOT_RUNNING'");
   expect(target).toContain("error.code === 'PLUGIN_BROWSER_NATIVE_APP_NOT_INSTALLED'");
 });
+
+test('fresh root bootstrap isolates only inherited foreign Supervisor drafts', () => {
+  const target = read('src/runtime/plugins/browser-chatgpt-target.ts');
+  expect(target).toContain('FRESH_ROOT_INHERITED_DRAFT_WINDOW_MS = 180_000');
+  expect(target).toContain('SUPERVISOR_BOOTSTRAP_KEY');
+  expect(target).toContain("status: 'unrecognized_draft'");
+  expect(target).toContain("status: 'same_lane_draft'");
+  expect(target).toContain("status: 'has_transcript'");
+  expect(target).toContain("status: 'generating'");
+  expect(target).toContain("'foreign_supervisor_draft_cleared'");
+  expect(target).toContain("expectedUrl.pathname === '/' || expectedUrl.pathname === ''");
+});
