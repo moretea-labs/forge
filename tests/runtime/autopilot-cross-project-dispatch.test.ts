@@ -1,4 +1,10 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { ensureControllerHome } from '../../src/effects/controller-home';
+import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { authorizeAutopilot } from '../../src/runtime/autopilot/service';
 import type { RepositoryRecord } from '../../src/core/repository/types';
 import type {
   RequirementDispatchCandidate,
@@ -144,6 +150,64 @@ describe('cross-project Requirement Autopilot dispatch (#707)', () => {
     ]);
   });
 
+  test('uses the real canonical grant store and dispatches only its exact approved Requirement', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-autopilot-dispatch-grant-'));
+    try {
+      ensureControllerHome(controllerHome);
+      createRequirement({ controllerHome }, {
+        requirementId: 'REQ-ACTUAL-GRANT',
+        title: 'Granted Requirement',
+        outcomeStatement: 'Execute only the explicitly authorized work.',
+        acceptanceCriteria: ['Use the exact grant and checkout.'],
+      });
+      const authorization = authorizeAutopilot({
+        controllerHome,
+        repoId: 'repo-a',
+        checkoutId: 'checkout-a',
+        requirementId: 'REQ-ACTUAL-GRANT',
+        confirmAuthorization: true,
+        expectedRequirementRevision: 1,
+        policy: {
+          provider: 'joycode',
+          endpoint: 'https://api-ai.jd.com',
+          protocol: 'chat_completions',
+          model: 'JoyAI-Code-1.6',
+          maxTurns: 3,
+          maxToolCalls: 3,
+          maxTotalTokens: 10_000,
+        },
+      });
+      const started: string[] = [];
+      const result = dispatchAuthorizedCrossProjectRequirements({
+        controllerHome,
+        repositories: [repository('repo-a', 'checkout-a')],
+        nowMs: Date.now(),
+      }, {
+        selectCandidates: () => selection([
+          candidate({
+            requirementId: 'REQ-ACTUAL-GRANT',
+            projectId: 'project-a',
+            repoId: 'repo-a',
+          }),
+        ]),
+        listPlacements: () => [],
+        sampleHostResources: () => host,
+        activeLoopCount: () => 0,
+        isLoopActive: () => false,
+        start: ({ requirementId, dispatchSource }) => {
+          started.push(`${requirementId}:${dispatchSource}`);
+          return {} as never;
+        },
+      });
+
+      expect(authorization.grant.capabilities).toContain('autopilot:execute');
+      expect(started).toEqual(['REQ-ACTUAL-GRANT:global_scheduler']);
+      expect(result.startedRequirementIds).toEqual(['REQ-ACTUAL-GRANT']);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('stale authorization and unavailable checkouts are local blockers, not global stops', () => {
     const stale = candidate({
       requirementId: 'REQ-STALE',
@@ -189,6 +253,32 @@ describe('cross-project Requirement Autopilot dispatch (#707)', () => {
       'checkout_unavailable',
       'started',
     ]);
+  });
+
+  test('fails closed for malformed grant expiry timestamps', () => {
+    const ready = candidate({ requirementId: 'REQ-INVALID-EXPIRY', projectId: 'project-a', repoId: 'repo-a' });
+    const malformedGrant = { ...grant('REQ-INVALID-EXPIRY', 'repo-a', 'checkout-a'), expiresAt: 'not-a-date' };
+    let starts = 0;
+    const result = dispatchAuthorizedCrossProjectRequirements({
+      controllerHome: '/controller',
+      repositories: [repository('repo-a', 'checkout-a')],
+      nowMs: NOW,
+    }, {
+      selectCandidates: () => selection([ready]),
+      listGrants: () => [malformedGrant],
+      listPlacements: () => [],
+      sampleHostResources: () => host,
+      activeLoopCount: () => 0,
+      isLoopActive: () => false,
+      readRun: () => undefined,
+      start: () => {
+        starts += 1;
+        return {} as never;
+      },
+    });
+
+    expect(starts).toBe(0);
+    expect(result.decisions[0]?.outcome).toBe('not_authorized');
   });
 
   test('recovers a persisted running Run after Runtime restart without creating a duplicate', () => {

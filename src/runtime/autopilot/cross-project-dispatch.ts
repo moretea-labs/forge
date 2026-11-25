@@ -113,10 +113,12 @@ function ownerScope(repoId: string, requirementId: string): string {
 function activeRequirementGrants(grants: CanonicalGrant[], nowMs: number): Map<string, CanonicalGrant> {
   const result = new Map<string, CanonicalGrant>();
   for (const grant of [...grants].sort((left, right) => right.createdAt.localeCompare(left.createdAt))) {
+    const expiresAt = Date.parse(grant.expiresAt);
     if (
       !grant.ownerScope ||
       grant.revokedAt ||
-      Date.parse(grant.expiresAt) <= nowMs ||
+      !Number.isFinite(expiresAt) ||
+      expiresAt <= nowMs ||
       !grant.capabilities.includes(AUTOPILOT_CAPABILITY)
     )
       continue;
