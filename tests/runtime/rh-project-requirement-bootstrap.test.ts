@@ -29,7 +29,7 @@ import {
 } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
-import { RH_WORK_MODEL_OPERATIONS } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
+import { RH_PROJECT_MODEL_OPERATIONS } from '../../src/runtime/control-plane/facade/rh-project-operation-contract';
 
 const roots: string[] = [];
 
@@ -95,19 +95,19 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
   >;
 }
 
-test('rh_work exposes the single Project root and explicit child Requirement tree', async () => {
+test('rh_project exposes the single Project root and explicit child Requirement tree', async () => {
   const home = tempRoot('forge-requirement-tree-api-');
   ensureControllerHome(home);
   const ctx = mcpContext(home);
   structured(
-    await callRuntimeTool(ctx, 'rh_work', {
+    await callRuntimeTool(ctx, 'rh_project', {
       operation: 'project_create',
       project_id: 'tree-api',
       project_display_name: 'Tree API',
     }),
   );
   const root = structured(
-    await callRuntimeTool(ctx, 'rh_work', {
+    await callRuntimeTool(ctx, 'rh_project', {
       operation: 'requirement_create',
       project_id: 'tree-api',
       requirement_id: 'REQ-TREE-ROOT',
@@ -118,7 +118,7 @@ test('rh_work exposes the single Project root and explicit child Requirement tre
   );
   expect(root.status).toBe('ok');
   const child = structured(
-    await callRuntimeTool(ctx, 'rh_work', {
+    await callRuntimeTool(ctx, 'rh_project', {
       operation: 'requirement_create',
       project_id: 'tree-api',
       requirement_id: 'REQ-TREE-CHILD',
@@ -132,7 +132,7 @@ test('rh_work exposes the single Project root and explicit child Requirement tre
     parentRequirementId: 'REQ-TREE-ROOT',
     rootRequirementId: 'REQ-TREE-ROOT',
   });
-  await callRuntimeTool(ctx, 'rh_work', {
+  await callRuntimeTool(ctx, 'rh_project', {
     operation: 'requirement_create',
     project_id: 'tree-api',
     requirement_id: 'REQ-TREE-LEGACY',
@@ -140,7 +140,7 @@ test('rh_work exposes the single Project root and explicit child Requirement tre
     requirement_outcome: 'Attach later.',
   });
   const attached = structured(
-    await callRuntimeTool(ctx, 'rh_work', {
+    await callRuntimeTool(ctx, 'rh_project', {
       operation: 'requirement_revise',
       project_id: 'tree-api',
       requirement_id: 'REQ-TREE-LEGACY',
@@ -153,7 +153,7 @@ test('rh_work exposes the single Project root and explicit child Requirement tre
     rootRequirementId: 'REQ-TREE-ROOT',
   });
   const listed = structured(
-    await callRuntimeTool(ctx, 'rh_work', { operation: 'requirement_list', project_id: 'tree-api' }),
+    await callRuntimeTool(ctx, 'rh_project', { operation: 'requirement_list', project_id: 'tree-api' }),
   );
   expect(listed.data.requirements).toEqual(
     expect.arrayContaining([
@@ -166,12 +166,12 @@ test('rh_work exposes the single Project root and explicit child Requirement tre
     ]),
   );
   expect(
-    structured(await callRuntimeTool(ctx, 'rh_work', { operation: 'project_get', project_id: 'tree-api' })).data.project
-      .rootRequirementId,
+    structured(await callRuntimeTool(ctx, 'rh_project', { operation: 'project_get', project_id: 'tree-api' })).data
+      .project.rootRequirementId,
   ).toBe('REQ-TREE-ROOT');
   expect(
     structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'requirement_create',
         project_id: 'tree-api',
         requirement_id: 'REQ-TREE-SECOND-ROOT',
@@ -181,7 +181,7 @@ test('rh_work exposes the single Project root and explicit child Requirement tre
       }),
     ).status,
   ).toBe('blocked');
-  const properties = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work')?.inputSchema
+  const properties = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project')?.inputSchema
     .properties as Record<string, any>;
   expect(properties.requirement_parent_id).toMatchObject({ type: 'string' });
   expect(properties.requirement_is_project_root).toMatchObject({ type: 'boolean' });
@@ -194,7 +194,7 @@ describe('Requirement assignment triage', () => {
     const ctx = mcpContext(home);
     expect(
       structured(
-        await callRuntimeTool(ctx, 'rh_work', {
+        await callRuntimeTool(ctx, 'rh_project', {
           operation: 'project_create',
           project_id: 'triage-project',
           project_display_name: 'Triage',
@@ -206,7 +206,7 @@ describe('Requirement assignment triage', () => {
       ['REQ-HAS-OWNER', 'alice'],
     ] as const) {
       const created = structured(
-        await callRuntimeTool(ctx, 'rh_work', {
+        await callRuntimeTool(ctx, 'rh_project', {
           operation: 'requirement_create',
           project_id: 'triage-project',
           requirement_id: id,
@@ -219,7 +219,7 @@ describe('Requirement assignment triage', () => {
     }
     const queue = async (filter: string, more: Record<string, unknown> = {}) =>
       structured(
-        await callRuntimeTool(ctx, 'rh_work', {
+        await callRuntimeTool(ctx, 'rh_project', {
           operation: 'requirement_list',
           project_id: 'triage-project',
           assignment_filter: filter,
@@ -233,7 +233,7 @@ describe('Requirement assignment triage', () => {
     ]);
     expect((await queue('assigned')).data.totalCount).toBe(1);
     const assigneeOrder = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'requirement_list',
         project_id: 'triage-project',
         sort_by: 'assignee',
@@ -249,7 +249,7 @@ describe('Requirement assignment triage', () => {
     const conflict = await queue('unassigned', { requirement_assignee: 'alice' });
     expect(conflict.status).toBe('blocked');
     const revised = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'requirement_revise',
         project_id: 'triage-project',
         requirement_id: 'REQ-NEEDS-OWNER',
@@ -261,7 +261,7 @@ describe('Requirement assignment triage', () => {
     expect((await queue('unassigned')).data).toMatchObject({ totalCount: 0, requirements: [] });
     expect((await queue('assigned')).data.totalCount).toBe(2);
     const selected = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'requirement_get',
         project_id: 'triage-project',
         requirement_id: 'REQ-NEEDS-OWNER',
@@ -272,13 +272,17 @@ describe('Requirement assignment triage', () => {
   });
 });
 
-describe('rh_work Requirement bootstrap', () => {
+describe('rh_project Requirement bootstrap', () => {
   test('returns a lightweight Requirement and current Plan manifest in one read', async () => {
     const repoRoot = tempRoot('forge-requirement-manifest-repo-');
     const controllerHome = tempRoot('forge-requirement-manifest-home-');
     initRepo(repoRoot);
     ensureControllerHome(controllerHome);
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Requirement manifest fixture' });
+    const repository = registerRepository({
+      path: repoRoot,
+      controllerHome,
+      displayName: 'Requirement manifest fixture',
+    });
     const ctx = mcpContext(controllerHome, repository);
 
     createRequirement(
@@ -304,7 +308,7 @@ describe('rh_work Requirement bootstrap', () => {
     );
 
     const manifest = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'requirement_manifest',
         requirement_id: 'REQ-MANIFEST',
       }),
@@ -335,7 +339,11 @@ describe('rh_work Requirement bootstrap', () => {
     const controllerHome = tempRoot('forge-requirement-manifest-detail-home-');
     initRepo(repoRoot);
     ensureControllerHome(controllerHome);
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Requirement manifest detail fixture' });
+    const repository = registerRepository({
+      path: repoRoot,
+      controllerHome,
+      displayName: 'Requirement manifest detail fixture',
+    });
     const ctx = mcpContext(controllerHome, repository);
     createRequirement(
       { controllerHome },
@@ -360,7 +368,7 @@ describe('rh_work Requirement bootstrap', () => {
       },
     );
     const snapshot = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'requirement_manifest',
         requirement_id: 'REQ-MANIFEST-DETAIL',
         plan_id: 'PLAN-MANIFEST-DETAIL',
@@ -369,24 +377,30 @@ describe('rh_work Requirement bootstrap', () => {
     );
     expect(snapshot.status).toBe('ok');
     expect(snapshot.data.requirement).toMatchObject({
-      requirementId: 'REQ-MANIFEST-DETAIL', revision: 1,
+      requirementId: 'REQ-MANIFEST-DETAIL',
+      revision: 1,
       outcomeStatement: 'Return the semantic Requirement and selected current Plan in one read.',
       acceptanceCriteria: ['Atomic snapshot remains revision fenced.'],
     });
     expect(snapshot.data.plan).toMatchObject({
-      planId: 'PLAN-MANIFEST-DETAIL', requirementId: 'REQ-MANIFEST-DETAIL', revision: 1,
+      planId: 'PLAN-MANIFEST-DETAIL',
+      requirementId: 'REQ-MANIFEST-DETAIL',
+      revision: 1,
       goal: 'Manifest detail plan',
       items: [{ id: 'A', objective: 'Return this detail item.', dependencies: [] }],
     });
     const wrongPlan = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
-        operation: 'requirement_manifest', requirement_id: 'REQ-MANIFEST-DETAIL',
-        plan_id: 'PLAN-OTHER', detail_level: 'detail',
+      await callRuntimeTool(ctx, 'rh_project', {
+        operation: 'requirement_manifest',
+        requirement_id: 'REQ-MANIFEST-DETAIL',
+        plan_id: 'PLAN-OTHER',
+        detail_level: 'detail',
       }),
     );
     expect(wrongPlan.status).toBe('not_found');
     expect(wrongPlan.data).toMatchObject({
-      requirementId: 'REQ-MANIFEST-DETAIL', planId: 'PLAN-OTHER',
+      requirementId: 'REQ-MANIFEST-DETAIL',
+      planId: 'PLAN-OTHER',
       currentPlanIds: ['PLAN-MANIFEST-DETAIL'],
     });
   });
@@ -403,7 +417,7 @@ describe('rh_work Requirement bootstrap', () => {
       ['REQ-LIST-B', 'List B'],
     ] as const) {
       const created = structured(
-        await callRuntimeTool(ctx, 'rh_work', {
+        await callRuntimeTool(ctx, 'rh_project', {
           operation: 'requirement_create',
           requirement_id: id,
           requirement_title: title,
@@ -413,7 +427,7 @@ describe('rh_work Requirement bootstrap', () => {
       expect(created.status).toBe('ok');
     }
     const listed = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'requirement_list',
         limit: 100,
       }),
@@ -458,7 +472,7 @@ describe('rh_work Requirement bootstrap', () => {
       [ctxB, 'REQ-SCOPE-B', 'Scope B'],
     ] as const) {
       const created = structured(
-        await callRuntimeTool(ctx, 'rh_work', {
+        await callRuntimeTool(ctx, 'rh_project', {
           operation: 'requirement_create',
           requirement_id: id,
           requirement_title: title,
@@ -468,8 +482,12 @@ describe('rh_work Requirement bootstrap', () => {
       expect(created.status).toBe('ok');
     }
 
-    const listedA = structured(await callRuntimeTool(ctxA, 'rh_work', { operation: 'requirement_list', limit: 100 }));
-    const listedB = structured(await callRuntimeTool(ctxB, 'rh_work', { operation: 'requirement_list', limit: 100 }));
+    const listedA = structured(
+      await callRuntimeTool(ctxA, 'rh_project', { operation: 'requirement_list', limit: 100 }),
+    );
+    const listedB = structured(
+      await callRuntimeTool(ctxB, 'rh_project', { operation: 'requirement_list', limit: 100 }),
+    );
     expect(listedA.data.requirements.map((entry: Record<string, unknown>) => entry.requirementId)).toContain(
       'REQ-SCOPE-A',
     );
@@ -484,7 +502,7 @@ describe('rh_work Requirement bootstrap', () => {
     );
 
     const crossRepositoryGet = structured(
-      await callRuntimeTool(ctxA, 'rh_work', {
+      await callRuntimeTool(ctxA, 'rh_project', {
         operation: 'requirement_get',
         requirement_id: 'REQ-SCOPE-B',
       }),
@@ -509,7 +527,7 @@ describe('rh_work Requirement bootstrap', () => {
       },
     );
     const foreignLinkedList = structured(
-      await callRuntimeTool(ctxA, 'rh_work', {
+      await callRuntimeTool(ctxA, 'rh_project', {
         operation: 'requirement_list',
         limit: 100,
       }),
@@ -518,7 +536,7 @@ describe('rh_work Requirement bootstrap', () => {
       foreignLinkedList.data.requirements.map((entry: Record<string, unknown>) => entry.requirementId),
     ).not.toContain('REQ-SCOPE-B');
     const foreignLinkedGet = structured(
-      await callRuntimeTool(ctxA, 'rh_work', {
+      await callRuntimeTool(ctxA, 'rh_project', {
         operation: 'requirement_get',
         requirement_id: 'REQ-SCOPE-B',
       }),
@@ -567,8 +585,12 @@ describe('rh_work Requirement bootstrap', () => {
         },
       );
     }
-    const legacyA = structured(await callRuntimeTool(ctxA, 'rh_work', { operation: 'requirement_list', limit: 100 }));
-    const legacyB = structured(await callRuntimeTool(ctxB, 'rh_work', { operation: 'requirement_list', limit: 100 }));
+    const legacyA = structured(
+      await callRuntimeTool(ctxA, 'rh_project', { operation: 'requirement_list', limit: 100 }),
+    );
+    const legacyB = structured(
+      await callRuntimeTool(ctxB, 'rh_project', { operation: 'requirement_list', limit: 100 }),
+    );
     expect(legacyA.data.requirements.map((entry: Record<string, unknown>) => entry.requirementId)).toContain(
       legacy.requirementId,
     );
@@ -595,7 +617,7 @@ describe('rh_work Requirement bootstrap', () => {
       [ctxB, 'project-filter-b', 'Project Filter B'],
     ] as const) {
       const project = structured(
-        await callRuntimeTool(ctx, 'rh_work', {
+        await callRuntimeTool(ctx, 'rh_project', {
           operation: 'project_create',
           project_id: projectId,
           project_display_name: name,
@@ -604,7 +626,7 @@ describe('rh_work Requirement bootstrap', () => {
       expect(project.status).toBe('ok');
     }
     const standaloneProject = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'project_create',
         project_id: 'project-filter-standalone',
         project_display_name: 'Standalone Filter Project',
@@ -622,7 +644,7 @@ describe('rh_work Requirement bootstrap', () => {
       projectId?: string,
     ) =>
       structured(
-        await callRuntimeTool(ctx, 'rh_work', {
+        await callRuntimeTool(ctx, 'rh_project', {
           operation: 'requirement_create',
           requirement_id: requirementId,
           requirement_title: title,
@@ -675,7 +697,7 @@ describe('rh_work Requirement bootstrap', () => {
       },
     );
     const repositoryOnlyList = structured(
-      await callRuntimeTool(ctxA, 'rh_work', {
+      await callRuntimeTool(ctxA, 'rh_project', {
         operation: 'requirement_list',
         limit: 100,
       }),
@@ -684,14 +706,14 @@ describe('rh_work Requirement bootstrap', () => {
       repositoryOnlyList.data.requirements.map((entry: { requirementId: string }) => entry.requirementId),
     ).not.toContain('REQ-FILTER-STANDALONE');
     const foreignProjectGet = structured(
-      await callRuntimeTool(ctxA, 'rh_work', {
+      await callRuntimeTool(ctxA, 'rh_project', {
         operation: 'requirement_get',
         requirement_id: 'REQ-FILTER-STANDALONE',
       }),
     );
     expect(foreignProjectGet.status).toBe('not_found');
 
-    const schema = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work')?.inputSchema;
+    const schema = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project')?.inputSchema;
     const properties = schema?.properties as Record<string, any>;
     expect(properties.project_id.description).toContain('requirement_list');
     expect(properties.requirement_status.description).toContain('requirement_list');
@@ -708,7 +730,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(properties.operation.enum).toContain('requirement_revise');
 
     const projectList = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_list',
         project_id: 'project-filter-a',
         limit: 2,
@@ -730,7 +752,7 @@ describe('rh_work Requirement bootstrap', () => {
       { requirementId: 'REQ-FILTER-A-NORMAL', projectId: 'project-filter-a', priority: 'normal' },
     ]);
     const nextRequirementPage = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_list',
         project_id: 'project-filter-a',
         limit: 2,
@@ -749,7 +771,7 @@ describe('rh_work Requirement bootstrap', () => {
       'REQ-FILTER-A-LOW',
     ]);
     const beyondRequirementPage = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_list',
         project_id: 'project-filter-a',
         limit: 2,
@@ -767,7 +789,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(beyondRequirementPage.data.requirements).toEqual([]);
 
     const repositoryProjectList = structured(
-      await callRuntimeTool(ctxA, 'rh_work', {
+      await callRuntimeTool(ctxA, 'rh_project', {
         operation: 'requirement_list',
         project_id: 'project-filter-a',
         sort_by: 'priority',
@@ -781,7 +803,7 @@ describe('rh_work Requirement bootstrap', () => {
     ).not.toContain('REQ-FILTER-STANDALONE');
 
     const filtered = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_list',
         project_id: 'project-filter-a',
         requirement_status: 'active',
@@ -804,7 +826,7 @@ describe('rh_work Requirement bootstrap', () => {
     ]);
 
     const searchedRequirements = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_list',
         project_id: 'project-filter-a',
         search_query: 'URGENT TASK',
@@ -819,7 +841,7 @@ describe('rh_work Requirement bootstrap', () => {
       ['REQ-FILTER-A-URGENT'],
     );
     const priorityFiltered = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_list',
         project_id: 'project-filter-a',
         requirement_status: 'active',
@@ -832,7 +854,7 @@ describe('rh_work Requirement bootstrap', () => {
     ]);
 
     const standalone = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_list',
         project_id: 'project-filter-standalone',
       }),
@@ -842,7 +864,7 @@ describe('rh_work Requirement bootstrap', () => {
     ]);
 
     const repositoryProjectMismatch = structured(
-      await callRuntimeTool(ctxA, 'rh_work', {
+      await callRuntimeTool(ctxA, 'rh_project', {
         operation: 'requirement_list',
         project_id: 'project-filter-b',
       }),
@@ -851,7 +873,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(repositoryProjectMismatch.summary).toContain('REQUIREMENT_PROJECT_SCOPE_CONFLICT');
 
     const invalidSort = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_list',
         project_id: 'project-filter-a',
         sort_by: 'unsupported',
@@ -862,7 +884,7 @@ describe('rh_work Requirement bootstrap', () => {
 
     // The Project board must not read or edit another Project's task by a stale task ID.
     const foreignProjectRead = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_get',
         project_id: 'project-filter-a',
         requirement_id: 'REQ-FILTER-B-HIGH',
@@ -870,7 +892,7 @@ describe('rh_work Requirement bootstrap', () => {
     );
     expect(foreignProjectRead.status).toBe('not_found');
     const foreignProjectWrite = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_revise',
         project_id: 'project-filter-a',
         requirement_id: 'REQ-FILTER-B-HIGH',
@@ -881,7 +903,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(foreignProjectWrite.status).toBe('blocked');
     expect(foreignProjectWrite.data.currentRequirement).toBeUndefined();
     const foreignAfter = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_get',
         project_id: 'project-filter-b',
         requirement_id: 'REQ-FILTER-B-HIGH',
@@ -890,7 +912,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(foreignAfter.data.requirement).toMatchObject({ revision: 1, assignee: 'greyson' });
 
     const wrongStandaloneRead = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_get',
         project_id: 'project-filter-a',
         requirement_id: 'REQ-FILTER-STANDALONE',
@@ -898,7 +920,7 @@ describe('rh_work Requirement bootstrap', () => {
     );
     expect(wrongStandaloneRead.status).toBe('not_found');
     const wrongStandaloneWrite = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_revise',
         project_id: 'project-filter-a',
         requirement_id: 'REQ-FILTER-STANDALONE',
@@ -909,7 +931,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(wrongStandaloneWrite.status).toBe('blocked');
 
     const repoWrongProjectRead = structured(
-      await callRuntimeTool(ctxA, 'rh_work', {
+      await callRuntimeTool(ctxA, 'rh_project', {
         operation: 'requirement_get',
         project_id: 'project-filter-b',
         requirement_id: 'REQ-FILTER-A-NORMAL',
@@ -918,7 +940,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(repoWrongProjectRead.status).toBe('blocked');
     expect(repoWrongProjectRead.summary).toContain('REQUIREMENT_PROJECT_SCOPE_CONFLICT');
     const repoWrongProjectWrite = structured(
-      await callRuntimeTool(ctxA, 'rh_work', {
+      await callRuntimeTool(ctxA, 'rh_project', {
         operation: 'requirement_revise',
         project_id: 'project-filter-b',
         requirement_id: 'REQ-FILTER-A-NORMAL',
@@ -930,7 +952,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(repoWrongProjectWrite.summary).toContain('REQUIREMENT_PROJECT_SCOPE_CONFLICT');
 
     const rightProjectWrite = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_revise',
         project_id: 'project-filter-a',
         requirement_id: 'REQ-FILTER-A-NORMAL',
@@ -946,7 +968,7 @@ describe('rh_work Requirement bootstrap', () => {
       assignee: 'project-editor',
     });
     const rightProjectRead = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_get',
         project_id: 'project-filter-a',
         requirement_id: 'REQ-FILTER-A-NORMAL',
@@ -956,7 +978,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(rightProjectRead.data.requirement).toMatchObject({ revision: 2, assignee: 'project-editor' });
     expect(rightProjectRead.data.revisionHistory).toMatchObject([{ revision: 1, assignee: 'greyson' }]);
     const rightRepositoryRead = structured(
-      await callRuntimeTool(ctxA, 'rh_work', {
+      await callRuntimeTool(ctxA, 'rh_project', {
         operation: 'requirement_get',
         project_id: 'project-filter-a',
         requirement_id: 'REQ-FILTER-A-NORMAL',
@@ -965,7 +987,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(rightRepositoryRead.status).toBe('ok');
     expect(rightRepositoryRead.data.requirement).toMatchObject({ revision: 2, assignee: 'project-editor' });
     const staleProjectWrite = structured(
-      await callRuntimeTool(globalContext, 'rh_work', {
+      await callRuntimeTool(globalContext, 'rh_project', {
         operation: 'requirement_revise',
         project_id: 'project-filter-a',
         requirement_id: 'REQ-FILTER-A-NORMAL',
@@ -977,8 +999,8 @@ describe('rh_work Requirement bootstrap', () => {
     expect(staleProjectWrite.summary).toContain('REQUIREMENT_REVISION_CONFLICT');
   });
 
-  test('exposes typed Requirement progress and CAS through rh_work without a Work or legacy carrier', async () => {
-    const schema = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work')?.inputSchema;
+  test('exposes typed Requirement progress and CAS through rh_project without a Work or legacy carrier', async () => {
+    const schema = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project')?.inputSchema;
     expect(schema).toBeDefined();
     const properties = schema?.properties as Record<string, unknown>;
     expect(properties.requirement_title).toMatchObject({ type: 'string' });
@@ -1022,7 +1044,7 @@ describe('rh_work Requirement bootstrap', () => {
     const ctx = mcpContext(controllerHome, repository);
 
     const created = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'requirement_create',
         requirement_id: 'REQ-TYPED-PROGRESS',
         requirement_title: 'Typed progress',
@@ -1036,7 +1058,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(created.data.requirement).toMatchObject({ status: 'active', priority: 'high', assignee: 'greyson' });
 
     const reused = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'requirement_create',
         requirement_id: 'REQ-TYPED-PROGRESS',
         requirement_title: 'Typed progress',
@@ -1051,7 +1073,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(reused.data.requirement).toMatchObject({ status: 'active', priority: 'high', assignee: 'greyson' });
 
     const updated = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'requirement_revise',
         requirement_id: 'REQ-TYPED-PROGRESS',
         expected_revision: 1,
@@ -1082,7 +1104,7 @@ describe('rh_work Requirement bootstrap', () => {
     });
 
     const stale = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'requirement_revise',
         requirement_id: 'REQ-TYPED-PROGRESS',
         expected_revision: 1,
@@ -1097,7 +1119,7 @@ describe('rh_work Requirement bootstrap', () => {
     );
 
     const reread = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'requirement_get',
         requirement_id: 'REQ-TYPED-PROGRESS',
         detail_level: 'detail',
@@ -1120,8 +1142,8 @@ describe('rh_work Requirement bootstrap', () => {
   });
 
   test('plan_list returns compact discovery rows and leaves detailed semantic content to plan_get (#478)', async () => {
-    const repoRoot = tempRoot('forge-rh-work-plan-list-repo-');
-    const controllerHome = tempRoot('forge-rh-work-plan-list-home-');
+    const repoRoot = tempRoot('forge-rh-project-plan-list-repo-');
+    const controllerHome = tempRoot('forge-rh-project-plan-list-home-');
     initRepo(repoRoot);
     ensureControllerHome(controllerHome);
     const repository = registerRepository({
@@ -1152,7 +1174,7 @@ describe('rh_work Requirement bootstrap', () => {
     });
 
     const listed = structured(
-      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_project', {
         operation: 'plan_list',
         repo_id: repository.repoId,
         limit: 20,
@@ -1173,7 +1195,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(JSON.stringify(listed).length).toBeLessThan(5_000);
 
     const detailed = structured(
-      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
+      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_project', {
         operation: 'plan_get',
         repo_id: repository.repoId,
         plan_id: 'PLAN-LIST-DETAIL',
@@ -1191,14 +1213,14 @@ describe('rh_work Requirement bootstrap', () => {
     });
   });
 
-  test('retired historical Work operations are not accepted by rh_work', async () => {
+  test('retired historical Work operations are not accepted by rh_project', async () => {
     const repoRoot = tempRoot('forge-work-retirement-api-repo-');
     const controllerHome = tempRoot('forge-work-retirement-api-home-');
     initRepo(repoRoot);
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'retirement-api' });
     for (const operation of ['get_contract', 'get', 'list']) {
       const response = structured(
-        await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
+        await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_project', {
           operation,
           repo_id: repository.repoId,
           work_id: 'retired-work',
@@ -1208,10 +1230,10 @@ describe('rh_work Requirement bootstrap', () => {
       expect(response.data).not.toHaveProperty('work');
       expect(response.status).not.toBe('ok');
     }
-    expect([...RH_WORK_MODEL_OPERATIONS]).not.toEqual(expect.arrayContaining(['list', 'get', 'get_contract']));
-    const rhWork = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
-    expect(rhWork).toBeDefined();
-    const operationEnum = (rhWork!.inputSchema as { properties?: { operation?: { enum?: string[] } } }).properties
+    expect([...RH_PROJECT_MODEL_OPERATIONS]).not.toEqual(expect.arrayContaining(['list', 'get', 'get_contract']));
+    const rhProject = runtimeToolDefinitions.find((tool) => tool.name === 'rh_project');
+    expect(rhProject).toBeDefined();
+    const operationEnum = (rhProject!.inputSchema as { properties?: { operation?: { enum?: string[] } } }).properties
       ?.operation?.enum;
     expect(operationEnum).toBeDefined();
     expect(operationEnum).not.toEqual(expect.arrayContaining(['list', 'get', 'get_contract']));
@@ -1305,7 +1327,7 @@ describe('rh_work Requirement bootstrap', () => {
 
     const ctx = mcpContext(controllerHome, repository);
     const promoted = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'requirement_promote_candidate',
         requirement_candidate_id: 'candidate:requirement-candidate-source',
@@ -1327,7 +1349,7 @@ describe('rh_work Requirement bootstrap', () => {
     );
 
     const duplicate = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'requirement_promote_candidate',
         requirement_candidate_id: 'candidate:requirement-candidate-source',
@@ -1370,7 +1392,7 @@ describe('rh_work Requirement bootstrap', () => {
 
     expect(
       structured(
-        await callRuntimeTool(ctx, 'rh_work', {
+        await callRuntimeTool(ctx, 'rh_project', {
           repo_id: repository.repoId,
           operation: 'requirement_create',
           requirement_id: requirementId,
@@ -1381,7 +1403,7 @@ describe('rh_work Requirement bootstrap', () => {
     ).toBe('ok');
     expect(
       structured(
-        await callRuntimeTool(ctx, 'rh_work', {
+        await callRuntimeTool(ctx, 'rh_project', {
           repo_id: repository.repoId,
           operation: 'plan_create',
           plan_id: predecessorPlanId,
@@ -1404,7 +1426,7 @@ describe('rh_work Requirement bootstrap', () => {
 
     expect(
       structured(
-        await callRuntimeTool(ctx, 'rh_work', {
+        await callRuntimeTool(ctx, 'rh_project', {
           repo_id: repository.repoId,
           operation: 'plan_create',
           plan_id: unrelatedPlanId,
@@ -1447,14 +1469,14 @@ describe('rh_work Requirement bootstrap', () => {
       requirement_acceptance_criteria: ['Foundation gates exist before production source.'],
     };
 
-    const created = structured(await callRuntimeTool(ctx, 'rh_work', requirementArgs));
+    const created = structured(await callRuntimeTool(ctx, 'rh_project', requirementArgs));
     expect(created.status).toBe('ok');
     expect(created.data.requirementCreated).toBe(true);
     expect(created.summary).toContain('does not imply a Plan');
     expect(created.suggestedNextActions ?? []).toEqual([]);
     expect(readRequirement({ controllerHome }, 'REQ-ANDROID-NATIVE-V1')?.value.title).toBe('Android native delivery');
 
-    const retried = structured(await callRuntimeTool(ctx, 'rh_work', requirementArgs));
+    const retried = structured(await callRuntimeTool(ctx, 'rh_project', requirementArgs));
     expect(retried.status).toBe('ok');
     expect(retried.data.requirementCreated).toBe(false);
     expect(retried.data.admissionDecision).toBe('reuse_existing');
@@ -1462,7 +1484,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(retried.suggestedNextActions ?? []).toEqual([]);
 
     const conflict = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         ...requirementArgs,
         requirement_outcome: 'Conflicting replacement outcome.',
       }),
@@ -1474,7 +1496,7 @@ describe('rh_work Requirement bootstrap', () => {
     );
 
     const planned = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'plan_create',
         plan_id: 'PLAN-ANDROID-NATIVE-V1',
@@ -1510,7 +1532,7 @@ describe('rh_work Requirement bootstrap', () => {
 
     expect(
       structured(
-        await callRuntimeTool(ctx, 'rh_work', {
+        await callRuntimeTool(ctx, 'rh_project', {
           repo_id: repository.repoId,
           operation: 'requirement_create',
           requirement_id: 'REQ-THIN-PLAN-CREATE',
@@ -1521,7 +1543,7 @@ describe('rh_work Requirement bootstrap', () => {
     ).toBe('ok');
 
     const created = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'plan_create',
         plan_id: 'PLAN-THIN-CREATE',
@@ -1552,7 +1574,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(stored?.semanticRevision).toBe(1);
 
     const child = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'plan_create',
         plan_id: 'PLAN-THIN-CREATE-CHILD',
@@ -1575,7 +1597,7 @@ describe('rh_work Requirement bootstrap', () => {
     );
 
     const listed = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'plan_list',
         limit: 20,
@@ -1590,7 +1612,7 @@ describe('rh_work Requirement bootstrap', () => {
 
     expect(
       structured(
-        await callRuntimeTool(ctx, 'rh_work', {
+        await callRuntimeTool(ctx, 'rh_project', {
           repo_id: repository.repoId,
           operation: 'requirement_create',
           requirement_id: 'REQ-THIN-PLAN-OTHER',
@@ -1600,7 +1622,7 @@ describe('rh_work Requirement bootstrap', () => {
       ).status,
     ).toBe('ok');
     const wrongTree = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'plan_create',
         plan_id: 'PLAN-THIN-CREATE-WRONG-PARENT',
@@ -1615,7 +1637,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(wrongTree.summary).toContain('PLAN_PARENT_REQUIREMENT_MISMATCH:PLAN-THIN-CREATE');
 
     const sameLabel = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'plan_create',
         plan_id: 'PLAN-THIN-CREATE-PARALLEL',
@@ -1631,7 +1653,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-THIN-CREATE-PARALLEL')).toBeUndefined();
 
     const revised = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'plan_revise',
         plan_id: 'PLAN-THIN-CREATE',
         expected_revision: 1,
@@ -1647,7 +1669,7 @@ describe('rh_work Requirement bootstrap', () => {
     });
 
     const stale = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         operation: 'plan_revise',
         plan_id: 'PLAN-THIN-CREATE',
         expected_revision: 1,
@@ -1658,7 +1680,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(stale.data.currentPlan).toMatchObject({ planId: 'PLAN-THIN-CREATE', revision: 2 });
 
     const parentAdvanced = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'requirement_revise',
         requirement_id: 'REQ-THIN-PLAN-CREATE',
@@ -1670,7 +1692,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(parentAdvanced.data.requirement.revision).toBe(2);
 
     const staleParent = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'plan_create',
         plan_id: 'PLAN-THIN-CREATE-STALE-PARENT',
@@ -1690,7 +1712,7 @@ describe('rh_work Requirement bootstrap', () => {
     ).toBeUndefined();
   }, 15_000);
 
-  test('repairs a malformed draft Plan in place through rh_work without creating a second authority', async () => {
+  test('repairs a malformed draft Plan in place through rh_project without creating a second authority', async () => {
     const repoRoot = tempRoot('forge-plan-repair-repo-');
     const controllerHome = tempRoot('forge-plan-repair-home-');
     const sourceRevision = initRepo(repoRoot);
@@ -1699,7 +1721,7 @@ describe('rh_work Requirement bootstrap', () => {
     const ctx = mcpContext(controllerHome, repository);
 
     const malformed = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'plan_create',
         plan_id: 'PLAN-LEGACY-MALFORMED',
@@ -1713,7 +1735,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(malformed.data.planContractCreated).toBe(true);
 
     const repeatedCreate = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'plan_create',
         plan_id: 'PLAN-LEGACY-MALFORMED',
@@ -1743,7 +1765,7 @@ describe('rh_work Requirement bootstrap', () => {
     });
 
     const diagnosed = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'repair',
         plan_id: 'PLAN-LEGACY-MALFORMED',
@@ -1756,7 +1778,7 @@ describe('rh_work Requirement bootstrap', () => {
     expect(diagnosed.data.plan.planId).toBe('PLAN-LEGACY-MALFORMED');
 
     const repaired = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'repair',
         plan_id: 'PLAN-LEGACY-MALFORMED',

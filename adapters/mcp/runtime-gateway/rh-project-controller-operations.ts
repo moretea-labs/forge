@@ -75,7 +75,7 @@ export function chatgptLaunchSessionRequest(
   return { requestId, sessionId, url: parsed.href };
 }
 
-const RH_WORK_CONTROLLER_OPERATIONS = new Set(['launcher_start']);
+const RH_PROJECT_CONTROLLER_OPERATIONS = new Set(['launcher_start']);
 
 const CHATGPT_COMPOSER_SELECTOR = '#prompt-textarea,[data-testid="prompt-textarea"]';
 const CHATGPT_SEND_SELECTOR = '[data-testid="send-button"]';
@@ -272,11 +272,11 @@ async function sendTaskPrompt(input: {
   return { result: send, receiptId, observedUrl: observedConversationUrl(send), applied: true };
 }
 
-export function isRhWorkControllerOperation(operation: string): boolean {
-  return RH_WORK_CONTROLLER_OPERATIONS.has(operation);
+export function isRhProjectControllerOperation(operation: string): boolean {
+  return RH_PROJECT_CONTROLLER_OPERATIONS.has(operation);
 }
 
-export async function callRhWorkControllerOperation(
+export async function callRhProjectControllerOperation(
   ctx: MultiRepositoryMcpToolContext,
   repository: RepositoryRecord,
   operation: string,

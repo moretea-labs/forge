@@ -6,7 +6,7 @@ import { spawnSync } from 'child_process';
 import { executeWorkflow, workflowCapabilityDependencies } from '../../packages/workflow-runtime/api/index';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { readWorkflowRegistryEntry } from '../../src/runtime/control-plane/persistence/workflow-registry-store';
-import { callRhWorkWorkflowOperation } from '../../adapters/mcp/runtime-gateway/rh-work-workflow-operations';
+import { callRhProjectWorkflowOperation } from '../../adapters/mcp/runtime-gateway/rh-project-workflow-operations';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import {
   ensureReleaseGrowthWorkflowInstalled,
@@ -226,7 +226,7 @@ describe('first-party X publication and reply workflows (#652)', () => {
     }
   });
 
-  test('rh_work route installs both X effect assets before validating inputs', async () => {
+  test('rh_project route installs both X effect assets before validating inputs', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'forge-x-effect-route-'));
     homes.push(workspace);
     const controllerHome = join(workspace, 'controller-home');
@@ -248,7 +248,7 @@ describe('first-party X publication and reply workflows (#652)', () => {
     const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
     const context = { controllerHome } as unknown as MultiRepositoryMcpToolContext;
     for (const workflowId of Object.values(X_EFFECT_WORKFLOW_IDS)) {
-      const response = await callRhWorkWorkflowOperation(context, repository, 'workflow_execute', {
+      const response = await callRhProjectWorkflowOperation(context, repository, 'workflow_execute', {
         workflow_id: workflowId,
         workflow_run_id: 'route-install-' + workflowId,
         workflow_inputs: {},
@@ -264,14 +264,14 @@ describe('first-party X publication and reply workflows (#652)', () => {
     const targetCommentId = '2097000000000000001';
     const targetCommentUrl = 'https://x.com/other_user/status/' + targetCommentId;
     const replyInputs = { account, comment_url: targetCommentUrl };
-    const wrongRun = await callRhWorkWorkflowOperation(context, repository, 'workflow_execute', {
+    const wrongRun = await callRhProjectWorkflowOperation(context, repository, 'workflow_execute', {
       workflow_id: X_EFFECT_WORKFLOW_IDS.replyToComment,
       workflow_run_id: 'random-reply-run',
       workflow_inputs: replyInputs,
     });
     expect(JSON.stringify(wrongRun)).toContain('X_REPLY_WORKFLOW_RUN_ID_MUST_BIND_COMMENT');
 
-    const canonicalRun = await callRhWorkWorkflowOperation(context, repository, 'workflow_execute', {
+    const canonicalRun = await callRhProjectWorkflowOperation(context, repository, 'workflow_execute', {
       workflow_id: X_EFFECT_WORKFLOW_IDS.replyToComment,
       workflow_run_id: 'x-reply-' + account + '-' + targetCommentId,
       workflow_inputs: replyInputs,

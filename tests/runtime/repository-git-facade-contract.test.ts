@@ -4,17 +4,22 @@ import { FACADE_TOOLS } from '../../src/runtime/control-plane/facade/types';
 
 describe('repository.git stable facade', () => {
   test('exposes exact remote branch CAS deletion without widening the top-level MCP surface', () => {
-    const schema = getCoreCapabilityExecutionSchema('repository.git') as {
-      executeWith?: string;
-      actions?: Record<string, {
-        readOnly?: boolean;
-        risk?: string;
-        argumentsSchema?: {
-          required?: string[];
-          properties?: Record<string, unknown>;
-        };
-      }>;
-    } | undefined;
+    const schema = getCoreCapabilityExecutionSchema('repository.git') as
+      | {
+          executeWith?: string;
+          actions?: Record<
+            string,
+            {
+              readOnly?: boolean;
+              risk?: string;
+              argumentsSchema?: {
+                required?: string[];
+                properties?: Record<string, unknown>;
+              };
+            }
+          >;
+        }
+      | undefined;
 
     expect(schema?.executeWith).toBe('capability_execute');
     const action = schema?.actions?.delete_remote_branch;
@@ -24,7 +29,12 @@ describe('repository.git stable facade', () => {
     expect(action?.argumentsSchema?.properties).not.toHaveProperty('remote');
     expect(action?.argumentsSchema?.properties).not.toHaveProperty('force');
     expect(FACADE_TOOLS).toEqual([
-      'rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute',
+      'rh_access',
+      'rh_status',
+      'rh_inbox',
+      'rh_context',
+      'rh_project',
+      'capability_execute',
     ]);
   });
 });

@@ -819,23 +819,23 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/rh-work-project-operations.test.ts": {
+    "tests/runtime/rh-project-project-operations.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/rh-work-requirement-bootstrap.test.ts": {
+    "tests/runtime/rh-project-requirement-bootstrap.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/rh-work-requirement-dependencies.test.ts": {
+    "tests/runtime/rh-project-requirement-dependencies.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/rh-work-requirement-legacy-aliases.test.ts": {
+    "tests/runtime/rh-project-requirement-legacy-aliases.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/rh-work-scheduler-adapter.test.ts": {
+    "tests/runtime/rh-project-scheduler-adapter.test.ts": {
       "module": "controller",
       "resource": "git-worktree"
     },

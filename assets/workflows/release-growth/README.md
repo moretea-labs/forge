@@ -4,7 +4,7 @@ These versioned assets run through the existing Workflow Runtime and plugin
 capabilities. They use the ordinary repository/checkout identity; no Work,
 additional provider, credential store or scheduler is required.
 
-Call `rh_work` with `operation: "workflow_execute"`, an explicit `repo_id`,
+Call `rh_project` with `operation: "workflow_execute"`, an explicit `repo_id`,
 `checkout_id`, `workflow_id`, stable `workflow_run_id`, and `workflow_inputs`.
 The Runtime installs the matching first-party asset and capability bindings.
 

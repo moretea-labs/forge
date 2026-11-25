@@ -308,13 +308,13 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
       reconnectRecommended: false,
       suggestedActions: [
         '重启 Runtime：forge recovery restart-runtime',
-        '确认 tools/list 包含 rh_status / rh_inbox / rh_context / rh_work',
+        '确认 tools/list 包含 rh_status / rh_inbox / rh_context / rh_project',
         '重新运行 connector status / smoke 自检',
       ],
       howToFix: [
         '重启 Runtime：forge recovery restart-runtime',
         '检查状态：forge runtime status',
-        '确认本地 tools/list 含 rh_status / rh_inbox / rh_context / rh_work',
+        '确认本地 tools/list 含 rh_status / rh_inbox / rh_context / rh_project',
         '重新打开 Local Controller UI',
         '运行 connector status 自检',
       ],
@@ -371,7 +371,7 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
         reconnectRecommended: true,
         suggestedActions: [
           '在 ChatGPT 中重新连接 / 刷新 MCP Connector',
-          '确认 tools/list 重新加载后可见 rh_status / rh_inbox / rh_context / rh_work',
+          '确认 tools/list 重新加载后可见 rh_status / rh_inbox / rh_context / rh_project',
           '可选：向 controller_capabilities 传入 connector_tool_names 复核',
         ],
         howToFix: [
@@ -407,7 +407,7 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
       sectionStatusLabel: '正常',
       sectionDetail: input.callabilityProbe?.callable
         ? 'Local registry and external Connector callability are verified for the facade surface.'
-        : 'Local registry parity is verified（rh_status / rh_inbox / rh_context / rh_work）；Connector callability remains unverified.',
+        : 'Local registry parity is verified（rh_status / rh_inbox / rh_context / rh_project）；Connector callability remains unverified.',
     });
   }
 
@@ -446,12 +446,12 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
     restartRecommended: false,
     reconnectRecommended: false,
     suggestedActions: [
-      '如果 ChatGPT 对话里看不到 rh_status / rh_inbox / rh_context / rh_work，请重连 MCP Connector',
+      '如果 ChatGPT 对话里看不到 rh_status / rh_inbox / rh_context / rh_project，请重连 MCP Connector',
       '可选：调用 controller_capabilities 并传入 connector_tool_names 做精确核对',
     ],
     howToFix: [
       '本地 MCP 工具面已包含 rh_*（无需仅为“未确认”而重启）',
-      '若 ChatGPT 里看不到 rh_status / rh_inbox / rh_context / rh_work，请重连 MCP Connector',
+      '若 ChatGPT 里看不到 rh_status / rh_inbox / rh_context / rh_project，请重连 MCP Connector',
       '重连后重新打开对话并检查工具列表',
       '重新打开 Local Controller UI',
       '可选：向 /api/console/connector/check 传入 connector_tool_names 精确核对',
@@ -461,7 +461,7 @@ export function evaluateConnectorFreshness(input: EvaluateConnectorFreshnessInpu
     connectorTone: 'blue',
     sectionStatusLabel: '未确认',
     sectionDetail:
-      '本地 MCP 工具面已更新。GUI 无法直接确认 ChatGPT 当前连接器快照；如果你在 ChatGPT 里看不到 rh_access / rh_status / rh_inbox / rh_context / rh_work，说明连接器快照确实陈旧，可重新加载连接器。',
+      '本地 MCP 工具面已更新。GUI 无法直接确认 ChatGPT 当前连接器快照；如果你在 ChatGPT 里看不到 rh_access / rh_status / rh_inbox / rh_context / rh_project，说明连接器快照确实陈旧，可重新加载连接器。',
     // No scary banner — this is informational, not a confirmed missing-tools state.
   });
 }

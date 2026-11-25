@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { callRhWorkRequirementOperation } from '../../adapters/mcp/runtime-gateway/rh-work-requirement-operations';
+import { callRhProjectRequirementOperation } from '../../adapters/mcp/runtime-gateway/rh-project-requirement-operations';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import {
   createRequirement,
@@ -12,7 +12,7 @@ import {
   reviseRequirementSemantic,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
 
-describe('rh_work Requirement legacy aliases', () => {
+describe('rh_project Requirement legacy aliases', () => {
   let controllerHome: string;
 
   beforeEach(() => {
@@ -41,7 +41,7 @@ describe('rh_work Requirement legacy aliases', () => {
     const alias = 'github:moretea-labs/forge#648';
     const context = { controllerHome } as MultiRepositoryMcpToolContext;
 
-    const revised = await callRhWorkRequirementOperation(context, undefined, 'requirement_revise', {
+    const revised = await callRhProjectRequirementOperation(context, undefined, 'requirement_revise', {
       requirement_id: 'task-a',
       expected_revision: 1,
       requirement_legacy_aliases: [alias],
@@ -54,13 +54,13 @@ describe('rh_work Requirement legacy aliases', () => {
       alias,
     ]);
 
-    const listed = await callRhWorkRequirementOperation(context, undefined, 'requirement_list', { limit: 20 });
+    const listed = await callRhProjectRequirementOperation(context, undefined, 'requirement_list', { limit: 20 });
     const listData = listed?.structuredContent as
       | { data?: { requirements?: Array<{ requirementId: string; legacyAliases: string[] }> } }
       | undefined;
     expect(listData?.data?.requirements?.find((row) => row.requirementId === 'task-a')?.legacyAliases).toEqual([alias]);
 
-    const detailed = await callRhWorkRequirementOperation(context, undefined, 'requirement_get', {
+    const detailed = await callRhProjectRequirementOperation(context, undefined, 'requirement_get', {
       requirement_id: 'task-a',
       detail_level: 'detail',
     });
@@ -92,7 +92,7 @@ describe('rh_work Requirement legacy aliases', () => {
       ),
     ).toThrow('REQUIREMENT_LEGACY_ALIAS_CONFLICT');
 
-    const cleared = await callRhWorkRequirementOperation(context, undefined, 'requirement_revise', {
+    const cleared = await callRhProjectRequirementOperation(context, undefined, 'requirement_revise', {
       requirement_id: 'task-a',
       expected_revision: 2,
       requirement_legacy_aliases: [],
@@ -108,7 +108,7 @@ describe('rh_work Requirement legacy aliases', () => {
     createTask('task-empty', 'repo-empty');
     const context = { controllerHome } as MultiRepositoryMcpToolContext;
 
-    const response = await callRhWorkRequirementOperation(context, undefined, 'requirement_revise', {
+    const response = await callRhProjectRequirementOperation(context, undefined, 'requirement_revise', {
       requirement_id: 'task-empty',
       expected_revision: 1,
     });

@@ -73,7 +73,7 @@ import {
   listLocalBridgeJobSnapshots,
   readLocalBridgeJobOutputSnapshot,
 } from '../../../src/runtime/local-bridge/read-model';
-import { contextRecord, contextText, runtimeIdentitySnapshot } from './rh-work-adapter';
+import { contextRecord, contextText, runtimeIdentitySnapshot } from './rh-project-adapter';
 import { summarizeJobEvents, summarizeExecutionJob } from './runtime-tool-shared';
 
 export function summarizeControllerReadyPayload(fullPayload: Record<string, unknown>): Record<string, unknown> {

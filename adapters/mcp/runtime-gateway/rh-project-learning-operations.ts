@@ -13,11 +13,11 @@ import { result } from './result-adapter';
 type RepositoryIdentity = { repoId: string; activeCheckoutId: string };
 
 /**
- * rh_work learning dispatch is advisory. Project/Workspace learning needs no lifecycle;
+ * rh_project learning dispatch is advisory. Project/Workspace learning needs no lifecycle;
  * optional Requirement scope is selected by exact requirement_id and validated by the
  * Requirement owner. Historical Work never grants learning write authority.
  */
-export function callRhWorkLearningOperation(
+export function callRhProjectLearningOperation(
   ctx: MultiRepositoryMcpToolContext,
   repository: RepositoryIdentity,
   operation: string,

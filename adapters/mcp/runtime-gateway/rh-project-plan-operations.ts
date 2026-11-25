@@ -20,10 +20,10 @@ import { listRepositories } from '../../../src/runtime/repositories/registry';
 import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 import { result } from './result-adapter';
 
-const RH_WORK_LIGHTWEIGHT_PLAN_OPERATIONS = new Set(['plan_list', 'plan_get', 'plan_revise']);
+const RH_PROJECT_LIGHTWEIGHT_PLAN_OPERATIONS = new Set(['plan_list', 'plan_get', 'plan_revise']);
 
-export function isRhWorkLightweightPlanOperation(operation: string): boolean {
-  return RH_WORK_LIGHTWEIGHT_PLAN_OPERATIONS.has(operation);
+export function isRhProjectLightweightPlanOperation(operation: string): boolean {
+  return RH_PROJECT_LIGHTWEIGHT_PLAN_OPERATIONS.has(operation);
 }
 
 function requirementBelongsToProject(
@@ -50,12 +50,12 @@ function planBelongsToProject(
   );
 }
 
-export async function callRhWorkPlanOperation(
+export async function callRhProjectPlanOperation(
   store: PlanContractStoreOptions,
   operation: string,
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
-  if (!isRhWorkLightweightPlanOperation(operation)) return undefined;
+  if (!isRhProjectLightweightPlanOperation(operation)) return undefined;
   const projectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
   const belongsToRequestedProject = (plan: NonNullable<ReturnType<typeof getPlanContract>>) =>
     !projectId || planBelongsToProject(store, plan, projectId);
@@ -191,7 +191,7 @@ function planObligationDispositionsFromArgs(value: unknown) {
     }));
 }
 
-export interface RhWorkPlanCreateContext {
+export interface RhProjectPlanCreateContext {
   controllerHome: string;
   /** Node-local placement provenance; absent when the Plan belongs to the ForgeInstance. */
   repoId?: string;
@@ -204,7 +204,7 @@ export interface RhWorkPlanCreateContext {
  * or explicitly requested, create it in the semantic scope; otherwise return
  * undefined so the normal repository-bound path stays authoritative.
  */
-export async function callRhWorkPlanCreateWithoutRepository(
+export async function callRhProjectPlanCreateWithoutRepository(
   ctx: MultiRepositoryMcpToolContext,
   operation: string,
   args: Record<string, unknown>,
@@ -258,7 +258,7 @@ export async function callRhWorkPlanCreateWithoutRepository(
           true,
         );
       }
-      return callRhWorkPlanCreateOperation(
+      return callRhProjectPlanCreateOperation(
         { controllerHome: ctx.controllerHome, repoId: repository.repoId },
         operation,
         { ...args, repo_id: repository.repoId, scope_key: projectId },
@@ -275,7 +275,7 @@ export async function callRhWorkPlanCreateWithoutRepository(
         true,
       );
     }
-    return callRhWorkPlanCreateOperation(
+    return callRhProjectPlanCreateOperation(
       { controllerHome: ctx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY },
       operation,
       { ...args, scope_key: projectId },
@@ -288,7 +288,7 @@ export async function callRhWorkPlanCreateWithoutRepository(
   // repository stays authoritative; several keep the explicit disambiguation
   // error instead of silently creating an unscoped Plan.
   if (enabled.length !== 0) return undefined;
-  return callRhWorkPlanCreateOperation(
+  return callRhProjectPlanCreateOperation(
     { controllerHome: ctx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY },
     operation,
     args,
@@ -296,11 +296,11 @@ export async function callRhWorkPlanCreateWithoutRepository(
   );
 }
 
-export async function callRhWorkPlanCreateOperation(
+export async function callRhProjectPlanCreateOperation(
   store: PlanContractStoreOptions,
   operation: string,
   args: Record<string, unknown>,
-  context: RhWorkPlanCreateContext,
+  context: RhProjectPlanCreateContext,
 ): Promise<CallToolResult | undefined> {
   if (operation !== 'plan_create') return undefined;
   const projectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
@@ -421,7 +421,7 @@ export async function callRhWorkPlanCreateOperation(
         const exactDraftRepair = admission.plan.status === 'draft' && requestedPlanId === admission.plan.planId;
         const facade = buildFacadeResult({
           summary: exactDraftRepair
-            ? `PLAN_DRAFT_REPAIR_REQUIRED: draft Plan ${admission.plan.planId} already owns scope ${admission.normalizedScopeKey}; preserve that authority and amend it through rh_work repair.`
+            ? `PLAN_DRAFT_REPAIR_REQUIRED: draft Plan ${admission.plan.planId} already owns scope ${admission.normalizedScopeKey}; preserve that authority and amend it through rh_project repair.`
             : `PLAN_AUTHORITY_REUSED: active Plan ${admission.plan.planId} already owns scope ${admission.normalizedScopeKey}; no duplicate draft was created.`,
           data: {
             plan: summarizePlanContract(admission.plan),
@@ -435,7 +435,7 @@ export async function callRhWorkPlanCreateOperation(
             ? [
                 {
                   label: 'Repair this exact draft Plan',
-                  tool: 'rh_work',
+                  tool: 'rh_project',
                   operation: 'repair',
                   payload: {
                     plan_id: admission.plan.planId,
@@ -459,7 +459,7 @@ export async function callRhWorkPlanCreateOperation(
             : [
                 {
                   label: 'Read active Plan',
-                  tool: 'rh_work',
+                  tool: 'rh_project',
                   operation: 'plan_get',
                   payload: { plan_id: admission.plan.planId },
                   risk: 'readonly',
@@ -569,7 +569,7 @@ export async function callRhWorkPlanCreateOperation(
         suggestedNextActions: [
           {
             label: 'Read current Plan revision',
-            tool: 'rh_work',
+            tool: 'rh_project',
             operation: 'plan_get',
             payload: { plan_id: plan.planId },
             risk: 'readonly',
@@ -594,7 +594,7 @@ export async function callRhWorkPlanCreateOperation(
       suggestedNextActions: [
         {
           label: 'Read current Plan revision',
-          tool: 'rh_work',
+          tool: 'rh_project',
           operation: 'plan_get',
           payload: { plan_id: plan.planId },
           risk: 'readonly',

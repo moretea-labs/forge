@@ -36,7 +36,7 @@ import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 import { listAutopilotRunActivityEvents, readAutopilotRun } from '../../../src/runtime/autopilot/store';
 import { listAutopilotRunSummaries, summarizeAutopilotRun } from '../../../src/runtime/autopilot/read-model';
 
-const RH_WORK_REQUIREMENT_OPERATIONS = new Set([
+const RH_PROJECT_REQUIREMENT_OPERATIONS = new Set([
   'requirement_create',
   'requirement_list',
   'requirement_manifest',
@@ -45,8 +45,8 @@ const RH_WORK_REQUIREMENT_OPERATIONS = new Set([
   'requirement_promote_candidate',
 ]);
 
-export function isRhWorkRequirementOperation(operation: string): boolean {
-  return RH_WORK_REQUIREMENT_OPERATIONS.has(operation);
+export function isRhProjectRequirementOperation(operation: string): boolean {
+  return RH_PROJECT_REQUIREMENT_OPERATIONS.has(operation);
 }
 
 function projectIdForRepository(
@@ -85,13 +85,13 @@ function requirementInSelectedScope(
     : undefined;
 }
 
-export async function callRhWorkRequirementOperation(
+export async function callRhProjectRequirementOperation(
   ctx: MultiRepositoryMcpToolContext,
   repository: { repoId: string; activeCheckoutId?: string } | undefined,
   operation: string,
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
-  if (!isRhWorkRequirementOperation(operation)) return undefined;
+  if (!isRhProjectRequirementOperation(operation)) return undefined;
 
   if (operation === 'requirement_list') {
     const limit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' ? args.limit : 20), 100));

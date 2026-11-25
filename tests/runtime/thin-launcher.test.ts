@@ -5,7 +5,7 @@ import { join } from 'path';
 import {
   chatgptLaunchSessionRequest,
   chatgptTabCloseProven,
-} from '../../adapters/mcp/runtime-gateway/rh-work-controller-operations';
+} from '../../adapters/mcp/runtime-gateway/rh-project-controller-operations';
 import {
   buildClaudeControllerInvocation,
   buildSuperControllerInvocation,

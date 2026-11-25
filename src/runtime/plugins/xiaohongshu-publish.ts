@@ -16,7 +16,9 @@ import {
 const PLUGIN_ID = 'xiaohongshu';
 const PROVIDER = 'xiaohongshu-workflow-compatibility';
 
-function now(): string { return new Date().toISOString(); }
+function now(): string {
+  return new Date().toISOString();
+}
 
 function invocation(args: Record<string, unknown>): XiaohongshuWorkflowInvocation {
   try {
@@ -49,64 +51,84 @@ export function buildXiaohongshuPublishRecipe(args: Record<string, unknown>): Re
     generationRequired: translated.generationRequired,
     inputs: translated.inputs,
     execution: {
-      tool: 'rh_work',
+      tool: 'rh_project',
       operation: 'workflow_execute',
       requiredRuntimeFields: ['workflow_run_id'],
       workflow_id: asset.workflowId,
       workflow_inputs: translated.inputs,
     },
-    ...(translated.generationRequired ? {
-      generationHandoff: {
-        status: 'required',
-        requiredInput: 'image_paths',
-        minImages: 1,
-        maxImages: 18,
-        resumeAction: 'publish_note',
-        resumeMode: 'generated_image_note',
-      },
-    } : {}),
+    ...(translated.generationRequired
+      ? {
+          generationHandoff: {
+            status: 'required',
+            requiredInput: 'image_paths',
+            minImages: 1,
+            maxImages: 18,
+            resumeAction: 'publish_note',
+            resumeMode: 'generated_image_note',
+          },
+        }
+      : {}),
   };
 }
 
-export async function executeXiaohongshuPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
+export async function executeXiaohongshuPluginAction(
+  input: AssistantPluginActionExecutionInput,
+): Promise<Record<string, unknown>> {
   if (input.actionId !== 'get_publish_recipe' && input.actionId !== 'publish_note') {
-    throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', `xiaohongshu/${input.actionId} is not supported.`, { retryable: false });
+    throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', `xiaohongshu/${input.actionId} is not supported.`, {
+      retryable: false,
+    });
   }
   const recipe = buildXiaohongshuPublishRecipe(input.args);
   if (input.actionId === 'get_publish_recipe') return recipe;
   return {
     ...recipe,
     status: recipe.generationRequired === true ? 'generation_required' : 'workflow_required',
-    next: recipe.generationRequired === true
-      ? 'Generate one or more image files and request the same compatibility translation with image_paths.'
-      : 'Execute the returned Workflow through rh_work workflow_execute with the exact repository/checkout and workflow_run_id.',
+    next:
+      recipe.generationRequired === true
+        ? 'Generate one or more image files and request the same compatibility translation with image_paths.'
+        : 'Execute the returned Workflow through rh_project workflow_execute with the exact repository/checkout and workflow_run_id.',
   };
 }
 
 function health(): AssistantPluginHealth {
   return {
-    state: 'ready', checkedAt: now(), ready: true, probed: true, errors: [],
-    warnings: ['This compatibility adapter is read-only. Xiaohongshu external effects are owned exclusively by the versioned Workflow Runtime and generic Browser capabilities.'],
+    state: 'ready',
+    checkedAt: now(),
+    ready: true,
+    probed: true,
+    errors: [],
+    warnings: [
+      'This compatibility adapter is read-only. Xiaohongshu external effects are owned exclusively by the versioned Workflow Runtime and generic Browser capabilities.',
+    ],
     details: { workflowRuntimeRequired: true, browserSessionRequired: true },
   };
 }
 
 function permissions(): AssistantPluginPermissionScope[] {
-  return [{
-    scope: 'xiaohongshu.recipe', mode: 'read',
-    description: 'Translate legacy Xiaohongshu publish inputs into the canonical first-party Workflow invocation.',
-    granted: true, required: true,
-  }];
+  return [
+    {
+      scope: 'xiaohongshu.recipe',
+      mode: 'read',
+      description: 'Translate legacy Xiaohongshu publish inputs into the canonical first-party Workflow invocation.',
+      granted: true,
+      required: true,
+    },
+  ];
 }
 
 function capabilities(): AssistantPluginCapability[] {
-  return [{
-    capabilityId: 'xiaohongshu-workflow-compatibility',
-    title: 'Xiaohongshu Workflow Compatibility',
-    description: 'Read-only translation into versioned first-party Workflow assets. It does not own publishing effects.',
-    scopes: ['xiaohongshu.recipe'],
-    actions: ['get_publish_recipe', 'publish_note'],
-  }];
+  return [
+    {
+      capabilityId: 'xiaohongshu-workflow-compatibility',
+      title: 'Xiaohongshu Workflow Compatibility',
+      description:
+        'Read-only translation into versioned first-party Workflow assets. It does not own publishing effects.',
+      scopes: ['xiaohongshu.recipe'],
+      actions: ['get_publish_recipe', 'publish_note'],
+    },
+  ];
 }
 
 function recipeSchema(): Record<string, unknown> {
@@ -132,26 +154,53 @@ function actions(): AssistantPluginActionDescriptor[] {
   const schema = recipeSchema();
   return [
     {
-      actionId: 'get_publish_recipe', title: 'Resolve publish Workflow',
-      description: 'Translate inputs to the immutable first-party Xiaohongshu Workflow identity and typed inputs without executing Browser effects.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['xiaohongshu.recipe'], resourceClaims: [], argumentsSchema: schema,
+      actionId: 'get_publish_recipe',
+      title: 'Resolve publish Workflow',
+      description:
+        'Translate inputs to the immutable first-party Xiaohongshu Workflow identity and typed inputs without executing Browser effects.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 15_000,
+      cancellable: true,
+      idempotent: true,
+      scopes: ['xiaohongshu.recipe'],
+      resourceClaims: [],
+      argumentsSchema: schema,
     },
     {
-      actionId: 'publish_note', title: 'Translate legacy publish request',
-      description: 'Compatibility-only alias that returns the canonical rh_work workflow_execute invocation. It never publishes directly.',
-      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 15_000, cancellable: true, idempotent: true,
-      scopes: ['xiaohongshu.recipe'], resourceClaims: [], argumentsSchema: schema,
+      actionId: 'publish_note',
+      title: 'Translate legacy publish request',
+      description:
+        'Compatibility-only alias that returns the canonical rh_project workflow_execute invocation. It never publishes directly.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 15_000,
+      cancellable: true,
+      idempotent: true,
+      scopes: ['xiaohongshu.recipe'],
+      resourceClaims: [],
+      argumentsSchema: schema,
     },
   ];
 }
 
-export function buildXiaohongshuPluginManifest(previousRevision = 0, previousUpdatedAt?: string): AssistantPluginManifest {
+export function buildXiaohongshuPluginManifest(
+  previousRevision = 0,
+  previousUpdatedAt?: string,
+): AssistantPluginManifest {
   return {
-    schemaVersion: 1, manifestVersion: 1, revision: Math.max(1, previousRevision || 1),
-    pluginId: PLUGIN_ID, provider: PROVIDER, displayName: 'Xiaohongshu Workflow Compatibility', pluginVersion: '2.0.0',
+    schemaVersion: 1,
+    manifestVersion: 1,
+    revision: Math.max(1, previousRevision || 1),
+    pluginId: PLUGIN_ID,
+    provider: PROVIDER,
+    displayName: 'Xiaohongshu Workflow Compatibility',
+    pluginVersion: '2.0.0',
     authority: {
-      strategy: 'derived', duplicateStateAllowed: false,
+      strategy: 'derived',
+      duplicateStateAllowed: false,
       sourceOfTruth: [
         'source:assets/workflows/xiaohongshu/*.draft.json',
         'source:src/runtime/workflows/first-party/xiaohongshu.ts',
@@ -159,7 +208,7 @@ export function buildXiaohongshuPluginManifest(previousRevision = 0, previousUpd
       ],
     },
     compatibility: {
-      replacementOwner: 'Workflow Runtime (rh_work workflow_execute) and the versioned xiaohongshu Workflow assets',
+      replacementOwner: 'Workflow Runtime (rh_project workflow_execute) and the versioned xiaohongshu Workflow assets',
       boundedConsumers: [
         {
           surface: 'plugin_action_execute',
@@ -175,8 +224,15 @@ export function buildXiaohongshuPluginManifest(previousRevision = 0, previousUpd
       },
     },
     enabled: true,
-    lifecycle: { state: 'enabled', reason: 'Compatibility translation is available; all publishing effects are Workflow-owned.' },
-    health: health(), permissions: permissions(), capabilities: capabilities(), actions: actions(), updatedAt: previousUpdatedAt ?? now(),
+    lifecycle: {
+      state: 'enabled',
+      reason: 'Compatibility translation is available; all publishing effects are Workflow-owned.',
+    },
+    health: health(),
+    permissions: permissions(),
+    capabilities: capabilities(),
+    actions: actions(),
+    updatedAt: previousUpdatedAt ?? now(),
   };
 }
 

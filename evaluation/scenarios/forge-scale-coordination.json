@@ -13,12 +13,7 @@
       "Independent Plan steps are admitted as independent bounded Work units.",
       "Stopping Scale units projects lifecycle state through the same Plan/Work authority."
     ],
-    "affectedDomains": [
-      "scale-routing",
-      "plan-contract",
-      "work-contract",
-      "resource-claims"
-    ],
+    "affectedDomains": ["scale-routing", "plan-contract", "work-contract", "resource-claims"],
     "behavioralInvariants": [
       "Scale is coordination, not an agent swarm.",
       "Independent deliverables may run concurrently when resource claims do not conflict.",
@@ -32,11 +27,7 @@
   },
   "execution": {
     "interface": "forge_cli",
-    "arguments": [
-      "docs",
-      "list",
-      "--json"
-    ],
+    "arguments": ["docs", "list", "--json"],
     "timeoutMs": 30000
   },
   "validators": [
@@ -45,10 +36,7 @@
       "kind": "invariant",
       "type": "command",
       "command": "bun",
-      "arguments": [
-        "test",
-        "tests/runtime/rh-work-lifecycle.test.ts"
-      ],
+      "arguments": ["test", "tests/runtime/rh-project-lifecycle.test.ts"],
       "expectedExitCode": 0,
       "timeoutMs": 120000
     },
@@ -56,11 +44,7 @@
       "id": "forge-scale-coordination-source-isolation",
       "kind": "regression",
       "type": "changed_paths",
-      "forbiddenGlobs": [
-        "src/**",
-        "package.json",
-        "bun.lock"
-      ]
+      "forbiddenGlobs": ["src/**", "package.json", "bun.lock"]
     }
   ],
   "provenance": {

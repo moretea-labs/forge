@@ -174,7 +174,7 @@ describe('connected assistant learning loops', () => {
     expect(observationPayload.durable).toBe(false);
     expect(observationPayload.observationReceiptId).toMatch(/^PLG-OBS-/);
 
-    const learning = await callRuntimeTool(ctx, 'rh_work', {
+    const learning = await callRuntimeTool(ctx, 'rh_project', {
       repo_id: fx.repository.repoId,
       operation: 'learning_record',
       learning_signals: [
@@ -201,7 +201,7 @@ describe('connected assistant learning loops', () => {
     expect(learningPayload.data.storedMemoryIds).toHaveLength(1);
 
     const memoryId = String(learningPayload.data.storedMemoryIds[0]);
-    const workspaceLearning = await callRuntimeTool(ctx, 'rh_work', {
+    const workspaceLearning = await callRuntimeTool(ctx, 'rh_project', {
       repo_id: fx.repository.repoId,
       operation: 'learning_record',
       learning_signals: [
@@ -275,7 +275,7 @@ describe('connected assistant learning loops', () => {
     const routineFollowupPayload = routineFollowup?.structuredContent as Record<string, any>;
     expect(routineFollowupPayload.data.learningRecall).toBeUndefined();
 
-    const feedback = await callRuntimeTool(ctx, 'rh_work', {
+    const feedback = await callRuntimeTool(ctx, 'rh_project', {
       repo_id: fx.repository.repoId,
       operation: 'learning_feedback',
       learning_feedback: [
@@ -313,7 +313,7 @@ describe('connected assistant learning loops', () => {
     expect(refreshedItem?.recentUsage?.usedCount).toBe(1);
     expect(refreshedItem?.provenance?.sourceKind).toBe('controller');
 
-    const duplicateFeedback = await callRuntimeTool(ctx, 'rh_work', {
+    const duplicateFeedback = await callRuntimeTool(ctx, 'rh_project', {
       repo_id: fx.repository.repoId,
       operation: 'learning_feedback',
       learning_feedback: [
@@ -352,7 +352,7 @@ describe('connected assistant learning loops', () => {
       toolset: 'full',
     } as unknown as MultiRepositoryMcpToolContext;
 
-    const learning = await callRuntimeTool(ctx, 'rh_work', {
+    const learning = await callRuntimeTool(ctx, 'rh_project', {
       repo_id: fx.repository.repoId,
       operation: 'learning_record',
       learning_signals: [
@@ -529,7 +529,7 @@ describe('connected assistant learning loops', () => {
         outcomeStatement: 'Explicit Requirement identity makes its advisory learning scope reachable without Work.',
       },
     );
-    const requirementLearning = await callRuntimeTool(ctx, 'rh_work', {
+    const requirementLearning = await callRuntimeTool(ctx, 'rh_project', {
       repo_id: fx.repository.repoId,
       operation: 'learning_record',
       requirement_id: requirementId,
@@ -556,7 +556,7 @@ describe('connected assistant learning loops', () => {
       4,
     );
     expect(requirementMemories[0]?.provenance.sourceKind).toBe('controller');
-    const requirementFeedback = await callRuntimeTool(ctx, 'rh_work', {
+    const requirementFeedback = await callRuntimeTool(ctx, 'rh_project', {
       repo_id: fx.repository.repoId,
       operation: 'learning_feedback',
       requirement_id: requirementId,
@@ -633,7 +633,7 @@ describe('connected assistant learning loops', () => {
       toolset: 'full',
     } as unknown as MultiRepositoryMcpToolContext;
 
-    const learning = await callRuntimeTool(ctx, 'rh_work', {
+    const learning = await callRuntimeTool(ctx, 'rh_project', {
       repo_id: fx.repository.repoId,
       operation: 'learning_record',
       learning_signals: [

@@ -15,10 +15,14 @@ class FakeTransport implements ClosableMcpTransport {
 }
 
 function addSession(
-  registry: McpSessionRegistry, sessionId: string,
+  registry: McpSessionRegistry,
+  sessionId: string,
   options: {
-    route?: McpSessionRoute; principalId?: string; clientIdentity?: string;
-    toolSurfaceFingerprint?: string; notifyToolListChanged?: () => Promise<void> | void;
+    route?: McpSessionRoute;
+    principalId?: string;
+    clientIdentity?: string;
+    toolSurfaceFingerprint?: string;
+    notifyToolListChanged?: () => Promise<void> | void;
     refreshToolSurface?: () => Promise<{ toolSurfaceFingerprint: string; toolNames?: string[] } | undefined>;
   } = {},
 ): FakeTransport {
@@ -31,14 +35,39 @@ function addSession(
     route: options.route ?? '/mcp',
     principalId: options.principalId ?? 'principal-a',
     clientIdentity: options.clientIdentity ?? `client-${sessionId}`,
-    toolSurfaceFingerprint: options.toolSurfaceFingerprint, notifyToolListChanged: options.notifyToolListChanged,
+    toolSurfaceFingerprint: options.toolSurfaceFingerprint,
+    notifyToolListChanged: options.notifyToolListChanged,
     refreshToolSurface: options.refreshToolSurface,
   });
   return transport;
 }
 
 describe('MCP session lifecycle registry', () => {
-  test('notifies only stale tool-surface sessions once per new fingerprint without marking them refreshed', async () => { const registry = new McpSessionRegistry(); let oldNotifications = 0; let currentNotifications = 0; addSession(registry, 'old-schema', { toolSurfaceFingerprint: 'schema-v1', notifyToolListChanged: () => { oldNotifications += 1; } }); addSession(registry, 'current-schema', { toolSurfaceFingerprint: 'schema-v2', notifyToolListChanged: () => { currentNotifications += 1; } }); expect(await registry.notifyToolListChanged('schema-v2')).toBe(1); expect(await registry.notifyToolListChanged('schema-v2')).toBe(0); expect(oldNotifications).toBe(1); expect(currentNotifications).toBe(0); expect(registry.get('old-schema')?.toolSurfaceFingerprint).toBe('schema-v1'); expect(mcpSessionToolSurfaceFingerprintIsCurrent(registry.get('old-schema')?.toolSurfaceFingerprint, 'schema-v2')).toBe(false); });
+  test('notifies only stale tool-surface sessions once per new fingerprint without marking them refreshed', async () => {
+    const registry = new McpSessionRegistry();
+    let oldNotifications = 0;
+    let currentNotifications = 0;
+    addSession(registry, 'old-schema', {
+      toolSurfaceFingerprint: 'schema-v1',
+      notifyToolListChanged: () => {
+        oldNotifications += 1;
+      },
+    });
+    addSession(registry, 'current-schema', {
+      toolSurfaceFingerprint: 'schema-v2',
+      notifyToolListChanged: () => {
+        currentNotifications += 1;
+      },
+    });
+    expect(await registry.notifyToolListChanged('schema-v2')).toBe(1);
+    expect(await registry.notifyToolListChanged('schema-v2')).toBe(0);
+    expect(oldNotifications).toBe(1);
+    expect(currentNotifications).toBe(0);
+    expect(registry.get('old-schema')?.toolSurfaceFingerprint).toBe('schema-v1');
+    expect(
+      mcpSessionToolSurfaceFingerprintIsCurrent(registry.get('old-schema')?.toolSurfaceFingerprint, 'schema-v2'),
+    ).toBe(false);
+  });
 
   test('refreshes a stale session fingerprint and tool names in place after tools/list', async () => {
     const registry = new McpSessionRegistry();
@@ -46,48 +75,64 @@ describe('MCP session lifecycle registry', () => {
       toolSurfaceFingerprint: 'schema-v1',
       refreshToolSurface: async () => ({
         toolSurfaceFingerprint: 'schema-v2',
-        toolNames: ['rh_status', 'rh_work'],
+        toolNames: ['rh_status', 'rh_project'],
       }),
     });
 
     const refreshed = await registry.refreshToolSurface('refreshable');
     expect(refreshed).toEqual({
       toolSurfaceFingerprint: 'schema-v2',
-      toolNames: ['rh_status', 'rh_work'],
+      toolNames: ['rh_status', 'rh_project'],
     });
     expect(registry.get('refreshable')).toMatchObject({
       toolSurfaceFingerprint: 'schema-v2',
-      toolNames: ['rh_status', 'rh_work'],
+      toolNames: ['rh_status', 'rh_project'],
       lastNotifiedToolSurfaceFingerprint: 'schema-v2',
     });
-    expect(mcpSessionToolSurfaceFingerprintIsCurrent(
-      registry.get('refreshable')?.toolSurfaceFingerprint,
-      'schema-v2',
-    )).toBe(true);
+    expect(
+      mcpSessionToolSurfaceFingerprintIsCurrent(registry.get('refreshable')?.toolSurfaceFingerprint, 'schema-v2'),
+    ).toBe(true);
   });
 
   test('reports the exact managed session and close reason once for explicit close and transport detach', async () => {
     const observed: Array<{ sessionId: string; reason: string; marker?: string }> = [];
     const registry = new McpSessionRegistry<FakeTransport, { marker?: string }>({
-      onSessionClosed: (session, reason) => observed.push({
-        sessionId: session.sessionId,
-        reason,
-        marker: session.toolContext.marker,
-      }),
+      onSessionClosed: (session, reason) =>
+        observed.push({
+          sessionId: session.sessionId,
+          reason,
+          marker: session.toolContext.marker,
+        }),
     });
     const first = new FakeTransport();
     registry.register({
-      sessionId: 'explicit-close', connectionId: 'connection-explicit-close', transport: first, toolContext: { marker: 'first' }, route: '/mcp', principalId: 'principal-a', clientIdentity: 'client-a',
+      sessionId: 'explicit-close',
+      connectionId: 'connection-explicit-close',
+      transport: first,
+      toolContext: { marker: 'first' },
+      route: '/mcp',
+      principalId: 'principal-a',
+      clientIdentity: 'client-a',
     });
     const second = new FakeTransport();
     registry.register({
-      sessionId: 'transport-close', connectionId: 'connection-transport-close', transport: second, toolContext: { marker: 'second' }, route: '/mcp', principalId: 'principal-a', clientIdentity: 'client-b',
+      sessionId: 'transport-close',
+      connectionId: 'connection-transport-close',
+      transport: second,
+      toolContext: { marker: 'second' },
+      route: '/mcp',
+      principalId: 'principal-a',
+      clientIdentity: 'client-b',
     });
 
     expect(await registry.close('explicit-close', 'client_delete')).toBe(true);
     expect(registry.detach('explicit-close')).toBe(false);
     expect(registry.detach('transport-close', 'transport_close')).toBe(true);
-    expect(registry.snapshot().lastClosed).toMatchObject({ reason: 'transport_close', route: '/mcp', closedAt: expect.any(String) });
+    expect(registry.snapshot().lastClosed).toMatchObject({
+      reason: 'transport_close',
+      route: '/mcp',
+      closedAt: expect.any(String),
+    });
     expect(observed).toEqual([
       { sessionId: 'explicit-close', reason: 'client_delete', marker: 'first' },
       { sessionId: 'transport-close', reason: 'transport_close', marker: 'second' },
@@ -163,11 +208,13 @@ describe('MCP session lifecycle registry', () => {
     const protectedTransport = addSession(registry, 'protected');
     registry.beginPost('protected');
 
-    expect(await registry.reserveForInitialize({
-      connectionId: 'connection-protected-capacity',
-      principalId: 'principal-b',
-      route: '/mcp',
-    })).toBeUndefined();
+    expect(
+      await registry.reserveForInitialize({
+        connectionId: 'connection-protected-capacity',
+        principalId: 'principal-b',
+        route: '/mcp',
+      }),
+    ).toBeUndefined();
     expect(registry.get('protected')).toBeDefined();
     expect(protectedTransport.closeCalls).toBe(0);
     expect(registry.snapshot()).toMatchObject({
@@ -184,8 +231,16 @@ describe('MCP session lifecycle registry', () => {
     addSession(registry, 'other-principal', { principalId: 'principal-b' });
 
     const reservations = await Promise.all([
-      registry.reserveForInitialize({ connectionId: 'connection-parallel-a', principalId: 'principal-a', route: '/mcp' }),
-      registry.reserveForInitialize({ connectionId: 'connection-parallel-b', principalId: 'principal-b', route: '/mcp-grok' }),
+      registry.reserveForInitialize({
+        connectionId: 'connection-parallel-a',
+        principalId: 'principal-a',
+        route: '/mcp',
+      }),
+      registry.reserveForInitialize({
+        connectionId: 'connection-parallel-b',
+        principalId: 'principal-b',
+        route: '/mcp-grok',
+      }),
     ]);
     expect(reservations.every(Boolean)).toBe(true);
     expect(registry.get('existing')).toBeDefined();
@@ -201,12 +256,14 @@ describe('MCP session lifecycle registry', () => {
     });
     registry.beginStream('previous');
 
-    expect(await registry.reserveForInitialize({
-      connectionId: 'connection-supersede-previous',
-      principalId: 'oauth-client:chatgpt',
-      route: '/mcp',
-      supersedeSessionId: 'previous',
-    })).toBeDefined();
+    expect(
+      await registry.reserveForInitialize({
+        connectionId: 'connection-supersede-previous',
+        principalId: 'oauth-client:chatgpt',
+        route: '/mcp',
+        supersedeSessionId: 'previous',
+      }),
+    ).toBeDefined();
 
     expect(registry.get('previous')).toBeUndefined();
     expect(previous.closeCalls).toBe(1);
@@ -220,11 +277,13 @@ describe('MCP session lifecycle registry', () => {
       clientIdentity: 'oauth-client:chatgpt|/mcp|chatgpt/1',
     });
 
-    expect(await registry.reserveForInitialize({
-      connectionId: 'connection-parallel-agent',
-      principalId: 'oauth-client:chatgpt',
-      route: '/mcp',
-    })).toBeDefined();
+    expect(
+      await registry.reserveForInitialize({
+        connectionId: 'connection-parallel-agent',
+        principalId: 'oauth-client:chatgpt',
+        route: '/mcp',
+      }),
+    ).toBeDefined();
     expect(registry.get('parallel-agent')).toBeDefined();
     expect(existing.closeCalls).toBe(0);
   });
@@ -235,8 +294,16 @@ describe('MCP session lifecycle registry', () => {
     registry.beginPost('existing');
 
     const [first, second] = await Promise.all([
-      registry.reserveForInitialize({ connectionId: 'connection-principal-a-1', principalId: 'principal-a', route: '/mcp' }),
-      registry.reserveForInitialize({ connectionId: 'connection-principal-a-2', principalId: 'principal-a', route: '/mcp' }),
+      registry.reserveForInitialize({
+        connectionId: 'connection-principal-a-1',
+        principalId: 'principal-a',
+        route: '/mcp',
+      }),
+      registry.reserveForInitialize({
+        connectionId: 'connection-principal-a-2',
+        principalId: 'principal-a',
+        route: '/mcp',
+      }),
     ]);
     expect([first, second].filter(Boolean)).toHaveLength(1);
 
@@ -290,7 +357,12 @@ describe('MCP session lifecycle registry', () => {
   });
 
   test('detects stale tool-surface fingerprints while tolerating missing compatibility metadata', () => {
-    expect([mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', 'schema-a'), mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', 'schema-b'), mcpSessionToolSurfaceFingerprintIsCurrent(undefined, 'schema-b'), mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', undefined)]).toEqual([true, false, true, true]);
+    expect([
+      mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', 'schema-a'),
+      mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', 'schema-b'),
+      mcpSessionToolSurfaceFingerprintIsCurrent(undefined, 'schema-b'),
+      mcpSessionToolSurfaceFingerprintIsCurrent('schema-a', undefined),
+    ]).toEqual([true, false, true, true]);
   });
 
   test('enforces one global capacity pool across all MCP routes', () => {

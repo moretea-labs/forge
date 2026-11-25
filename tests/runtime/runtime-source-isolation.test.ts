@@ -164,13 +164,13 @@ describe('runtime source isolation', () => {
     } as MultiRepositoryMcpToolContext;
 
     const requirement = structured(
-      await callRuntimeTool(unscoped, 'rh_work', {
+      await callRuntimeTool(unscoped, 'rh_project', {
         operation: 'requirement_get',
         requirement_id: requirementId,
       }),
     );
     const plan = structured(
-      await callRuntimeTool(unscoped, 'rh_work', {
+      await callRuntimeTool(unscoped, 'rh_project', {
         operation: 'plan_get',
         plan_id: planId,
       }),
@@ -183,7 +183,7 @@ describe('runtime source isolation', () => {
 
     // Requirement progress is sent as direct typed fields; no legacy carrier.
     const revisedRequirement = structured(
-      await callRuntimeTool(unscoped, 'rh_work', {
+      await callRuntimeTool(unscoped, 'rh_project', {
         operation: 'requirement_revise',
         requirement_id: requirementId,
         expected_revision: 1,
@@ -194,7 +194,7 @@ describe('runtime source isolation', () => {
       }),
     );
     const revisedPlan = structured(
-      await callRuntimeTool(unscoped, 'rh_work', {
+      await callRuntimeTool(unscoped, 'rh_project', {
         operation: 'plan_revise',
         plan_id: planId,
         expected_revision: 1,
@@ -213,7 +213,7 @@ describe('runtime source isolation', () => {
       acceptedEvidenceRefs: ['git:reviewed'],
     });
     const resumedRequirement = structured(
-      await callRuntimeTool(unscoped, 'rh_work', {
+      await callRuntimeTool(unscoped, 'rh_project', {
         operation: 'requirement_get',
         requirement_id: requirementId,
       }),
@@ -226,7 +226,7 @@ describe('runtime source isolation', () => {
         acceptedEvidenceRefs: ['git:reviewed'],
       },
     );
-    const incompleteCompletion = await callRuntimeTool(unscoped, 'rh_work', {
+    const incompleteCompletion = await callRuntimeTool(unscoped, 'rh_project', {
       operation: 'requirement_revise',
       requirement_id: requirementId,
       expected_revision: 2,
@@ -234,7 +234,7 @@ describe('runtime source isolation', () => {
       requirement_remaining_work: ['Runtime acceptance'],
     });
     expect(JSON.stringify(incompleteCompletion)).toContain('REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED');
-    const missingEvidenceCompletion = await callRuntimeTool(unscoped, 'rh_work', {
+    const missingEvidenceCompletion = await callRuntimeTool(unscoped, 'rh_project', {
       operation: 'requirement_revise',
       requirement_id: requirementId,
       expected_revision: 2,
@@ -244,12 +244,12 @@ describe('runtime source isolation', () => {
     });
     expect(JSON.stringify(missingEvidenceCompletion)).toContain('REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED');
     const acceptedRequirement = structured(
-      await callRuntimeTool(unscoped, 'rh_work', {
+      await callRuntimeTool(unscoped, 'rh_project', {
         operation: 'requirement_revise',
         requirement_id: requirementId,
         expected_revision: 2,
         requirement_state: 'completed',
-        requirement_progress_summary: 'Accepted through the public rh_work path',
+        requirement_progress_summary: 'Accepted through the public rh_project path',
         requirement_remaining_work: [],
         requirement_accepted_evidence_refs: ['git:reviewed', 'review:accepted'],
       }),
@@ -305,7 +305,7 @@ describe('runtime source isolation', () => {
 
     // Unscoped get when present in >1 scope => SEMANTIC_ID_SCOPE_AMBIGUOUS
     const ambiguousPlanGet = structured(
-      await callRuntimeTool(unscopedCtx, 'rh_work', {
+      await callRuntimeTool(unscopedCtx, 'rh_project', {
         operation: 'plan_get',
         plan_id: sharedPlanId,
       }),
@@ -316,7 +316,7 @@ describe('runtime source isolation', () => {
 
     // Explicit repo_id => disambiguates exact record
     const planA = structured(
-      await callRuntimeTool(unscopedCtx, 'rh_work', {
+      await callRuntimeTool(unscopedCtx, 'rh_project', {
         operation: 'plan_get',
         plan_id: sharedPlanId,
         repo_id: repoA.repoId,
@@ -326,7 +326,7 @@ describe('runtime source isolation', () => {
     expect((planA.data as { plan?: { goal?: string } })?.plan?.goal).toBe('Goal in Repo A');
 
     const planB = structured(
-      await callRuntimeTool(unscopedCtx, 'rh_work', {
+      await callRuntimeTool(unscopedCtx, 'rh_project', {
         operation: 'plan_get',
         plan_id: sharedPlanId,
         repo_id: repoB.repoId,
@@ -340,7 +340,7 @@ describe('runtime source isolation', () => {
     initGitRepo(nonExistentRepoRoot, 'routing-c');
     const repoC = registerRepository({ path: nonExistentRepoRoot, controllerHome, displayName: 'Repo C' });
     const missingInC = structured(
-      await callRuntimeTool(unscopedCtx, 'rh_work', {
+      await callRuntimeTool(unscopedCtx, 'rh_project', {
         operation: 'plan_get',
         plan_id: sharedPlanId,
         repo_id: repoC.repoId,
@@ -351,7 +351,7 @@ describe('runtime source isolation', () => {
 
     // Unscoped revise when ambiguous => SEMANTIC_ID_SCOPE_AMBIGUOUS
     const ambiguousRevisePlan = structured(
-      await callRuntimeTool(unscopedCtx, 'rh_work', {
+      await callRuntimeTool(unscopedCtx, 'rh_project', {
         operation: 'plan_revise',
         plan_id: sharedPlanId,
         expected_revision: 1,
@@ -363,7 +363,7 @@ describe('runtime source isolation', () => {
 
     // Explicit scoped revise => succeeds for the exact scope
     const revisedPlanB = structured(
-      await callRuntimeTool(unscopedCtx, 'rh_work', {
+      await callRuntimeTool(unscopedCtx, 'rh_project', {
         operation: 'plan_revise',
         plan_id: sharedPlanId,
         repo_id: repoB.repoId,

@@ -18,8 +18,10 @@ import {
 
 const profileUrl = 'https://www.xiaohongshu.com/user/profile/5fb3e0fd0000000001008089';
 const baseArgs = {
-  session_id: 'browser_test_session', profile_url: profileUrl,
-  title: '一个可以直接收藏的工具帖', body: '正文内容',
+  session_id: 'browser_test_session',
+  profile_url: profileUrl,
+  title: '一个可以直接收藏的工具帖',
+  body: '正文内容',
 };
 
 describe('xiaohongshu Workflow compatibility', () => {
@@ -28,13 +30,21 @@ describe('xiaohongshu Workflow compatibility', () => {
     try {
       const entrypoint = join(directory, 'probe.ts');
       const modulePath = new URL('../../src/runtime/workflows/first-party/xiaohongshu.ts', import.meta.url).pathname;
-      writeFileSync(entrypoint, `import { materializedXiaohongshuWorkflow, XIAOHONGSHU_WORKFLOW_IDS } from ${JSON.stringify(modulePath)};\nconsole.log(JSON.stringify(Object.values(XIAOHONGSHU_WORKFLOW_IDS).map(id => materializedXiaohongshuWorkflow(id).contentDigest)));`);
+      writeFileSync(
+        entrypoint,
+        `import { materializedXiaohongshuWorkflow, XIAOHONGSHU_WORKFLOW_IDS } from ${JSON.stringify(modulePath)};\nconsole.log(JSON.stringify(Object.values(XIAOHONGSHU_WORKFLOW_IDS).map(id => materializedXiaohongshuWorkflow(id).contentDigest)));`,
+      );
       const build = await Bun.build({ entrypoints: [entrypoint], outdir: directory, target: 'bun' });
       expect(build.success).toBe(true);
-      const run = Bun.spawnSync([process.execPath, build.outputs[0].path], { cwd: directory, stdout: 'pipe', stderr: 'pipe' });
+      const run = Bun.spawnSync([process.execPath, build.outputs[0].path], {
+        cwd: directory,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
       expect({ exitCode: run.exitCode, stderr: run.stderr.toString() }).toEqual({ exitCode: 0, stderr: '' });
-      expect(JSON.parse(run.stdout.toString())).toEqual(Object.values(XIAOHONGSHU_WORKFLOW_IDS)
-        .map(id => materializedXiaohongshuWorkflow(id).contentDigest));
+      expect(JSON.parse(run.stdout.toString())).toEqual(
+        Object.values(XIAOHONGSHU_WORKFLOW_IDS).map((id) => materializedXiaohongshuWorkflow(id).contentDigest),
+      );
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -45,7 +55,7 @@ describe('xiaohongshu Workflow compatibility', () => {
     try {
       const installed = ensureXiaohongshuWorkflowInstalled(controllerHome, XIAOHONGSHU_WORKFLOW_IDS.longText);
       const asset = materializedXiaohongshuWorkflow(XIAOHONGSHU_WORKFLOW_IDS.longText);
-      const bound = installed.value.bindings.map(binding => binding.capabilityId).sort();
+      const bound = installed.value.bindings.map((binding) => binding.capabilityId).sort();
       expect(bound).toEqual(workflowCapabilityDependencies(asset));
       expect(asset.requiredCapabilities).toContain('browser.attach_local_file');
       expect(bound).not.toContain('browser.attach_local_file');
@@ -57,20 +67,26 @@ describe('xiaohongshu Workflow compatibility', () => {
   test('manifest exposes only read-only translation; remote effects are not plugin-owned', () => {
     const manifest = buildXiaohongshuPluginManifest();
     expect(manifest.pluginId).toBe('xiaohongshu');
-    expect(listFirstPartyPluginAdapters().map(adapter => adapter.pluginId)).toContain('xiaohongshu');
+    expect(listFirstPartyPluginAdapters().map((adapter) => adapter.pluginId)).toContain('xiaohongshu');
     expect(manifest.health.ready).toBe(true);
     expect(manifest.authority.sourceOfTruth).toContain('source:assets/workflows/xiaohongshu/*.draft.json');
     expect(manifest.compatibility).toMatchObject({
       replacementOwner: expect.stringContaining('Workflow Runtime'),
-      boundedConsumers: [{
-        surface: 'plugin_action_execute', pluginId: 'xiaohongshu', actionIds: ['get_publish_recipe', 'publish_note'],
-      }],
+      boundedConsumers: [
+        {
+          surface: 'plugin_action_execute',
+          pluginId: 'xiaohongshu',
+          actionIds: ['get_publish_recipe', 'publish_note'],
+        },
+      ],
       removalCondition: {
         kind: 'no_supported_frozen_contract_actions',
-        surface: 'plugin_action_execute', pluginId: 'xiaohongshu', actionIds: ['get_publish_recipe', 'publish_note'],
+        surface: 'plugin_action_execute',
+        pluginId: 'xiaohongshu',
+        actionIds: ['get_publish_recipe', 'publish_note'],
       },
     });
-    expect(manifest.actions.map(action => action.actionId)).toEqual(['get_publish_recipe', 'publish_note']);
+    expect(manifest.actions.map((action) => action.actionId)).toEqual(['get_publish_recipe', 'publish_note']);
     for (const action of manifest.actions) {
       expect(action.readOnly).toBe(true);
       expect(action.risk).toBe('readonly');
@@ -80,13 +96,29 @@ describe('xiaohongshu Workflow compatibility', () => {
   });
 
   test('legacy image/generated/long-text inputs translate to exact versioned Workflow identities', () => {
-    const image = translateXiaohongshuPublishToWorkflow({ ...baseArgs, mode: 'image_note', image_paths: ['cover.png'] });
-    expect(image).toMatchObject({ workflowId: XIAOHONGSHU_WORKFLOW_IDS.imageNote, generationRequired: false, normalizedMode: 'image_note' });
+    const image = translateXiaohongshuPublishToWorkflow({
+      ...baseArgs,
+      mode: 'image_note',
+      image_paths: ['cover.png'],
+    });
+    expect(image).toMatchObject({
+      workflowId: XIAOHONGSHU_WORKFLOW_IDS.imageNote,
+      generationRequired: false,
+      normalizedMode: 'image_note',
+    });
     expect(image.inputs.image_paths).toEqual(['cover.png']);
     const generated = translateXiaohongshuPublishToWorkflow({ ...baseArgs, mode: 'generated_image_note' });
-    expect(generated).toMatchObject({ workflowId: XIAOHONGSHU_WORKFLOW_IDS.imageNote, generationRequired: true, normalizedMode: 'image_note' });
+    expect(generated).toMatchObject({
+      workflowId: XIAOHONGSHU_WORKFLOW_IDS.imageNote,
+      generationRequired: true,
+      normalizedMode: 'image_note',
+    });
     const longText = translateXiaohongshuPublishToWorkflow({ ...baseArgs, mode: 'long_text', summary: '摘要' });
-    expect(longText).toMatchObject({ workflowId: XIAOHONGSHU_WORKFLOW_IDS.longText, generationRequired: false, normalizedMode: 'long_text' });
+    expect(longText).toMatchObject({
+      workflowId: XIAOHONGSHU_WORKFLOW_IDS.longText,
+      generationRequired: false,
+      normalizedMode: 'long_text',
+    });
     expect(longText.inputs.summary).toBe('摘要');
   });
 
@@ -95,9 +127,11 @@ describe('xiaohongshu Workflow compatibility', () => {
     expect(image.resources?.creatorBaseUrl).toContain('creator.xiaohongshu.com');
     expect(image.selectors?.publish).toBe('xhs-publish-btn');
     expect(image.requiredCapabilities).toContain('browser.reconcile_effect');
-    const effect = image.steps.find(step => step.stepId === 'publish.semantic_submit');
+    const effect = image.steps.find((step) => step.stepId === 'publish.semantic_submit');
     expect(effect).toMatchObject({
-      capabilityId: 'browser.dispatch_event', idempotency: 'non_idempotent', reconcileWithCapabilityId: 'browser.reconcile_effect',
+      capabilityId: 'browser.dispatch_event',
+      idempotency: 'non_idempotent',
+      reconcileWithCapabilityId: 'browser.reconcile_effect',
     });
     expect(image.publication).toMatchObject({ channel: 'xiaohongshu', effectStepId: 'publish.semantic_submit' });
     const source = readFileSync(new URL('../../src/runtime/plugins/xiaohongshu-publish.ts', import.meta.url), 'utf8');
@@ -108,19 +142,35 @@ describe('xiaohongshu Workflow compatibility', () => {
 
   test('compatibility publish_note never reports a remote publish as completed', async () => {
     const result = await executeXiaohongshuPluginAction({
-      controllerHome: '/tmp/controller', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'xiaohongshu', actionId: 'publish_note', requestId: 'xhs-compat',
-      args: { ...baseArgs, mode: 'image_note', image_paths: ['cover.png'] }, origin: { surface: 'local-ui', actor: 'test' },
+      controllerHome: '/tmp/controller',
+      repoId: 'repo',
+      repoRoot: '/tmp/repo',
+      pluginId: 'xiaohongshu',
+      actionId: 'publish_note',
+      requestId: 'xhs-compat',
+      args: { ...baseArgs, mode: 'image_note', image_paths: ['cover.png'] },
+      origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(result.status).toBe('workflow_required');
-    expect(result.execution).toMatchObject({ tool: 'rh_work', operation: 'workflow_execute', workflow_id: XIAOHONGSHU_WORKFLOW_IDS.imageNote });
+    expect(result.execution).toMatchObject({
+      tool: 'rh_project',
+      operation: 'workflow_execute',
+      workflow_id: XIAOHONGSHU_WORKFLOW_IDS.imageNote,
+    });
     expect(result).not.toHaveProperty('publishedAt');
     expect(result).not.toHaveProperty('receipts');
   });
 
   test('generated image request remains a pure generation handoff until image paths exist', async () => {
     const result = await executeXiaohongshuPluginAction({
-      controllerHome: '/tmp/controller', repoId: 'repo', repoRoot: '/tmp/repo', pluginId: 'xiaohongshu', actionId: 'publish_note', requestId: 'xhs-generation',
-      args: { ...baseArgs, mode: 'generated_image_note' }, origin: { surface: 'local-ui', actor: 'test' },
+      controllerHome: '/tmp/controller',
+      repoId: 'repo',
+      repoRoot: '/tmp/repo',
+      pluginId: 'xiaohongshu',
+      actionId: 'publish_note',
+      requestId: 'xhs-generation',
+      args: { ...baseArgs, mode: 'generated_image_note' },
+      origin: { surface: 'local-ui', actor: 'test' },
     });
     expect(result.status).toBe('generation_required');
     expect(result.generationHandoff).toMatchObject({ requiredInput: 'image_paths', minImages: 1, maxImages: 18 });
@@ -129,7 +179,11 @@ describe('xiaohongshu Workflow compatibility', () => {
   test('recipe projection exposes exact immutable asset identity instead of copied platform steps', () => {
     const recipe = buildXiaohongshuPublishRecipe({ ...baseArgs, mode: 'long_text' });
     const asset = materializedXiaohongshuWorkflow(XIAOHONGSHU_WORKFLOW_IDS.longText);
-    expect(recipe).toMatchObject({ workflowId: asset.workflowId, workflowVersion: asset.version, workflowContentDigest: asset.contentDigest });
+    expect(recipe).toMatchObject({
+      workflowId: asset.workflowId,
+      workflowVersion: asset.version,
+      workflowContentDigest: asset.contentDigest,
+    });
     expect(recipe).not.toHaveProperty('steps');
     expect(recipe).not.toHaveProperty('selectors');
   });

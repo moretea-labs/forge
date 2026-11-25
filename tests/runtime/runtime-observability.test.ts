@@ -900,7 +900,7 @@ describe('runtime observability', () => {
       expect(defaultNames).toEqual(expect.arrayContaining([...PREFERRED_CONTROLLER_TOOL_NAMES]));
       expect(defaultNames.length).toBeGreaterThan(PREFERRED_CONTROLLER_TOOL_NAMES.length);
       expect(defaultNames).toEqual(
-        expect.arrayContaining(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']),
+        expect.arrayContaining(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_project']),
       );
       expect(defaultNames).toContain('execute_command');
       expect(defaultNames).not.toContain('repository_command_execute');

@@ -2,10 +2,7 @@ import { createHash, randomBytes } from 'crypto';
 import { createServer, type Server } from 'http';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { describeFailure } from '../../../packages/protocols/failure';
-import {
-  ControllerLockContentionError,
-  withControllerLock,
-} from '../../effects/controller-locks';
+import { ControllerLockContentionError, withControllerLock } from '../../effects/controller-locks';
 import {
   cancelAgentJob,
   getAgentJob,
@@ -76,7 +73,7 @@ import {
 import { getToolPolicy } from '../../runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
 import { createMcpToolContext as createControllerMcpToolContext } from '../../../adapters/mcp/server';
-import { callRhWorkWorkflowOperation } from '../../../adapters/mcp/runtime-gateway/rh-work-workflow-operations';
+import { callRhProjectWorkflowOperation } from '../../../adapters/mcp/runtime-gateway/rh-project-workflow-operations';
 import {
   AGENTMAIL_EVENT_WORKFLOW_ID,
   resolveAgentMailAppCaseRoute,
@@ -314,22 +311,21 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
   const runs = listAgentJobs(repoRoot, 30);
   const localJobs = listLocalBridgeJobs(repoRoot, 30);
   const legacyBoard = retiredLegacyControlPlane ? undefined : projectBoard(repoRoot);
-  const board = legacyBoard
-    ?? {
-        schemaVersion: 1,
-        projection: 'deprecated_frozen_legacy_board',
-        authority: 'controller-home-sqlite',
-        deprecated: true,
-        frozen: true,
-        issues: [],
-        counts: requirementBoard?.counts ?? {},
-        declaredCounts: {},
-        archivedCounts: {},
-        readyTasks: [],
-        queueableTasks: [],
-        archivedIssueCount: 0,
-        notice: 'Requirement Board is authoritative. Legacy Issue/Task board data is intentionally omitted.',
-      };
+  const board = legacyBoard ?? {
+    schemaVersion: 1,
+    projection: 'deprecated_frozen_legacy_board',
+    authority: 'controller-home-sqlite',
+    deprecated: true,
+    frozen: true,
+    issues: [],
+    counts: requirementBoard?.counts ?? {},
+    declaredCounts: {},
+    archivedCounts: {},
+    readyTasks: [],
+    queueableTasks: [],
+    archivedIssueCount: 0,
+    notice: 'Requirement Board is authoritative. Legacy Issue/Task board data is intentionally omitted.',
+  };
   const taskLedger = buildControllerTaskLedgerProjection(repoRoot, legacyBoard, requirementBoard);
   const runtime = runtimeControllerSnapshot(repoRoot);
   const activeExecutionJobs = 'activeExecutionJobs' in runtime ? (runtime.activeExecutionJobs ?? []) : [];
@@ -1296,7 +1292,7 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
           workflow_inputs: workflowInputs,
         };
         const reconciliationRequestId = `agentmail-reconcile-${createHash('sha256').update(eventId).digest('hex').slice(0, 40)}`;
-        let dispatched = await callRhWorkWorkflowOperation(
+        let dispatched = await callRhProjectWorkflowOperation(
           mcpExposureContext,
           repository,
           'workflow_execute',
@@ -1329,7 +1325,7 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
           (!workflow && summary.startsWith('WORKFLOW_RUN_RECONCILIATION_REQUIRED:'))
         ) {
           recovered = true;
-          dispatched = await callRhWorkWorkflowOperation(mcpExposureContext, repository, 'workflow_reconcile', {
+          dispatched = await callRhProjectWorkflowOperation(mcpExposureContext, repository, 'workflow_reconcile', {
             ...workflowArguments,
             workflow_reconciliation_request_id: reconciliationRequestId,
           });

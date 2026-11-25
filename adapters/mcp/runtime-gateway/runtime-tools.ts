@@ -24,7 +24,7 @@ export {
   currentCallableTools,
   runtimeToolDefinitions,
 } from './runtime-tool-definitions';
-import { callRhWorkAdapter, runFacadeRepair } from './rh-work-adapter';
+import { callRhProjectAdapter, runFacadeRepair } from './rh-project-adapter';
 
 async function callRuntimeToolUnchecked(
   ctx: MultiRepositoryMcpToolContext,
@@ -62,7 +62,7 @@ async function callRuntimeToolUnchecked(
     if (credential) return credential;
     const autopilot = await callAutopilotAdapter(ctx, name, args);
     if (autopilot) return autopilot;
-    if (name === 'rh_work') return callRhWorkAdapter(ctx, args);
+    if (name === 'rh_project') return callRhProjectAdapter(ctx, args);
     return undefined;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

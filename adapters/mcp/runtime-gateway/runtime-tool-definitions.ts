@@ -1,6 +1,6 @@
 import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
 import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATES } from '../../../packages/kernel/goal/api/index';
-import { RH_WORK_MODEL_OPERATIONS } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
+import { RH_PROJECT_MODEL_OPERATIONS } from '../../../src/runtime/control-plane/facade/rh-project-operation-contract';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../../src/runtime/context/automatic-learning';
 
 function definition(
@@ -88,7 +88,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       operation: {
         type: 'string',
         enum: ['list', 'get'],
-        description: 'Defaults to get. Source search is retired; use execute_command/read_repository_file for code discovery.',
+        description:
+          'Defaults to get. Source search is retired; use execute_command/read_repository_file for code discovery.',
       },
       query: {
         type: 'string',
@@ -169,7 +170,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       detail_level: {
         type: 'string',
         enum: ['summary', 'detail', 'raw'],
-        description: 'Defaults to summary. Expand only when repository/capability diagnostics can change the next decision.',
+        description:
+          'Defaults to summary. Expand only when repository/capability diagnostics can change the next decision.',
       },
     },
   ),
@@ -274,7 +276,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     false,
   ),
   definition(
-    'rh_work',
+    'rh_project',
     'Preferred ChatGPT facade for optional durable Requirement/Plan semantic context, Workflow execution, browser schedules, and ChatGPT Launch Session. Ordinary execution and validation use direct domain capabilities.',
     {
       repo_id: repoId,
@@ -284,7 +286,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       },
       operation: {
         type: 'string',
-        enum: [...RH_WORK_MODEL_OPERATIONS],
+        enum: [...RH_PROJECT_MODEL_OPERATIONS],
         description:
           'Project and Requirement operations manage canonical semantic records; project_attach_requirement links an existing Requirement through a selected Project repository placement without duplicating or changing its semantic state. Set repo_id when a Project has multiple repository placements. Plan operations manage delivery structure. Workflow execution and browser schedules are Work-free; launcher_start opens a ChatGPT session or sends one explicit Prompt through its task-bound active conversation.',
       },
@@ -1069,7 +1071,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'plugin_action_execute',
-    'Execute one typed repository or controller-scoped plugin action through the plugin provider authority. rh_context exposes plugin schemas/policy; rh_work does not execute plugin capabilities. For confirmation=authorization, normal host permission is authoritative and an exact-target Forge capability grant may be reused; do not set confirm_authorization merely because an ordinary authorization-class action was previously allowed. Strong-confirmation actions still require their explicit confirmation contract.',
+    'Execute one typed repository or controller-scoped plugin action through the plugin provider authority. rh_context exposes plugin schemas/policy; rh_project does not execute plugin capabilities. For confirmation=authorization, normal host permission is authoritative and an exact-target Forge capability grant may be reused; do not set confirm_authorization merely because an ordinary authorization-class action was previously allowed. Strong-confirmation actions still require their explicit confirmation contract.',
     {
       repo_id: repoId,
       checkout_id: {

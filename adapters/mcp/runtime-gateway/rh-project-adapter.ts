@@ -3,7 +3,7 @@ import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
-import { isRhWorkAcceptedOperation } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
+import { isRhProjectAcceptedOperation } from '../../../src/runtime/control-plane/facade/rh-project-operation-contract';
 import {
   findControlPlaneRecordsByKey,
   readControlPlaneRecord,
@@ -11,19 +11,22 @@ import {
 import { result } from './result-adapter';
 import { selected, selectedOptional } from './shared-adapter';
 import { invalidFacadeOperation } from './status-inbox-adapter';
-import { callRhWorkScheduleAdapter, isRhWorkScheduleOperation } from './scheduler-adapter';
-import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './rh-work-requirement-operations';
-import { callRhWorkProjectOperation, isRhWorkProjectOperation } from './rh-work-project-operations';
+import { callRhProjectScheduleAdapter, isRhProjectScheduleOperation } from './scheduler-adapter';
 import {
-  callRhWorkPlanCreateOperation,
-  callRhWorkPlanCreateWithoutRepository,
-  callRhWorkPlanOperation,
-  isRhWorkLightweightPlanOperation,
-} from './rh-work-plan-operations';
-import { callRhWorkWorkflowOperation } from './rh-work-workflow-operations';
-import { callRhWorkLearningOperation } from './rh-work-learning-operations';
-import { callRhWorkControllerOperation } from './rh-work-controller-operations';
-import { runFacadeRepair } from './rh-work-repair-adapter';
+  callRhProjectRequirementOperation,
+  isRhProjectRequirementOperation,
+} from './rh-project-requirement-operations';
+import { callRhProjectProjectOperation, isRhProjectProjectOperation } from './rh-project-project-operations';
+import {
+  callRhProjectPlanCreateOperation,
+  callRhProjectPlanCreateWithoutRepository,
+  callRhProjectPlanOperation,
+  isRhProjectLightweightPlanOperation,
+} from './rh-project-plan-operations';
+import { callRhProjectWorkflowOperation } from './rh-project-workflow-operations';
+import { callRhProjectLearningOperation } from './rh-project-learning-operations';
+import { callRhProjectControllerOperation } from './rh-project-controller-operations';
+import { runFacadeRepair } from './rh-project-repair-adapter';
 
 export { runFacadeRepair };
 export { runtimeIdentitySnapshot } from './controller-authority-adapter';
@@ -119,7 +122,7 @@ async function routeStableSemanticOperation(
   const planStore = explicitRepoId
     ? { controllerHome: ctx.controllerHome, repoId: explicitRepoId }
     : { controllerHome: ctx.controllerHome, scopeKey: targetScope };
-  return callRhWorkPlanOperation(planStore, operation, args);
+  return callRhProjectPlanOperation(planStore, operation, args);
 }
 
 /** Reject prototype-polluting input while keeping the direct typed operation path. */
@@ -141,7 +144,7 @@ function unsafeInputKey(value: unknown): string | undefined {
 }
 
 /** Direct semantic operations only; Work-era carrier translation is retired. */
-export async function callRhWorkAdapter(
+export async function callRhProjectAdapter(
   ctx: MultiRepositoryMcpToolContext,
   input: Record<string, unknown>,
 ): Promise<CallToolResult> {
@@ -170,30 +173,30 @@ export async function callRhWorkAdapter(
   }
   const args = input;
   const operation = typeof args.operation === 'string' ? args.operation.trim() : '';
-  if (!isRhWorkAcceptedOperation(operation)) return invalidFacadeOperation('rh_work', operation);
+  if (!isRhProjectAcceptedOperation(operation)) return invalidFacadeOperation('rh_project', operation);
 
-  if (isRhWorkProjectOperation(operation)) {
+  if (isRhProjectProjectOperation(operation)) {
     const repository = selectedOptional(ctx, args);
-    const project = callRhWorkProjectOperation(ctx, repository, operation, args);
+    const project = callRhProjectProjectOperation(ctx, repository, operation, args);
     if (project) return project;
   }
 
-  if (isRhWorkRequirementOperation(operation) && operation !== 'requirement_promote_candidate') {
+  if (isRhProjectRequirementOperation(operation) && operation !== 'requirement_promote_candidate') {
     const repository = selectedOptional(ctx, args);
-    const requirement = await callRhWorkRequirementOperation(ctx, repository, operation, args);
+    const requirement = await callRhProjectRequirementOperation(ctx, repository, operation, args);
     if (requirement) return requirement;
   }
 
   const stableSemantic = await routeStableSemanticOperation(ctx, operation, args);
   if (stableSemantic) return stableSemantic;
 
-  const repositoryOptionalPlan = await callRhWorkPlanCreateWithoutRepository(ctx, operation, args);
+  const repositoryOptionalPlan = await callRhProjectPlanCreateWithoutRepository(ctx, operation, args);
   if (repositoryOptionalPlan) return repositoryOptionalPlan;
 
   const projectId = typeof args.project_id === 'string' ? args.project_id.trim() : '';
   const explicitRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
-  if (projectId && !explicitRepoId && !ctx.explicitRepository && isRhWorkLightweightPlanOperation(operation)) {
-    const projectPlan = await callRhWorkPlanOperation(
+  if (projectId && !explicitRepoId && !ctx.explicitRepository && isRhProjectLightweightPlanOperation(operation)) {
+    const projectPlan = await callRhProjectPlanOperation(
       { controllerHome: ctx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY },
       operation,
       args,
@@ -204,28 +207,28 @@ export async function callRhWorkAdapter(
   const repository = selected(ctx, args);
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
 
-  if (isRhWorkScheduleOperation(operation)) {
-    return callRhWorkScheduleAdapter(ctx, repository, operation, args);
+  if (isRhProjectScheduleOperation(operation)) {
+    return callRhProjectScheduleAdapter(ctx, repository, operation, args);
   }
 
   if (operation === 'launcher_start') {
-    const controller = await callRhWorkControllerOperation(ctx, repository, operation, args);
+    const controller = await callRhProjectControllerOperation(ctx, repository, operation, args);
     if (controller) return controller;
   }
 
-  const workflow = await callRhWorkWorkflowOperation(ctx, repository, operation, args);
+  const workflow = await callRhProjectWorkflowOperation(ctx, repository, operation, args);
   if (workflow) return workflow;
 
-  const learning = callRhWorkLearningOperation(ctx, repository, operation, args);
+  const learning = callRhProjectLearningOperation(ctx, repository, operation, args);
   if (learning) return learning;
 
-  const requirement = await callRhWorkRequirementOperation(ctx, repository, operation, args);
+  const requirement = await callRhProjectRequirementOperation(ctx, repository, operation, args);
   if (requirement) return requirement;
 
-  const plan = await callRhWorkPlanOperation(store, operation, args);
+  const plan = await callRhProjectPlanOperation(store, operation, args);
   if (plan) return plan;
 
-  const planCreate = await callRhWorkPlanCreateOperation(store, operation, args, {
+  const planCreate = await callRhProjectPlanCreateOperation(store, operation, args, {
     controllerHome: ctx.controllerHome,
     repoId: repository.repoId,
     checks: listControllerChecks(repository.canonicalRoot),
@@ -236,5 +239,5 @@ export async function callRhWorkAdapter(
     return runFacadeRepair(ctx, repository, args);
   }
 
-  return invalidFacadeOperation('rh_work', operation);
+  return invalidFacadeOperation('rh_project', operation);
 }

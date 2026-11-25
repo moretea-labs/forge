@@ -28,7 +28,7 @@ export const FACADE_TOOLS = [
   'rh_status',
   'rh_inbox',
   'rh_context',
-  'rh_work',
+  'rh_project',
   'capability_execute',
 ] as const;
 export type FacadeTool = (typeof FACADE_TOOLS)[number];

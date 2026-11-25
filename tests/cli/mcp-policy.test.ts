@@ -45,7 +45,7 @@ describe('mcp policy and paths', () => {
   });
 
   test('preferred facades do not advertise retired work_id (#483)', () => {
-    for (const name of ['rh_context', 'rh_work'] as const) {
+    for (const name of ['rh_context', 'rh_project'] as const) {
       const tool = runtimeToolDefinitions.find((entry) => entry.name === name);
       expect(tool).toBeDefined();
       const properties = (tool?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};

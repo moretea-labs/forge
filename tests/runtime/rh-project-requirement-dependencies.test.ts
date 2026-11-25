@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { callRhWorkRequirementOperation } from '../../adapters/mcp/runtime-gateway/rh-work-requirement-operations';
+import { callRhProjectRequirementOperation } from '../../adapters/mcp/runtime-gateway/rh-project-requirement-operations';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import {
   createRequirement,
@@ -12,7 +12,7 @@ import {
   reviseRequirementSemantic,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
 
-describe('rh_work Requirement dependencies', () => {
+describe('rh_project Requirement dependencies', () => {
   let controllerHome: string;
 
   beforeEach(() => {
@@ -35,7 +35,7 @@ describe('rh_work Requirement dependencies', () => {
     );
   }
 
-  it('stores cross-project dependencies through rh_work, snapshots them in history, and rejects missing, self and cyclic links', async () => {
+  it('stores cross-project dependencies through rh_project, snapshots them in history, and rejects missing, self and cyclic links', async () => {
     createTask('task-a', 'repo-a');
     createTask('task-b', 'repo-b');
     createTask('task-c', 'repo-c');
@@ -47,7 +47,7 @@ describe('rh_work Requirement dependencies', () => {
     expect(taskB.dependsOnRequirementIds).toEqual(['task-c']);
 
     const context = { controllerHome } as MultiRepositoryMcpToolContext;
-    const revised = await callRhWorkRequirementOperation(context, undefined, 'requirement_revise', {
+    const revised = await callRhProjectRequirementOperation(context, undefined, 'requirement_revise', {
       requirement_id: 'task-a',
       expected_revision: 1,
       requirement_dependencies: ['task-b'],
@@ -59,13 +59,13 @@ describe('rh_work Requirement dependencies', () => {
     expect(
       requirementSemanticView(readRequirement({ controllerHome }, 'task-a')!.value).dependsOnRequirementIds,
     ).toEqual(['task-b']);
-    const listed = await callRhWorkRequirementOperation(context, undefined, 'requirement_list', { limit: 20 });
+    const listed = await callRhProjectRequirementOperation(context, undefined, 'requirement_list', { limit: 20 });
     const listResponse = listed?.structuredContent as
       | { data?: { requirements?: Array<{ requirementId: string; dependencyCount: number }> } }
       | undefined;
     expect(listResponse?.data?.requirements?.find((row) => row.requirementId === 'task-a')?.dependencyCount).toBe(1);
     const repositoryA = { repoId: 'repo-a' };
-    const detailed = await callRhWorkRequirementOperation(context, repositoryA, 'requirement_get', {
+    const detailed = await callRhProjectRequirementOperation(context, repositoryA, 'requirement_get', {
       requirement_id: 'task-a',
       detail_level: 'detail',
     });
@@ -133,7 +133,7 @@ describe('rh_work Requirement dependencies', () => {
     );
 
     reviseRequirementSemantic({ controllerHome }, 'task-b', { expectedRevision: 2, status: 'cancelled' });
-    const cancelledDependencyDetail = await callRhWorkRequirementOperation(context, repositoryA, 'requirement_get', {
+    const cancelledDependencyDetail = await callRhProjectRequirementOperation(context, repositoryA, 'requirement_get', {
       requirement_id: 'task-a',
       detail_level: 'detail',
     });
@@ -191,7 +191,7 @@ describe('rh_work Requirement dependencies', () => {
       requirement_status: 'active',
     };
 
-    const created = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', args);
+    const created = await callRhProjectRequirementOperation(context, undefined, 'requirement_create', args);
     const response = created?.structuredContent as
       | {
           data?: {
@@ -218,13 +218,13 @@ describe('rh_work Requirement dependencies', () => {
     });
     expect(readRequirement({ controllerHome }, 'child')?.value.dependsOnRequirementIds).toEqual(['parent']);
 
-    const repeated = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', args);
+    const repeated = await callRhProjectRequirementOperation(context, undefined, 'requirement_create', args);
     const repeatedData = repeated?.structuredContent as
       | { data?: { requirementCreated?: boolean; admissionDecision?: string } }
       | undefined;
     expect(repeatedData?.data).toMatchObject({ requirementCreated: false, admissionDecision: 'reuse_existing' });
 
-    const conflicting = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', {
+    const conflicting = await callRhProjectRequirementOperation(context, undefined, 'requirement_create', {
       ...args,
       requirement_dependencies: [],
     });
@@ -233,7 +233,7 @@ describe('rh_work Requirement dependencies', () => {
     expect(conflictData?.summary).toContain('REQUIREMENT_ALREADY_EXISTS_CONFLICT');
     expect(readRequirement({ controllerHome }, 'child')?.value.dependsOnRequirementIds).toEqual(['parent']);
 
-    const missing = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', {
+    const missing = await callRhProjectRequirementOperation(context, undefined, 'requirement_create', {
       ...args,
       requirement_id: 'missing-parent-child',
       requirement_legacy_aliases: ['github:moretea-labs/forge#130'],
@@ -246,7 +246,7 @@ describe('rh_work Requirement dependencies', () => {
 
     createTask('cancelled-parent', 'repo-cancelled');
     reviseRequirementSemantic({ controllerHome }, 'cancelled-parent', { expectedRevision: 1, status: 'cancelled' });
-    const cancelled = await callRhWorkRequirementOperation(context, undefined, 'requirement_create', {
+    const cancelled = await callRhProjectRequirementOperation(context, undefined, 'requirement_create', {
       ...args,
       requirement_id: 'cancelled-parent-child',
       requirement_legacy_aliases: ['github:moretea-labs/forge#131'],
@@ -272,7 +272,7 @@ describe('rh_work Requirement dependencies', () => {
     });
 
     const context = { controllerHome } as MultiRepositoryMcpToolContext;
-    const before = await callRhWorkRequirementOperation(context, undefined, 'requirement_get', {
+    const before = await callRhProjectRequirementOperation(context, undefined, 'requirement_get', {
       requirement_id: 'shared-prerequisite',
       detail_level: 'detail',
     });
@@ -311,7 +311,7 @@ describe('rh_work Requirement dependencies', () => {
       ]),
     );
 
-    const completed = await callRhWorkRequirementOperation(context, undefined, 'requirement_revise', {
+    const completed = await callRhProjectRequirementOperation(context, undefined, 'requirement_revise', {
       requirement_id: 'shared-prerequisite',
       expected_revision: 1,
       requirement_status: 'done',
@@ -320,7 +320,7 @@ describe('rh_work Requirement dependencies', () => {
     });
     expect((completed?.structuredContent as { status?: string } | undefined)?.status).toBe('ok');
 
-    const after = await callRhWorkRequirementOperation(context, undefined, 'requirement_get', {
+    const after = await callRhProjectRequirementOperation(context, undefined, 'requirement_get', {
       requirement_id: 'shared-prerequisite',
       detail_level: 'detail',
     });
@@ -338,7 +338,7 @@ describe('rh_work Requirement dependencies', () => {
       ]),
     );
 
-    const blockedTasks = await callRhWorkRequirementOperation(context, undefined, 'requirement_list', {
+    const blockedTasks = await callRhProjectRequirementOperation(context, undefined, 'requirement_list', {
       dependency_filter: 'blocked',
       limit: 20,
     });

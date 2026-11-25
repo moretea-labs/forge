@@ -21,14 +21,14 @@ export const COGNITION_SETTLEMENT_PROPERTY = {
       maxItems: CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS,
       items: { type: 'object' },
       description:
-        'Optional model-authored reusable learning using the same LearningSignal contract as rh_work learning_record.',
+        'Optional model-authored reusable learning using the same LearningSignal contract as rh_project learning_record.',
     },
     learning_feedback: {
       type: 'array',
       maxItems: 32,
       items: { type: 'object' },
       description:
-        'Optional model-authored used/rejected feedback using the same contract as rh_work learning_feedback.',
+        'Optional model-authored used/rejected feedback using the same contract as rh_project learning_feedback.',
     },
   },
   description:
@@ -184,7 +184,7 @@ export function settleCognitionAfterTool(
   outcome: CallToolResult | undefined,
 ): CallToolResult | undefined {
   if (!outcome || outcome.isError || args.cognition_settlement === undefined) return outcome;
-  if (name === 'rh_work' && ['learning_record', 'learning_feedback'].includes(String(args.operation ?? ''))) {
+  if (name === 'rh_project' && ['learning_record', 'learning_feedback'].includes(String(args.operation ?? ''))) {
     return outcome;
   }
   try {

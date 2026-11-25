@@ -926,7 +926,6 @@ export async function callRepositoryTool(
         const scopeFields: Record<string, unknown> = repository
           ? { repoId: commandScopeKey, checkoutId: commandTarget.activeCheckoutId }
           : { scopeId: commandScopeKey };
-        const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
         const mutationPaths = Array.isArray(args.mutation_paths)
           ? args.mutation_paths
               .map(String)
@@ -938,17 +937,15 @@ export async function callRepositoryTool(
             'COMMAND_MUTATION_PATHS_INVALID: mutation_paths must contain at least one repository-relative path',
           );
         }
-        // Work context is optional. Repository mutation safety is decided by
-        // Git/Process/Lease and physical-checkout fences, never by an old
-        // session repository/checkout focus.
+        // Repository mutation safety is decided by Git/Process/Lease and
+        // physical-checkout fences, never by a semantic task record.
         const mutationClassification = classifyRepositoryCommand(
           args.command as string | string[],
           commandTarget.defaultBranch,
         );
         const hasDeclaredMutationScope = Boolean(mutationPaths?.length);
-        // Git integration is a capability with its own repository, scope and
-        // concurrency checks.  A Work's semantic completion and any optional
-        // verification/review evidence never admit or deny this operation.
+        // Git integration owns its repository, scope and concurrency checks;
+        // semantic task completion never admits or denies this operation.
         const timeoutMs =
           typeof args.timeout_ms === 'number'
             ? args.timeout_ms

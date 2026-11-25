@@ -30,25 +30,29 @@ test('historical Plan workId metadata does not disable Requirement read-only acc
   const requirementId = 'REQ-LEGACY-WORK-METADATA-READ';
   const planId = 'PLAN-LEGACY-WORK-METADATA-READ';
 
-  createRequirement({ controllerHome }, {
-    requirementId,
-    title: 'Keep canonical Requirement readable',
-    outcomeStatement: 'Read the Requirement independently of historical Plan ownership.',
-  });
-
-  createPlanSemanticContext({ controllerHome, scopeKey: SEMANTIC_SCOPE_KEY }, {
-    planId,
-    requirementId,
-    scopeKey: SEMANTIC_SCOPE_KEY,
-    sourceBasisRevision: 'historical-source',
-    goal: 'Historical Plan row remains readable.',
-    items: [{ id: 'A', objective: 'Old semantic task', dependencies: [] }],
-  });
-  const existing = readControlPlaneRecord<any>(
-    controllerHome, 'plan_contract', SEMANTIC_SCOPE_KEY, planId,
+  createRequirement(
+    { controllerHome },
+    {
+      requirementId,
+      title: 'Keep canonical Requirement readable',
+      outcomeStatement: 'Read the Requirement independently of historical Plan ownership.',
+    },
   );
+
+  createPlanSemanticContext(
+    { controllerHome, scopeKey: SEMANTIC_SCOPE_KEY },
+    {
+      planId,
+      requirementId,
+      scopeKey: SEMANTIC_SCOPE_KEY,
+      sourceBasisRevision: 'historical-source',
+      goal: 'Historical Plan row remains readable.',
+      items: [{ id: 'A', objective: 'Old semantic task', dependencies: [] }],
+    },
+  );
+  const existing = readControlPlaneRecord<any>(controllerHome, 'plan_contract', SEMANTIC_SCOPE_KEY, planId);
   expect(existing).toBeDefined();
-  withControlPlaneTransaction(controllerHome, database => {
+  withControlPlaneTransaction(controllerHome, (database) => {
     writeControlPlaneRecordWithinTransaction(database, {
       namespace: 'plan_contract',
       scope: SEMANTIC_SCOPE_KEY,
@@ -58,7 +62,8 @@ test('historical Plan workId metadata does not disable Requirement read-only acc
         ...existing!.value,
         workId: 'WORK-RETIRED',
         steps: (existing!.value.steps ?? []).map((step: any) => ({
-          ...step, workId: 'WORK-RETIRED',
+          ...step,
+          workId: 'WORK-RETIRED',
         })),
       },
       action: 'test_historical_plan_metadata',
@@ -78,7 +83,7 @@ test('historical Plan workId metadata does not disable Requirement read-only acc
     enableChatgptBrowser: false,
     audit: () => undefined,
   } as unknown as MultiRepositoryMcpToolContext;
-  const reply = await callRuntimeTool(ctx, 'rh_work', {
+  const reply = await callRuntimeTool(ctx, 'rh_project', {
     operation: 'requirement_get',
     requirement_id: requirementId,
     detail_level: 'detail',

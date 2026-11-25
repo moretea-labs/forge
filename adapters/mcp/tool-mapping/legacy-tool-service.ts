@@ -803,14 +803,14 @@ export async function callMcpTool(
             suggestedActions: connectorFreshness.suggestedActions,
           },
           staleConnectorHint: staleConnector
-            ? `Stale ChatGPT connector tool snapshot is missing facade tools: ${missingFacadeTools.join(', ')}. Refresh/reconnect MCP so tools/list reloads rh_status, rh_inbox, rh_context, and rh_work.`
+            ? `Stale ChatGPT connector tool snapshot is missing facade tools: ${missingFacadeTools.join(', ')}. Refresh/reconnect MCP so tools/list reloads rh_status, rh_inbox, rh_context, and rh_project.`
             : connectorFreshness.status === 'unable_to_verify_chatgpt_snapshot'
-              ? `Local MCP tool surface includes preferred facade tools. ChatGPT connector snapshot was not supplied, so freshness cannot be verified from this call. If ChatGPT tools/list is missing rh_status/rh_inbox/rh_context/rh_work, reconnect MCP. Pass connector_tool_names for an exact check.`
+              ? `Local MCP tool surface includes preferred facade tools. ChatGPT connector snapshot was not supplied, so freshness cannot be verified from this call. If ChatGPT tools/list is missing rh_status/rh_inbox/rh_context/rh_project, reconnect MCP. Pass connector_tool_names for an exact check.`
               : connectorFreshness.status === 'stale_fingerprint'
                 ? `Local MCP process fingerprint/version may be stale. Restart controller/MCP, then reconnect ChatGPT if rh_* are still missing.`
                 : connectorFreshness.status === 'local_mcp_missing_facade'
                   ? `Local MCP tool surface is missing facade tools: ${connectorFreshness.missingLocalTools.join(', ')}. Restart controller/MCP.`
-                  : `Connector clients must match ${FORGE_TOOL_SURFACE} version ${FORGE_VERSION} / schema ${FORGE_MCP_SCHEMA_VERSION}. Prefer rh_status/rh_inbox/rh_context/rh_work. Pass connector_tool_names to detect a stale ChatGPT tool snapshot precisely.`,
+                  : `Connector clients must match ${FORGE_TOOL_SURFACE} version ${FORGE_VERSION} / schema ${FORGE_MCP_SCHEMA_VERSION}. Prefer rh_status/rh_inbox/rh_context/rh_project. Pass connector_tool_names to detect a stale ChatGPT tool snapshot precisely.`,
         };
         audit(ctx, name, 'ok', args);
         return textResult(payload);

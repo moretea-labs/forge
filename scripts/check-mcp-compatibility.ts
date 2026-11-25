@@ -39,7 +39,7 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // repository.git diff/status remain canonical capability_execute routes with the same
 // protocol-neutral handlers and status-cache semantics. Refresh the complete registry
 // fingerprint for that deliberate contraction; do not relax the preferred tool contract.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '721b3e0b5bdca1ed';
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = '2af44825d79cf988';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a
@@ -63,14 +63,14 @@ const EXPECTED_PREFERRED_CONTROLLER_TOOL_NAMES = [
   'rh_status',
   'rh_inbox',
   'rh_context',
-  'rh_work',
+  'rh_project',
   'capability_execute',
 ] as const;
 // The stable bounded surface now includes the generic typed capability executor
 // already shipped on main. V3 Work objective relations intentionally extend only
-// the existing rh_work input schema; both changes must invalidate stale Connector
+// the existing rh_project input schema; both changes must invalidate stale Connector
 // schema snapshots without adding a parallel execution or graph authority.
-const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = '9ebdaeedde7cf065';
+const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = '531c8020345c2029';
 // Every public object-schema tool carries shared transport metadata only through
 // the final tools/list materialization path. Tool schema revisions
 // intentionally invalidate stale Connector schema snapshots.
@@ -81,7 +81,7 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = '9ebdaeedde7cf065';
 // 2026-10-21: rh_context documents bounded flat semantic navigation locations.
 // 2026-10-27: rh_context describes conversation-context reuse and compact search
 // summaries; only descriptive metadata changes, with names and input types intact.
-// 2026-10-29: compose the read-only rh_work get_contract operation with
+// 2026-10-29: compose the read-only rh_project get_contract operation with
 // #483 A02 typed Requirement progress CAS fields. Refresh the exact combined
 // schema fingerprint without relaxing the frozen public-contract assertion.
 // 2026-11-05: #478 adds model-authored execute_command mutation_paths so the
@@ -89,10 +89,10 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = '9ebdaeedde7cf065';
 // 2026-11-07: #483 retires Work-specific outcome_record/experience_record input
 // fields and keeps lifecycle-free learning_record/learning_feedback as the
 // canonical advisory-memory write path.
-// 2026-11-08: Forge Client planning adds optional parent_plan_id to rh_work
+// 2026-11-08: Forge Client planning adds optional parent_plan_id to rh_project
 // plan_create. This is an authored Plan refinement edge only; it adds no new
 // execution, approval, lifecycle, progress, or scheduling authority.
-// 2026-11-08: rh_work adds bounded requirement_list discovery so the native
+// 2026-11-08: rh_project adds bounded requirement_list discovery so the native
 // Planning client reads current Requirement semantics from their canonical owner
 // instead of depending on the retired rh_status requirementBoard projection.
 // 2026-11-09: #592 adds rh_inbox.scope (list-only all/global) so scoped counts
@@ -124,17 +124,17 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = '9ebdaeedde7cf065';
 // separate from Requirement dependency edges. Refresh the exact fingerprint so
 // stale Connector schema snapshots are invalidated.
 // 2026-11-22 #483: delete inert historical Work list/get/get_contract enum tokens
-// and advertising from the model-facing rh_work schema; Work has no remaining
+// and advertising from the model-facing rh_project schema; Work has no remaining
 // read surface. Refresh the exact schema fingerprint.
 // 2026-11-22 #483 follow-up: remove advertised work_id fields from rh_context /
-// rh_work input schemas (additionalProperties remains false). Refresh fingerprint.
+// rh_project input schemas (additionalProperties remains false). Refresh fingerprint.
 // 2026-11-23: origin/main drifted past the prior preferred schema fence after
 // Work-retirement schema cleanup; refresh the exact fingerprint so Connector
 // snapshots invalidate without relaxing the frozen public-contract assertion.
 // 2026-11-24 #714: repository.git gained the exact bounded diff contract behind
 // capability_execute while the preferred tool-name set itself remains unchanged.
 // 2026-11-25 #714-H retires rh_context source-search fields and Context Pack; Shell/Read owns source discovery while optional Cognitive/LSP reads remain.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'd444a394aa2dbf5a';
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'b61ddb054ea3e5c9';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
@@ -222,7 +222,7 @@ if (duplicateDefault.length)
 if (missingDefault.length)
   failures.push(`preferred tools missing from registered definitions: ${missingDefault.join(', ')}`);
 if (sourceCollisions.length) failures.push(`tool schema authority collisions: ${sourceCollisions.join(', ')}`);
-for (const name of ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work']) {
+for (const name of ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_project']) {
   if (!preferredNames.includes(name)) failures.push(`preferred facade surface missing: ${name}`);
   if (!defaultNames.includes(name)) failures.push(`preferred list missing facade tool: ${name}`);
 }
@@ -244,8 +244,8 @@ if (projectedNames.join('\n') !== [...fullNames].sort().join('\n')) {
   failures.push('controller_capabilities expectation differs from the complete MCP registry');
 }
 
-const rhWorkDefinition = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
-const rhWorkProperties = (rhWorkDefinition?.inputSchema?.properties ?? {}) as Record<string, unknown>;
+const rhProjectDefinition = runtimeToolDefinitions.find((tool) => tool.name === 'rh_project');
+const rhProjectProperties = (rhProjectDefinition?.inputSchema?.properties ?? {}) as Record<string, unknown>;
 for (const field of [
   'checkout_id',
   'workflow_id',
@@ -253,16 +253,16 @@ for (const field of [
   'learning_signals',
   'learning_feedback',
 ] as const) {
-  if (!(field in rhWorkProperties)) failures.push(`stable rh_work Tool Contract missing ${field}`);
+  if (!(field in rhProjectProperties)) failures.push(`stable rh_project Tool Contract missing ${field}`);
 }
 for (const retiredWorkLearningField of [
   'outcome_observation',
   'experience_draft',
   'quality_adjustment_fingerprint',
 ] as const) {
-  if (retiredWorkLearningField in rhWorkProperties) {
+  if (retiredWorkLearningField in rhProjectProperties) {
     failures.push(
-      `stable rh_work Tool Contract must not restore retired Work-specific learning field ${retiredWorkLearningField}`,
+      `stable rh_project Tool Contract must not restore retired Work-specific learning field ${retiredWorkLearningField}`,
     );
   }
 }

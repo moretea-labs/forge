@@ -10,7 +10,7 @@ export interface EvidenceRef {
 }
 export interface SuggestedNextAction {
   label: string;
-  tool: 'rh_access' | 'rh_status' | 'rh_inbox' | 'rh_context' | 'rh_work' | 'capability_execute';
+  tool: 'rh_access' | 'rh_status' | 'rh_inbox' | 'rh_context' | 'rh_project' | 'capability_execute';
   operation: string;
   payload?: Record<string, unknown>;
   risk:

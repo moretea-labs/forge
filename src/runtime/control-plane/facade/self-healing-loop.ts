@@ -97,7 +97,8 @@ function defaultDiagnoseIssues(input: SelfHealingInput): SelfHealingIssue[] {
   if (input.chatgptPullFailed) {
     issues.push({
       kind: 'mcp_tool_result_too_large',
-      summary: 'ChatGPT pull/result delivery failed or exceeded bounds; treat as bounded artifact/handoff/retry, not task failure.',
+      summary:
+        'ChatGPT pull/result delivery failed or exceeded bounds; treat as bounded artifact/handoff/retry, not task failure.',
       severity: 'warning',
       safeToAutoRepair: true,
       requiresApproval: false,
@@ -130,7 +131,8 @@ function defaultDiagnoseIssues(input: SelfHealingInput): SelfHealingIssue[] {
   if (input.diagnostics?.controllerDaemonUnhealthy) {
     issues.push({
       kind: 'controller_daemon_health',
-      summary: 'Forge Runtime health issue detected. Runtime lifecycle recovery belongs to the external owner of the existing single Runtime.',
+      summary:
+        'Forge Runtime health issue detected. Runtime lifecycle recovery belongs to the external owner of the existing single Runtime.',
       severity: 'error',
       safeToAutoRepair: false,
       requiresApproval: false,
@@ -259,21 +261,25 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
     }));
     const suggested = validateSuggestedNextActions([
       ...(issues.length > 0
-        ? [{
-            label: 'Preview repair (dry-run)',
-            tool: 'rh_work' as const,
-            operation: 'repair',
-            payload: { repair_operation: 'repair', dry_run: true },
-            risk: 'readonly' as const,
-            confidence: 'high' as const,
-          }]
-        : [{
-            label: 'Controller status',
-            tool: 'rh_status' as const,
-            operation: 'get',
-            risk: 'readonly' as const,
-            confidence: 'medium' as const,
-          }]),
+        ? [
+            {
+              label: 'Preview repair (dry-run)',
+              tool: 'rh_project' as const,
+              operation: 'repair',
+              payload: { repair_operation: 'repair', dry_run: true },
+              risk: 'readonly' as const,
+              confidence: 'high' as const,
+            },
+          ]
+        : [
+            {
+              label: 'Controller status',
+              tool: 'rh_status' as const,
+              operation: 'get',
+              risk: 'readonly' as const,
+              confidence: 'medium' as const,
+            },
+          ]),
       verificationSuggestion(),
     ]).actions;
 
@@ -323,15 +329,14 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
   if (operation === 'verify') {
     return buildFacadeResult({
       status: 'ok',
-      summary: 'Self-healing verification is a maintenance observation; run registered repository checks through run_check when code verification is needed.',
+      summary:
+        'Self-healing verification is a maintenance observation; run registered repository checks through run_check when code verification is needed.',
       data: {
         operation: 'verify',
         dryRun,
         isAcceptanceFailure: false,
       },
-      suggestedNextActions: validateSuggestedNextActions([
-        verificationSuggestion(),
-      ]).actions,
+      suggestedNextActions: validateSuggestedNextActions([verificationSuggestion()]).actions,
     });
   }
 
@@ -340,7 +345,8 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
     // concrete user authorization or product decision has actually been found.
     return buildFacadeResult({
       status: 'blocked',
-      summary: 'Self-healing could not safely complete automatically; keep the maintenance action blocked for bounded internal recovery rather than escalating infrastructure failure to the user.',
+      summary:
+        'Self-healing could not safely complete automatically; keep the maintenance action blocked for bounded internal recovery rather than escalating infrastructure failure to the user.',
       data: {
         operation: 'handoff',
         internalRecoveryRequired: true,
@@ -349,7 +355,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
       suggestedNextActions: [
         {
           label: 'Diagnose again (dry-run)',
-          tool: 'rh_work',
+          tool: 'rh_project',
           operation: 'repair',
           payload: { repair_operation: 'diagnose', dry_run: true },
           risk: 'workspace_write',
@@ -361,9 +367,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
 
   // operation === 'repair'
   const needsStrongApproval =
-    input.destructive === true
-    || input.remoteEffect === true
-    || issues.some((issue) => issue.requiresApproval);
+    input.destructive === true || input.remoteEffect === true || issues.some((issue) => issue.requiresApproval);
 
   // Safe maintenance is allowed without ChatGPT approval; destructive/remote effects stay gated.
   const policy: PolicyDecision = dryRun
@@ -406,7 +410,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
       suggestedNextActions: validateSuggestedNextActions([
         {
           label: 'Apply safe repair (requires approval if destructive)',
-          tool: 'rh_work',
+          tool: 'rh_project',
           operation: 'repair',
           payload: {
             repair_operation: 'repair',
@@ -428,14 +432,12 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
       repoId: ctx.repoId,
       title: 'Repair requires approval',
       severity: 'blocked',
-      creationReason: input.destructive
-        ? 'destructive_action_requires_confirmation'
-        : 'policy_approval_required',
+      creationReason: input.destructive ? 'destructive_action_requires_confirmation' : 'policy_approval_required',
       reason: policy.reason,
       summary: 'Destructive or remote repair requires explicit approval.',
       currentState: {
         repoId: ctx.repoId,
-          statusSummary: 'repair blocked pending approval',
+        statusSummary: 'repair blocked pending approval',
       },
       attemptedActions: ['self_healing_repair'],
       evidenceRefs: [],
@@ -487,9 +489,10 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
 
   return buildFacadeResult({
     status: eligible.length > 0 ? 'blocked' : 'ok',
-    summary: eligible.length > 0
-      ? `Safe repair has ${eligible.length} eligible maintenance action(s), but no maintenance executor result was provided; no mutation reported.`
-      : 'No safe maintenance mutation was required.',
+    summary:
+      eligible.length > 0
+        ? `Safe repair has ${eligible.length} eligible maintenance action(s), but no maintenance executor result was provided; no mutation reported.`
+        : 'No safe maintenance mutation was required.',
     data: {
       operation: 'repair',
       dryRun: false,
@@ -499,9 +502,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
       // Infrastructure recovery must not be framed as acceptance failure.
       classification: 'infrastructure_recovery',
     },
-    suggestedNextActions: validateSuggestedNextActions([
-      verificationSuggestion(),
-    ]).actions,
+    suggestedNextActions: validateSuggestedNextActions([verificationSuggestion()]).actions,
     rawAvailable: false,
   });
 }

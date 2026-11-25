@@ -37,7 +37,7 @@ import {
 } from '../../../src/runtime/control-plane/workspace/workspace-store';
 import { result } from './result-adapter';
 
-const RH_WORK_PROJECT_OPERATIONS = new Set([
+const RH_PROJECT_PROJECT_OPERATIONS = new Set([
   'project_create',
   'project_list',
   'project_get',
@@ -48,8 +48,8 @@ const RH_WORK_PROJECT_OPERATIONS = new Set([
 type ProjectRecord = ReturnType<typeof listProjectIdentities>[number];
 type Repository = NonNullable<MultiRepositoryMcpToolContext['explicitRepository']>;
 
-export function isRhWorkProjectOperation(operation: string): boolean {
-  return RH_WORK_PROJECT_OPERATIONS.has(operation);
+export function isRhProjectProjectOperation(operation: string): boolean {
+  return RH_PROJECT_PROJECT_OPERATIONS.has(operation);
 }
 
 function text(value: unknown): string | undefined {
@@ -177,13 +177,13 @@ function blocked(message: string, data: Record<string, unknown> = {}): CallToolR
   );
 }
 
-export function callRhWorkProjectOperation(
+export function callRhProjectProjectOperation(
   ctx: MultiRepositoryMcpToolContext,
   repository: Repository | undefined,
   operation: string,
   args: Record<string, unknown>,
 ): CallToolResult | undefined {
-  if (!isRhWorkProjectOperation(operation)) return undefined;
+  if (!isRhProjectProjectOperation(operation)) return undefined;
 
   try {
     if (operation === 'project_list') {

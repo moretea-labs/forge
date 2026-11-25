@@ -344,7 +344,7 @@ describe('structured repository git merge commits', () => {
 });
 
 describe('repository MCP command tools', () => {
-  test('keeps standalone Recovery capability execution out of the Thin rh_work repair facade', async () => {
+  test('keeps standalone Recovery capability execution out of the Thin rh_project repair facade', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'forge-mcp-recovery-migration-route-'));
     const controllerHome = join(workspace, 'controller-home');
     const repoRoot = join(workspace, 'sample-repo');
@@ -359,7 +359,7 @@ describe('repository MCP command tools', () => {
       git(repoRoot, ['commit', '-m', 'init']);
       const repository = registerRepository({ path: repoRoot, controllerHome });
       const ctx = createMcpToolContext({ repo: repoRoot, controllerHome, profile: 'controller' });
-      const response = await callRuntimeTool(ctx, 'rh_work', {
+      const response = await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'repair',
         capability_id: 'recovery.migrate_controller_home',
@@ -445,7 +445,7 @@ describe('repository MCP command tools', () => {
 
   test('documents the direct-tool-first path without restoring the Work lifecycle', () => {
     const rhContext = runtimeToolDefinitions.find((tool) => tool.name === 'rh_context');
-    const rhWork = runtimeToolDefinitions.find((tool) => tool.name === 'rh_work');
+    const rhProject = runtimeToolDefinitions.find((tool) => tool.name === 'rh_project');
     const command = repositoryToolDefinitions.find((tool) => tool.name === 'execute_command');
     const directEditCapability = getCoreCapabilityExecutionSchema('repository.direct_edit') as {
       actions?: {
@@ -461,10 +461,10 @@ describe('repository MCP command tools', () => {
     expect(rhContextProperties.known_paths).toBeUndefined();
     expect(rhContextProperties.structural_context).toBeUndefined();
     expect(rhContextProperties.semantic_navigation).toBeDefined();
-    expect(rhWork?.description).toContain('optional durable Requirement/Plan semantic context');
-    expect(rhWork?.description).not.toContain('WorkHandle');
-    expect(rhWork?.description).not.toContain('WorkContract');
-    expect(rhWork?.description).toContain('Ordinary execution and validation use direct domain capabilities');
+    expect(rhProject?.description).toContain('optional durable Requirement/Plan semantic context');
+    expect(rhProject?.description).not.toContain('WorkHandle');
+    expect(rhProject?.description).not.toContain('WorkContract');
+    expect(rhProject?.description).toContain('Ordinary execution and validation use direct domain capabilities');
 
     expect(command?.description).toContain('Single terminal entry');
     expect(repositoryToolDefinitions.some((tool) => tool.name === 'repository_command_execute')).toBe(false);
@@ -1838,7 +1838,7 @@ describe('repository MCP command tools', () => {
       expect(applied.appliedChunks).toHaveLength(2);
       expect(applied.groups).toHaveLength(2);
       expect(applied.reviewEvidence.receipts).toHaveLength(2);
-      expect(applied.reviewEvidence.next).toContain('no EditSession');
+      expect(applied.reviewEvidence.next).toContain('no persistent edit lifecycle');
       expect(applied.responseMeta?.serverDurationMs).toBeGreaterThanOrEqual(0);
       expect(existsSync(join(repoRoot, '.ai/harness/edit-sessions'))).toBe(false);
       expect(readFileSync(join(repoRoot, 'app.txt'), 'utf-8')).toBe('alpha-1\nbeta-1\n');

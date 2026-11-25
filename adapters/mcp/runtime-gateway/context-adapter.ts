@@ -614,8 +614,7 @@ export async function callContextAdapter(
   const explicitSemanticNavigation =
     operation === 'get' && Array.isArray(args.semantic_navigation) ? args.semantic_navigation : [];
   const advisoryReadRequested =
-    operation === 'get' &&
-    (knowledgeAuditRequested || Boolean(recallQuery) || explicitSemanticNavigation.length > 0);
+    operation === 'get' && (knowledgeAuditRequested || Boolean(recallQuery) || explicitSemanticNavigation.length > 0);
 
   if (advisoryReadRequested) {
     const cognitionAudit = knowledgeAuditRequested ? rhContextKnowledgeAudit(ctx, repository, args) : undefined;
@@ -636,10 +635,8 @@ export async function callContextAdapter(
       semanticNavigation!.requested > 0 &&
       semanticNavigation!.results.length === 0 &&
       semanticNavigation!.errors.length > 0;
-    const detailLevel =
-      args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
-    const auditItems =
-      cognitionAudit && Array.isArray(cognitionAudit.items) ? cognitionAudit.items.length : 0;
+    const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
+    const auditItems = cognitionAudit && Array.isArray(cognitionAudit.items) ? cognitionAudit.items.length : 0;
     const facade = buildFacadeResult({
       status: semanticFailed ? 'failed' : 'ok',
       summary: semanticNavigation
@@ -876,7 +873,7 @@ export async function callContextAdapter(
     },
     capabilityLookup,
     toolArchitecture: {
-      facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
+      facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_project'],
       domainSchemaLoading: 'static_stable_surface',
     },
     activeProcesses: activeProcesses.slice(0, 3).map((process) => ({
@@ -933,7 +930,7 @@ export async function callContextAdapter(
     capabilityGroups,
     capabilityLookup,
     toolArchitecture: {
-      facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'],
+      facadeTools: ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_project'],
       atomicTypedToolsRetained: true,
       internalHandlersRetained: true,
       domainSchemaLoading: 'static_stable_surface',

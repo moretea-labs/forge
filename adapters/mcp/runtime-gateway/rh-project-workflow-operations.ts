@@ -43,11 +43,9 @@ function reconcileWorkflowWithProcessFallback(input: Parameters<typeof observeAn
 }
 
 /**
- * Dedicated Workflow dispatch retained under the compatibility rh_work namespace.
- * WorkflowRun is owned by repository/checkout/workflow scope plus exact effect receipts;
- * historical Work is never execution authority.
+ * Dedicated Workflow dispatch for repository/checkout/workflow scope plus exact effect receipts.
  */
-export async function callRhWorkWorkflowOperation(
+export async function callRhProjectWorkflowOperation(
   ctx: MultiRepositoryMcpToolContext,
   repository: RepositorySelection,
   operation: string,
@@ -55,7 +53,6 @@ export async function callRhWorkWorkflowOperation(
 ): Promise<CallToolResult | undefined> {
   if (operation !== 'workflow_execute' && operation !== 'workflow_reconcile') return undefined;
   try {
-    if (typeof args.work_id === 'string' && args.work_id.trim()) throw new Error('WORKFLOW_WORK_ID_RETIRED');
     const workflowId = String(args.workflow_id ?? '').trim();
     const runId = String(args.workflow_run_id ?? '').trim();
     if (!workflowId || !runId) throw new Error('WORKFLOW_FACADE_IDENTITY_REQUIRED');

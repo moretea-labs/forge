@@ -33,10 +33,10 @@ function git(repoRoot: string, ...args: string[]): string {
 }
 
 function fixture() {
-  const repoRoot = tempRoot('forge-rh-work-schedule-repo-');
-  const controllerHome = tempRoot('forge-rh-work-schedule-home-');
+  const repoRoot = tempRoot('forge-rh-project-schedule-repo-');
+  const controllerHome = tempRoot('forge-rh-project-schedule-home-');
   mkdirSync(join(repoRoot, 'src'), { recursive: true });
-  writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ name: 'rh-work-schedule-fixture' }, null, 2));
+  writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ name: 'rh-project-schedule-fixture' }, null, 2));
   writeFileSync(join(repoRoot, 'src', 'index.ts'), 'export const ready = true;\n');
   git(repoRoot, 'init', '-b', 'main');
   git(repoRoot, 'config', 'user.email', 'test@example.com');
@@ -44,7 +44,7 @@ function fixture() {
   git(repoRoot, 'add', '.');
   git(repoRoot, 'commit', '-m', 'init');
   ensureControllerHome(controllerHome);
-  const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'rh_work schedule fixture' });
+  const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'rh_project schedule fixture' });
   const workId = 'work-schedule-fixture';
   const ctx = {
     repoRoot: repository.canonicalRoot,
@@ -70,7 +70,7 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 
 async function createShadowKeepalive(ctx: MultiRepositoryMcpToolContext, repoId: string, requestId: string) {
   const created = structured(
-    await callRuntimeTool(ctx, 'rh_work', {
+    await callRuntimeTool(ctx, 'rh_project', {
       repo_id: repoId,
       operation: 'schedule_create',
       schedule_mode: 'browser_keepalive',
@@ -129,7 +129,7 @@ describe('Work-free observe-only Schedule', () => {
       probe_url: 'https://chatgpt.com/',
       shadow_mode: true,
     };
-    const created = structured(await callRuntimeTool(ctx, 'rh_work', input));
+    const created = structured(await callRuntimeTool(ctx, 'rh_project', input));
     expect(created.status).toBe('ok');
     const scheduleId = created.data.schedule.scheduleId as string;
     const stored = getSchedule(controllerHome, repository.repoId, scheduleId);
@@ -139,7 +139,7 @@ describe('Work-free observe-only Schedule', () => {
     expect(stored.action.arguments?.keepalive_only).toBe(false);
 
     const unsafe = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         ...input,
         schedule_request_id: 'rejected-auto-turn',
         continuation_prompt: 'CONTINUE',
@@ -148,12 +148,12 @@ describe('Work-free observe-only Schedule', () => {
     expect(unsafe.status).toBe('blocked');
     expect(unsafe.summary).toContain('SCHEDULE_AUTONOMOUS_MODEL_LAUNCH_FIELDS_RETIRED');
 
-    const replay = structured(await callRuntimeTool(ctx, 'rh_work', input));
+    const replay = structured(await callRuntimeTool(ctx, 'rh_project', input));
     expect(replay.status).toBe('ok');
     expect(replay.data.schedule.scheduleId).toBe(scheduleId);
 
     const triggered = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_trigger',
         schedule_id: scheduleId,
@@ -165,7 +165,7 @@ describe('Work-free observe-only Schedule', () => {
   });
 });
 
-describe('rh_work Scheduler MCP adapter', () => {
+describe('rh_project Scheduler MCP adapter', () => {
   test('bounds browser Schedule listing and rejects retired controller schedule detail', async () => {
     const { controllerHome, repository, ctx, workId } = fixture();
     const first = await createShadowKeepalive(ctx, repository.repoId, 'bounded-list-first');
@@ -183,7 +183,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     });
 
     const bounded = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_list',
         limit: 2,
@@ -202,7 +202,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(bounded.data.occurrences).toEqual([]);
 
     const all = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_list',
         limit: 100,
@@ -213,7 +213,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(all.data.schedules).toHaveLength(2);
     expect(JSON.stringify(all.data)).not.toContain('CONTINUE');
 
-    const detail = await callRuntimeTool(ctx, 'rh_work', {
+    const detail = await callRuntimeTool(ctx, 'rh_project', {
       repo_id: repository.repoId,
       operation: 'schedule_get',
       schedule_id: retired,
@@ -226,7 +226,7 @@ describe('rh_work Scheduler MCP adapter', () => {
   test('configures one bounded 3-hour internal Supervisor rescue schedule without model continuation', async () => {
     const { repository, ctx } = fixture();
     const created = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_create',
         schedule_mode: 'supervisor_healthcheck',
@@ -243,14 +243,14 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(schedule.policy.shadowMode).toBe(true);
     expect(schedule.stopConditions).toEqual([]);
     const listed = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_list',
       }),
     );
     expect(listed.data.schedules.some((s: { scheduleId: string }) => s.scheduleId === schedule.scheduleId)).toBe(true);
     const occurrence = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_trigger',
         schedule_id: schedule.scheduleId,
@@ -259,7 +259,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     );
     expect(occurrence.data.occurrence).toMatchObject({ status: 'shadowed', decision: 'would_execute' });
     const tooFrequent = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_create',
         schedule_mode: 'supervisor_healthcheck',
@@ -276,7 +276,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     const scheduleId = await createShadowKeepalive(ctx, repository.repoId, 'schedule-lifecycle-fixture');
 
     const retired = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_create',
         schedule_mode: 'continuation',
@@ -290,7 +290,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(retired.summary).toContain('SCHEDULE_MODE_INVALID');
 
     const listed = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_list',
       }),
@@ -301,7 +301,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     );
 
     const fetched = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_get',
         schedule_id: scheduleId,
@@ -311,7 +311,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(fetched.data.schedule.scheduleId).toBe(scheduleId);
 
     const paused = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_pause',
         schedule_id: scheduleId,
@@ -322,7 +322,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(paused.data.schedule.enabled).toBe(false);
 
     const resumed = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_resume',
         schedule_id: scheduleId,
@@ -332,7 +332,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(resumed.data.schedule.enabled).toBe(true);
 
     const triggered = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_trigger',
         schedule_id: scheduleId,
@@ -343,7 +343,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(triggered.data.occurrence).toMatchObject({ decision: 'would_execute', status: 'shadowed' });
 
     const pausedForDelete = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_pause',
         schedule_id: scheduleId,
@@ -353,7 +353,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(pausedForDelete.status).toBe('ok');
 
     const deleted = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_delete',
         schedule_id: scheduleId,
@@ -363,7 +363,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(deleted.data).toMatchObject({ scheduleId, deleted: true });
 
     const missing = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_get',
         schedule_id: scheduleId,
@@ -377,7 +377,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     const scheduleId = await createShadowKeepalive(ctx, repository.repoId, 'schedule-delete-fixture');
 
     const paused = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_pause',
         schedule_id: scheduleId,
@@ -387,7 +387,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(paused.status).toBe('ok');
 
     const deleted = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_delete',
         schedule_id: scheduleId,
@@ -397,7 +397,7 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(deleted.data).toMatchObject({ scheduleId, deleted: true });
 
     const missing = structured(
-      await callRuntimeTool(ctx, 'rh_work', {
+      await callRuntimeTool(ctx, 'rh_project', {
         repo_id: repository.repoId,
         operation: 'schedule_get',
         schedule_id: scheduleId,

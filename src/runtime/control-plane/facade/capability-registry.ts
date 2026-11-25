@@ -119,7 +119,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     group: 'runtime-maintenance',
     operationClass: 'execute',
     risk: 'workspace_write',
-    exposedVia: 'rh_work',
+    exposedVia: 'rh_project',
     schemaExposure: 'stable_static',
     summary:
       'Diagnose and dry-run repair stuck jobs, stale projections, invalid check pollution, and worker unavailability without treating infrastructure failure as acceptance failure.',
@@ -130,7 +130,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     group: 'controller',
     operationClass: 'read',
     risk: 'readonly',
-    exposedVia: 'rh_work',
+    exposedVia: 'rh_project',
     schemaExposure: 'stable_static',
     summary:
       'Persist model-authored Plan working memory with stable identity and semantic revision/CAS; Plan items do not own execution, checks, or acceptance.',

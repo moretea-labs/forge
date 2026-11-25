@@ -17,7 +17,7 @@ import { result } from './result-adapter';
 import type { selected } from './shared-adapter';
 import { controllerReadinessEvidence, repositoryRevisionContains } from './status-inbox-adapter';
 
-// Bounded rh_work repair transport orchestration. Canonical lifecycle/persistence authority remains in application services.
+// Bounded rh_project repair transport orchestration. Canonical lifecycle/persistence authority remains in application services.
 export function planObligationDispositionsFromArgs(value: unknown) {
   if (!Array.isArray(value)) return undefined;
   return value
@@ -125,7 +125,7 @@ export async function runFacadeRepair(
         suggestedNextActions: [
           {
             label: 'Repair this exact draft Plan',
-            tool: 'rh_work',
+            tool: 'rh_project',
             operation: 'repair',
             payload: { plan_id: plan.planId, repair_operation: 'repair', dry_run: false },
             risk: 'workspace_write',
@@ -219,7 +219,7 @@ export async function runFacadeRepair(
         suggestedNextActions: [
           {
             label: 'Read repaired Plan',
-            tool: 'rh_work',
+            tool: 'rh_project',
             operation: 'plan_get',
             payload: { plan_id: repaired.planId },
             risk: 'readonly',
@@ -276,7 +276,7 @@ export async function runFacadeRepair(
       suggestedNextActions: [
         {
           label: 'Read current Plan',
-          tool: 'rh_work',
+          tool: 'rh_project',
           operation: 'plan_get',
           payload: { plan_id: planId },
           risk: 'readonly',

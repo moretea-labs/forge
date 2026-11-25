@@ -1,6 +1,14 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { applyScheduleDedupe, buildScheduleDedupeReport, deleteSchedule, getSchedule, listOccurrences, listSchedules, saveSchedule } from '../../../packages/kernel/scheduler/api/index';
+import {
+  applyScheduleDedupe,
+  buildScheduleDedupeReport,
+  deleteSchedule,
+  getSchedule,
+  listOccurrences,
+  listSchedules,
+  saveSchedule,
+} from '../../../packages/kernel/scheduler/api/index';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade/facade-result';
 import {
   createBrowserObservationSchedule,
@@ -13,7 +21,7 @@ import { evaluateSchedule } from '../../../src/runtime/workflow/schedules/engine
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
 
-export type RhWorkScheduleOperation =
+export type RhProjectScheduleOperation =
   | 'schedule_create'
   | 'schedule_list'
   | 'schedule_get'
@@ -22,7 +30,7 @@ export type RhWorkScheduleOperation =
   | 'schedule_delete'
   | 'schedule_trigger';
 
-const RH_WORK_SCHEDULE_OPERATIONS = new Set<RhWorkScheduleOperation>([
+const RH_PROJECT_SCHEDULE_OPERATIONS = new Set<RhProjectScheduleOperation>([
   'schedule_create',
   'schedule_list',
   'schedule_get',
@@ -32,19 +40,19 @@ const RH_WORK_SCHEDULE_OPERATIONS = new Set<RhWorkScheduleOperation>([
   'schedule_trigger',
 ]);
 
-export function isRhWorkScheduleOperation(operation: string): operation is RhWorkScheduleOperation {
-  return RH_WORK_SCHEDULE_OPERATIONS.has(operation as RhWorkScheduleOperation);
+export function isRhProjectScheduleOperation(operation: string): operation is RhProjectScheduleOperation {
+  return RH_PROJECT_SCHEDULE_OPERATIONS.has(operation as RhProjectScheduleOperation);
 }
 
 /**
- * MCP transport normalization for the rh_work schedule family. Scheduler and
+ * MCP transport normalization for the rh_project schedule family. Scheduler and
  * Work-continuation application services remain the only lifecycle/persistence
  * authority; this adapter only parses tool arguments and shapes facade output.
  */
-export async function callRhWorkScheduleAdapter(
+export async function callRhProjectScheduleAdapter(
   ctx: MultiRepositoryMcpToolContext,
   repository: ReturnType<typeof selected>,
-  operation: RhWorkScheduleOperation,
+  operation: RhProjectScheduleOperation,
   args: Record<string, unknown>,
   options: { scheduleIdOverride?: string } = {},
 ): Promise<CallToolResult> {
@@ -67,15 +75,37 @@ export async function callRhWorkScheduleAdapter(
       const controllerType = String(args.controller_type ?? 'chatgpt').trim();
       if (!['chatgpt', 'codex', 'claude', 'grok'].includes(controllerType)) throw new Error('CONTROLLER_TYPE_INVALID');
       const triggerTypeRaw = String(args.trigger_type ?? '').trim();
-      const triggerType = ['interval', 'cron', 'calendar', 'condition', 'repository-event', 'dependency-checkpoint', 'manual'].includes(triggerTypeRaw)
-        ? triggerTypeRaw as 'interval' | 'cron' | 'calendar' | 'condition' | 'repository-event' | 'dependency-checkpoint' | 'manual'
+      const triggerType = [
+        'interval',
+        'cron',
+        'calendar',
+        'condition',
+        'repository-event',
+        'dependency-checkpoint',
+        'manual',
+      ].includes(triggerTypeRaw)
+        ? (triggerTypeRaw as
+            | 'interval'
+            | 'cron'
+            | 'calendar'
+            | 'condition'
+            | 'repository-event'
+            | 'dependency-checkpoint'
+            | 'manual')
         : undefined;
       const scheduleModeRaw = String(args.schedule_mode ?? 'browser_watch').trim();
-      if (!['browser_watch', 'browser_keepalive', 'supervisor_healthcheck'].includes(scheduleModeRaw)) throw new Error('SCHEDULE_MODE_INVALID');
+      if (!['browser_watch', 'browser_keepalive', 'supervisor_healthcheck'].includes(scheduleModeRaw))
+        throw new Error('SCHEDULE_MODE_INVALID');
       if (scheduleModeRaw === 'supervisor_healthcheck') {
-        if (args.trigger_type !== undefined && args.trigger_type !== 'interval') throw new Error('SUPERVISOR_HEALTH_INTERVAL_ONLY');
-        const forbidden = ['probe_url', 'probe_browser_session_id', 'launch_args', 'continuation_prompt', 'stop_conditions']
-          .filter(key => args[key] !== undefined);
+        if (args.trigger_type !== undefined && args.trigger_type !== 'interval')
+          throw new Error('SUPERVISOR_HEALTH_INTERVAL_ONLY');
+        const forbidden = [
+          'probe_url',
+          'probe_browser_session_id',
+          'launch_args',
+          'continuation_prompt',
+          'stop_conditions',
+        ].filter((key) => args[key] !== undefined);
         if (forbidden.length) throw new Error('SUPERVISOR_HEALTH_ARGUMENTS_NOT_ALLOWED: ' + forbidden.join(','));
         const created = createSupervisorHealthSchedule(ctx.controllerHome, repository.repoId, {
           requestId: String(args.schedule_request_id ?? 'forge-supervisor-rescue-3h-v1'),
@@ -83,17 +113,22 @@ export async function callRhWorkScheduleAdapter(
           everyMinutes: typeof args.every_minutes === 'number' ? args.every_minutes : undefined,
           shadowMode: args.shadow_mode === false ? false : true,
         });
-        return result(buildFacadeResult({
-          summary: `Supervisor rescue schedule ${created.schedule.scheduleId} configured.`,
-          data: { schedule: created.schedule },
-        }) as unknown as Record<string, unknown>);
+        return result(
+          buildFacadeResult({
+            summary: `Supervisor rescue schedule ${created.schedule.scheduleId} configured.`,
+            data: { schedule: created.schedule },
+          }) as unknown as Record<string, unknown>,
+        );
       }
       const created = createBrowserObservationSchedule(ctx.controllerHome, repository.repoId, {
         scheduleMode: scheduleModeRaw as 'browser_watch' | 'browser_keepalive',
         controllerType: controllerType as BrowserObservationControllerType,
-        authorizationGrantRefs: Array.isArray(args.authorization_grant_refs) ? args.authorization_grant_refs.map(String) : undefined,
+        authorizationGrantRefs: Array.isArray(args.authorization_grant_refs)
+          ? args.authorization_grant_refs.map(String)
+          : undefined,
         probeUrl: typeof args.probe_url === 'string' ? args.probe_url : undefined,
-        probeBrowserSessionId: typeof args.probe_browser_session_id === 'string' ? args.probe_browser_session_id : undefined,
+        probeBrowserSessionId:
+          typeof args.probe_browser_session_id === 'string' ? args.probe_browser_session_id : undefined,
         probeSelector: typeof args.probe_selector === 'string' ? args.probe_selector : undefined,
         probeMaxChars: typeof args.probe_max_chars === 'number' ? args.probe_max_chars : undefined,
         probeTimeoutMs: typeof args.probe_timeout_ms === 'number' ? args.probe_timeout_ms : undefined,
@@ -110,7 +145,10 @@ export async function callRhWorkScheduleAdapter(
         timezone: typeof args.schedule_timezone === 'string' ? args.schedule_timezone : undefined,
         catchUpMinutes: typeof args.catch_up_minutes === 'number' ? args.catch_up_minutes : undefined,
         calendarAt: typeof args.calendar_at === 'string' ? args.calendar_at : undefined,
-        condition: args.condition && typeof args.condition === 'object' && !Array.isArray(args.condition) ? args.condition as never : undefined,
+        condition:
+          args.condition && typeof args.condition === 'object' && !Array.isArray(args.condition)
+            ? (args.condition as never)
+            : undefined,
         eventName: typeof args.event_name === 'string' ? args.event_name : undefined,
         dependencyJobIds: Array.isArray(args.dependency_job_ids) ? args.dependency_job_ids.map(String) : undefined,
         maxFailures: typeof args.max_failures === 'number' ? args.max_failures : undefined,
@@ -121,32 +159,63 @@ export async function callRhWorkScheduleAdapter(
         backoffMaxMinutes: typeof args.backoff_max_minutes === 'number' ? args.backoff_max_minutes : undefined,
         stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : undefined,
       });
-      return result(buildFacadeResult({ summary: `Browser observation schedule ${created.schedule.scheduleId} is configured.`, data: { schedule: created.schedule } }) as unknown as Record<string, unknown>);
+      return result(
+        buildFacadeResult({
+          summary: `Browser observation schedule ${created.schedule.scheduleId} is configured.`,
+          data: { schedule: created.schedule },
+        }) as unknown as Record<string, unknown>,
+      );
     }
     if (operation === 'schedule_list') {
-      const scheduled = listSchedules(ctx.controllerHome, repository.repoId)
-        .filter(s => s.action.operation === 'browser_probe' || s.action.operation === 'supervisor_healthcheck');
+      const scheduled = listSchedules(ctx.controllerHome, repository.repoId).filter(
+        (s) => s.action.operation === 'browser_probe' || s.action.operation === 'supervisor_healthcheck',
+      );
       const schedules = {
         schedules: scheduled,
-        occurrences: args.include_occurrences === true
-          ? listOccurrences(ctx.controllerHome, repository.repoId, undefined, 100)
-            .filter(o => scheduled.some(s => s.scheduleId === o.scheduleId))
-          : [],
+        occurrences:
+          args.include_occurrences === true
+            ? listOccurrences(ctx.controllerHome, repository.repoId, undefined, 100).filter((o) =>
+                scheduled.some((s) => s.scheduleId === o.scheduleId),
+              )
+            : [],
       };
       // A list is discovery, not a transport for archived controller prompts.
       // Return compact, bounded entries; schedule_get retains the exact contract.
-      const limit = typeof args.limit === 'number' && Number.isFinite(args.limit)
-        ? Math.min(100, Math.max(1, Math.trunc(args.limit)))
-        : 30;
+      const limit =
+        typeof args.limit === 'number' && Number.isFinite(args.limit)
+          ? Math.min(100, Math.max(1, Math.trunc(args.limit)))
+          : 30;
       const visible = [...schedules.schedules]
-        .sort((left, right) => Number(right.enabled) - Number(left.enabled)
-          || right.updatedAt.localeCompare(left.updatedAt)
-          || left.scheduleId.localeCompare(right.scheduleId))
+        .sort(
+          (left, right) =>
+            Number(right.enabled) - Number(left.enabled) ||
+            right.updatedAt.localeCompare(left.updatedAt) ||
+            left.scheduleId.localeCompare(right.scheduleId),
+        )
         .slice(0, limit)
-        .map(({ scheduleId, name, enabled, trigger, action, updatedAt, lastTriggeredAt, nextEligibleAt, pausedReason }) => ({
-          scheduleId, name, enabled, trigger, operation: action.operation,
-          updatedAt, lastTriggeredAt, nextEligibleAt, pausedReason,
-        }));
+        .map(
+          ({
+            scheduleId,
+            name,
+            enabled,
+            trigger,
+            action,
+            updatedAt,
+            lastTriggeredAt,
+            nextEligibleAt,
+            pausedReason,
+          }) => ({
+            scheduleId,
+            name,
+            enabled,
+            trigger,
+            operation: action.operation,
+            updatedAt,
+            lastTriggeredAt,
+            nextEligibleAt,
+            pausedReason,
+          }),
+        );
       const visibleIds = new Set(visible.map((entry) => entry.scheduleId));
       const data = {
         schedules: visible,
@@ -156,75 +225,120 @@ export async function callRhWorkScheduleAdapter(
           ? { occurrences: (schedules.occurrences ?? []).filter((entry) => visibleIds.has(entry.scheduleId)) }
           : {}),
       };
-      return result(buildFacadeResult({ summary: `Found ${schedules.schedules.length} schedule(s); returned ${visible.length}.`, data }) as unknown as Record<string, unknown>);
+      return result(
+        buildFacadeResult({
+          summary: `Found ${schedules.schedules.length} schedule(s); returned ${visible.length}.`,
+          data,
+        }) as unknown as Record<string, unknown>,
+      );
     }
     if (!scheduleId) throw new Error('SCHEDULE_ID_REQUIRED');
     if (operation === 'schedule_get') {
       const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation)) throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation))
+        throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
       const data = {
         schedule,
         ...(args.include_occurrences === true
-          ? { occurrences: listOccurrences(ctx.controllerHome, repository.repoId, scheduleId, 50) } : {}),
+          ? { occurrences: listOccurrences(ctx.controllerHome, repository.repoId, scheduleId, 50) }
+          : {}),
       };
-      return result(buildFacadeResult({ summary: `Schedule ${scheduleId}.`, data }) as unknown as Record<string, unknown>);
+      return result(
+        buildFacadeResult({ summary: `Schedule ${scheduleId}.`, data }) as unknown as Record<string, unknown>,
+      );
     }
     if (operation === 'schedule_pause') {
       const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation)) throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation))
+        throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
       const saved = saveSchedule(ctx.controllerHome, {
-        ...schedule, enabled: false, pausedReason: String(args.reason ?? 'Paused through Scheduler.'),
+        ...schedule,
+        enabled: false,
+        pausedReason: String(args.reason ?? 'Paused through Scheduler.'),
       });
-      return result(buildFacadeResult({ summary: `Schedule ${scheduleId} is paused.`, data: { schedule: saved } }) as unknown as Record<string, unknown>);
+      return result(
+        buildFacadeResult({
+          summary: `Schedule ${scheduleId} is paused.`,
+          data: { schedule: saved },
+        }) as unknown as Record<string, unknown>,
+      );
     }
     if (operation === 'schedule_resume') {
       const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation)) throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
-      const saved = schedule.action.operation === 'browser_probe'
-        ? resumeBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId)
-        : saveSchedule(ctx.controllerHome, { ...schedule, enabled: true, pausedReason: undefined, consecutiveFailures: 0 });
-      return result(buildFacadeResult({
-        summary: `Schedule ${scheduleId} is resumed.`,
-        data: { schedule: saved },
-      }) as unknown as Record<string, unknown>);
+      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation))
+        throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+      const saved =
+        schedule.action.operation === 'browser_probe'
+          ? resumeBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId)
+          : saveSchedule(ctx.controllerHome, {
+              ...schedule,
+              enabled: true,
+              pausedReason: undefined,
+              consecutiveFailures: 0,
+            });
+      return result(
+        buildFacadeResult({
+          summary: `Schedule ${scheduleId} is resumed.`,
+          data: { schedule: saved },
+        }) as unknown as Record<string, unknown>,
+      );
     }
     if (operation === 'schedule_delete') {
       const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation)) throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation))
+        throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
       deleteSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-      return result(buildFacadeResult({
-        summary: `Schedule ${scheduleId} is deleted; historical occurrences and evidence are retained.`,
-        data: { scheduleId, deleted: true, requestId: schedule.requestId },
-      }) as unknown as Record<string, unknown>);
+      return result(
+        buildFacadeResult({
+          summary: `Schedule ${scheduleId} is deleted; historical occurrences and evidence are retained.`,
+          data: { scheduleId, deleted: true, requestId: schedule.requestId },
+        }) as unknown as Record<string, unknown>,
+      );
     }
     const repositoryEvent = typeof args.event_name === 'string' && args.event_name.trim().length > 0;
     const explicitEventId = typeof args.event_id === 'string' ? args.event_id.trim() : '';
     const manualRequestId = !repositoryEvent && typeof args.request_id === 'string' ? args.request_id.trim() : '';
     const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-    if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation)) throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+    if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation))
+      throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
     const context = {
       source: (repositoryEvent ? 'repository-event' : 'manual') as 'repository-event' | 'manual',
       eventName: typeof args.event_name === 'string' ? args.event_name : undefined,
       eventId: explicitEventId || manualRequestId || undefined,
-      data: args.event_data && typeof args.event_data === 'object' && !Array.isArray(args.event_data) ? args.event_data as Record<string, unknown> : undefined,
+      data:
+        args.event_data && typeof args.event_data === 'object' && !Array.isArray(args.event_data)
+          ? (args.event_data as Record<string, unknown>)
+          : undefined,
     };
-    const occurrence = schedule.action.operation === 'browser_probe'
-      ? await triggerBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId, context)
-      : await evaluateSchedule(ctx.controllerHome, schedule, true, context);
-    return result(buildFacadeResult({
-      summary: occurrence ? `Schedule ${scheduleId} produced ${occurrence.decision}.` : `Schedule ${scheduleId} produced no occurrence.`,
-      data: { occurrence },
-    }) as unknown as Record<string, unknown>);
+    const occurrence =
+      schedule.action.operation === 'browser_probe'
+        ? await triggerBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId, context)
+        : await evaluateSchedule(ctx.controllerHome, schedule, true, context);
+    return result(
+      buildFacadeResult({
+        summary: occurrence
+          ? `Schedule ${scheduleId} produced ${occurrence.decision}.`
+          : `Schedule ${scheduleId} produced no occurrence.`,
+        data: { occurrence },
+      }) as unknown as Record<string, unknown>,
+    );
   } catch (error) {
-    return result(buildFacadeResult({
-      status: 'blocked',
-      summary: error instanceof Error ? error.message : 'Schedule operation failed.',
-      data: {},
-    }) as unknown as Record<string, unknown>, true);
+    return result(
+      buildFacadeResult({
+        status: 'blocked',
+        summary: error instanceof Error ? error.message : 'Schedule operation failed.',
+        data: {},
+      }) as unknown as Record<string, unknown>,
+      true,
+    );
   }
 }
 
-export async function callSchedulerAdapter(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
+export async function callSchedulerAdapter(
+  ctx: MultiRepositoryMcpToolContext,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<CallToolResult | undefined> {
   try {
     switch (name) {
       case 'schedule_dedupe_report': {
@@ -233,9 +347,15 @@ export async function callSchedulerAdapter(ctx: MultiRepositoryMcpToolContext, n
       }
       case 'schedule_dedupe_apply': {
         const repository = selected(ctx, args);
-        return result({ dedupe: applyScheduleDedupe(ctx.controllerHome, repository.repoId, { dryRun: args.dry_run, confirmAuthorization: args.confirm_authorization }) });
+        return result({
+          dedupe: applyScheduleDedupe(ctx.controllerHome, repository.repoId, {
+            dryRun: args.dry_run,
+            confirmAuthorization: args.confirm_authorization,
+          }),
+        });
       }
-      default: return undefined;
+      default:
+        return undefined;
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

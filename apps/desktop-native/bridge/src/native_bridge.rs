@@ -578,7 +578,7 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 return Err("FORGE_NATIVE_KNOWLEDGE_WRITE_REQUIRES_FULL_ACCESS".to_string());
             }
             let response = call_runtime_tool(
-                "rh_work",
+                "rh_project",
                 json!({
                     "repo_id": repo_id, "checkout_id": checkout_id,
                     "operation": "learning_record", "request_id": request,

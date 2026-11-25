@@ -291,7 +291,7 @@ export async function callStatusInboxAdapter(
         'rh_status',
         'rh_inbox',
         'rh_context',
-        'rh_work',
+        'rh_project',
         'capability_execute',
       ] as const;
       const facade = buildFacadeResult({
@@ -392,7 +392,7 @@ export async function callStatusInboxAdapter(
             })),
             bounded: true,
             nextDetail:
-              'Use rh_context or rh_work(plan_get/requirement_get) only when the next decision requires more detail.',
+              'Use rh_context or rh_project(plan_get/requirement_get) only when the next decision requires more detail.',
           },
         },
         suggestedNextActions: [
@@ -580,7 +580,7 @@ export async function callStatusInboxAdapter(
       'rh_status',
       'rh_inbox',
       'rh_context',
-      'rh_work',
+      'rh_project',
       'capability_execute',
     ] as const;
     const facade = buildFacadeResult({

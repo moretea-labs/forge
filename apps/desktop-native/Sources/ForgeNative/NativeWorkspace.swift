@@ -208,9 +208,11 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
     }
   }
   var durationLabel: String? {
-    let measured = durationMs ?? completedAt.flatMap {
-      Self.elapsedMilliseconds(startedAt: startedAt, completedAt: $0)
-    }
+    let measured =
+      durationMs
+      ?? completedAt.flatMap {
+        Self.elapsedMilliseconds(startedAt: startedAt, completedAt: $0)
+      }
     return measured.flatMap(Self.durationLabel(milliseconds:))
   }
 
@@ -274,7 +276,7 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
     "git_commit_paths": "提交代码",
     "rh_status": "读取运行状态",
     "rh_context": "读取项目上下文",
-    "rh_work": "更新任务记录",
+    "rh_project": "更新任务记录",
     "mcp_doctor": "检查 MCP 连接",
     "process_get": "查询执行状态",
     "process_wait": "等待执行结果",
@@ -397,9 +399,11 @@ struct AgentProviderTiming: Codable, Equatable {
 
   var compactLabel: String {
     let total = AgentLiveActivityEvent.durationLabel(milliseconds: totalDurationMs)
-    let first = finalRoundTimeToFirstTokenMs.flatMap(AgentLiveActivityEvent.durationLabel(milliseconds:))
+    let first = finalRoundTimeToFirstTokenMs.flatMap(
+      AgentLiveActivityEvent.durationLabel(milliseconds:))
     if totalRounds == 1 {
-      let round = finalRoundDurationMs.flatMap(AgentLiveActivityEvent.durationLabel(milliseconds:)) ?? total
+      let round =
+        finalRoundDurationMs.flatMap(AgentLiveActivityEvent.durationLabel(milliseconds:)) ?? total
       if let first, let round { return "首 token \(first) · 本轮 \(round)" }
       if let round { return "本轮 \(round)" }
       return "模型 1 轮"
@@ -411,7 +415,9 @@ struct AgentProviderTiming: Codable, Equatable {
 
   var accessibilityLabel: String {
     var parts = ["Provider 共 \(totalRounds) 轮"]
-    if let first = finalRoundTimeToFirstTokenMs.flatMap(AgentLiveActivityEvent.durationLabel(milliseconds:)) {
+    if let first = finalRoundTimeToFirstTokenMs.flatMap(
+      AgentLiveActivityEvent.durationLabel(milliseconds:))
+    {
       parts.append("最终回复首 token \(first)")
     }
     if let duration = AgentLiveActivityEvent.durationLabel(milliseconds: totalDurationMs) {
@@ -6245,9 +6251,10 @@ final class NativeWorkspace: ObservableObject {
     limit: Int = 40
   ) -> [AgentLiveActivityEvent] {
     guard limit > 0, events.count > limit else { return events }
-    let activeIDs = Set(events.filter {
-      $0.phase == "tool" && ["running", "output"].contains($0.status)
-    }.map(\.id))
+    let activeIDs = Set(
+      events.filter {
+        $0.phase == "tool" && ["running", "output"].contains($0.status)
+      }.map(\.id))
     let completedLimit = max(0, limit - activeIDs.count)
     let retainedIDs = activeIDs.union(
       events.filter { !activeIDs.contains($0.id) }.suffix(completedLimit).map(\.id)
@@ -6286,7 +6293,8 @@ final class NativeWorkspace: ObservableObject {
         ["running", "output"].contains(status) ? nil : (row["completedAt"] as? String ?? now)
       let rawOutput = row["output"] as? String
       let toolCallId = (row["toolCallId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-      let durationMs = (row["durationMs"] as? NSNumber)?.doubleValue
+      let durationMs =
+        (row["durationMs"] as? NSNumber)?.doubleValue
         ?? (row["duration_ms"] as? NSNumber)?.doubleValue
         ?? completedAt.flatMap {
           row["startedAt"] == nil
@@ -6360,7 +6368,8 @@ final class NativeWorkspace: ObservableObject {
         outputTruncated: outputTruncated ?? started.outputTruncated,
         durationMs: completedAt.flatMap {
           started.durationMs
-            ?? AgentLiveActivityEvent.elapsedMilliseconds(startedAt: started.startedAt, completedAt: $0)
+            ?? AgentLiveActivityEvent.elapsedMilliseconds(
+              startedAt: started.startedAt, completedAt: $0)
         },
         serverDurationMs: serverDurationMs ?? started.serverDurationMs,
         canonicalDurationMs: canonicalDurationMs ?? started.canonicalDurationMs
@@ -6393,19 +6402,21 @@ final class NativeWorkspace: ObservableObject {
     _ events: [AgentLiveActivityEvent],
     now: String
   ) -> [AgentLiveActivityEvent] {
-    boundedActivityEvents(events.map { event in
-      guard event.status == "running" || event.status == "output" else { return event }
-      return AgentLiveActivityEvent(
-        phase: event.phase, label: event.label, detail: event.detail,
-        status: "unknown", startedAt: event.startedAt, completedAt: now,
-        toolCallId: event.toolCallId, eventId: event.eventId,
-        output: event.output, outputTruncated: event.outputTruncated,
-        durationMs: event.durationMs
-          ?? AgentLiveActivityEvent.elapsedMilliseconds(startedAt: event.startedAt, completedAt: now),
-        serverDurationMs: event.serverDurationMs,
-        canonicalDurationMs: event.canonicalDurationMs
-      )
-    })
+    boundedActivityEvents(
+      events.map { event in
+        guard event.status == "running" || event.status == "output" else { return event }
+        return AgentLiveActivityEvent(
+          phase: event.phase, label: event.label, detail: event.detail,
+          status: "unknown", startedAt: event.startedAt, completedAt: now,
+          toolCallId: event.toolCallId, eventId: event.eventId,
+          output: event.output, outputTruncated: event.outputTruncated,
+          durationMs: event.durationMs
+            ?? AgentLiveActivityEvent.elapsedMilliseconds(
+              startedAt: event.startedAt, completedAt: now),
+          serverDurationMs: event.serverDurationMs,
+          canonicalDurationMs: event.canonicalDurationMs
+        )
+      })
   }
 
   func applyApiModelProgress(_ payload: [String: Any], conversationId: String) {
@@ -6516,7 +6527,8 @@ final class NativeWorkspace: ObservableObject {
       if let call = event.toolCallId {
         index = unused.firstIndex { $0.toolCallId == call }
       } else if uncorrelatedEventCounts[event.label] == 1
-        && uncorrelatedReceiptCounts[event.label] == 1 {
+        && uncorrelatedReceiptCounts[event.label] == 1
+      {
         index = unused.firstIndex { $0.toolCallId == nil && $0.label == event.label }
       } else {
         index = nil
@@ -6531,7 +6543,8 @@ final class NativeWorkspace: ObservableObject {
             && receipt.detail.map(Self.isCanonicalProcessId) != true
           ? event.detail : nil
         let completedAt = receipt.completedAt ?? event.completedAt
-        let durationMs = event.durationMs ?? receipt.durationMs
+        let durationMs =
+          event.durationMs ?? receipt.durationMs
           ?? completedAt.flatMap {
             AgentLiveActivityEvent.elapsedMilliseconds(startedAt: event.startedAt, completedAt: $0)
           }
@@ -6875,7 +6888,8 @@ final class NativeWorkspace: ObservableObject {
 
       guard let current = threads.firstIndex(where: { $0.id == id }) else { return }
       let answer = response["output"] as? String ?? ""
-      let toolActivityCount = response["toolActivityCount"] as? Int
+      let toolActivityCount =
+        response["toolActivityCount"] as? Int
         ?? liveActivity?.toolActivityCount
       let usage = (response["usage"] as? [String: Any])
         .flatMap(AgentTokenUsage.fromProviderReceipt)
@@ -6914,7 +6928,8 @@ final class NativeWorkspace: ObservableObject {
       let now = ISO8601DateFormatter().string(from: Date())
       let activityEvents = Self.finalizeFailedToolEvents(liveActivity?.events ?? [], now: now)
       let failure = Self.agentTurnFailure(rawError, toolName: activityEvents.last?.label)
-      let completedCount = liveActivity?.toolActivityCount
+      let completedCount =
+        liveActivity?.toolActivityCount
         ?? activityEvents.filter { $0.phase == "tool" }.count
       let incompleteReply = ChatMessage(
         role: "assistant",

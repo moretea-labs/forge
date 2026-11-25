@@ -43,7 +43,7 @@ describe('MCP transport latency benchmark', () => {
         91.25,
       );
       expect(timingLedgerServerDuration(ledger, 'rh_status', { traceId: 'missing' })).toBeUndefined();
-      expect(timingLedgerServerDuration(ledger, 'rh_work', { traceId: 'trace-b' })).toBeUndefined();
+      expect(timingLedgerServerDuration(ledger, 'rh_project', { traceId: 'trace-b' })).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

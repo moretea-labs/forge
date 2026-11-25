@@ -19,11 +19,7 @@
       "props": {
         "active": "项目",
         "assistantLabel": "助手",
-        "projects": [
-          "forge",
-          "Avela",
-          "Knowledge"
-        ],
+        "projects": ["forge", "Avela", "Knowledge"],
         "selectedProject": "forge",
         "selectedWork": "work-mcp",
         "workListPlacement": "sidebar",
@@ -52,12 +48,12 @@
           "Work semantic state + semantic revision",
           "Repository dirty/clean",
           "Git branch + source revision",
-          "Work continuationPrompt / nextSafeAction from canonical rh_work(get, detail) continuation projection"
+          "Work continuationPrompt / nextSafeAction from canonical rh_project(get, detail) continuation projection"
         ],
-        "requirementDisclosure": "Requirement title/outcome/acceptance criteria from rh_work(requirement_get)",
-        "planDisclosure": "Plan goal/revision/items and canonical revisionHistory from rh_work(plan_get, detail)",
-        "workDisclosure": "Work parent/dependencies/update time/revisionHistory plus bounded canonical continuation facts from rh_work(get, detail); no client inference",
-        "executionEvidenceDisclosure": "rh_work(get, detail) 直接投影 WorkContract 的 dispatch/evidence/phase/checkRefs/evidenceRefs；客户端不得解析 resultRefs 推导检查结果",
+        "requirementDisclosure": "Requirement title/outcome/acceptance criteria from rh_project(requirement_get)",
+        "planDisclosure": "Plan goal/revision/items and canonical revisionHistory from rh_project(plan_get, detail)",
+        "workDisclosure": "Work parent/dependencies/update time/revisionHistory plus bounded canonical continuation facts from rh_project(get, detail); no client inference",
+        "executionEvidenceDisclosure": "rh_project(get, detail) 直接投影 WorkContract 的 dispatch/evidence/phase/checkRefs/evidenceRefs；客户端不得解析 resultRefs 推导检查结果",
         "attentionProjection": "仅展示 targetScope.workId 精确匹配当前 Work 的 pending UserRequest；来源为 rh_inbox(list)",
         "clientInference": false
       }
@@ -67,10 +63,7 @@
       "component": "UserRequestCard",
       "props": {
         "visibility": "only-when-exact-current-work-has-pending-request",
-        "content": [
-          "title",
-          "summary"
-        ],
+        "content": ["title", "summary"],
         "mutatesInbox": false,
         "noGlobalInboxDump": true
       }
@@ -81,17 +74,9 @@
       "props": {
         "title": "计划上下文",
         "revision": "r8",
-        "decisions": [
-          "不建立计划进度状态机",
-          "不建立影子工作图",
-          "可移植渲染层"
-        ],
+        "decisions": ["不建立计划进度状态机", "不建立影子工作图", "可移植渲染层"],
         "currentFocus": "MCP 项目工作台",
-        "nextActions": [
-          "当前/历史投影",
-          "按需详情",
-          "键盘交互优化"
-        ],
+        "nextActions": ["当前/历史投影", "按需详情", "键盘交互优化"],
         "historyCount": 8,
         "executionProjection": "描述性上下文",
         "collapsedByDefault": true
@@ -102,14 +87,7 @@
       "component": "EvidencePanel",
       "props": {
         "source": "canonical WorkContract detail projection",
-        "facts": [
-          "phase",
-          "dispatchState",
-          "evidenceState",
-          "workKind",
-          "verification records",
-          "evidence refs"
-        ],
+        "facts": ["phase", "dispatchState", "evidenceState", "workKind", "verification records", "evidence refs"],
         "receiptProjection": "bounded product-safe fields only; show receipt id/status/runtimeStatus/reusedExecution/timing and evidence title/summary/identity, with no artifactPath/local filesystem leakage",
         "collapsedByDefault": false,
         "neverChangesSemanticState": true,
@@ -120,10 +98,7 @@
       "id": "semantic-history",
       "component": "HistoryTimeline",
       "props": {
-        "sources": [
-          "Work revisionHistory",
-          "Plan revisionHistory"
-        ],
+        "sources": ["Work revisionHistory", "Plan revisionHistory"],
         "presentation": "collapsed disclosure with revision, authored state/status, recordedAt, objective/goal and bounded counts",
         "currentRevisionDuplicated": false,
         "clientComputedProgress": false
@@ -138,18 +113,9 @@
           "apps/desktop/src/ProjectWorkbench.tsx",
           "adapters/local-api/work-projection.ts"
         ],
-        "checks": [
-          "类型检查通过",
-          "架构检查通过"
-        ],
-        "artifacts": [
-          "diff +184 −27",
-          "语义审查"
-        ],
-        "receipts": [
-          "上下文闭合",
-          "验证回执"
-        ],
+        "checks": ["类型检查通过", "架构检查通过"],
+        "artifacts": ["diff +184 −27", "语义审查"],
+        "receipts": ["上下文闭合", "验证回执"],
         "sourceRevision": "候选版本",
         "compact": true,
         "collapsedByDefault": true
@@ -162,15 +128,8 @@
         "placeholder": "向控制器发送指令…",
         "scopeLabel": "当前工作",
         "modeLabel": "MCP",
-        "suggestions": [
-          "继续",
-          "查看差异",
-          "运行检查"
-        ],
-        "attachments": [
-          "计划",
-          "证据"
-        ],
+        "suggestions": ["继续", "查看差异", "运行检查"],
+        "attachments": ["计划", "证据"],
         "shortcut": "⌘↵",
         "floatingBottomComposer": true
       },
@@ -200,9 +159,7 @@
       "id": "submitting",
       "name": "正在提交指令",
       "meaning": "控制器指令已发送，客户端正在等待权威确认。",
-      "constraints": [
-        "不要根据传输活动推断工作进度。"
-      ]
+      "constraints": ["不要根据传输活动推断工作进度。"]
     },
     {
       "id": "degraded",
@@ -221,11 +178,7 @@
     "safeBottom": 0
   },
   "quality": {
-    "requiredStateIds": [
-      "focused",
-      "submitting",
-      "degraded"
-    ],
+    "requiredStateIds": ["focused", "submitting", "degraded"],
     "minimumHitTarget": 36
   }
 }

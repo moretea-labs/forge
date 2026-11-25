@@ -637,7 +637,7 @@ async fn semantic_project_operation(operation: &str, args: &Value) -> Result<Val
         "project_revise" => "project-revise",
         _ => "project-attach-requirement",
     }));
-    let result = call_runtime_tool("rh_work", request).await?;
+    let result = call_runtime_tool("rh_project", request).await?;
     let data = semantic_facade_data(result);
     let project_id = optional_project_text(args, "projectId", 512)?;
     match operation {
@@ -693,7 +693,7 @@ async fn read_project_requirement_list(
     arguments["operation"] = json!("requirement_list");
     arguments["limit"] = json!(100);
     arguments["request_id"] = json!(request_id("project-requirement-list"));
-    let result = call_runtime_tool("rh_work", arguments).await?;
+    let result = call_runtime_tool("rh_project", arguments).await?;
     Ok(semantic_facade_data(result))
 }
 
@@ -708,7 +708,7 @@ async fn read_project_plan_list(
     arguments["operation"] = json!("plan_list");
     arguments["limit"] = json!(100);
     arguments["request_id"] = json!(request_id("project-plan-list"));
-    let result = call_runtime_tool("rh_work", arguments).await?;
+    let result = call_runtime_tool("rh_project", arguments).await?;
     Ok(semantic_facade_data(result))
 }
 
@@ -718,7 +718,7 @@ async fn read_project_schedules(repo_id: String) -> Result<Value, String> {
         return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string());
     }
     let result = call_runtime_tool(
-        "rh_work",
+        "rh_project",
         json!({
             "repo_id": repo_id,
             "operation": "schedule_list",
@@ -750,7 +750,7 @@ async fn control_project_schedule(
         _ => return Err("FORGE_DESKTOP_SCHEDULE_ACTION_UNSUPPORTED".to_string()),
     };
     let result = call_runtime_tool(
-        "rh_work",
+        "rh_project",
         json!({
             "repo_id": repo_id,
             "operation": operation,
@@ -972,7 +972,7 @@ fn has_repository_or_project_scope(repo_id: Option<&String>, project_id: Option<
         || project_id.is_some_and(|value| !value.trim().is_empty())
 }
 
-/// Build a `rh_work` scope object that omits empty identifiers instead of
+/// Build a `rh_project` scope object that omits empty identifiers instead of
 /// forwarding them as nulls. Read-only Project/Repository listings use this so
 /// an absent placement never becomes an explicit `null` scope argument.
 fn semantic_project_scope(
@@ -1057,7 +1057,7 @@ async fn read_requirement_detail(
     if requirement_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_REQUIREMENT_DETAIL_ARGUMENT_REQUIRED".to_string());
     }
-    let result = call_runtime_tool("rh_work", json!({
+    let result = call_runtime_tool("rh_project", json!({
         "repo_id": repo_id,
         "project_id": project_id,
         "operation": "requirement_get",
@@ -1080,7 +1080,7 @@ async fn read_plan_detail(
     if plan_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_PLAN_DETAIL_ARGUMENT_REQUIRED".to_string());
     }
-    let result = call_runtime_tool("rh_work", json!({
+    let result = call_runtime_tool("rh_project", json!({
         "repo_id": repo_id,
         "project_id": project_id,
         "operation": "plan_get",
@@ -1116,7 +1116,7 @@ async fn create_requirement(
         || dependencies.as_ref().is_some_and(|items| items.len() > 50 || items.iter().any(|id| id.len() > 160)) {
         return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_METADATA_INVALID".to_string());
     }
-    let result = call_runtime_tool("rh_work", json!({
+    let result = call_runtime_tool("rh_project", json!({
         "repo_id": repo_id,
         "project_id": project_id,
         "operation": "requirement_create",
@@ -1178,7 +1178,7 @@ async fn revise_requirement(
         || accepted_evidence_refs.as_ref().is_some_and(|refs| refs.len() > 100 || refs.iter().any(|reference| reference.len() > 512)) {
         return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID".to_string());
     }
-    let result = call_runtime_tool("rh_work", json!({
+    let result = call_runtime_tool("rh_project", json!({
         "repo_id": repo_id,
         "project_id": project_id,
         "operation": "requirement_revise",
@@ -1285,7 +1285,7 @@ async fn create_plan(
     if let Some(revision) = expected_requirement_revision {
         arguments["expected_requirement_revision"] = json!(revision);
     }
-    let result = call_runtime_tool("rh_work", arguments).await?;
+    let result = call_runtime_tool("rh_project", arguments).await?;
     Ok(semantic_facade_data(result))
 }
 
@@ -1307,7 +1307,7 @@ async fn revise_plan(
     if plan_id.trim().is_empty() || expected_revision == 0 || objective.trim().is_empty() {
         return Err("FORGE_DESKTOP_PLAN_REVISE_ARGUMENT_INVALID".to_string());
     }
-    let result = call_runtime_tool("rh_work", json!({
+    let result = call_runtime_tool("rh_project", json!({
         "repo_id": repo_id,
         "project_id": project_id,
         "operation": "plan_revise",

@@ -1,8 +1,8 @@
-import { RH_WORK_MODEL_OPERATIONS } from './rh-work-operation-contract';
+import { RH_PROJECT_MODEL_OPERATIONS } from './rh-project-operation-contract';
 import { FACADE_TOOLS, type EvidenceRef, type FacadeTool, type SuggestedNextAction } from './types';
 
 function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['risk'] | undefined {
-  if (action.tool !== 'rh_work') return undefined;
+  if (action.tool !== 'rh_project') return undefined;
   switch (action.operation) {
     case 'repair':
     case 'launcher_start':
@@ -38,7 +38,7 @@ const ALLOWED_FACADE_OPERATIONS: Record<FacadeTool, readonly string[]> = {
   rh_status: ['list', 'get', 'repair'],
   rh_inbox: ['list', 'get', 'ack', 'accept', 'resolve', 'dismiss', 'create'],
   rh_context: ['list', 'get'],
-  rh_work: RH_WORK_MODEL_OPERATIONS,
+  rh_project: RH_PROJECT_MODEL_OPERATIONS,
   capability_execute: ['execute'],
 };
 
@@ -61,7 +61,8 @@ function actionUsesKnownCheck(action: SuggestedNextAction, validCheckIds: readon
 
 function actionUsesKnownHandoff(action: SuggestedNextAction, validHandoffIds: readonly string[] | undefined): boolean {
   if (!validHandoffIds || validHandoffIds.length === 0) return true;
-  const handoffId = action.payload && typeof action.payload.handoff_id === 'string' ? action.payload.handoff_id : undefined;
+  const handoffId =
+    action.payload && typeof action.payload.handoff_id === 'string' ? action.payload.handoff_id : undefined;
   return !handoffId || validHandoffIds.includes(handoffId);
 }
 
@@ -88,12 +89,16 @@ export function validateSuggestedNextActions(
       return [];
     }
     if (!actionUsesKnownHandoff(action, options.validHandoffIds)) {
-      warnings.push(`Dropped suggested action ${action.label}: invalid handoff_id ${String(action.payload?.handoff_id)}.`);
+      warnings.push(
+        `Dropped suggested action ${action.label}: invalid handoff_id ${String(action.payload?.handoff_id)}.`,
+      );
       return [];
     }
     const expectedRisk = expectedActionRisk(action);
     if (expectedRisk && action.risk !== expectedRisk) {
-      warnings.push(`Corrected suggested action ${action.label}: ${action.tool}.${action.operation} risk ${action.risk} -> ${expectedRisk}.`);
+      warnings.push(
+        `Corrected suggested action ${action.label}: ${action.tool}.${action.operation} risk ${action.risk} -> ${expectedRisk}.`,
+      );
       return [{ ...action, risk: expectedRisk }];
     }
     return [action];

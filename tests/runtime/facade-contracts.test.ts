@@ -31,11 +31,11 @@ import {
   validateLocalConversationImagePaths,
 } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import {
-  RH_WORK_MODEL_OPERATIONS,
-  isRhWorkAcceptedOperation,
-} from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
+  RH_PROJECT_MODEL_OPERATIONS,
+  isRhProjectAcceptedOperation,
+} from '../../src/runtime/control-plane/facade/rh-project-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
-import { callRhWorkAdapter } from '../../adapters/mcp/runtime-gateway/rh-work-adapter';
+import { callRhProjectAdapter } from '../../adapters/mcp/runtime-gateway/rh-project-adapter';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -188,7 +188,14 @@ describe('handoff and facade contracts', () => {
   });
 
   test('keeps the ChatGPT-facing facade small and stable', () => {
-    expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
+    expect(FACADE_TOOLS).toEqual([
+      'rh_access',
+      'rh_status',
+      'rh_inbox',
+      'rh_context',
+      'rh_project',
+      'capability_execute',
+    ]);
   });
 
   test('keeps repository.git actions Work-free without widening the top-level facade', () => {
@@ -501,7 +508,14 @@ describe('handoff and facade contracts', () => {
     );
     expect(getCoreCapabilityExecutionSchema('controller.workflow_supervisor')).toBeUndefined();
     expect(runtimeToolDefinitions.some((entry) => entry.name === 'supervisor_task')).toBe(false);
-    expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
+    expect(FACADE_TOOLS).toEqual([
+      'rh_access',
+      'rh_status',
+      'rh_inbox',
+      'rh_context',
+      'rh_project',
+      'capability_execute',
+    ]);
   });
 
   test('does not expose retired ControllerRound recovery capability', () => {
@@ -510,8 +524,8 @@ describe('handoff and facade contracts', () => {
     expect(
       searchCapabilityDescriptors('controller round authority recovery').map((entry) => entry.capabilityId),
     ).not.toContain('controller.round_recovery');
-    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
-    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+    const rhProject = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project');
+    const properties = rhProject?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties?.operation?.enum).not.toContain('controller_authority_recover');
     expect(properties).not.toHaveProperty('controller_authority_id');
   });
@@ -522,33 +536,33 @@ describe('handoff and facade contracts', () => {
     expect(properties?.include_maintenance?.description).toContain('defaults to false');
   });
 
-  test('keeps controller round ownership and disposition out of the current model-facing rh_work contract', () => {
-    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
-    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+  test('keeps controller round ownership and disposition out of the current model-facing rh_project contract', () => {
+    const rhProject = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project');
+    const properties = rhProject?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties).toHaveProperty('checkout_id');
     expect(properties?.operation?.enum).not.toContain('controller_disposition');
     expect(properties).not.toHaveProperty('disposition');
     expect(properties).not.toHaveProperty('enroll_current_conversation');
     expect(properties).not.toHaveProperty('relay_scope_id');
     expect(properties).not.toHaveProperty('controller_authority_id');
-    expect(allowedFacadeOperations('rh_work')).not.toContain('controller_disposition');
+    expect(allowedFacadeOperations('rh_project')).not.toContain('controller_disposition');
   });
 
   test('rejects retired wire carriers and unsafe object keys instead of translating them', async () => {
-    const legacy = await callRhWorkAdapter({} as never, {
+    const legacy = await callRhProjectAdapter({} as never, {
       operation: 'requirement_get',
       capability_id: 'semantic.v1:{"operation":"requirement_get"}',
     });
     expect(JSON.stringify(legacy)).toContain('CAPABILITY_ID_RETIRED');
     const polluted = JSON.parse('{"operation":"repair","nested":{"__proto__":{"polluted":true}}}');
-    const blocked = await callRhWorkAdapter({} as never, polluted);
+    const blocked = await callRhProjectAdapter({} as never, polluted);
     expect(JSON.stringify(blocked)).toContain('MCP_INPUT_UNSAFE_KEY');
     expect({}).not.toHaveProperty('polluted');
   });
 
-  test('keeps retired Work relations and writers out of the current typed rh_work schema', () => {
-    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
-    const properties = rhWork?.inputSchema.properties as Record<string, any> | undefined;
+  test('keeps retired Work relations and writers out of the current typed rh_project schema', () => {
+    const rhProject = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project');
+    const properties = rhProject?.inputSchema.properties as Record<string, any> | undefined;
     expect(properties).not.toHaveProperty('semantic_parent_work_id');
     expect(properties).not.toHaveProperty('depends_on_work_ids');
 
@@ -564,8 +578,8 @@ describe('handoff and facade contracts', () => {
   });
 
   test('keeps controller learning drafts bounded and provenance server-owned', () => {
-    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
-    const properties = rhWork?.inputSchema.properties as Record<string, any> | undefined;
+    const rhProject = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project');
+    const properties = rhProject?.inputSchema.properties as Record<string, any> | undefined;
     const learning = properties?.learning_signals;
     // The per-call array bound is a transport envelope owned by one constant, not
     // an interaction quota and not a second schema-local policy.
@@ -582,10 +596,10 @@ describe('handoff and facade contracts', () => {
     expect(properties?.operation?.enum).toContain('learning_record');
   });
 
-  test('derives the current rh_work schema and suggested-action admission from one thin operation ABI', () => {
-    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
-    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
-    expect(properties?.operation?.enum).toEqual([...allowedFacadeOperations('rh_work')]);
+  test('derives the current rh_project schema and suggested-action admission from one thin operation ABI', () => {
+    const rhProject = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project');
+    const properties = rhProject?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+    expect(properties?.operation?.enum).toEqual([...allowedFacadeOperations('rh_project')]);
     expect(properties?.operation?.enum).not.toContain('review');
     expect(properties?.operation?.enum).not.toContain('verify');
     expect(properties?.operation?.enum).not.toContain('finalize');
@@ -594,21 +608,26 @@ describe('handoff and facade contracts', () => {
     expect(properties?.operation?.enum).not.toContain('experience_record');
 
     const retiredReview = validateSuggestedNextActions([
-      { label: 'Review implementation', tool: 'rh_work', operation: 'review', risk: 'workspace_write' },
+      { label: 'Review implementation', tool: 'rh_project', operation: 'review', risk: 'workspace_write' },
     ]);
     expect(retiredReview.actions).toHaveLength(0);
-    expect(retiredReview.warnings[0]).toContain('unsupported rh_work.review');
+    expect(retiredReview.warnings[0]).toContain('unsupported rh_project.review');
 
     const invalid = validateSuggestedNextActions([
-      { label: 'Impossible transition', tool: 'rh_work', operation: 'not_in_stable_schema', risk: 'workspace_write' },
+      {
+        label: 'Impossible transition',
+        tool: 'rh_project',
+        operation: 'not_in_stable_schema',
+        risk: 'workspace_write',
+      },
     ]);
     expect(invalid.actions).toHaveLength(0);
-    expect(invalid.warnings[0]).toContain('unsupported rh_work.not_in_stable_schema');
+    expect(invalid.warnings[0]).toContain('unsupported rh_project.not_in_stable_schema');
   });
 
   test('rejects retired lifecycle vocabulary after connector rollover', () => {
-    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
-    const properties = rhWork?.inputSchema.properties as
+    const rhProject = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project');
+    const properties = rhProject?.inputSchema.properties as
       | Record<string, { description?: string; enum?: string[] }>
       | undefined;
     expect(properties).not.toHaveProperty('controller_authority_id');
@@ -630,36 +649,36 @@ describe('handoff and facade contracts', () => {
       'controller_release',
       'controller_disposition',
     ]) {
-      expect(isRhWorkAcceptedOperation(operation)).toBe(false);
+      expect(isRhProjectAcceptedOperation(operation)).toBe(false);
     }
   });
 
   test('exposes task-bound launcher fields without restoring Work lifecycle operations', () => {
-    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
-    const properties = rhWork?.inputSchema.properties as
+    const rhProject = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project');
+    const properties = rhProject?.inputSchema.properties as
       | Record<string, { type?: string; maxLength?: number }>
       | undefined;
     expect(properties?.task_id).toMatchObject({ type: 'string', maxLength: 256 });
     expect(properties?.continuation_prompt).toMatchObject({ type: 'string', maxLength: 9000 });
     expect(properties?.issue_number?.type).toBe('number');
-    expect(isRhWorkAcceptedOperation('review')).toBe(false);
+    expect(isRhProjectAcceptedOperation('review')).toBe(false);
   });
 
-  test('exposes explicit Requirement bootstrap through rh_work without expanding the tool surface', () => {
-    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
-    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+  test('exposes explicit Requirement bootstrap through rh_project without expanding the tool surface', () => {
+    const rhProject = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project');
+    const properties = rhProject?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties?.operation?.enum).toContain('requirement_create');
     expect(properties?.operation?.enum).toContain('requirement_promote_candidate');
     expect(properties).toHaveProperty('requirement_candidate_id');
     expect(properties).toHaveProperty('requirement_title');
     expect(properties).toHaveProperty('requirement_outcome');
     expect(properties).toHaveProperty('requirement_acceptance_criteria');
-    expect(allowedFacadeOperations('rh_work')).toContain('requirement_create');
+    expect(allowedFacadeOperations('rh_project')).toContain('requirement_create');
     expect(FACADE_TOOLS).toHaveLength(6);
   });
 
-  test('keeps Work continuation scheduling inside rh_work instead of expanding the tool surface', () => {
-    expect(allowedFacadeOperations('rh_work')).toEqual(
+  test('keeps Work continuation scheduling inside rh_project instead of expanding the tool surface', () => {
+    expect(allowedFacadeOperations('rh_project')).toEqual(
       expect.arrayContaining([
         'schedule_create',
         'schedule_list',
@@ -674,8 +693,8 @@ describe('handoff and facade contracts', () => {
   });
 
   test('keeps execution evidence shape out of semantic Work creation', () => {
-    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
-    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+    const rhProject = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project');
+    const properties = rhProject?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties).not.toHaveProperty('work_kind');
     expect(properties).not.toHaveProperty('review_findings');
     expect(properties).not.toHaveProperty('acceptance_evidence');
@@ -684,10 +703,10 @@ describe('handoff and facade contracts', () => {
     expect(properties).toHaveProperty('expected_revision');
   });
 
-  test('keeps the public rh_work ABI thin without frozen carriers', () => {
-    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
-    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
-    expect(properties?.operation?.enum).toEqual([...RH_WORK_MODEL_OPERATIONS]);
+  test('keeps the public rh_project ABI thin without frozen carriers', () => {
+    const rhProject = runtimeToolDefinitions.find((definition) => definition.name === 'rh_project');
+    const properties = rhProject?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+    expect(properties?.operation?.enum).toEqual([...RH_PROJECT_MODEL_OPERATIONS]);
     expect(properties).toHaveProperty('expected_revision');
     expect(properties).not.toHaveProperty('work_state');
     expect(properties).not.toHaveProperty('work_result_refs');
@@ -732,8 +751,8 @@ describe('handoff and facade contracts', () => {
 
   test('drops retired lifecycle suggestions instead of normalizing them back into the model workflow', () => {
     const normalized = validateSuggestedNextActions([
-      { label: 'Continue', tool: 'rh_work', operation: 'continue', risk: 'readonly' },
-      { label: 'Finalize', tool: 'rh_work', operation: 'finalize', risk: 'readonly' },
+      { label: 'Continue', tool: 'rh_project', operation: 'continue', risk: 'readonly' },
+      { label: 'Finalize', tool: 'rh_project', operation: 'finalize', risk: 'readonly' },
       { label: 'Read context', tool: 'rh_context', operation: 'get', risk: 'readonly' },
     ]);
 
@@ -741,8 +760,8 @@ describe('handoff and facade contracts', () => {
     expect(normalized.actions.map((action) => action.risk)).toEqual(['readonly']);
     expect(normalized.warnings).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('unsupported rh_work.continue'),
-        expect.stringContaining('unsupported rh_work.finalize'),
+        expect.stringContaining('unsupported rh_project.continue'),
+        expect.stringContaining('unsupported rh_project.finalize'),
       ]),
     );
   });
@@ -767,20 +786,20 @@ describe('handoff and facade contracts', () => {
       [
         {
           label: 'Bad tool',
-          tool: 'not_a_tool' as 'rh_work',
+          tool: 'not_a_tool' as 'rh_project',
           operation: 'start',
           risk: 'readonly',
         },
         {
           label: 'Retired bad check',
-          tool: 'rh_work',
+          tool: 'rh_project',
           operation: 'verify',
           payload: { check_id: 'package:does-not-exist' },
           risk: 'workspace_write',
         },
         {
           label: 'Retired good check',
-          tool: 'rh_work',
+          tool: 'rh_project',
           operation: 'verify',
           payload: { check_id: 'package:check:type' },
           risk: 'workspace_write',
@@ -797,7 +816,7 @@ describe('handoff and facade contracts', () => {
     expect(validation.actions.map((action) => action.label)).toEqual(['Read context']);
     expect(validation.warnings.length).toBeGreaterThanOrEqual(3);
     expect(validation.warnings).toEqual(
-      expect.arrayContaining([expect.stringContaining('unsupported rh_work.verify')]),
+      expect.arrayContaining([expect.stringContaining('unsupported rh_project.verify')]),
     );
   });
 
@@ -838,7 +857,7 @@ describe('handoff and facade contracts', () => {
     expect(handoff.suggestedNextActions[0]?.tool).toBe('rh_context');
   });
 
-  test('routes typed plugin capabilities through the real plugin executor instead of rh_work', () => {
+  test('routes typed plugin capabilities through the real plugin executor instead of rh_project', () => {
     const capabilities = listCapabilityDescriptors([]);
     expect(capabilities.find((entry) => entry.capabilityId === 'platform.ios')?.exposedVia).toBe(
       'plugin_action_execute',
@@ -857,7 +876,7 @@ describe('handoff and facade contracts', () => {
     expect(capabilities.map((entry) => entry.capabilityId)).not.toContain('controller.external_controller');
     expect(
       new Set(capabilities.map((entry) => entry.exposedVia).filter((surface) => surface.startsWith('rh_'))),
-    ).toEqual(new Set(['rh_context', 'rh_inbox', 'rh_status', 'rh_work']));
+    ).toEqual(new Set(['rh_context', 'rh_inbox', 'rh_status', 'rh_project']));
     expect(capabilities.some((entry) => entry.exposedVia === 'plugin_action_execute')).toBe(true);
     expect([...new Set(capabilities.map((entry) => entry.group))].sort()).toEqual([
       'controller',

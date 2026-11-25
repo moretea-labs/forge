@@ -6,7 +6,7 @@ export { FORGE_VERSION } from '../../version';
 /** Product identity exposed by every Forge runtime surface. */
 export const FORGE_TOOL_SURFACE = FORGE_PRODUCT_ID;
 /** Payload schema for MCP health/config records; this is not a product/component version. */
-// 16: Independent Project task creation reuses rh_work.project_id and the
+// 16: Independent Project task creation reuses rh_project.project_id and the
 // canonical Requirement owner; refresh stale Connector contract snapshots.
 export const FORGE_MCP_SCHEMA_VERSION = 16;
 
@@ -20,9 +20,11 @@ type ToolSurfaceDefinition = {
 function canonicalToolSurfaceValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalToolSurfaceValue);
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => [key, canonicalToolSurfaceValue(entry)]));
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalToolSurfaceValue(entry)]),
+    );
   }
   return value;
 }
@@ -32,23 +34,30 @@ function canonicalToolSurfaceValue(value: unknown): unknown {
  * A code-only release must therefore preserve existing sessions, while a tool
  * name, description, input schema, or annotation change fences them.
  */
-export function forgeToolSurfaceFingerprint(toolSurface: readonly string[] | readonly ToolSurfaceDefinition[] = []): string {
-  const definitions = toolSurface.map((tool) => typeof tool === 'string'
-    ? { name: tool.trim() }
-    : {
-      name: tool.name.trim(),
-      ...(tool.description === undefined ? {} : { description: tool.description }),
-      ...(tool.inputSchema === undefined ? {} : { inputSchema: canonicalToolSurfaceValue(tool.inputSchema) }),
-      ...(tool.annotations === undefined ? {} : { annotations: canonicalToolSurfaceValue(tool.annotations) }),
-    })
+export function forgeToolSurfaceFingerprint(
+  toolSurface: readonly string[] | readonly ToolSurfaceDefinition[] = [],
+): string {
+  const definitions = toolSurface
+    .map((tool) =>
+      typeof tool === 'string'
+        ? { name: tool.trim() }
+        : {
+            name: tool.name.trim(),
+            ...(tool.description === undefined ? {} : { description: tool.description }),
+            ...(tool.inputSchema === undefined ? {} : { inputSchema: canonicalToolSurfaceValue(tool.inputSchema) }),
+            ...(tool.annotations === undefined ? {} : { annotations: canonicalToolSurfaceValue(tool.annotations) }),
+          },
+    )
     .filter((tool) => Boolean(tool.name))
     .sort((left, right) => left.name.localeCompare(right.name));
   return createHash('sha256')
-    .update(JSON.stringify({
-      product: FORGE_PRODUCT_ID,
-      schemaVersion: FORGE_MCP_SCHEMA_VERSION,
-      tools: definitions,
-    }))
+    .update(
+      JSON.stringify({
+        product: FORGE_PRODUCT_ID,
+        schemaVersion: FORGE_MCP_SCHEMA_VERSION,
+        tools: definitions,
+      }),
+    )
     .digest('hex')
     .slice(0, 16);
 }
@@ -69,11 +78,12 @@ export function normalizeAgentTimeoutMs(
   const defaultMs = options.defaultMs ?? DEFAULT_AGENT_TIMEOUT_MS;
   const maxMs = options.maxMs ?? MAX_AGENT_TIMEOUT_MS;
   const label = options.label ?? 'timeout_ms';
-  const parsed = value === undefined || value === null || value === ''
-    ? defaultMs
-    : typeof value === 'number'
-      ? value
-      : Number(value);
+  const parsed =
+    value === undefined || value === null || value === ''
+      ? defaultMs
+      : typeof value === 'number'
+        ? value
+        : Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`${label} must be a finite number of milliseconds`);
   const integer = Math.trunc(parsed);
   if (integer < MIN_AGENT_TIMEOUT_MS || integer > maxMs) {

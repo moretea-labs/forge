@@ -92,11 +92,15 @@ export function classifyUserFacingError(input: {
   if (structured !== 'unknown_failure') return structured;
 
   switch ((input.status ?? '').trim().toLowerCase()) {
-    case 'waiting_for_approval': return 'approval_required';
+    case 'waiting_for_approval':
+      return 'approval_required';
     case 'human_attention_required':
-    case 'needs_review': return 'handoff_required';
-    case 'timed_out': return 'timeout';
-    default: break;
+    case 'needs_review':
+      return 'handoff_required';
+    case 'timed_out':
+      return 'timeout';
+    default:
+      break;
   }
 
   // Compatibility-only fallback for legacy producers that still emit prose
@@ -138,69 +142,93 @@ function phaseFromJobStatus(status: ExecutionJobStatus | string): UserFacingPhas
 
 export function statusLabelForPhase(phase: UserFacingPhase): string {
   switch (phase) {
-    case 'queued': return '已排队';
-    case 'running': return '执行中';
-    case 'waiting': return '等待中';
-    case 'succeeded': return '已完成';
-    case 'failed': return '失败';
-    case 'timed_out': return '超时';
-    case 'blocked': return '已阻塞';
-    case 'needs_attention': return '需要你处理';
-    case 'cancelled': return '已取消';
-    default: return '处理中';
+    case 'queued':
+      return '已排队';
+    case 'running':
+      return '执行中';
+    case 'waiting':
+      return '等待中';
+    case 'succeeded':
+      return '已完成';
+    case 'failed':
+      return '失败';
+    case 'timed_out':
+      return '超时';
+    case 'blocked':
+      return '已阻塞';
+    case 'needs_attention':
+      return '需要你处理';
+    case 'cancelled':
+      return '已取消';
+    default:
+      return '处理中';
   }
 }
 
-function defaultNextActions(phase: UserFacingPhase, jobId?: string, errorClass?: UserFacingErrorClass): SuggestedNextAction[] {
+function defaultNextActions(
+  phase: UserFacingPhase,
+  jobId?: string,
+  errorClass?: UserFacingErrorClass,
+): SuggestedNextAction[] {
   if (phase === 'queued' || phase === 'running' || phase === 'waiting') {
-    return [{
-      label: '查看运行状态',
-      tool: 'rh_status',
-      operation: 'get',
-      risk: 'readonly',
-      confidence: 'high',
-      reason: '读取当前运行事实，不通过 Work lifecycle 操作轮询执行。',
-    }];
-  }
-  if (phase === 'failed' || phase === 'timed_out') {
-    if (errorClass === 'acceptance_failure' || errorClass === 'invalid_check_id' || errorClass === 'policy_denied') {
-      return [{
-        label: errorClass === 'policy_denied' ? '检查策略限制' : '修复代码或检查契约',
-        tool: 'rh_context',
+    return [
+      {
+        label: '查看运行状态',
+        tool: 'rh_status',
         operation: 'get',
         risk: 'readonly',
         confidence: 'high',
-      }];
+        reason: '读取当前运行事实，不通过 Work lifecycle 操作轮询执行。',
+      },
+    ];
+  }
+  if (phase === 'failed' || phase === 'timed_out') {
+    if (errorClass === 'acceptance_failure' || errorClass === 'invalid_check_id' || errorClass === 'policy_denied') {
+      return [
+        {
+          label: errorClass === 'policy_denied' ? '检查策略限制' : '修复代码或检查契约',
+          tool: 'rh_context',
+          operation: 'get',
+          risk: 'readonly',
+          confidence: 'high',
+        },
+      ];
     }
-    return [{
-      label: '诊断环境（dry-run）',
-      tool: 'rh_work',
-      operation: 'repair',
-      payload: { repair_operation: 'diagnose', dry_run: true },
-      risk: 'readonly',
-      confidence: 'high',
-    }];
+    return [
+      {
+        label: '诊断环境（dry-run）',
+        tool: 'rh_project',
+        operation: 'repair',
+        payload: { repair_operation: 'diagnose', dry_run: true },
+        risk: 'readonly',
+        confidence: 'high',
+      },
+    ];
   }
   if (phase === 'needs_attention') {
-    return [{
-      label: '查看待决定事项',
-      tool: 'rh_inbox',
-      operation: 'list',
-      risk: 'readonly',
-      confidence: 'high',
-    }];
+    return [
+      {
+        label: '查看待决定事项',
+        tool: 'rh_inbox',
+        operation: 'list',
+        risk: 'readonly',
+        confidence: 'high',
+      },
+    ];
   }
-  return [{
-    label: '查看控制器状态',
-    tool: 'rh_status',
-    operation: 'get',
-    risk: 'readonly',
-    confidence: 'medium',
-  }];
+  return [
+    {
+      label: '查看控制器状态',
+      tool: 'rh_status',
+      operation: 'get',
+      risk: 'readonly',
+      confidence: 'medium',
+    },
+  ];
 }
 
 function extractChangedFiles(job: ExecutionJob): string[] {
-  const result = job.result && typeof job.result === 'object' ? job.result as Record<string, unknown> : {};
+  const result = job.result && typeof job.result === 'object' ? (job.result as Record<string, unknown>) : {};
   const candidates: string[] = [];
   const pushList = (value: unknown) => {
     if (!Array.isArray(value)) return;
@@ -240,7 +268,9 @@ function readableErrorMessage(job: ExecutionJob): string | undefined {
   if (message) {
     const trimmed = message.trim();
     if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && trimmed.length > 240) {
-      return bound(`${code || 'STRUCTURED_ERROR'}: see artifactRefs / get_artifact (message ${trimmed.length} chars suppressed)`);
+      return bound(
+        `${code || 'STRUCTURED_ERROR'}: see artifactRefs / get_artifact (message ${trimmed.length} chars suppressed)`,
+      );
     }
     return bound(message);
   }
@@ -249,12 +279,11 @@ function readableErrorMessage(job: ExecutionJob): string | undefined {
   if (job.status === 'failed') return '任务失败，但未提供详细错误信息。请查看证据或运行诊断。';
   if (job.status === 'timed_out') return '任务超时。';
   if (job.status === 'waiting_for_approval') {
-    const approval = job.result?.authorization && typeof job.result.authorization === 'object'
-      ? job.result.authorization as Record<string, unknown>
-      : undefined;
-    return typeof approval?.humanSummary === 'string'
-      ? approval.humanSummary
-      : '任务正在等待当前对话确认后继续。';
+    const approval =
+      job.result?.authorization && typeof job.result.authorization === 'object'
+        ? (job.result.authorization as Record<string, unknown>)
+        : undefined;
+    return typeof approval?.humanSummary === 'string' ? approval.humanSummary : '任务正在等待当前对话确认后继续。';
   }
   if (job.status === 'human_attention_required') return '任务需要你的判断后才能继续。';
   return undefined;
@@ -267,30 +296,34 @@ function childStatusFromResult(job: ExecutionJob): {
   delegationAccepted?: boolean;
 } {
   const childReference = childReferenceFromJob(job);
-  const result = job.result && typeof job.result === 'object' ? job.result as Record<string, unknown> : {};
-  const localJob = result.localJob && typeof result.localJob === 'object'
-    ? result.localJob as Record<string, unknown>
-    : result.job && typeof result.job === 'object'
-      ? result.job as Record<string, unknown>
-      : undefined;
-  const childRunStatus = typeof result.childRunStatus === 'string'
-    ? result.childRunStatus
-    : typeof result.runStatus === 'string'
-      ? result.runStatus
-      : undefined;
-  const childLocalJobStatus = typeof result.childLocalJobStatus === 'string'
-    ? result.childLocalJobStatus
-    : typeof localJob?.status === 'string'
-      ? localJob.status
-      : typeof result.status === 'string' && result.delegated === true
-        ? result.status
+  const result = job.result && typeof job.result === 'object' ? (job.result as Record<string, unknown>) : {};
+  const localJob =
+    result.localJob && typeof result.localJob === 'object'
+      ? (result.localJob as Record<string, unknown>)
+      : result.job && typeof result.job === 'object'
+        ? (result.job as Record<string, unknown>)
         : undefined;
-  const delegationAccepted = result.delegationAccepted === true
-    || result.delegated === true
-    || (TERMINAL_JOB_STATUSES.has(job.status)
-      && job.status === 'succeeded'
-      && hasDurableChildReference(childReference)
-      && isAgentDelegationOperation(job.payload.operation));
+  const childRunStatus =
+    typeof result.childRunStatus === 'string'
+      ? result.childRunStatus
+      : typeof result.runStatus === 'string'
+        ? result.runStatus
+        : undefined;
+  const childLocalJobStatus =
+    typeof result.childLocalJobStatus === 'string'
+      ? result.childLocalJobStatus
+      : typeof localJob?.status === 'string'
+        ? localJob.status
+        : typeof result.status === 'string' && result.delegated === true
+          ? result.status
+          : undefined;
+  const delegationAccepted =
+    result.delegationAccepted === true ||
+    result.delegated === true ||
+    (TERMINAL_JOB_STATUSES.has(job.status) &&
+      job.status === 'succeeded' &&
+      hasDurableChildReference(childReference) &&
+      isAgentDelegationOperation(job.payload.operation));
   return {
     ...(childReference ? { childReference } : {}),
     ...(childRunStatus ? { childRunStatus } : {}),
@@ -299,51 +332,53 @@ function childStatusFromResult(job: ExecutionJob): {
   };
 }
 
-export function buildJobOperationDigest(job: ExecutionJob, options: {
-  waited?: boolean;
-  stillRunning?: boolean;
-} = {}): OperationDigest {
+export function buildJobOperationDigest(
+  job: ExecutionJob,
+  options: {
+    waited?: boolean;
+    stillRunning?: boolean;
+  } = {},
+): OperationDigest {
   const phase = phaseFromJobStatus(job.status);
   const terminal = TERMINAL_JOB_STATUSES.has(job.status);
   const operation = typeof job.payload.operation === 'string' ? job.payload.operation : job.type;
   const errorMessage = readableErrorMessage(job);
-  const errorClass = errorMessage || job.status === 'failed' || job.status === 'timed_out'
-    ? classifyUserFacingError({
-      code: job.error?.code,
-      message: errorMessage,
-      status: job.status,
-      infrastructure: job.outcome?.failureClass === 'infrastructure_failure'
-        || Boolean(job.outcome?.infrastructureError)
-        || job.status === 'orphaned'
-        || job.status === 'stale',
-      acceptance: job.outcome?.failureClass === 'acceptance_failure'
-        || Boolean(job.outcome?.acceptanceFailure),
-    })
-    : undefined;
+  const errorClass =
+    errorMessage || job.status === 'failed' || job.status === 'timed_out'
+      ? classifyUserFacingError({
+          code: job.error?.code,
+          message: errorMessage,
+          status: job.status,
+          infrastructure:
+            job.outcome?.failureClass === 'infrastructure_failure' ||
+            Boolean(job.outcome?.infrastructureError) ||
+            job.status === 'orphaned' ||
+            job.status === 'stale',
+          acceptance: job.outcome?.failureClass === 'acceptance_failure' || Boolean(job.outcome?.acceptanceFailure),
+        })
+      : undefined;
   const child = childStatusFromResult(job);
   const logRefs = [
     job.outcome?.process?.stdoutPath ? { title: 'stdout', path: job.outcome.process.stdoutPath } : undefined,
     job.outcome?.process?.stderrPath ? { title: 'stderr', path: job.outcome.process.stderrPath } : undefined,
     job.workerLifecycle?.stderrPath ? { title: 'worker-stderr', path: job.workerLifecycle.stderrPath } : undefined,
   ].filter((entry): entry is { title: string; path: string } => Boolean(entry?.path));
-  const resultRef = typeof job.result?.resultRef === 'string'
-    ? job.result.resultRef
-    : typeof job.result?.result_ref === 'string'
-      ? job.result.result_ref
-      : undefined;
+  const resultRef =
+    typeof job.result?.resultRef === 'string'
+      ? job.result.resultRef
+      : typeof job.result?.result_ref === 'string'
+        ? job.result.result_ref
+        : undefined;
 
   let summary: string;
   if (child.delegationAccepted && phase === 'succeeded') {
     const runLabel = child.childRunStatus ? `，子 Run 状态 ${child.childRunStatus}` : '';
-    const localLabel = !child.childRunStatus && child.childLocalJobStatus
-      ? `，Local Job 状态 ${child.childLocalJobStatus}`
-      : '';
+    const localLabel =
+      !child.childRunStatus && child.childLocalJobStatus ? `，Local Job 状态 ${child.childLocalJobStatus}` : '';
     summary = `已接受 ${operation} 委派${runLabel}${localLabel}。父 Job 完成不代表 Task 验收通过。`;
   } else if (phase === 'succeeded') {
     const files = extractChangedFiles(job);
-    summary = files.length
-      ? `已完成 ${operation}，涉及 ${files.length} 个文件。`
-      : `已完成 ${operation}。`;
+    summary = files.length ? `已完成 ${operation}，涉及 ${files.length} 个文件。` : `已完成 ${operation}。`;
   } else if (phase === 'failed' || phase === 'timed_out' || phase === 'needs_attention' || phase === 'cancelled') {
     summary = errorMessage
       ? `${statusLabelForPhase(phase)}：${errorMessage}`
@@ -368,9 +403,7 @@ export function buildJobOperationDigest(job: ExecutionJob, options: {
     accepted: true,
     requestAccepted: true,
     // Delegation-accepted parent success is not Task/Run result success.
-    resultAccepted: terminal
-      ? (child.delegationAccepted ? false : phase === 'succeeded')
-      : null,
+    resultAccepted: terminal ? (child.delegationAccepted ? false : phase === 'succeeded') : null,
     operation,
     jobId: job.jobId,
     requestId: job.requestId,
@@ -382,7 +415,10 @@ export function buildJobOperationDigest(job: ExecutionJob, options: {
     timeout: {
       admissionTimeoutMs: job.timeoutPolicy?.admissionTimeoutMs ?? job.operationMetadata?.admissionTimeoutMs,
       queueTimeoutMs: job.timeoutPolicy?.queueTimeoutMs ?? job.operationMetadata?.queueTimeoutMs,
-      executionTimeoutMs: job.timeoutPolicy?.executionTimeoutMs ?? job.operationMetadata?.executionTimeoutMs ?? job.operationMetadata?.timeoutMs,
+      executionTimeoutMs:
+        job.timeoutPolicy?.executionTimeoutMs ??
+        job.operationMetadata?.executionTimeoutMs ??
+        job.operationMetadata?.timeoutMs,
       interactiveWaitMs: job.timeoutPolicy?.interactiveWaitMs ?? job.operationMetadata?.interactiveWaitMs,
       admissionDeadlineAt: job.admissionDeadlineAt,
       queueDeadlineAt: job.queueDeadlineAt,

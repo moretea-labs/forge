@@ -292,7 +292,7 @@ describe('MCP canonical Runtime proxy routing', () => {
     };
     expect(canonicalRuntimeToolCallIsReplaySafe('execute_command', args)).toBe(true);
     expect(canonicalRuntimeToolCallIsReplaySafe('execute_command', { ...args, request_id: '' })).toBe(false);
-    expect(canonicalRuntimeToolCallIsReplaySafe('rh_work', args)).toBe(false);
+    expect(canonicalRuntimeToolCallIsReplaySafe('rh_project', args)).toBe(false);
     expect(
       canonicalRuntimeToolCallIsReplaySafe('computer_console_unlock_prepare', { confirm_authorization: true }),
     ).toBe(false);
@@ -2000,7 +2000,7 @@ describe('MCP canonical Runtime schema fencing', () => {
   test('changes only when the exposed schema changes, not when a release identity changes', () => {
     const surface = [
       {
-        name: 'rh_work',
+        name: 'rh_project',
         description: 'Stable facade.',
         inputSchema: { type: 'object', properties: { operation: { type: 'string' } } },
         annotations: { readOnlyHint: false },

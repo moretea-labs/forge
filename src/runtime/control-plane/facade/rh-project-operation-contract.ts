@@ -1,12 +1,12 @@
 /*
- * Stable rh_work operation ABI.
+ * Stable rh_project operation ABI.
  *
  * The MCP input schema and server-generated SuggestedNextAction validation must
  * consume this single registry. Keeping separate handwritten operation lists
  * lets the Runtime advertise transitions that a client contract cannot express,
  * or reject valid lifecycle actions that the schema already exposes.
  */
-export const RH_WORK_OPERATIONS = [
+export const RH_PROJECT_OPERATIONS = [
   'repair',
   'launcher_start',
   'project_create',
@@ -44,15 +44,15 @@ export const RH_WORK_OPERATIONS = [
  * vocabulary instead of silently translating it or advertising read-only Work.
  */
 
-/** Model-facing rh_work enum is identical to the accepted operation registry. */
-export const RH_WORK_MODEL_OPERATIONS = RH_WORK_OPERATIONS;
+/** Model-facing rh_project enum is identical to the accepted operation registry. */
+export const RH_PROJECT_MODEL_OPERATIONS = RH_PROJECT_OPERATIONS;
 
-export type RhWorkOperation = (typeof RH_WORK_OPERATIONS)[number];
+export type RhProjectOperation = (typeof RH_PROJECT_OPERATIONS)[number];
 
-export function isRhWorkOperation(operation: string): operation is RhWorkOperation {
-  return (RH_WORK_OPERATIONS as readonly string[]).includes(operation);
+export function isRhProjectOperation(operation: string): operation is RhProjectOperation {
+  return (RH_PROJECT_OPERATIONS as readonly string[]).includes(operation);
 }
 
-export function isRhWorkAcceptedOperation(operation: string): boolean {
-  return isRhWorkOperation(operation);
+export function isRhProjectAcceptedOperation(operation: string): boolean {
+  return isRhProjectOperation(operation);
 }

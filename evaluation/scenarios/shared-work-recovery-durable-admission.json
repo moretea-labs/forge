@@ -10,12 +10,51 @@
     "behavioralInvariants": ["Raw stdio cannot impersonate an authenticated controller session."],
     "regressionRisks": ["Recovery work runs as untracked Direct Control or authentication fencing is weakened."]
   },
-  "execution": { "interface": "forge_mcp", "profile": "controller", "toolset": "advanced", "calls": [
-    { "id": "admit", "tool": "rh_work", "arguments": { "operation": "start", "objective": "Evaluation recovery durable admission", "requested_by": "user", "work_kind": "investigation", "scope_clear": true, "needs_dependencies": false, "requires_recovery": true, "requires_external_effect": false, "requires_approval": false, "requires_user_approval": false, "destructive": false, "remote_write": false, "secret_access": false }, "expectedOutcome": "error" }
-  ] },
+  "execution": {
+    "interface": "forge_mcp",
+    "profile": "controller",
+    "toolset": "advanced",
+    "calls": [
+      {
+        "id": "admit",
+        "tool": "rh_project",
+        "arguments": {
+          "operation": "start",
+          "objective": "Evaluation recovery durable admission",
+          "requested_by": "user",
+          "work_kind": "investigation",
+          "scope_clear": true,
+          "needs_dependencies": false,
+          "requires_recovery": true,
+          "requires_external_effect": false,
+          "requires_approval": false,
+          "requires_user_approval": false,
+          "destructive": false,
+          "remote_write": false,
+          "secret_access": false
+        },
+        "expectedOutcome": "error"
+      }
+    ]
+  },
   "validators": [
-    { "id": "recovery-work-retained", "kind": "behavior", "type": "execution_output", "stepId": "admit", "expectedExitCode": 1, "includes": ["\"workContractCreated\":true", "\"canonicalWorkRetained\":true", "CONTROLLER_AUTHENTICATED_SESSION_REQUIRED"] }
+    {
+      "id": "recovery-work-retained",
+      "kind": "behavior",
+      "type": "execution_output",
+      "stepId": "admit",
+      "expectedExitCode": 1,
+      "includes": [
+        "\"workContractCreated\":true",
+        "\"canonicalWorkRetained\":true",
+        "CONTROLLER_AUTHENTICATED_SESSION_REQUIRED"
+      ]
+    }
   ],
   "corpus": { "class": "shared", "behaviorClass": "work_lifecycle" },
-  "provenance": { "kind": "historical_behavior", "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38", "note": "Shared lifecycle admission behavior anchored to the exact v1.7.2 release." }
+  "provenance": {
+    "kind": "historical_behavior",
+    "sourceCommit": "c873cfeb11a223ced342e7101c016261b4a93b38",
+    "note": "Shared lifecycle admission behavior anchored to the exact v1.7.2 release."
+  }
 }

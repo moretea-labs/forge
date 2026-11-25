@@ -192,7 +192,7 @@ describe('runtime command surface', () => {
     );
     const recoveryAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/recovery-adapter.ts'), 'utf8');
     const statusInboxAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/status-inbox-adapter.ts'), 'utf8');
-    const workAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/rh-work-adapter.ts'), 'utf8');
+    const workAdapter = readFileSync(join(ROOT, 'adapters/mcp/runtime-gateway/rh-project-adapter.ts'), 'utf8');
     const controllerAuthorityAdapter = readFileSync(
       join(ROOT, 'adapters/mcp/runtime-gateway/controller-authority-adapter.ts'),
       'utf8',
