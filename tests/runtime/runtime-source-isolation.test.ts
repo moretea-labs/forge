@@ -17,7 +17,6 @@ import {
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { callContextAdapter } from '../../adapters/mcp/runtime-gateway/context-adapter';
 import { recordGatewayLatency } from '../../src/core/observability/gateway-contention-metrics';
-import type { ContextClosureReceipt } from '../../packages/kernel/engineering/api/index';
 import {
   collectRuntimeSourceIdentity,
   CONTROLLER_RUNTIME_SOURCE_ROOT_ENV,
@@ -155,70 +154,6 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('runtime source isolation', () => {
-  test('rh_context source routing uses explicit checkout identity', async () => {
-    const controllerHome = tempRoot('forge-context-explicit-checkout-home-');
-    const repoRoot = tempRoot('forge-context-explicit-checkout-repo-');
-    initGitRepo(repoRoot, 'context-explicit-checkout');
-    writeFileSync(join(repoRoot, 'src', 'index.ts'), 'export const EXACT_WORK_SOURCE = "CANONICAL";\\n');
-    git(repoRoot, 'add', '.');
-    git(repoRoot, 'commit', '-m', 'canonical context source');
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Context source owner' });
-    const worktree = join(controllerHome, 'managed-worktrees', repository.repoId, 'historical-work-context-proof');
-    mkdirSync(join(controllerHome, 'managed-worktrees', repository.repoId), { recursive: true });
-    git(repoRoot, 'worktree', 'add', '-q', '-b', 'work/context-exact-source', worktree, 'HEAD');
-    writeFileSync(join(worktree, 'src', 'index.ts'), 'export const EXACT_WORK_SOURCE = "ISOLATED";\\n');
-    git(worktree, 'add', '.');
-    git(worktree, 'commit', '-m', 'isolated context source');
-    const registry = addRepositoryCheckout({ repoId: repository.repoId, path: worktree, controllerHome });
-    const checkout = registry.checkouts.find((item) => item.canonicalRoot === realpathSync(worktree));
-    expect(checkout).toBeDefined();
-    const context = mcpContext(controllerHome, repository);
-    const baseArgs = {
-      repo_id: repository.repoId,
-      operation: 'search',
-      query: 'EXACT_WORK_SOURCE',
-      known_paths: ['src/index.ts'],
-      max_files: 1,
-      max_snippets: 2,
-      detail_level: 'raw',
-      retrieval_mode: 'implementation',
-      structural_context: 'off',
-    };
-
-    const historicalWorkData = structured(
-      await callRuntimeTool(context, 'rh_context', {
-        ...baseArgs,
-      }),
-    ).data as {
-      contextClosure?: { sourceRevision?: string; repository?: { branch?: string } };
-      files?: Array<{ snippets?: Array<{ content?: string }> }>;
-    };
-    const historicalWorkSource = (historicalWorkData.files ?? [])
-      .flatMap((file) => file.snippets ?? [])
-      .map((snippet) => snippet.content ?? '')
-      .join('');
-    expect(historicalWorkData.contextClosure?.sourceRevision).toBe(git(repoRoot, 'rev-parse', 'HEAD'));
-    expect(historicalWorkSource).toContain('CANONICAL');
-    expect(historicalWorkSource).not.toContain('ISOLATED');
-
-    const explicitCheckoutData = structured(
-      await callRuntimeTool(context, 'rh_context', {
-        ...baseArgs,
-        checkout_id: checkout!.checkoutId,
-      }),
-    ).data as {
-      contextClosure?: { sourceRevision?: string; repository?: { branch?: string } };
-      files?: Array<{ snippets?: Array<{ content?: string }> }>;
-    };
-    const explicitCheckoutSource = (explicitCheckoutData.files ?? [])
-      .flatMap((file) => file.snippets ?? [])
-      .map((snippet) => snippet.content ?? '')
-      .join('');
-    expect(explicitCheckoutData.contextClosure?.sourceRevision).toBe(git(worktree, 'rev-parse', 'HEAD'));
-    expect(explicitCheckoutData.contextClosure?.repository?.branch).toBe('work/context-exact-source');
-    expect(explicitCheckoutSource).toContain('ISOLATED');
-    expect(explicitCheckoutSource).not.toContain('CANONICAL');
-  });
   test('stable semantic ids resolve without synthetic repository ownership in a multi-repository Controller Home', async () => {
     const controllerHome = tempRoot('forge-home-stable-semantic-id-');
     const primaryRoot = tempRoot('forge-stable-semantic-primary-');
@@ -962,7 +897,7 @@ printf '{"ok":true}\\n'
     expect(typeof observedData.readiness?.diagnostics?.semantics?.maintenanceCandidateCount).toBe('number');
   });
 
-  test('rh_context knowledge-only search audits learned memory within current Project and Workspace scopes', async () => {
+  test('rh_context get audits learned memory within current Project and Workspace scopes', async () => {
     const business = tempRoot('forge-context-knowledge-audit-');
     const controllerHome = tempRoot('forge-home-context-knowledge-audit-');
     initGitRepo(business, 'context-knowledge-audit');
@@ -1016,7 +951,7 @@ printf '{"ok":true}\\n'
     const payload = structured(
       await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
         repo_id: repository.repoId,
-        operation: 'search',
+        operation: 'get',
         knowledge_query: 'self explanatory',
         knowledge_concept: 'product.interaction',
         knowledge_limit: 8,
@@ -1092,23 +1027,12 @@ printf '{"ok":true}\\n'
       structured(
         await callRuntimeTool(context, 'rh_context', {
           repo_id: repository.repoId,
-          operation: 'search',
-          query: 'EXPORTED',
-          known_paths: ['src/index.ts', 'src/helper.ts'],
-          retrieval_mode: 'review',
-          structural_context: 'off',
-          max_files: 4,
-          max_snippets: 8,
+          operation: 'get',
           detail_level: 'raw',
           semantic_navigation: [{ navigation: 'definition', path, line, column }],
         }),
       );
     const allowed = (await search('src/index.ts', 3, definitionLine.indexOf('helper') + 2)).data as {
-      readiness?: {
-        status?: string;
-        readyForHighConfidenceMutation?: boolean;
-        semantic?: { status?: string; reasonCodes?: string[] };
-      };
       semanticNavigation?: {
         policyDeniedReads?: number;
         materialPolicyDeniedReads?: number;
@@ -1128,226 +1052,12 @@ printf '{"ok":true}\\n'
       expect.objectContaining({ path: 'src/helper.ts', line: 1, navigation: 'definition' }),
     );
     expect(allowed.semanticEvidence?.returnedLocations).toBeGreaterThan(0);
-    expect(allowed.readiness).toMatchObject({
-      status: 'ready',
-      readyForHighConfidenceMutation: true,
-      semantic: { status: 'ready', reasonCodes: [] },
-    });
     const denied = (await search('node_modules/dummy-dependency/index.d.ts', 1, 20)).data as {
-      readiness?: { status?: string; semantic?: { reasonCodes?: string[] } };
       semanticNavigation?: { errors?: Array<{ code?: string }> };
     };
-    expect(denied.readiness?.status).toBe('insufficient');
-    expect(denied.readiness?.semantic?.reasonCodes).toContain('semantic.semantic_navigation_target_denied');
     expect(denied.semanticNavigation?.errors?.map((error) => error.code)).toContain(
       'SEMANTIC_NAVIGATION_TARGET_DENIED',
     );
-  });
-
-  test('rh_context search exposes multi-wave readiness and folds semantic failures into mutation readiness', async () => {
-    const business = tempRoot('forge-context-readiness-facade-');
-    const controllerHome = tempRoot('forge-home-context-readiness-facade-');
-    initGitRepo(business, 'context-readiness-facade');
-    writeFileSync(
-      join(business, 'src', 'index.ts'),
-      "import { helper } from './helper';\nexport const ENTRY_MARKER = helper;\n" +
-        '// Source evidence must survive the MCP facade.\n'.repeat(40) +
-        'export const END_OF_SOURCE_EVIDENCE = true;\n',
-    );
-    writeFileSync(join(business, 'src', 'helper.ts'), 'export const helper = 42;\n');
-    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Readiness Facade' });
-    const payload = structured(
-      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-        repo_id: repository.repoId,
-        operation: 'search',
-        query: 'ENTRY_MARKER',
-        known_paths: ['src/index.ts'],
-        retrieval_mode: 'review',
-        structural_context: 'off',
-        max_files: 4,
-        max_snippets: 8,
-        detail_level: 'raw',
-        semantic_navigation: [{ navigation: 'references', path: 'src/index.ts', line: 0, column: 1 }],
-      }),
-    );
-    const data = payload.data as {
-      readiness?: {
-        status?: string;
-        readyForHighConfidenceMutation?: boolean;
-        semantic?: { status?: string; reasonCodes?: string[] };
-        unresolvedReasonCodes?: string[];
-      };
-      expansion?: { waveCount?: number; expansionPerformed?: boolean; materializedPaths?: string[] };
-      semanticNavigation?: { requested?: number; errors?: Array<{ code?: string }> };
-    };
-    expect(data.expansion).toMatchObject({ expansionPerformed: true });
-    expect(data.expansion?.waveCount).toBeGreaterThanOrEqual(2);
-    expect(data.expansion?.materializedPaths).toContain('src/helper.ts');
-    expect(data.semanticNavigation?.requested).toBe(1);
-    expect(data.semanticNavigation?.errors?.some((entry) => entry.code === 'SEMANTIC_NAVIGATION_REQUEST_INVALID')).toBe(
-      true,
-    );
-    expect(data.readiness).toMatchObject({
-      status: 'insufficient',
-      readyForHighConfidenceMutation: false,
-      semantic: { status: 'error' },
-    });
-    expect(data.readiness?.unresolvedReasonCodes).toContain('semantic.semantic_navigation_request_invalid');
-    expect(payload.detailLevel).toBe('raw');
-    const source = (
-      payload.data as { files: Array<{ path: string; snippets: Array<{ content: string; truncated: boolean }> }> }
-    ).files.find((file) => file.path === 'src/index.ts')?.snippets[0];
-    expect(source?.truncated).toBe(false);
-    expect(source?.content.length).toBeGreaterThan(1_000);
-    expect(source?.content).toContain('END_OF_SOURCE_EVIDENCE');
-  });
-
-  test('rh_context exposes omitted evidence without choosing a follow-up query for the model', async () => {
-    const business = tempRoot('forge-context-progressive-candidates-');
-    const controllerHome = tempRoot('forge-home-context-progressive-candidates-');
-    initGitRepo(business, 'context-progressive-candidates');
-    writeFileSync(join(business, 'src', 'owner.ts'), 'export function progressiveOwner() { return true; }\n');
-    writeFileSync(
-      join(business, 'src', 'consumer.ts'),
-      "import { progressiveOwner } from './owner';\nexport const result = progressiveOwner();\n",
-    );
-    const repository = registerRepository({
-      path: business,
-      controllerHome,
-      displayName: 'Context Progressive Candidates',
-    });
-    const payload = structured(
-      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-        repo_id: repository.repoId,
-        operation: 'search',
-        query: 'Inspect progressiveOwner references',
-        search_terms: ['progressiveOwner'],
-        retrieval_mode: 'plan',
-        structural_context: 'off',
-        max_files: 1,
-        max_snippets: 2,
-        detail_level: 'detail',
-        include_learning_recall: false,
-      }),
-    );
-    const data = payload.data as {
-      readiness?: { retrieval?: { omittedCandidateCount?: number } };
-      omitted?: Array<{ path: string; reason: string }>;
-    };
-    expect(data.readiness?.retrieval?.omittedCandidateCount).toBeGreaterThan(0);
-    expect(data.omitted).toContainEqual(expect.objectContaining({ path: 'src/consumer.ts' }));
-    expect(payload.suggestedNextActions).toEqual([]);
-    // The caller, not Forge, chooses whether and how to retrieve this path.
-    const followed = structured(
-      await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-        repo_id: repository.repoId,
-        operation: 'search',
-        query: 'Inspect progressiveOwner consumer',
-        known_paths: ['src/consumer.ts'],
-        max_files: 3,
-        max_snippets: 6,
-        retrieval_mode: 'implementation',
-        include_learning_recall: false,
-      }),
-    );
-    expect((followed.data as { files: Array<{ path: string }> }).files.map((file) => file.path)).toContain(
-      'src/consumer.ts',
-    );
-    expect(followed.suggestedNextActions).toEqual([]);
-  });
-
-  test('rh_context warns about Chinese-only cold-start and finds English owners after model-selected hints', async () => {
-    const business = tempRoot('forge-context-source-language-');
-    const controllerHome = tempRoot('forge-home-context-source-language-');
-    initGitRepo(business, 'source-language-discovery');
-    mkdirSync(join(business, 'docs'), { recursive: true });
-    writeFileSync(join(business, 'docs', 'first-task.zh-CN.md'), '工作归属应该退役，自动推进需要由需求驱动。\n');
-    writeFileSync(join(business, 'src', 'authority.ts'), 'export function requirementAuthority() { return true; }\n');
-    writeFileSync(
-      join(business, 'src', 'scheduler.ts'),
-      "import { requirementAuthority } from './authority';\nexport function schedulerContinue() { return requirementAuthority(); }\n",
-    );
-    git(business, 'add', '.');
-    git(business, 'commit', '-qm', 'discovery fixture');
-    const repository = registerRepository({ path: business, controllerHome, displayName: 'Source Language Discovery' });
-    const context = mcpContext(controllerHome, repository);
-    const query = '工作归属应该退役，自动推进需要由需求驱动。';
-    const cold = structured(
-      await callRuntimeTool(context, 'rh_context', {
-        repo_id: repository.repoId,
-        operation: 'search',
-        query,
-        retrieval_mode: 'plan',
-        structural_context: 'off',
-        max_files: 4,
-        max_snippets: 8,
-        include_learning_recall: false,
-      }),
-    );
-    expect((cold.data as { files: Array<{ path: string }> }).files.some((file) => file.path.startsWith('src/'))).toBe(
-      false,
-    );
-    expect(
-      (cold.warnings as string[] | undefined)?.some((warning) => warning.includes('source-language code terms')),
-    ).toBe(true);
-    const grounded = structured(
-      await callRuntimeTool(context, 'rh_context', {
-        repo_id: repository.repoId,
-        operation: 'search',
-        query,
-        search_terms: ['requirement', 'scheduler'],
-        retrieval_mode: 'plan',
-        structural_context: 'off',
-        max_files: 4,
-        max_snippets: 8,
-        include_learning_recall: false,
-      }),
-    );
-    expect((grounded.data as { files: Array<{ path: string }> }).files.map((file) => file.path)).toEqual(
-      expect.arrayContaining(['src/authority.ts', 'src/scheduler.ts']),
-    );
-  });
-
-  test('rh_context returns intact source-bound context facts without admission replay', async () => {
-    const business = tempRoot('forge-context-roundtrip-facade-');
-    const controllerHome = tempRoot('forge-home-context-roundtrip-facade-');
-    initGitRepo(business, 'context-roundtrip-facade');
-    writeFileSync(join(business, 'src', 'index.ts'), 'export const ENTRY_MARKER = true;\n');
-    writeProjectEngineeringContract(business);
-    git(
-      business,
-      'add',
-      '.forge/project-engineering.json',
-      '.agents/skills/typescript-engineering/SKILL.md',
-      'src/index.ts',
-    );
-    git(business, 'commit', '-m', 'add engineering contract');
-    const sourceRevision = git(business, 'rev-parse', 'HEAD');
-    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Roundtrip Facade' });
-    const ctx = mcpContext(controllerHome, repository);
-
-    const contextPayload = structured(
-      await callRuntimeTool(ctx, 'rh_context', {
-        repo_id: repository.repoId,
-        operation: 'search',
-        query: 'ENTRY_MARKER',
-        known_paths: ['src/index.ts'],
-        retrieval_mode: 'implementation',
-        structural_context: 'off',
-        max_files: 2,
-        max_snippets: 4,
-      }),
-    );
-    const contextData = contextPayload.data as { contextClosure?: ContextClosureReceipt };
-    const closure = contextData.contextClosure;
-    expect(closure).toBeTruthy();
-    expect(JSON.stringify(closure)).not.toContain('[bounded-depth]');
-    expect(closure?.readiness.status).not.toBe('insufficient');
-    expect(closure?.sourceRevision).toBe(sourceRevision);
-    expect(closure?.sourceEvidence.currentPaths).toContain('src/index.ts');
-    expect(closure?.projectContract?.sourceRevision).toBe(sourceRevision);
-    expect(closure?.provenance.source).toBe('rh_context');
-    expect(closure?.receiptId).toMatch(/^context_closure_[a-f0-9]{32}$/);
   });
 
   test('rh_context list query returns bounded read-only intent discovery and preserves plugin_action_execute authority', async () => {

@@ -76,12 +76,10 @@ function writePackageRuntimeCanaryFixture(packageRoot: string, supportsCurrentCa
   const executionRoot = join(packageRoot, 'src', 'runtime', 'execution', 'process-runtime');
   const cliRoot = join(packageRoot, 'src', 'cli');
   const runtimeCliRoot = join(cliRoot, 'runtime');
-  const contextPackRoot = join(packageRoot, 'adapters', 'mcp', 'runtime-gateway');
   const pluginSidecarRoot = join(packageRoot, 'src', 'cli', 'github');
   mkdirSync(executionRoot, { recursive: true });
   mkdirSync(cliRoot, { recursive: true });
   mkdirSync(runtimeCliRoot, { recursive: true });
-  mkdirSync(contextPackRoot, { recursive: true });
   mkdirSync(pluginSidecarRoot, { recursive: true });
   const canaryOnly = supportsCurrentCanary
     ? [
@@ -94,7 +92,6 @@ function writePackageRuntimeCanaryFixture(packageRoot: string, supportsCurrentCa
     : `process.exit(process.argv.includes('--forge-release-canary-child') ? 17 : 2);\n`;
   writeFileSync(join(executionRoot, 'process-runner-entry.ts'), canaryOnly);
   writeFileSync(join(executionRoot, 'check-runner-sidecar.ts'), canaryOnly);
-  writeFileSync(join(contextPackRoot, 'context-pack-sidecar.ts'), canaryOnly);
   writeFileSync(join(pluginSidecarRoot, 'plugin-action-sidecar.ts'), canaryOnly);
   writeFileSync(join(runtimeCliRoot, 'entry.ts'), 'process.exit(0);\n');
   writeFileSync(

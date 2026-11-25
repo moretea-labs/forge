@@ -37,7 +37,7 @@ const ALLOWED_FACADE_OPERATIONS: Record<FacadeTool, readonly string[]> = {
   rh_access: ['get', 'preview', 'set'],
   rh_status: ['list', 'get', 'repair'],
   rh_inbox: ['list', 'get', 'ack', 'accept', 'resolve', 'dismiss', 'create'],
-  rh_context: ['list', 'get', 'search'],
+  rh_context: ['list', 'get'],
   rh_work: RH_WORK_MODEL_OPERATIONS,
   capability_execute: ['execute'],
 };

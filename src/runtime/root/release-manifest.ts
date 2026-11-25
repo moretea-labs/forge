@@ -60,7 +60,6 @@ export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
   'browserHandoffEntrypoint', 'browserHandoffArtifactIdentity',
   'processRunnerEntrypoint', 'processRunnerArtifactIdentity',
   'checkRunnerEntrypoint', 'checkRunnerArtifactIdentity',
-  'contextPackEntrypoint', 'contextPackArtifactIdentity',
   'pluginActionSidecarEntrypoint', 'pluginActionSidecarArtifactIdentity',
   'schedulerWorkerEntrypoint', 'schedulerWorkerArtifactIdentity',
   'periodicCleanupEntrypoint', 'periodicCleanupArtifactIdentity',
@@ -199,12 +198,6 @@ export function loadRuntimeReleaseManifest(
     identityField: 'typescriptNavigationArtifactIdentity',
     canonicalEntry: 'forge-typescript-navigation',
   });
-  const contextPack = optionalRuntimeComponent({
-    value,
-    entryField: 'contextPackEntrypoint',
-    identityField: 'contextPackArtifactIdentity',
-    canonicalEntry: 'forge-context-pack',
-  });
   const schedulerWorker = optionalRuntimeComponent({
     value,
     entryField: 'schedulerWorkerEntrypoint',
@@ -295,7 +288,6 @@ export function loadRuntimeReleaseManifest(
     ...(processRunner ?? {}),
     ...(checkRunner ?? {}),
     ...(typescriptNavigation ?? {}),
-    ...(contextPack ?? {}),
     ...(schedulerWorker ?? {}),
     ...(periodicCleanup ?? {}),
     ...(pluginActionSidecar ?? {}),
@@ -342,12 +334,6 @@ export function assertRuntimeReleaseExecutionSurface(
     || !manifest.checkRunnerEntrypoint || !manifest.checkRunnerArtifactIdentity) {
     throw new Error('RUNTIME_RELEASE_PROCESS_RUNTIME_SURFACE_INCOMPLETE: process-runner.js and forge-check-runner are required');
   }
-  // `rh_context` is a core Runtime capability. Every activatable release must
-  // carry its own context-pack sidecar instead of failing open at query time
-  // or borrowing source from another release/checkout.
-  if (!manifest.contextPackEntrypoint || !manifest.contextPackArtifactIdentity) {
-    throw new Error('RUNTIME_RELEASE_CONTEXT_PACK_SURFACE_INCOMPLETE: forge-context-pack is required for rh_context');
-  }
   // Process Runtime's trusted-child fence resolves this exact release-owned
   // path. A package release without it must fail activation, not a plugin
   // action after admission.
@@ -383,12 +369,6 @@ export function assertRuntimeReleaseExecutionSurface(
       name: 'typescript_navigation' as const,
       path: join(releaseRoot, manifest.typescriptNavigationEntrypoint),
       artifactIdentity: manifest.typescriptNavigationArtifactIdentity,
-      canary: 'process_runtime' as const,
-    }] : []),
-    ...(manifest.contextPackEntrypoint && manifest.contextPackArtifactIdentity ? [{
-      name: 'context_pack' as const,
-      path: join(releaseRoot, manifest.contextPackEntrypoint),
-      artifactIdentity: manifest.contextPackArtifactIdentity,
       canary: 'process_runtime' as const,
     }] : []),
     ...(manifest.pluginActionSidecarEntrypoint && manifest.pluginActionSidecarArtifactIdentity ? [{

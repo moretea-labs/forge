@@ -5,10 +5,8 @@ import {
   type SemanticNavigationRequest,
 } from '../../../src/runtime/context/semantic-navigation';
 import { isIncidentalSemanticDependencyProbe } from '../../../src/runtime/context/semantic-navigation-contract';
-import { buildContextClosureReceipt } from '../../../src/runtime/context/context-closure';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { result, serializeResultPayload } from './result-adapter';
-import { boundedRuntimeResult } from './bounded-result-runtime';
 import { selected } from './shared-adapter';
 import { resolveMcpPath } from '../../../src/runtime/safe-tooling/path-policy';
 import {
@@ -24,12 +22,6 @@ import {
   listRecoverableProcessRecords,
   processRuntimeResourceDiagnostics,
 } from '../../../src/runtime/execution/process-runtime';
-import {
-  CONTROLLER_CONTEXT_IMPACT_DOMAINS,
-  type ControllerContextImpactDomain,
-} from '../../../src/runtime/context/context-pack-contract';
-import { buildControllerContextPackInSidecar } from '../../../src/runtime/context/context-pack-process';
-import { isCodeShapedTerm } from '../../../src/cli/controller/context/query-planning';
 import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
 import {
   getAssistantPluginManifest,
@@ -55,7 +47,6 @@ import {
 } from '../../../src/runtime/control-plane/facade';
 import { readForgeInstanceIdentity, type ScopeRef } from '../../../packages/kernel/identity/api/index';
 import { memoryAddressKey } from '../../../packages/kernel/cognition/api/index';
-import { currentControllerInstanceId } from '../../../src/runtime/control-plane/execution/session-store';
 import { resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
 import {
   activateCognitiveMemory,
@@ -65,7 +56,7 @@ import {
   cognitiveUsageFeedbackForContext,
   resolveCognitiveAttention,
 } from '../../../src/runtime/context/cognitive-attention';
-import { invalidFacadeOperation, repositoryExecutionReadiness } from './status-inbox-adapter';
+import { invalidFacadeOperation } from './status-inbox-adapter';
 import { summarizeExecutionJob } from './runtime-tool-shared';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 
@@ -77,16 +68,6 @@ function timestampIsRecent(value: string | undefined, cutoffMs: number): boolean
   if (!value) return false;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && timestamp >= cutoffMs;
-}
-
-function rhContextReadSessionId(ctx: MultiRepositoryMcpToolContext): string | undefined {
-  const principal = ctx.principalId?.trim();
-  if (principal) {
-    const controllerInstance = ctx.controllerInstanceId?.trim() || currentControllerInstanceId();
-    return `controller:${principal}:${controllerInstance}`;
-  }
-  const transportSession = ctx.sessionId?.trim();
-  return transportSession ? `transport:${transportSession}` : undefined;
 }
 
 function rhContextKnowledgeAuditRequested(args: Record<string, unknown>): boolean {
@@ -289,47 +270,6 @@ function rhContextLearningRecall(
 const RH_CONTEXT_SEMANTIC_QUERY_LIMIT = 8;
 
 const RH_CONTEXT_SEMANTIC_LOCATION_LIMIT = 200;
-
-const RH_CONTEXT_LEGACY_SEMANTIC_SYNTAX =
-  '@tsnav references <repo-path>:<line>:<column> | @swiftnav references <repo-path>:<line>:<column>';
-
-type RhContextSemanticNavigationRequest = {
-  navigation: SemanticNavigationKind;
-  path: string;
-  line: number;
-  column: number;
-  tsconfig_path?: string;
-  language?: string;
-};
-
-function rhContextLegacySemanticQuery(query: string): {
-  retrievalQuery: string;
-  requests: RhContextSemanticNavigationRequest[];
-} {
-  const requests: RhContextSemanticNavigationRequest[] = [];
-  const directive =
-    /(?:^|\s)@(tsnav|swiftnav)\s+(definition|references|implementations)\s+([^\s]+):(\d+):(\d+)(?:\s+tsconfig=([^\s]+))?/gi;
-  const retrievalQuery = query
-    .replace(directive, (_match, directiveKind, navigation, path, line, column, tsconfigPath) => {
-      const language = String(directiveKind).toLowerCase() === 'swiftnav' ? 'swift' : 'typescript';
-      requests.push({
-        navigation: String(navigation).toLowerCase() as SemanticNavigationKind,
-        path: String(path),
-        line: Number(line),
-        column: Number(column),
-        language,
-        ...(tsconfigPath ? { tsconfig_path: String(tsconfigPath) } : {}),
-      });
-      return ' ';
-    })
-    .replace(/\s+/g, ' ')
-    .trim();
-  const fallback =
-    requests.length > 0
-      ? `${requests[0]!.language === 'swift' ? 'Swift' : 'TypeScript'} ${requests[0]!.navigation} ${requests[0]!.path}`
-      : query;
-  return { retrievalQuery: retrievalQuery || fallback, requests };
-}
 
 interface RhContextSemanticNavigationProjection {
   requested: number;
@@ -598,6 +538,60 @@ async function rhContextSemanticNavigation(
   };
 }
 
+function rhContextSemanticEvidence(semanticNavigation: RhContextSemanticNavigationProjection) {
+  const locations = semanticNavigation.results.flatMap((entry) => {
+    const target =
+      entry.target && typeof entry.target === 'object' && !Array.isArray(entry.target)
+        ? (entry.target as Record<string, unknown>)
+        : {};
+    const values = Array.isArray(entry.locations) ? entry.locations : [];
+    return values.flatMap((value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+      const location = value as Record<string, unknown>;
+      const path = typeof location.path === 'string' ? location.path : '';
+      const line = typeof location.line === 'number' ? location.line : Number.NaN;
+      const column = typeof location.column === 'number' ? location.column : Number.NaN;
+      if (!path || !Number.isSafeInteger(line) || line < 1 || !Number.isSafeInteger(column) || column < 1) return [];
+      return [
+        {
+          provider: typeof entry.provider === 'string' ? entry.provider : 'unknown',
+          language: typeof entry.language === 'string' ? entry.language : 'unknown',
+          navigation: typeof entry.navigation === 'string' ? entry.navigation : 'unknown',
+          targetPath: typeof target.path === 'string' ? target.path : '',
+          targetLine: typeof target.line === 'number' ? target.line : 0,
+          targetColumn: typeof target.column === 'number' ? target.column : 0,
+          path,
+          line,
+          column,
+          ...(typeof location.name === 'string' ? { name: location.name } : {}),
+          ...(typeof location.kind === 'string' ? { kind: location.kind } : {}),
+        },
+      ];
+    });
+  });
+  const totalLocations = semanticNavigation.results.reduce(
+    (total, entry) =>
+      total +
+      (typeof entry.totalLocations === 'number'
+        ? entry.totalLocations
+        : Array.isArray(entry.locations)
+          ? entry.locations.length
+          : 0),
+    0,
+  );
+  return {
+    requested: semanticNavigation.requested,
+    resultCount: semanticNavigation.results.length,
+    totalLocations,
+    returnedLocations: Math.min(locations.length, RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT),
+    truncated:
+      semanticNavigation.requestTruncated ||
+      locations.length > RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT ||
+      semanticNavigation.results.some((entry) => entry.truncated === true),
+    locations: locations.slice(0, RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT),
+  };
+}
+
 export async function callContextAdapter(
   ctx: MultiRepositoryMcpToolContext,
   name: string,
@@ -609,429 +603,80 @@ export async function callContextAdapter(
   if (!allowedFacadeOperations('rh_context').includes(operation)) {
     return invalidFacadeOperation('rh_context', operation);
   }
-  if (operation === 'search') {
-    const query = typeof args.query === 'string' ? args.query.trim() : '';
-    const knowledgeAuditRequested = rhContextKnowledgeAuditRequested(args);
-    if (!query && !knowledgeAuditRequested) {
-      const facade = buildFacadeResult({
-        status: 'failed',
-        summary: 'rh_context.search requires a non-empty code query or explicit knowledge audit fields.',
-        data: { operation, repoId: repository.repoId },
-        suggestedNextActions: [],
-      });
-      return result(facade as unknown as Record<string, unknown>, true);
-    }
+  const knowledgeAuditRequested = operation === 'get' && rhContextKnowledgeAuditRequested(args);
+  const recallQuery = operation === 'get' && typeof args.query === 'string' ? args.query.trim() : '';
+  const queryVariants = Array.isArray(args.recall_query_variants)
+    ? args.recall_query_variants
+        .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+        .slice(0, 3)
+        .map((value) => value.trim().slice(0, 256))
+    : [];
+  const explicitSemanticNavigation =
+    operation === 'get' && Array.isArray(args.semantic_navigation) ? args.semantic_navigation : [];
+  const advisoryReadRequested =
+    operation === 'get' &&
+    (knowledgeAuditRequested || Boolean(recallQuery) || explicitSemanticNavigation.length > 0);
+
+  if (advisoryReadRequested) {
     const cognitionAudit = knowledgeAuditRequested ? rhContextKnowledgeAudit(ctx, repository, args) : undefined;
-    const includeLearningRecall = args.include_learning_recall !== false;
-    const queryVariants = Array.isArray(args.recall_query_variants)
-      ? args.recall_query_variants
-          .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
-          .slice(0, 3)
-          .map((value) => value.trim().slice(0, 256))
-      : [];
     const learningRecall =
-      query && !knowledgeAuditRequested && includeLearningRecall
-        ? rhContextLearningRecall(ctx, repository, query, queryVariants)
+      recallQuery && !knowledgeAuditRequested && args.include_learning_recall !== false
+        ? rhContextLearningRecall(ctx, repository, recallQuery, queryVariants)
         : undefined;
-    if (!query && cognitionAudit) {
-      const items = Array.isArray(cognitionAudit.items) ? cognitionAudit.items : [];
-      const facade = buildFacadeResult({
-        status: 'ok',
-        summary: `Retrieved ${items.length} bounded learned-memory audit item(s).`,
-        data: { operation, repoId: repository.repoId, cognitionAudit },
-        warnings: [],
-        suggestedNextActions: [],
-        detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
-        rawAvailable: false,
-      });
-      // cognitionAudit is already bounded by scope/item/relation/usage/activation budgets.
-      // Preserve its nested provenance and reasoning rather than letting generic facade depth
-      // bounding turn the read-only audit contract into opaque "[bounded-depth]" markers.
-      (facade.data as typeof facade.data & { cognitionAudit: typeof cognitionAudit }).cognitionAudit = cognitionAudit;
-      return result(facade as unknown as Record<string, unknown>);
-    }
-    const legacySemanticQuery = rhContextLegacySemanticQuery(query);
-    const retrievalQuery = legacySemanticQuery.retrievalQuery;
-    const list = (value: unknown): string[] =>
-      Array.isArray(value)
-        ? value
-            .map(String)
-            .map((entry) => entry.trim())
-            .filter(Boolean)
-        : [];
-    const retrievalMode =
-      args.retrieval_mode === 'plan' || args.retrieval_mode === 'debug' || args.retrieval_mode === 'review'
-        ? args.retrieval_mode
-        : 'implementation';
-    const impactDomains = list(args.impact_domains).filter((domain): domain is ControllerContextImpactDomain =>
-      CONTROLLER_CONTEXT_IMPACT_DOMAINS.includes(domain as ControllerContextImpactDomain),
-    );
-    // CodeGraph is opt-in. Ordinary source location never starts a graph index.
-    const structuralContext =
-      args.structural_context === 'off' || args.structural_context === 'auto' || args.structural_context === 'required'
-        ? args.structural_context
-        : 'off';
-    const requestedCheckIds = list(args.requested_check_ids);
-    // Source retrieval is the default Context responsibility. Check
-    // readiness is only meaningful when the controller has named the
-    // checks it is about to use, so do not pay its Git/dependency/schedule
-    // preflight cost for every broad search.
-    const checks = requestedCheckIds.length > 0 ? listControllerChecks(repository.canonicalRoot) : [];
-    const executionReadiness =
-      requestedCheckIds.length > 0
-        ? repositoryExecutionReadiness(repository.canonicalRoot, checks, requestedCheckIds, {
+    const semanticNavigation =
+      explicitSemanticNavigation.length > 0
+        ? await rhContextSemanticNavigation(repository.canonicalRoot, ctx.policy, explicitSemanticNavigation, {
             repoId: repository.repoId,
             checkoutId: repository.activeCheckoutId,
           })
         : undefined;
-    // GPT supplies repository-language code hints for natural-language intents.
-    // Forge only searches those literal terms; it does not translate or infer semantics.
-    const codeSearchTerms = list(args.search_terms)
-      .filter((term) => term.length <= 160)
-      .slice(0, 8);
-    const exactCodeQuery = !/\s/u.test(retrievalQuery) && isCodeShapedTerm(retrievalQuery);
-    const pack = await buildControllerContextPackInSidecar({
-      repoRoot: repository.canonicalRoot,
-      policy: ctx.policy,
-      options: {
-        description: retrievalQuery,
-        // Only an actual single code identifier is an implicit exact needle.
-        // Prose (including mixed-language queries) stays in description; the
-        // model supplies matching source-language hints through search_terms.
-        searchTerms: codeSearchTerms.length ? codeSearchTerms : exactCodeQuery ? [retrievalQuery] : undefined,
-        knownPaths: list(args.known_paths),
-        includeGlobs: list(args.include_globs),
-        excludeGlobs: list(args.exclude_globs),
-        maxFiles: typeof args.max_files === 'number' ? args.max_files : undefined,
-        maxSnippets: typeof args.max_snippets === 'number' ? args.max_snippets : undefined,
-        structuralContext,
-        retrievalMode,
-        impactDomains,
-        session: rhContextReadSessionId(ctx)
-          ? {
-              sessionId: rhContextReadSessionId(ctx)!,
-              repoId: repository.repoId,
-              checkoutId: repository.activeCheckoutId,
-            }
-          : undefined,
-      },
-    });
-    const explicitSemanticNavigation = Array.isArray(args.semantic_navigation) ? args.semantic_navigation : [];
-    const semanticRequests = [...explicitSemanticNavigation, ...legacySemanticQuery.requests];
-    const semanticNavigation = {
-      ...(await rhContextSemanticNavigation(repository.canonicalRoot, ctx.policy, semanticRequests, {
-        repoId: repository.repoId,
-        checkoutId: repository.activeCheckoutId,
-      })),
-      requestSource:
-        explicitSemanticNavigation.length > 0 && legacySemanticQuery.requests.length > 0
-          ? 'schema_and_query'
-          : explicitSemanticNavigation.length > 0
-            ? 'semantic_navigation'
-            : legacySemanticQuery.requests.length > 0
-              ? 'query_compatibility'
-              : 'none',
-      compatibilityQuerySyntax: RH_CONTEXT_LEGACY_SEMANTIC_SYNTAX,
-    };
-    // Keep actionable source locations in a shallow, bounded projection. The
-    // generic facade's depth budget otherwise replaces nested LSP locations
-    // with opaque [bounded-depth] markers, hiding the very evidence requested.
-    const semanticEvidence =
-      semanticNavigation.requested > 0
-        ? (() => {
-            const locations = semanticNavigation.results.flatMap((entry) => {
-              const target =
-                entry.target && typeof entry.target === 'object' && !Array.isArray(entry.target)
-                  ? (entry.target as Record<string, unknown>)
-                  : {};
-              const values = Array.isArray(entry.locations) ? entry.locations : [];
-              return values.flatMap((value) => {
-                if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
-                const location = value as Record<string, unknown>;
-                const path = typeof location.path === 'string' ? location.path : '';
-                const line = typeof location.line === 'number' ? location.line : Number.NaN;
-                const column = typeof location.column === 'number' ? location.column : Number.NaN;
-                if (!path || !Number.isSafeInteger(line) || line < 1 || !Number.isSafeInteger(column) || column < 1)
-                  return [];
-                return [
-                  {
-                    provider: typeof entry.provider === 'string' ? entry.provider : 'unknown',
-                    language: typeof entry.language === 'string' ? entry.language : 'unknown',
-                    navigation: typeof entry.navigation === 'string' ? entry.navigation : 'unknown',
-                    targetPath: typeof target.path === 'string' ? target.path : '',
-                    targetLine: typeof target.line === 'number' ? target.line : 0,
-                    targetColumn: typeof target.column === 'number' ? target.column : 0,
-                    path,
-                    line,
-                    column,
-                    ...(typeof location.name === 'string' ? { name: location.name } : {}),
-                    ...(typeof location.kind === 'string' ? { kind: location.kind } : {}),
-                  },
-                ];
-              });
-            });
-            const totalLocations = semanticNavigation.results.reduce(
-              (total, entry) =>
-                total +
-                (typeof entry.totalLocations === 'number'
-                  ? entry.totalLocations
-                  : Array.isArray(entry.locations)
-                    ? entry.locations.length
-                    : 0),
-              0,
-            );
-            return {
-              requested: semanticNavigation.requested,
-              resultCount: semanticNavigation.results.length,
-              totalLocations,
-              returnedLocations: Math.min(locations.length, RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT),
-              truncated:
-                semanticNavigation.requestTruncated ||
-                locations.length > RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT ||
-                semanticNavigation.results.some((entry) => entry.truncated === true),
-              locations: locations.slice(0, RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT),
-            };
-          })()
-        : undefined;
-    const semanticReasonCodes = Array.from(
-      new Set([
-        ...semanticNavigation.errors.map((entry) => `semantic.${String(entry.code ?? 'provider_error').toLowerCase()}`),
-        ...(semanticNavigation.requestTruncated ? ['semantic.request_truncated'] : []),
-        ...(semanticNavigation.policyDeniedLocations > 0 || semanticNavigation.materialPolicyDeniedReads > 0
-          ? ['semantic.policy_denied']
-          : []),
-        ...(semanticNavigation.freshness === 'changed_during_query' ? ['semantic.source_changed_during_query'] : []),
-        ...(semanticNavigation.requested > 0 &&
-        semanticNavigation.staticClosure.status !== 'complete_for_requested_symbols'
-          ? ['semantic.static_closure_incomplete']
-          : []),
-      ]),
-    );
-    const semanticUnavailable =
-      semanticNavigation.requested > 0 &&
-      semanticNavigation.results.length === 0 &&
-      semanticNavigation.errors.length > 0 &&
-      semanticNavigation.errors.every((entry) =>
-        /UNAVAILABLE|NOT_AVAILABLE|NOT_READY|MISSING|NOT_FOUND|BUILD_SETTINGS|BUILD_SERVER/i.test(
-          String(entry.code ?? ''),
-        ),
-      );
-    const semanticReadinessStatus =
-      semanticNavigation.requested === 0
-        ? ('not_requested' as const)
-        : semanticNavigation.results.length === 0 && semanticNavigation.errors.length > 0
-          ? semanticUnavailable
-            ? ('unavailable' as const)
-            : ('error' as const)
-          : semanticNavigation.staticClosure.status === 'complete_for_requested_symbols' &&
-              semanticReasonCodes.length === 0
-            ? ('ready' as const)
-            : ('partial' as const);
-    const readinessStatus =
-      pack.readiness.status === 'insufficient'
-        ? ('insufficient' as const)
-        : semanticReadinessStatus === 'unavailable' || semanticReadinessStatus === 'error'
-          ? ('insufficient' as const)
-          : pack.readiness.status === 'degraded' || semanticReadinessStatus === 'partial'
-            ? ('degraded' as const)
-            : ('ready' as const);
-    const readiness = {
-      ...pack.readiness,
-      status: readinessStatus,
-      semantic: { status: semanticReadinessStatus, reasonCodes: semanticReasonCodes },
-      unresolvedReasonCodes: Array.from(
-        new Set([...pack.readiness.unresolvedReasonCodes, ...semanticReasonCodes]),
-      ).slice(0, 80),
-      readyForHighConfidenceMutation: readinessStatus === 'ready',
-    };
-    const contextClosure = buildContextClosureReceipt({
-      repoRoot: repository.canonicalRoot,
-      query: retrievalQuery,
-      pack: { ...pack, readiness },
-      semanticNavigation,
-      semanticProviders: defaultSemanticProviderRegistry.list(),
-      includeRecentChanges: retrievalMode !== 'implementation',
-    });
-    const warnings =
-      structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
-        ? [
-            pack.structuralContext.fallbackReason ??
-              'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.',
-          ]
-        : [];
-    // Omitted paths and readiness are factual evidence, not a tool-authored
-    // next query. The caller decides which gaps matter and issues each follow-up.
-    // Source-language interpretation belongs to the model, not the lexical
-    // retriever. Don't invent translations or silently broaden a user query.
-    // Warn only when a non-English cold start returned no implementation owner.
-    const nonEnglishColdStart =
-      /\p{Script=Han}/u.test(retrievalQuery) &&
-      codeSearchTerms.length === 0 &&
-      list(args.known_paths).length === 0 &&
-      !pack.files.some((file) => /\.(?:ts|tsx|js|jsx|swift|py|rs|go|java|kt|c|cc|cpp|h|hpp|cs|rb)$/i.test(file.path));
-    if (nonEnglishColdStart) {
-      warnings.push(
-        'No implementation source found from the non-English query alone; source-language code terms were not supplied, so documentation-only results do not establish implementation coverage.',
-      );
-    }
-    if (readiness.status !== 'ready' && pack.omitted.length === 0) {
-      warnings.push(
-        'Search evidence is incomplete; unresolved reason codes identify the remaining materialization or coverage limits.',
-      );
-    }
-    const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
-    const isSummary = detailLevel === 'summary';
+    const semanticEvidence = semanticNavigation ? rhContextSemanticEvidence(semanticNavigation) : undefined;
+    const semanticFailed =
+      Boolean(semanticNavigation) &&
+      semanticNavigation!.requested > 0 &&
+      semanticNavigation!.results.length === 0 &&
+      semanticNavigation!.errors.length > 0;
+    const detailLevel =
+      args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
+    const auditItems =
+      cognitionAudit && Array.isArray(cognitionAudit.items) ? cognitionAudit.items.length : 0;
     const facade = buildFacadeResult({
-      status: 'ok',
-      summary: pack.files.length
-        ? `Retrieved ${pack.files.length} bounded code context file(s) for the query.`
-        : 'No bounded code context matched the query.',
+      status: semanticFailed ? 'failed' : 'ok',
+      summary: semanticNavigation
+        ? `Returned explicit semantic navigation for ${semanticNavigation.executed}/${semanticNavigation.requested} request(s).`
+        : cognitionAudit
+          ? `Retrieved ${auditItems} bounded learned-memory audit item(s).`
+          : 'Retrieved bounded advisory Cognitive context.',
       data: {
         operation,
         repoId: repository.repoId,
-        goal: pack.goal,
-        search: isSummary
-          ? {
-              terms: pack.search.terms,
-              truncated: pack.search.truncated,
-              evidenceTruncated: pack.search.evidenceTruncated,
-            }
-          : pack.search,
-        ...(!isSummary || structuralContext !== 'off' ? { structuralContext: pack.structuralContext } : {}),
-        ...(!isSummary || impactDomains.length > 0 || retrievalMode !== 'implementation'
-          ? { impactContext: pack.impactContext }
-          : {}),
-        ...(!isSummary || semanticNavigation.requested > 0 ? { semanticNavigation } : {}),
-        ...(semanticEvidence ? { semanticEvidence } : {}),
-        contextClosure,
-        // The original context pack already resolves and bounds repository
-        // guidance. Surface that *content* to the model; paths-only closure
-        // receipts proved discovery but did not let an assistant read rules.
-        instructionContext: pack.instructionContext,
-        readiness,
-        files: pack.files,
-        coverage: isSummary
-          ? {
-              exactKnownPaths: pack.coverage.exactKnownPaths,
-              unresolvedRelationships: pack.coverage.unresolvedRelationships,
-              skippedCandidates: pack.coverage.skippedCandidates,
-              likelyRelatedNotInspectedCount: pack.coverage.likelyRelatedNotInspected.length,
-            }
-          : pack.coverage,
-        deniedPaths: pack.deniedPaths,
-        limits: pack.limits,
-        ...(isSummary
-          ? {
-              omittedCandidateCount: pack.omitted.length,
-              detailPointer: { tool: 'rh_context', arguments: { ...args, detail_level: 'detail' } },
-            }
-          : {
-              expansion: pack.expansion,
-              cache: pack.cache,
-              timingsMs: pack.timingsMs,
-              omitted: pack.omitted,
-              contextContract: pack.contextContract,
-              retrievalPolicy: {
-                defaultBackend: 'bounded_lexical',
-                structuralBackend: 'retired',
-                rawReadTool: 'read_repository_file',
-                shellSearchFallbackOnly: true,
-                executionReadiness: 'requested_check_ids_only',
-              },
-            }),
+        sourceSearch: {
+          retired: true,
+          searchWith: ['execute_command', 'read_repository_file'],
+        },
         ...(cognitionAudit ? { cognitionAudit } : {}),
         ...(learningRecall ? { learningRecall } : {}),
-        ...(executionReadiness
-          ? {
-              executionReadiness,
-              registeredChecks: checks.slice(0, 80).map((check) => ({
-                id: check.id,
-                description: check.description,
-                source: check.source,
-                effects: check.effects,
-              })),
-            }
-          : {}),
+        ...(semanticNavigation ? { semanticNavigation } : {}),
+        ...(semanticEvidence ? { semanticEvidence } : {}),
       },
-      warnings,
+      warnings: [],
       suggestedNextActions: [],
       detailLevel,
-      rawAvailable: true,
+      rawAvailable: false,
     });
-    // ContextClosureReceipt already enforces bounded paths, tests, skills, semantic providers,
-    // and reason codes. Generic facade depth bounding is appropriate for exploratory context,
-    // but it must not corrupt this runtime-issued round-trip contract because rh_work validates
-    // the exact full receipt digest supplied by the Controller during engineering re-entry.
-    (facade.data as typeof facade.data & { contextClosure: typeof contextClosure }).contextClosure = contextClosure;
-    // Keep the already-owned instruction pack readable in the MCP response.
-    // The generic facade bounds nested strings to 1k characters and otherwise
-    // silently hides the design rules after they have been found on disk.
-    const readableInstructions = {
-      ...pack.instructionContext,
-      contracts: pack.instructionContext.contracts.map((contract) => {
-        const limit = isSummary
-          ? /(?:^|\/)(?:DESIGN\.md|design\/[^/]+\.md)$/i.test(contract.path)
-            ? 6_000
-            : 1_600
-          : contract.content.length;
-        return {
-          ...contract,
-          content: contract.content.slice(0, limit),
-          truncated: contract.truncated || contract.content.length > limit,
-        };
-      }),
-    };
-    (facade.data as typeof facade.data & { instructionContext: typeof readableInstructions }).instructionContext =
-      readableInstructions;
-    // Like source guidance, the bounded Cognitive working set must retain
-    // provenance and rejection feedback; generic nested depth bounding drops
-    // these details exactly when conflicting memories need inspection.
-    if (learningRecall) {
-      (facade.data as typeof facade.data & { learningRecall: typeof learningRecall }).learningRecall = learningRecall;
-    }
-    if (semanticEvidence) {
-      (facade.data as typeof facade.data & { semanticEvidence: typeof semanticEvidence }).semanticEvidence =
-        semanticEvidence;
-    }
-    // Individual snippets are bounded, but broad searches can still aggregate
-    // a very large direct MCP payload. Keep ContextClosure authority inline and
-    // externalize only the heavy file collection through the existing Result Store.
-    const boundedFiles = boundedRuntimeResult(
-      {
-        controllerHome: ctx.controllerHome,
-        repoId: repository.repoId,
-        sessionId: ctx.sessionId,
-        principalId: ctx.principalId,
-        controllerInstanceId: ctx.controllerInstanceId,
-      },
-      pack.files,
-    );
     const data = facade.data as typeof facade.data & {
-      files: typeof pack.files;
-      filesResult?: unknown;
-      filesTruncated?: boolean;
-      fileCount?: number;
-      filePreview?: Array<{ path: string; reasons: string[]; hitLines: number[]; snippetCount: number }>;
+      cognitionAudit?: typeof cognitionAudit;
+      learningRecall?: typeof learningRecall;
+      semanticNavigation?: typeof semanticNavigation;
+      semanticEvidence?: typeof semanticEvidence;
     };
-    if (boundedFiles.externalized) {
-      data.files = [];
-      data.filesResult = boundedFiles.value;
-      data.filesTruncated = true;
-      data.fileCount = pack.files.length;
-      data.filePreview = pack.files.slice(0, 10).map((file) => ({
-        path: file.path,
-        reasons: file.reasons.slice(0, 4),
-        hitLines: file.hitLines.slice(0, 12),
-        snippetCount: file.snippetCount,
-      }));
-    } else {
-      data.files = pack.files;
-    }
-    if (cognitionAudit) {
-      (facade.data as typeof facade.data & { cognitionAudit: typeof cognitionAudit }).cognitionAudit = cognitionAudit;
-    }
-    return result(facade as unknown as Record<string, unknown>);
+    if (cognitionAudit) data.cognitionAudit = cognitionAudit;
+    if (learningRecall) data.learningRecall = learningRecall;
+    if (semanticNavigation) data.semanticNavigation = semanticNavigation;
+    if (semanticEvidence) data.semanticEvidence = semanticEvidence;
+    return result(facade as unknown as Record<string, unknown>, semanticFailed);
   }
+
   const startedAt = performance.now();
   const requestedCapabilityId = typeof args.capability_id === 'string' ? args.capability_id.trim() : '';
   if (requestedCapabilityId) {

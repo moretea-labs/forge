@@ -456,8 +456,6 @@ function assertImmutablePackageRuntimeRelease(input: {
   processRunnerLauncher: string;
   checkRunnerPath: string;
   checkRunnerLauncher: string;
-  contextPackPath: string;
-  contextPackLauncher: string;
   pluginActionSidecarPath: string;
   pluginActionSidecarLauncher: string;
   manifestPath: string;
@@ -478,7 +476,6 @@ function assertImmutablePackageRuntimeRelease(input: {
   assertFile(input.entrypointPath, input.launcher, 'runtime launcher', true);
   assertFile(input.processRunnerPath, input.processRunnerLauncher, 'process runner launcher', true);
   assertFile(input.checkRunnerPath, input.checkRunnerLauncher, 'check runner launcher', true);
-  assertFile(input.contextPackPath, input.contextPackLauncher, 'context pack launcher', true);
   assertFile(input.pluginActionSidecarPath, input.pluginActionSidecarLauncher, 'plugin action sidecar launcher', true);
   if (!existsSync(input.manifestPath)) throw new Error('PACKAGE_RUNTIME_RELEASE_IMMUTABILITY_VIOLATION: manifest is missing');
   const manifestStat = lstatSync(input.manifestPath);
@@ -499,8 +496,6 @@ function assertImmutablePackageRuntimeRelease(input: {
     && manifest.processRunnerArtifactIdentity === expected.processRunnerArtifactIdentity
     && manifest.checkRunnerEntrypoint === expected.checkRunnerEntrypoint
     && manifest.checkRunnerArtifactIdentity === expected.checkRunnerArtifactIdentity
-    && manifest.contextPackEntrypoint === expected.contextPackEntrypoint
-    && manifest.contextPackArtifactIdentity === expected.contextPackArtifactIdentity
     && manifest.pluginActionSidecarEntrypoint === expected.pluginActionSidecarEntrypoint
     && manifest.pluginActionSidecarArtifactIdentity === expected.pluginActionSidecarArtifactIdentity
     && JSON.stringify(manifest.arguments ?? []) === JSON.stringify(expected.arguments ?? [])
@@ -566,13 +561,6 @@ export function materializePackageRuntimeRelease(input: {
     entryRelativePath: 'src/runtime/execution/process-runtime/check-runner-sidecar.ts',
   });
   const checkRunnerArtifactIdentity = `sha256:${sha256(Buffer.from(checkRunnerLauncher))}`;
-  const contextPackEntrypoint = 'forge-context-pack' as const;
-  const contextPackPath = join(releaseRoot, contextPackEntrypoint);
-  const contextPackLauncher = launcherSource({
-    indexSha256,
-    entryRelativePath: 'adapters/mcp/runtime-gateway/context-pack-sidecar.ts',
-  });
-  const contextPackArtifactIdentity = `sha256:${sha256(Buffer.from(contextPackLauncher))}`;
   const pluginActionSidecarEntrypoint = 'forge-plugin-action-sidecar' as const;
   const pluginActionSidecarPath = join(releaseRoot, pluginActionSidecarEntrypoint);
   const pluginActionSidecarLauncher = launcherSource({
@@ -589,8 +577,6 @@ export function materializePackageRuntimeRelease(input: {
     processRunnerArtifactIdentity,
     checkRunnerEntrypoint,
     checkRunnerArtifactIdentity,
-    contextPackEntrypoint,
-    contextPackArtifactIdentity,
     pluginActionSidecarEntrypoint,
     pluginActionSidecarArtifactIdentity,
     packageRoot: 'package',
@@ -609,14 +595,13 @@ export function materializePackageRuntimeRelease(input: {
     + Buffer.byteLength(launcher)
     + Buffer.byteLength(processRunnerLauncher)
     + Buffer.byteLength(checkRunnerLauncher)
-    + Buffer.byteLength(contextPackLauncher)
     + Buffer.byteLength(pluginActionSidecarLauncher)
     + Buffer.byteLength(JSON.stringify({ ...expectedManifest, createdAt: new Date(0).toISOString() }));
   let executionCanariesValidated = false;
   const assertExisting = () => assertImmutablePackageRuntimeRelease({
     releaseRoot, packageRoot, records, indexPath, indexJson, entrypointPath, launcher,
     processRunnerPath, processRunnerLauncher, checkRunnerPath, checkRunnerLauncher,
-    contextPackPath, contextPackLauncher, pluginActionSidecarPath, pluginActionSidecarLauncher,
+    pluginActionSidecarPath, pluginActionSidecarLauncher,
     manifestPath, expectedManifest,
   });
 
@@ -640,8 +625,6 @@ export function materializePackageRuntimeRelease(input: {
       chmodSync(join(stagingRoot, processRunnerEntrypoint), 0o700);
       writeAtomicTextFile(join(stagingRoot, checkRunnerEntrypoint), checkRunnerLauncher, 0o700);
       chmodSync(join(stagingRoot, checkRunnerEntrypoint), 0o700);
-      writeAtomicTextFile(join(stagingRoot, contextPackEntrypoint), contextPackLauncher, 0o700);
-      chmodSync(join(stagingRoot, contextPackEntrypoint), 0o700);
       writeAtomicTextFile(join(stagingRoot, pluginActionSidecarEntrypoint), pluginActionSidecarLauncher, 0o700);
       chmodSync(join(stagingRoot, pluginActionSidecarEntrypoint), 0o700);
       const manifest: RuntimeReleaseManifest = { ...expectedManifest, createdAt: new Date().toISOString() };

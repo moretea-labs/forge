@@ -113,10 +113,7 @@ try {
   const independentStartedAt = performance.now();
   const independent = await callRuntimeTool(ctx, 'rh_context', {
     repo_id: repository.repoId,
-    operation: 'search',
-    query: 'backgroundFixture',
-    known_paths: ['src/fixture.ts'],
-    structural_context: 'off',
+    operation: 'get',
   });
   const independentOperationLatencyMs = performance.now() - independentStartedAt;
   const independentPayload = independent?.structuredContent as { data?: Record<string, unknown> } | undefined;
@@ -124,7 +121,7 @@ try {
   const independentRetrievalPolicy = independentData?.retrievalPolicy as Record<string, unknown> | undefined;
   // The default summary intentionally omits the detail-only retrievalPolicy
   // object; its absence is not evidence that execution preflight was performed.
-  const sourceRetrievalSkippedExecutionPreflight =
+  const repositoryContextSkippedExecutionPreflight =
     independentData?.executionReadiness === undefined &&
     independentData?.registeredChecks === undefined &&
     (independentRetrievalPolicy === undefined ||
@@ -188,7 +185,7 @@ try {
       startPayload?.path === 'process_managed' &&
       initialHandleLatencyMs <= MAX_INITIAL_HANDLE_LATENCY_MS,
     independentUsefulOperation: independent?.isError !== true,
-    sourceRetrievalSkipsExecutionPreflight: sourceRetrievalSkippedExecutionPreflight,
+    sourceRetrievalSkipsExecutionPreflight: repositoryContextSkippedExecutionPreflight,
     noPollingBeforeDependencyBoundary: processWaitCallsBeforeDependencyBoundary === 0,
     oneDependencyJoin: finalSynchronizationCount === 1,
     exactlyOnce: physicalExecutionCount === 1,
@@ -213,10 +210,10 @@ try {
       initialManagedHandleLatencyMs: Number(initialHandleLatencyMs.toFixed(2)),
       processWaitCallsBeforeDependencyBoundary,
       independentOperation: {
-        tool: 'rh_context.search',
+        tool: 'rh_context.get',
         latencyMs: Number(independentOperationLatencyMs.toFixed(2)),
         completed: independent?.isError !== true,
-        executionPreflight: sourceRetrievalSkippedExecutionPreflight ? 'not_requested' : 'unexpected',
+        executionPreflight: repositoryContextSkippedExecutionPreflight ? 'not_requested' : 'unexpected',
       },
       finalSynchronizationCount,
       finalJoinDurationMs: resultObservedAtMs - joinStartedAtMs,

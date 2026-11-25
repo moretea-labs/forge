@@ -163,7 +163,6 @@ function executionSurfaceFixture(input: {
     ['forge-runtime', runtime],
     ['process-runner.js', processRunner],
     ['forge-check-runner', checkRunner],
-    ['forge-context-pack', requiredSidecar],
     ['forge-plugin-action-sidecar', requiredSidecar],
   ] as const) {
     writeFileSync(join(releaseRoot, name), content);
@@ -178,8 +177,6 @@ function executionSurfaceFixture(input: {
     processRunnerArtifactIdentity: `sha256:${sha256Text(processRunner)}`,
     checkRunnerEntrypoint: 'forge-check-runner',
     checkRunnerArtifactIdentity: `sha256:${sha256Text(checkRunner)}`,
-    contextPackEntrypoint: 'forge-context-pack',
-    contextPackArtifactIdentity: `sha256:${sha256Text(requiredSidecar)}`,
     pluginActionSidecarEntrypoint: 'forge-plugin-action-sidecar',
     pluginActionSidecarArtifactIdentity: `sha256:${sha256Text(requiredSidecar)}`,
     arguments: [],
@@ -203,7 +200,6 @@ describe('immutable Runtime Process Runtime execution surface', () => {
     expect(surface.entries.map((entry) => entry.name)).toEqual([
       'process_runner',
       'check_runner',
-      'context_pack',
       'plugin_action_sidecar',
     ]);
     expect(await runPersistedCheckSidecar(['--forge-release-canary-child'])).toBe(0);
@@ -644,7 +640,6 @@ describe('runtime release materialization', () => {
       'process_runner',
       'check_runner',
       'typescript_navigation',
-      'context_pack',
       'plugin_action_sidecar',
       'scheduler_worker',
       'periodic_cleanup',
@@ -857,9 +852,6 @@ describe('runtime release materialization', () => {
     const typescriptNavigationPath = join(staged.releasePath, 'forge-typescript-navigation');
     expect(existsSync(typescriptNavigationPath)).toBe(true);
     expect(staged.typescriptNavigationArtifactIdentity).toMatch(/^sha256:/);
-    const contextPackPath = join(staged.releasePath, 'forge-context-pack');
-    expect(existsSync(contextPackPath)).toBe(true);
-    expect(staged.contextPackArtifactIdentity).toMatch(/^sha256:/);
     const runtimeBundlePath = join(staged.releasePath, 'forge-runtime-bundle.js');
     expect(existsSync(runtimeBundlePath)).toBe(true);
     expect(readFileSync(runtimeBundlePath, 'utf8')).toBe('runtime-bundle');
@@ -891,8 +883,6 @@ describe('runtime release materialization', () => {
     expect(manifest.checkRunnerArtifactIdentity).toBe(staged.checkRunnerArtifactIdentity);
     expect(manifest.typescriptNavigationEntrypoint).toBe('forge-typescript-navigation');
     expect(manifest.typescriptNavigationArtifactIdentity).toBe(staged.typescriptNavigationArtifactIdentity);
-    expect(manifest.contextPackEntrypoint).toBe('forge-context-pack');
-    expect(manifest.contextPackArtifactIdentity).toBe(staged.contextPackArtifactIdentity);
     expect(manifest.externalPluginProbeEntrypoint).toBe('external-unix-socket-probe.cjs');
     expect(manifest.externalPluginProbeArtifactIdentity).toBe(staged.externalPluginProbeArtifactIdentity);
     expect(existsSync(join(staged.releasePath, 'package', 'package.json'))).toBe(true);

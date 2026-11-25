@@ -1,471 +1,87 @@
-# 工具使用最佳实践指南
+# Forge 工具使用最佳实践
 
-## 目的
+## 目标与边界
 
-指导模型（Claude/Codex）如何高效、自然地使用 Forge 提供的工具和终端能力，避免不必要的抽象和复杂流程。
+Forge 是模型的本地执行环境，不是替模型理解代码的检索代理。**模型负责决定搜什么、为什么搜、何时扩大范围；Forge 提供直接、可靠的 Shell、文件读取、编辑和验证能力。**
 
-## 核心原则
+- 源码发现默认使用 `execute_command` 执行 Shell 命令。
+- 精确阅读使用 `read_repository_file`，按路径和行范围读取。
+- `rh_context` 不再提供源码搜索、候选排序、源码片段打包或 Context Closure。
+- CodeGraph / 结构索引不属于当前源码发现路径。
+- `rh_context.list` 用于能力发现；`rh_context.get` 用于仓库/运行状态，以及显式的 Cognitive 召回或符号导航。
+- Cognitive 记忆只提供建议，不授予权限、执行或验收权。
 
-### 1. 简单操作直接使用终端
+## 默认检索循环
 
-**优先**使用简单、直接的终端命令，而不是复杂的工具。
-
-✅ **推荐**：
-```bash
-# 搜索代码
-grep -r "function prepareWork" src/
-
-# 查找文件
-find src -name "*work*.ts" -type f
-
-# 查看文件
-cat src/file.ts
-
-# Git 操作
-git status
-git log --oneline -10
-git diff
-```
-
-❌ **避免**：
-```typescript
-// 不要总是使用复杂工具
-rh_context.search({ query: "prepareWork", mode: "implementation" })
-```
-
-### 2. 何时使用高级工具
-
-仅在确实需要结构化信息或复杂分析时使用高级工具。
-
-#### rh_context.search
-
-**使用场景**：
-- 需要理解代码结构和关系
-- 需要跨文件的上下文
-- 需要类型定义和依赖
-
-**示例**：
-```typescript
-// 理解复杂的模块关系
-rh_context.search({
-  query: "Work preparation flow",
-  mode: "plan",
-  structural_context: true
-})
-```
-
-#### codegraph explore
-
-**使用场景**：
-- 追踪函数调用链
-- 理解复杂的依赖关系
-- 分析架构模式
-
-**示例**：
-```typescript
-codegraph_explore({
-  query: "beginEditSession ResourceLease Process Runtime",
-  maxFiles: 10
-})
-```
-
-### 3. 工作流选择
-
-根据任务复杂度选择合适的工作流。
-
-#### 简单任务（90%场景）
+从小范围开始，沿着实际证据逐步扩展，不要先构建一份大而全的 Context Pack。
 
 ```bash
-# 直接在当前分支工作
-grep -r "TODO" src/
-vim src/file.ts
-npm test
-git commit -am "fix: issue"
+# 1. 按文件名定位
+rg --files src | rg 'repository|context|scheduler'
+
+# 2. 搜索函数、类型、字段或日志标识
+rg -n -C 3 'runProcess|ProcessRecord|contextClosure' src adapters tests
+
+# 3. 查看命中位置附近的真实源码
+sed -n '120,220p' src/runtime/example.ts
+
+# 4. 追踪调用方、实现方和测试
+rg -n 'runProcess\(' src adapters tests
+rg -n 'ProcessRecord' src packages tests
+
+# 5. 查看当前修改和历史
+git status --short
+git diff -- src/runtime/example.ts
+git log -S 'runProcess' --oneline -- src/runtime/example.ts
 ```
 
-**无需**：
-- 任何准备/生命周期步骤（Work / WorkHandle / WorkContract 已物理退役）
-- 多层验证
+随后使用 `read_repository_file` 对确定的路径做精确读取。大型文件优先读取相关范围；需要完整理解类型、状态机或协议时，再扩大到完整文件。
 
-#### 中等与复杂任务
+## 如何逐步扩大搜索
 
-同样直接在 canonical checkout 上工作：读取最新源码 → 编辑 → 运行定向检查 → 精确路径提交。
-长期目标、用户决策与进度只记录在现有 GitHub Issue/Project；不要为隔离而新建任务分支、worktree 或 Work Queue。
-并发 Writer 修改同一文件时，写入前重新读取最新内容并语义合并，不覆盖他人改动（#713）。
+1. **入口**：从用户可见行为、命令、工具名、路由、公开 API 或界面事件开始。
+2. **实现**：搜索调用的函数、状态字段、事件、持久化和副作用。
+3. **反向调用**：查找所有 callers、注册点、调度器、transport 和未修改的入口。
+4. **验证面**：搜索相关测试、fixture、脚本、文档、配置和发布清单。
+5. **停止条件**：模型能够解释真实数据流、所有相关入口和受影响验证面后停止；发现新依赖或源码变化时再定向扩展。
 
-## 常见场景指南
+中文需求对应英文标识符时，由模型自行提炼英文函数名、类型名、字段名和业务短语，分别检索。不要期待 Forge 自动翻译或语义推断。
 
-### 场景 1: 搜索代码
+## 什么时候使用 rh_context
 
-**目标**：找到包含特定模式的代码
+### 能力发现
 
-**推荐方案**：
-```bash
-# 简单搜索
-grep -r "prepareWork" src/
+`rh_context.list` 可按自然语言意图查找可用的 typed capability，再使用对应的执行器。它不是源码搜索入口。
 
-# 带上下文
-grep -r -A 5 -B 5 "prepareWork" src/
+### 仓库与运行状态
 
-# 排除特定目录
-grep -r "prepareWork" src/ --exclude-dir=node_modules
+`rh_context.get` 返回有界仓库、检查项、进程和待处理事项摘要。仅在这些状态会影响当前决策时调用，不作为每次编辑的固定前置步骤。
 
-# 只搜索特定文件类型
-grep -r "prepareWork" --include="*.ts" src/
+### Cognitive 召回
 
-# 使用正则表达式
-grep -rE "function (prepare|create)Work" src/
-```
+当历史项目决策、用户纠正或已知经验可能改变当前判断时，才通过 `rh_context.get` 的 query 显式召回。记忆是 advisory；模型需要核对当前源码和最新用户决定，不能把旧记忆当作当前事实。
 
-**何时升级到 rh_context**：
-- 需要理解代码结构
-- 需要类型信息
-- 需要跨文件上下文
+### 编译器符号导航
 
-### 场景 2: 查找文件
+当已经定位到具体文件和符号，并且需要准确的定义、引用或实现关系时，可在 `rh_context.get` 中显式提供 `semantic_navigation`（path、line、column、navigation）。这是按需 LSP，不是普通搜索的默认步骤。
 
-**目标**：找到特定的文件
+- TypeScript 使用短生命周期 Language Service。
+- Swift 使用现有 SourceKit-LSP/build settings；Forge 不会为导航隐式触发构建。
+- 其他语言仅在已安装语言服务器和项目环境可用时导航。
+- 返回结果必须结合当前源码验证；LSP 结果不是代码或验收权威。
 
-**推荐方案**：
-```bash
-# 按名称查找
-find src -name "work-preparation*.ts"
+## 编辑与验证
 
-# 按类型查找
-find src -type f -name "*.ts"
+- 已知路径的修改优先使用 `capability_execute(repository.direct_edit)` 的 sessionless atomic CAS。
+- Shell 用于搜索、阅读辅助、Git 和本地命令；不要通过宽泛脚本覆盖未知或其他 Writer 的 dirty。
+- 写入前核对目标文件最新内容，只对真实重叠片段做语义合并。
+- 选择与改动风险相称的定向测试、构建或运行验证。编译通过不等于模拟器或真机验收。
+- 复用当前会话已读取的源码和测试结果；只有文件变化或证据不足时才重读，不要每轮重新做全仓库搜索。
 
-# 最近修改的文件
-find src -name "*.ts" -mtime -7
+## 不要做的事
 
-# 组合条件
-find src -name "*.ts" -not -path "*/node_modules/*" -mtime -1
-```
-
-**何时升级到工具**：
-- 需要按内容搜索
-- 需要语义搜索
-
-### 场景 3: 理解代码
-
-**目标**：理解函数/模块的工作原理
-
-**方案选择**：
-
-**简单理解**（直接阅读）：
-```bash
-# 查看函数
-cat src/file.ts | grep -A 50 "function prepareWork"
-
-# 查看文件
-cat src/work-preparation-service.ts
-
-# 查看特定行
-sed -n '100,150p' src/file.ts
-```
-
-**深度理解**（使用工具）：
-```typescript
-// 追踪调用链
-codegraph_explore({
-  query: "prepareWork validation flow"
-})
-
-// 获取结构化上下文
-rh_context.search({
-  query: "prepareWork implementation",
-  structural_context: true
-})
-```
-
-### 场景 4: 修改代码
-
-**目标**：修改一个或多个文件
-
-**简单修改**（1-2 个文件）：
-```bash
-# 直接编辑
-vim src/file.ts
-
-# 或使用工具
-apply_patch({
-  path: "src/file.ts",
-  changes: [...]
-})
-```
-
-**批量修改**（多个文件）：
-```bash
-# 使用 sed 批量替换
-find src -name "*.ts" -exec sed -i 's/oldName/newName/g' {} +
-
-# 或用 grep + vim
-grep -r "oldName" src/ -l | xargs vim
-```
-
-### 场景 5: 运行测试
-
-**目标**：验证代码修改
-
-**推荐方案**：
-```bash
-# 运行所有测试
-npm test
-
-# 运行特定测试
-npm test -- --test-name-pattern="work"
-
-# 运行单个文件
-npm test tests/work.test.ts
-
-# 监视模式
-npm test -- --watch
-```
-
-**无需**：
-- 复杂的验证工作流
-- 多层测试编排
-
-### 场景 6: Git 操作
-
-**目标**：版本控制操作
-
-**推荐方案**：
-```bash
-# 查看状态
-git status
-
-# 查看历史
-git log --oneline -20
-git log --grep="work" -10
-
-# 查看差异
-git diff
-git diff HEAD~1
-
-# 提交
-git add src/file.ts
-git commit -m "fix: issue"
-
-# 分支操作
-git checkout -b feature/new-feature
-git branch -d old-branch
-```
-
-**长期跟踪**：使用现有 GitHub Issue；审计依据是 Git 提交历史本身，不创建 Work。
-
-## 命令组合示例
-
-### 示例 1: 快速 Bug 修复
-
-```bash
-# 1. 搜索问题
-grep -r "buggy function" src/
-
-# 2. 查看文件
-cat src/problematic-file.ts
-
-# 3. 修改
-vim src/problematic-file.ts
-
-# 4. 测试
-npm test -- --test-name-pattern="problematic"
-
-# 5. 提交
-git add src/problematic-file.ts
-git commit -m "fix: resolve issue with buggy function"
-```
-
-**耗时**：< 5 分钟  
-**无需**：准备步骤、复杂验证
-
-### 示例 2: 功能重构
-
-```bash
-# 1. 理解当前代码
-codegraph_explore({
-  query: "target module structure"
-})
-
-# 2. 批量修改
-find src -name "*.ts" -exec sed -i 's/oldAPI/newAPI/g' {} +
-
-# 3. 测试
-npm test
-
-# 4. 提交
-git add src/
-git commit -m "refactor: modernize API"
-```
-
-**耗时**：10-30 分钟  
-**使用**：Git diff 本身即变更证据
-
-### 示例 3: 新功能开发
-
-```bash
-# 1. 在现有 GitHub Issue 记录目标与验收标准
-# 2. 在 canonical main 上分小步开发、测试、精确路径提交（多次迭代）
-# 3. 在 Issue 中记录交付证据并关闭
-```
-
-**耗时**：数小时到数天  
-**使用**：GitHub Issue 追踪 + Git 历史
-
-## 性能最佳实践
-
-### 1. 避免重复工具调用
-
-❌ **低效**：
-```typescript
-// 每次都查询
-const status1 = rh_context.search({ query: "module A" });
-const status2 = rh_context.search({ query: "module A" }); // 重复
-```
-
-✅ **高效**：
-```typescript
-// 查询一次，复用结果
-const status = rh_context.search({ query: "module A B C" });
-// 从结果中提取需要的信息
-```
-
-### 2. 使用缓存的信息
-
-✅ **利用 Git 状态缓存**：
-```typescript
-// 连续操作自动使用缓存（5秒内）
-work_prepare({ isolation: 'reuse' });  // Git 查询
-// ... 其他操作
-work_inspect({ work_id: '...' });      // 使用缓存
-```
-
-### 3. 批量操作
-
-❌ **低效**：
-```bash
-# 逐个文件搜索
-grep "pattern" file1.ts
-grep "pattern" file2.ts
-grep "pattern" file3.ts
-```
-
-✅ **高效**：
-```bash
-# 一次搜索多个文件
-grep "pattern" file1.ts file2.ts file3.ts
-
-# 或使用通配符
-grep "pattern" src/**/*.ts
-```
-
-## 决策树
-
-使用此决策树选择合适的方法：
-
-```
-任务复杂度？
-├─ 简单（读文件、搜索、查看状态）
-│  └─ 使用终端命令（grep、cat、git）
-│
-├─ 中等（快速编辑、小重构）
-│  └─ 轻量级会话 + 终端命令
-│
-└─ 复杂（新功能、大重构、需要隔离）
-   └─ 完整 Work + 结构化工具
-```
-
-```
-搜索需求？
-├─ 简单文本搜索
-│  └─ grep -r "pattern" src/
-│
-├─ 需要上下文和结构
-│  └─ rh_context.search()
-│
-└─ 需要调用链和依赖
-   └─ codegraph_explore()
-```
-
-```
-修改范围？
-├─ 1-2 个文件
-│  └─ 直接编辑或 apply_patch
-│
-├─ 3-10 个文件
-│  └─ 轻量级会话 + 批量编辑
-│
-└─ 大范围重构
-   └─ 完整 Work + 结构化工具
-```
-
-## 反模式
-
-### ❌ 反模式 1: 过度使用高级工具
-
-```typescript
-// 不好：简单查询使用复杂工具
-rh_context.search({
-  query: "find TODO comments",
-  mode: "implementation",
-  structural_context: true,
-  max_results: 100
-})
-
-// 好：直接用 grep
-grep -r "TODO" src/
-```
-
-### ❌ 反模式 2: 总是创建 Work
-
-```typescript
-// 不好：简单修改也创建 Work
-work_prepare({
-  isolation: 'new_worktree',
-  objective: 'Fix typo'
-})
-
-// 好：直接修改
-vim src/file.ts
-git commit -am "fix: typo"
-```
-
-### ❌ 反模式 3: 重复读取相同信息
-
-```bash
-# 不好：每次都重新查询
-git status
-# ... 操作
-git status  # 重复
-# ... 操作
-git status  # 重复
-```
-
-## 工具速查表
-
-| 需求 | 简单方案（推荐） | 高级方案 |
-|------|------------------|----------|
-| **搜索文本** | `grep -r "pattern" src/` | `rh_context.search()` |
-| **查找文件** | `find src -name "*.ts"` | `rh_context.search()` |
-| **查看文件** | `cat file.ts` | `Read({ file_path })` |
-| **理解代码** | `cat + grep` | `codegraph_explore()` |
-| **修改文件** | `vim` | `apply_patch()` |
-| **Git 状态** | `git status` | `work_inspect()` |
-| **运行测试** | `npm test` | `execute_command()` |
-| **快速修改** | 直接编辑 | 轻量级会话 |
-| **大重构** | 轻量级会话 | 完整 Work |
-
-## 总结
-
-**核心理念**：
-1. **简单操作用简单工具**：grep、find、cat、git
-2. **需要理解用高级工具**：rh_context、codegraph
-3. **按需使用 Work**：90% 场景不需要完整 Work
-4. **性能优先**：避免重复调用，利用缓存
-
-**记住**：
-- 快速 > 完美
-- 直接 > 抽象
-- 终端 > 工具（大多数情况）
-- 轻量 > 重量（除非必要）
-
-遵循这些原则，你的工作流会更快、更自然、更高效。
+- 不调用已退役的 `rh_context.search`。
+- 不恢复 Context Pack、Context Closure、CodeGraph 或另一套源码候选索引。
+- 不为普通任务自动加载大量源码、历史记录或所有关联模块。
+- 不因结果数量、Top-N、命中率或单次检索返回成功就宣称语义完整。
+- 不把 Cognitive 召回、Capability discovery 或 LSP 导航混成普通源码搜索。

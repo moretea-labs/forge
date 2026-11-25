@@ -162,7 +162,7 @@ async function main(): Promise<void> {
           usable: checkpointNonOk.length === 0,
           environment: generatedHome ? 'synthetic_controller_home' : 'supplied_controller_home',
         },
-        runtimeRestartContextClosure: {
+        runtimeRestartContextRead: {
           status: 'not_measured',
           reason: 'This local benchmark does not own Runtime restart authority; Mac Recovery certification must bind restart-to-first-usable-context latency to the activated revision.',
         },

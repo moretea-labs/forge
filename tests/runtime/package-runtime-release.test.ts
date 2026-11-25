@@ -65,10 +65,6 @@ function fixture(targetPackageRoot?: string): { home: string; packageRoot: strin
   writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 1;\n');
   writeFileSync(join(packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'export const adapter = 1;\n');
   writeFileSync(
-    join(packageRoot, 'adapters', 'mcp', 'runtime-gateway', 'context-pack-sidecar.ts'),
-    "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge context-pack release canary'); process.exit(0); } process.exit(2);\n",
-  );
-  writeFileSync(
     join(packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'),
     'export const scheduler = 1;\n',
   );
@@ -180,11 +176,9 @@ describe('package Runtime release immutability', () => {
     const manifest = JSON.parse(readFileSync(release.manifestPath, 'utf8')) as Record<string, string>;
     expect(manifest.processRunnerEntrypoint).toBe('process-runner.js');
     expect(manifest.checkRunnerEntrypoint).toBe('forge-check-runner');
-    expect(manifest.contextPackEntrypoint).toBe('forge-context-pack');
     expect(manifest.pluginActionSidecarEntrypoint).toBe('forge-plugin-action-sidecar');
     expect(manifest.processRunnerArtifactIdentity).toMatch(/^sha256:/);
     expect(manifest.checkRunnerArtifactIdentity).toMatch(/^sha256:/);
-    expect(manifest.contextPackArtifactIdentity).toMatch(/^sha256:/);
     expect(manifest.pluginActionSidecarArtifactIdentity).toMatch(/^sha256:/);
     expect(
       spawnSync(join(release.releaseRoot, 'process-runner.js'), ['--forge-release-canary-child'], { encoding: 'utf8' })
@@ -192,10 +186,6 @@ describe('package Runtime release immutability', () => {
     ).toBe(0);
     expect(
       spawnSync(join(release.releaseRoot, 'forge-check-runner'), ['--forge-release-canary-child'], { encoding: 'utf8' })
-        .status,
-    ).toBe(0);
-    expect(
-      spawnSync(join(release.releaseRoot, 'forge-context-pack'), ['--forge-release-canary-child'], { encoding: 'utf8' })
         .status,
     ).toBe(0);
     expect(

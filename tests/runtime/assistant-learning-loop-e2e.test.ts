@@ -302,11 +302,9 @@ describe('connected assistant learning loops', () => {
 
     const routineFollowup = await callRuntimeTool(ctx, 'rh_context', {
       repo_id: fx.repository.repoId,
-      operation: 'search',
+      operation: 'get',
       query: 'continue inspecting the already chosen Local System route',
       include_learning_recall: false,
-      max_files: 2,
-      max_snippets: 2,
     });
     expect(routineFollowup?.isError).not.toBe(true);
     const routineFollowupPayload = routineFollowup?.structuredContent as Record<string, any>;
@@ -329,7 +327,7 @@ describe('connected assistant learning loops', () => {
 
     const audit = await callRuntimeTool(ctx, 'rh_context', {
       repo_id: fx.repository.repoId,
-      operation: 'search',
+      operation: 'get',
       knowledge_memory_id: memoryId,
       knowledge_limit: 4,
     });
@@ -341,10 +339,8 @@ describe('connected assistant learning loops', () => {
     // a high lexical score must not hide that a memory was rejected or stale.
     const refreshedRecall = await callRuntimeTool(ctx, 'rh_context', {
       repo_id: fx.repository.repoId,
-      operation: 'search',
+      operation: 'get',
       query: 'Local System capability',
-      max_files: 2,
-      max_snippets: 2,
     });
     const refreshedItem = (
       (refreshedRecall?.structuredContent ?? {}) as Record<string, any>
@@ -366,7 +362,7 @@ describe('connected assistant learning loops', () => {
     expect(duplicateFeedback?.isError).not.toBe(true);
     const duplicateAudit = await callRuntimeTool(ctx, 'rh_context', {
       repo_id: fx.repository.repoId,
-      operation: 'search',
+      operation: 'get',
       knowledge_memory_id: memoryId,
       knowledge_limit: 4,
     });

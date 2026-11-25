@@ -453,8 +453,14 @@ describe('repository MCP command tools', () => {
         apply?: { argumentsSchema?: { properties?: Record<string, unknown> } };
       };
     };
-    expect(rhContext?.description).toContain('model chooses');
-    expect(rhContext?.description).not.toContain('fallback-only');
+    expect(rhContext?.description).toContain('Source-code discovery is intentionally not provided');
+    expect(rhContext?.description).toContain('execute_command');
+    const rhContextProperties = rhContext?.inputSchema.properties as Record<string, unknown>;
+    expect((rhContextProperties.operation as { enum?: string[] })?.enum).toEqual(['list', 'get']);
+    expect(rhContextProperties.search_terms).toBeUndefined();
+    expect(rhContextProperties.known_paths).toBeUndefined();
+    expect(rhContextProperties.structural_context).toBeUndefined();
+    expect(rhContextProperties.semantic_navigation).toBeDefined();
     expect(rhWork?.description).toContain('optional durable Requirement/Plan semantic context');
     expect(rhWork?.description).not.toContain('WorkHandle');
     expect(rhWork?.description).not.toContain('WorkContract');
@@ -485,7 +491,7 @@ describe('repository MCP command tools', () => {
       | undefined;
     expect(applyOperations?.items?.properties?.type?.enum).toEqual(planOperations?.items?.properties?.type?.enum);
     expect(applyProperties).toHaveProperty('check_ids');
-    expect(applyProperties).toHaveProperty('validation_only');
+    expect(applyProperties).not.toHaveProperty('validation_only');
     for (const retired of [
       'repository_goal_list',
       'repository_goal_upsert',

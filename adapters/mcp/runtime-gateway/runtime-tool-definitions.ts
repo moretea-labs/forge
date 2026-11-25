@@ -1,6 +1,5 @@
 import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
 import { REQUIREMENT_PRIORITIES, REQUIREMENT_STATES } from '../../../packages/kernel/goal/api/index';
-import { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../../src/runtime/context/context-pack-contract';
 import { RH_WORK_MODEL_OPERATIONS } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../../src/runtime/context/automatic-learning';
 
@@ -79,7 +78,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'rh_context',
-    'Read-only semantic repository retrieval and advisory context, including source snippets, paths, symbols, relationships and optional project knowledge. Requested compiler navigation locations are returned as bounded flat semanticEvidence.locations alongside navigation diagnostics. The model chooses whether semantic retrieval is needed and when its evidence is sufficient; no mandatory retrieval router or tool sequence is imposed. Reuse known context within the conversation; retrieve only changed or missing evidence. For cross-module changes or retirement of an old mechanism, start with broad source candidates, trace newly discovered callers/indirect entry points using targeted search and explicit semantic_navigation references, and revisit related tests and docs. When readiness identifies omitted or truncated material evidence, decide which gaps affect the original goal and read those exact paths rather than assuming the first result is complete; narrow local edits need no repeated broad search. Execution facts still require live verification at the operation boundary. This tool does not authorize execution or impose a required workflow.',
+    'Read-only repository advisory context. Use operation=list for capability discovery and operation=get for bounded repository status, explicit Cognitive memory reads, or explicit compiler/LSP symbol navigation. Source-code discovery is intentionally not provided here: the model searches current source directly with execute_command (for example rg/find/git) and reads exact files with read_repository_file. This tool does not authorize execution or impose a workflow.',
     {
       repo_id: repoId,
       checkout_id: {
@@ -88,38 +87,29 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       },
       operation: {
         type: 'string',
-        enum: ['list', 'get', 'search'],
-        description:
-          'Defaults to get. Search returns semantic source candidates when the model selects this retrieval capability.',
+        enum: ['list', 'get'],
+        description: 'Defaults to get. Source search is retired; use execute_command/read_repository_file for code discovery.',
       },
       query: {
         type: 'string',
         description:
-          'Code/content intent for operation=search. For operation=list, a natural-language capability intent such as "configure Xcode provisioning" returns ranked read-only capability candidates while execution remains on the capability\'s typed executor. Frozen-schema clients may append @tsnav or @swiftnav references|definition|implementations <repo-path>:<line>:<column> for compiler/LSP-backed semantic navigation.',
-      },
-      search_terms: {
-        type: 'array',
-        maxItems: 8,
-        items: { type: 'string', maxLength: 160 },
-        description:
-          'Optional model-selected literal code-search terms, ordered by likely relevance. Preserve query as the original user intent; for non-English or descriptive questions about source written in another language, infer repository-language identifiers/phrases (such as the relevant function name, file symbol, or operation keyword) and supply them here. Forge uses bounded lexical ripgrep matching, not automatic translation or semantic embeddings. Refine terms or known_paths when initial candidates are insufficient; a broad non-English query alone may not match English identifiers.',
+          'For operation=list, a natural-language capability intent. For operation=get, an optional Cognitive recall query; it never searches source code.',
       },
       include_learning_recall: {
         type: 'boolean',
         description:
-          'Defaults to true for semantic task/capability queries. Set false for routine progressive source follow-ups or micro-steps when the already recalled working set is still valid. This is a model-owned attention/cadence choice, not a Forge semantic trigger.',
+          'For an operation=get query, include a bounded advisory Cognitive working set. Defaults to true when a query is supplied.',
       },
       recall_query_variants: {
         type: 'array',
         maxItems: 3,
         items: { type: 'string', maxLength: 256 },
-        description:
-          'Optional model-authored equivalent Cognitive recall queries, including translations. Forge only performs bounded lexical retrieval, preserves scope and provenance, and never generates language translations, embeddings or semantic judgements. Requires a normal query and active learning recall.',
+        description: 'Optional model-authored equivalent Cognitive recall queries, including translations.',
       },
       knowledge_query: {
         type: 'string',
         description:
-          'Optional explicit read-only Cognitive audit query. Ordinary code/capability intent queries already receive a bounded relevant-learning recall; use this field for deliberate memory inspection. May be used without code query. Use "*" or omit text with filters to list learned advisory memory in scopes reachable from this repo.',
+          'Optional explicit read-only Cognitive audit query. Use "*" or omit text with filters to list learned advisory memory in scopes reachable from this repo.',
       },
       knowledge_memory_id: { type: 'string', description: 'Optional exact Cognitive memory id for inspection.' },
       knowledge_scope_kind: {
@@ -142,40 +132,13 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
         type: 'number',
         minimum: 1,
         maximum: 100,
-        description:
-          'Per-call read envelope for explicit Cognitive audit/expansion; defaults to 24. This is a context/transport budget, not a semantic claim that N memories are sufficient.',
-      },
-      known_paths: {
-        type: 'array',
-        items: { type: 'string' },
-        description:
-          'Optional exact paths or globs that should receive highest retrieval priority. Prefer exact file reads when paths are already known; use retrieval only for missing or changed evidence.',
-      },
-      include_globs: { type: 'array', items: { type: 'string' } },
-      exclude_globs: { type: 'array', items: { type: 'string' } },
-      retrieval_mode: {
-        type: 'string',
-        enum: ['implementation', 'plan', 'debug', 'review'],
-        description:
-          'Defaults to implementation. Implementation returns current raw impact evidence for ChatGPT to judge; plan/debug/review intentionally widen evidence.',
-      },
-      impact_domains: {
-        type: 'array',
-        items: { type: 'string', enum: [...CONTROLLER_CONTEXT_IMPACT_DOMAINS] },
-        description:
-          'Optional GPT-selected cross-cutting evidence dimensions. Forge expands these mechanically in the same retrieval call; it never treats them as proof of semantic completeness.',
-      },
-      structural_context: {
-        type: 'string',
-        enum: ['off', 'auto', 'required'],
-        description:
-          'Optional override. Defaults to off for all modes; explicitly opt in only for structural investigations.',
+        description: 'Per-call read envelope for explicit Cognitive audit/expansion; defaults to 24.',
       },
       semantic_navigation: {
         type: 'array',
         maxItems: 8,
         description:
-          'Optional bounded semantic navigation through the provider registry. TypeScript uses a short-lived release-owned Language Service sidecar so compiler/project allocator growth never remains resident in the canonical Runtime; Swift uses SourceKit-LSP only with existing build settings; registered generic LSP providers currently cover Rust, Go, Python, and C/C++ when their language-server executable and project root markers already exist. Providers start lazily only for explicit semantic requests; Forge never installs a server, triggers a build, or treats language-server output as source authority.',
+          'Optional explicit compiler/LSP navigation. Providers start lazily only for requested definition/reference/implementation lookups; this does not perform repository search.',
         items: {
           type: 'object',
           required: ['navigation', 'path', 'line', 'column'],
@@ -193,13 +156,10 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
           },
         },
       },
-      max_files: { type: 'number' },
-      max_snippets: { type: 'number' },
       requested_check_ids: {
         type: 'array',
         items: { type: 'string' },
-        description:
-          'Optional execution preflight. When supplied, returns registered checks plus dependency and resource-compatible scheduling readiness; omit for source-only retrieval.',
+        description: 'Optional registered checks to include in repository execution-readiness status.',
       },
       capability_id: {
         type: 'string',
@@ -209,8 +169,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       detail_level: {
         type: 'string',
         enum: ['summary', 'detail', 'raw'],
-        description:
-          'Defaults to summary. Source search keeps snippets, exact provenance and readiness/gaps; detail/raw adds retrieval diagnostics and candidate lists. Expand only when those diagnostics can change the next decision; raw is still bounded.',
+        description: 'Defaults to summary. Expand only when repository/capability diagnostics can change the next decision.',
       },
     },
   ),

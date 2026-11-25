@@ -44,7 +44,6 @@ import {
   initializeStandaloneRecovery,
   isPrimaryTunnelControlPlaneOnlyDegradation,
   loadRecoveryConfig,
-  legacyStableContextPackUpgradeBaseline,
   observeOpenAiTunnelLocalHealthFallback,
   recoveryCommandEnvironment,
   recoveryMachineIdentity,
@@ -612,53 +611,6 @@ test('Runtime ownership liveness still reports an exact live schema-v2 owner', (
   });
 });
 
-test('historical Stable A permits only the exact pre-context-pack omission to seed strict Candidate B', () => {
-  const baseline: VerifyResult = {
-    ok: false,
-    at: new Date(0).toISOString(),
-    runtime: { ok: true, running: true, ready: true, stale: false, reasonCodes: [] },
-    releases: {
-      coherent: true,
-      active: { revision: 'package-1.8.2-historical' } as VerifyResult['releases']['active'],
-    },
-    probes: {
-      runtime_status: { ok: true, detail: 'live' },
-      runtime_execution_surface: {
-        ok: false,
-        detail: 'RUNTIME_RELEASE_CONTEXT_PACK_SURFACE_INCOMPLETE: forge-context-pack is required for rh_context',
-      },
-      active_gateway: { ok: true, detail: 'HTTP 200' },
-      mcp_initialize: { ok: true, detail: 'verified' },
-    },
-  };
-  expect(legacyStableContextPackUpgradeBaseline(baseline)).toBe(true);
-  expect(legacyStableContextPackUpgradeBaseline({ ...baseline, ok: true })).toBe(false);
-  expect(legacyStableContextPackUpgradeBaseline({ ...baseline, runtime: { ...baseline.runtime, ok: false } })).toBe(
-    false,
-  );
-  expect(
-    legacyStableContextPackUpgradeBaseline({ ...baseline, releases: { ...baseline.releases, coherent: false } }),
-  ).toBe(false);
-  expect(
-    legacyStableContextPackUpgradeBaseline({ ...baseline, releases: { ...baseline.releases, active: undefined } }),
-  ).toBe(false);
-  expect(
-    legacyStableContextPackUpgradeBaseline({
-      ...baseline,
-      probes: { ...baseline.probes, active_gateway: { ok: false, detail: 'down' } },
-    }),
-  ).toBe(false);
-  expect(
-    legacyStableContextPackUpgradeBaseline({
-      ...baseline,
-      probes: {
-        ...baseline.probes,
-        runtime_execution_surface: { ok: false, detail: 'RUNTIME_RELEASE_PROCESS_RUNTIME_SURFACE_INCOMPLETE' },
-      },
-    }),
-  ).toBe(false);
-});
-
 test('Recovery OpenAI reachability measures direct and configured proxy paths separately and treats HTTP 401 as reachable', async () => {
   const observedEnvironments: NodeJS.ProcessEnv[] = [];
   const result = await probeOpenAiApiReachability(
@@ -1188,8 +1140,6 @@ function runtimeServiceConfig(home: string): void {
 function writeReleaseExecutionSurface(releaseRoot: string): {
   processRunnerArtifactIdentity: string;
   checkRunnerArtifactIdentity: string;
-  contextPackEntrypoint: 'forge-context-pack';
-  contextPackArtifactIdentity: string;
   pluginActionSidecarEntrypoint: 'forge-plugin-action-sidecar';
   pluginActionSidecarArtifactIdentity: string;
 } {
@@ -1204,12 +1154,8 @@ function writeReleaseExecutionSurface(releaseRoot: string): {
   chmodSync(checkRunnerPath, 0o700);
   const sidecar = '#!/bin/sh\nexit 0\n';
   const sidecarIdentity = `sha256:${createHash('sha256').update(sidecar).digest('hex')}`;
-  for (const name of ['forge-context-pack', 'forge-plugin-action-sidecar']) {
-    writeFileSync(join(releaseRoot, name), sidecar, { mode: 0o700 });
-  }
+  writeFileSync(join(releaseRoot, 'forge-plugin-action-sidecar'), sidecar, { mode: 0o700 });
   return {
-    contextPackEntrypoint: 'forge-context-pack',
-    contextPackArtifactIdentity: sidecarIdentity,
     pluginActionSidecarEntrypoint: 'forge-plugin-action-sidecar',
     pluginActionSidecarArtifactIdentity: sidecarIdentity,
     processRunnerArtifactIdentity: `sha256:${createHash('sha256').update(processRunner).digest('hex')}`,

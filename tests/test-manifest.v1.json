@@ -203,10 +203,6 @@
       "module": "workflow",
       "resource": "git-worktree"
     },
-    "tests/cli/instruction-context.test.ts": {
-      "module": "controller",
-      "resource": "temp-isolated"
-    },
     "tests/cli/legacy-control-plane-cutover.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
@@ -495,14 +491,6 @@
       "module": "browser",
       "resource": "pure"
     },
-    "tests/runtime/context-closure.test.ts": {
-      "module": "controller",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/context-pack-readiness.test.ts": {
-      "module": "controller",
-      "resource": "git-worktree"
-    },
     "tests/runtime/context-plane.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
@@ -630,10 +618,6 @@
     "tests/runtime/goal-authority-convergence.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
-    },
-    "tests/runtime/governance-rule-resolution.test.ts": {
-      "module": "controller",
-      "resource": "temp-isolated"
     },
     "tests/runtime/handoff-inbox-authority.test.ts": {
       "module": "controller",

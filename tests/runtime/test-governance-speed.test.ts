@@ -566,15 +566,6 @@ describe('execution-speed test governance', () => {
       args: ['scripts/check-candidate-type.ts'],
       timeoutMs: 10 * 60_000,
     });
-    expect(
-      stepsFor('task').some(
-        (step) =>
-          !('gate' in step) &&
-          step.label === 'context pack readiness regression' &&
-          step.command === 'bun' &&
-          step.args.join(' ') === 'test tests/runtime/context-pack-readiness.test.ts',
-      ),
-    ).toBe(true);
     expect(stepsFor('task').some((step) => !('gate' in step) && step.label === 'affected tests')).toBe(true);
     expect(stepsFor('task')).toContainEqual({
       label: 'module boundaries',

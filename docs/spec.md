@@ -7,12 +7,12 @@
 
 Forge is an executable local engineering harness for a semantic controller. It should make repository understanding, implementation, verification, and external tool use faster and more reliable without turning ordinary coding into a durable workflow system.
 
-The controller owns semantic judgement: what the user means, whether more context is needed, what to change, and whether the result is correct. Forge owns deterministic repository mechanics, bounded context retrieval, execution, provider actions, verification evidence, and durable continuity only when continuity is actually required.
+The controller owns semantic judgement: what the user means, whether more context is needed, what to change, and whether the result is correct. Forge owns deterministic repository mechanics, direct Shell and exact file-read tools, execution, provider actions, verification evidence, and durable continuity only when continuity is actually required.
 
 ## Product principles
 
 - **Direct-first**: ordinary investigation, edits, local commands, builds, and focused checks should use the shortest safe local path.
-- **Current source is truth**: Git/worktree source is authoritative for code. `rh_context` and CodeGraph help retrieve evidence; they do not define semantic scope.
+- **Current source is truth**: Git/worktree source is authoritative for code. The model searches it directly through Shell and exact file reads; `rh_context` is not a source-search or context-packing service.
 - **Durability is selective**: Work and durable Process state exist for real multi-session continuity, independent deliverables, scheduling, release/recovery, or external coordination—not because a task is large or difficult.
 - **One authority per concern**: diagnostics, compatibility projections, tests, plans, reviews, and historical records must not become competing runtime or product authorities.
 - **External effects are explicit**: remote, destructive, or non-idempotent actions remain permission- and evidence-bounded and are never silently replayed after ambiguous outcomes.
@@ -20,7 +20,7 @@ The controller owns semantic judgement: what the user means, whether more contex
 
 ## Core user outcomes
 
-1. Understand a repository through bounded raw-source retrieval with optional structural and compiler-semantic navigation.
+1. Understand a repository through model-directed Shell search and exact file reads, with optional compiler-backed symbol navigation.
 2. Execute ordinary local work through Ephemeral Direct with minimal fixed overhead.
 3. Attach to longer current-Runtime commands through Lightweight Managed handles without promoting them to durable recovery state.
 4. Use durable Work/Process only when the task actually needs continuity or orchestration.

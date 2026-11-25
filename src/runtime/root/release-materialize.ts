@@ -69,7 +69,6 @@ export interface StagedRuntimeRelease {
   processRunnerArtifactIdentity?: string;
   checkRunnerArtifactIdentity?: string;
   typescriptNavigationArtifactIdentity?: string;
-  contextPackArtifactIdentity?: string;
   schedulerWorkerArtifactIdentity?: string;
   periodicCleanupArtifactIdentity?: string;
   pluginActionSidecarArtifactIdentity?: string;
@@ -981,24 +980,6 @@ export function stageRuntimeRelease(
     chmodSync(typescriptNavigationPath, 0o700);
     const typescriptNavigationArtifactIdentity = `sha256:${sha256(typescriptNavigationPath)}`;
 
-    const contextPackEntrypoint = 'forge-context-pack' as const;
-    const contextPackPath = join(staging, contextPackEntrypoint);
-    const contextPackCompile = compileBinary({
-      sourceRoot,
-      outputPath: contextPackPath,
-      entryPath: join(sourceRoot, 'adapters/mcp/runtime-gateway/context-pack-sidecar.ts'),
-    });
-    if (!contextPackCompile.ok) {
-      throw new Error(
-        `RUNTIME_RELEASE_CONTEXT_PACK_BUILD_FAILED: ${contextPackCompile.stderr || contextPackCompile.stdout || contextPackCompile.error}`.slice(
-          0,
-          2_000,
-        ),
-      );
-    }
-    chmodSync(contextPackPath, 0o700);
-    const contextPackArtifactIdentity = `sha256:${sha256(contextPackPath)}`;
-
     const schedulerWorkerEntrypoint = 'forge-scheduler-worker' as const;
     const schedulerWorkerPath = join(staging, schedulerWorkerEntrypoint);
     const schedulerWorkerCompile = compileBinary({
@@ -1101,8 +1082,6 @@ export function stageRuntimeRelease(
       checkRunnerArtifactIdentity,
       typescriptNavigationEntrypoint,
       typescriptNavigationArtifactIdentity,
-      contextPackEntrypoint,
-      contextPackArtifactIdentity,
       schedulerWorkerEntrypoint,
       schedulerWorkerArtifactIdentity,
       periodicCleanupEntrypoint,
@@ -1146,7 +1125,6 @@ export function stageRuntimeRelease(
       processRunnerArtifactIdentity,
       checkRunnerArtifactIdentity,
       typescriptNavigationArtifactIdentity,
-      contextPackArtifactIdentity,
       schedulerWorkerArtifactIdentity,
       periodicCleanupArtifactIdentity,
       pluginActionSidecarArtifactIdentity,
@@ -1449,12 +1427,6 @@ export function assertRuntimeReleaseFiles(
     path: join(release.releasePath, 'forge-typescript-navigation'),
     identity: release.typescriptNavigationArtifactIdentity,
     missingCode: 'RUNTIME_RELEASE_TYPESCRIPT_NAVIGATION_MISSING',
-    executable: true,
-  });
-  assertComponentFile({
-    path: join(release.releasePath, 'forge-context-pack'),
-    identity: release.contextPackArtifactIdentity,
-    missingCode: 'RUNTIME_RELEASE_CONTEXT_PACK_MISSING',
     executable: true,
   });
   assertComponentFile({
