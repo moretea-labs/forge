@@ -23,6 +23,8 @@ function fixture(options: {
   actionExit?: number;
   terminalInitiallyFocused?: boolean;
   terminalFocusNeverSucceeds?: boolean;
+  terminalWindowFocusAction?: boolean;
+  terminalWindowClickAction?: boolean;
   accessibilityDeviceName?: string;
   openButtonCount?: number;
 } = {}) {
@@ -75,6 +77,11 @@ function fixture(options: {
           identifier: 'TerminalWindow',
           name: 'session1',
           state: { focused: terminalFocused },
+          ...((options.terminalWindowFocusAction || options.terminalWindowClickAction) ? {
+            ref: 'terminal-window-1',
+            target: { interactionId: 'ix-1', pid: 90766, bundleIdentifier: config.uuBundleId, appName: 'UU远程', windowRef: 'terminal-window', snapshotRevision: 1 },
+            actions: options.terminalWindowFocusAction ? ['focus'] : ['click'],
+          } : {}),
           children: [{ role: 'AXStaticText', value: config.device.name }],
         },
       ],
@@ -87,8 +94,24 @@ function fixture(options: {
   const desktopCall = async (_config: unknown, _requestId: string, action: string, args: Record<string, unknown>) => {
     desktopCalls.push({ action, args });
     if (action === 'desktop_session_open') return { interaction_id: 'ix-1' };
-    if (action === 'computer_element_observe') return elementObservation();
+    if (action === 'computer_element_observe') {
+      if (keySent) {
+        const decoded = decodeRemoteScript(command);
+        const begin = decoded.match(/__FORGE_UU_RESCUE_BEGIN_[a-f0-9]+__/)?.[0] ?? '';
+        const end = decoded.match(/__FORGE_UU_RESCUE_END_[a-f0-9]+__/)?.[0] ?? '';
+        const records = [
+          'distro_b64|' + Buffer.from('Ubuntu-24.04').toString('base64'),
+          'controller_home_present|1', 'control_plane_present|1', 'runtime_owner_present|1', 'runtime_status_present|1', 'connector_authority_present|1', 'recovery_config_present|1',
+          'migration_json_b64|' + Buffer.from(JSON.stringify([{ status: 'applied', sourceHome: '/old', destinationHome: TEST_LINUX_HOME + '/.forge/controller' }])).toString('base64'),
+          'action_exit|' + (options.actionExit ?? 0),
+          'service|runtime|loaded|active|running|101', 'service|connector|loaded|active|running|102', 'service|recoveryGateway|loaded|active|running|103', 'service|recoveryWatchdog|loaded|active|running|104', 'service|independentRecovery|loaded|active|running|105',
+        ].join('\n');
+        return { tree: command + '\n' + begin + '\n' + records + '\n' + end };
+      }
+      return elementObservation();
+    }
     if (action === 'computer_element_action') {
+      if (['focus', 'click'].includes(String(args.action)) && args.ref === 'terminal-window-1' && !options.terminalFocusNeverSucceeds) terminalFocused = true;
       if (args.action === 'invoke' && String(args.ref).startsWith('open-terminal-') && !options.terminalFocusNeverSucceeds) terminalFocused = true;
       return { method: 'AXPress_background', ref: args.ref, semantic_action: args.action };
     }
@@ -156,6 +179,14 @@ describe('UU Remote rescue helper', () => {
     });
   });
 
+  test('reads result markers from the same bound accessibility observer used for focus proof', async () => {
+    const fx = fixture({ terminalInitiallyFocused: true });
+    await executeAction('forge_health', {}, config, { ...fx, requestId: 'bound-observe-1' });
+    const resultObserves = fx.desktopCalls.filter((call) => call.action === 'computer_element_observe');
+    expect(resultObserves.length).toBeGreaterThanOrEqual(2);
+    expect(fx.desktopCalls.some((call) => call.action === 'desktop_observe')).toBe(false);
+  });
+
   test('returns structured Forge health and never returns the prior clipboard', async () => {
     const fx = fixture();
     const result = await executeAction('forge_health', {}, config, { ...fx, requestId: 'health-1' });
@@ -170,6 +201,36 @@ describe('UU Remote rescue helper', () => {
     expect(fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'new' && args.includes(config.device.id))).toBe(true);
     expect(fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'kill' && args.includes(config.device.id))).toBe(true);
     expect(fx.cliCalls.some((args) => ['open', 'exit'].includes(args[1]))).toBe(false);
+  });
+
+  test('focuses an existing exact terminal window directly before requiring the session list button', async () => {
+    const fx = fixture({ terminalInitiallyFocused: false, terminalWindowFocusAction: true, openButtonCount: 0 });
+    await executeAction('forge_health', {}, config, { ...fx, requestId: 'focus-existing-window-1' });
+    const focusIndex = fx.desktopCalls.findIndex((call) =>
+      call.action === 'computer_element_action'
+      && call.args.action === 'focus'
+      && call.args.ref === 'terminal-window-1');
+    const commandWriteIndex = fx.desktopCalls.findIndex((call) =>
+      call.action === 'desktop_clipboard_write' && call.args.text !== 'private-existing-clipboard');
+    expect(focusIndex).toBeGreaterThanOrEqual(0);
+    expect(commandWriteIndex).toBeGreaterThan(focusIndex);
+    expect(fx.desktopCalls.some((call) =>
+      call.action === 'computer_element_action'
+      && call.args.action === 'invoke'
+      && String(call.args.ref).startsWith('open-terminal-'))).toBe(false);
+  });
+
+  test('click-focuses an existing exact terminal window when AX exposes click but not focus', async () => {
+    const fx = fixture({ terminalInitiallyFocused: false, terminalWindowClickAction: true, openButtonCount: 0 });
+    await executeAction('host_full_recover_dispatch', {}, config, { ...fx, requestId: 'click-focus-existing-window-1' });
+    const clickIndex = fx.desktopCalls.findIndex((call) =>
+      call.action === 'computer_element_action'
+      && call.args.action === 'click'
+      && call.args.ref === 'terminal-window-1');
+    const commandWriteIndex = fx.desktopCalls.findIndex((call) =>
+      call.action === 'desktop_clipboard_write' && call.args.text !== 'private-existing-clipboard');
+    expect(clickIndex).toBeGreaterThanOrEqual(0);
+    expect(commandWriteIndex).toBeGreaterThan(clickIndex);
   });
 
   test('focuses the exact configured device session through its Open Terminal control before pasting', async () => {

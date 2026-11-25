@@ -240,6 +240,34 @@ async function ensureTerminalWindowFocused(config, requestId, interactionId, ini
   }
   if (terminals.length === 1 && terminals[0].focused) return initialObservation;
 
+  if (terminals.length === 1) {
+    const terminal = terminals[0].node;
+    const focusAction = Array.isArray(terminal?.actions)
+      ? (terminal.actions.includes('focus') ? 'focus' : (terminal.actions.includes('click') ? 'click' : undefined))
+      : undefined;
+    if (typeof terminal?.ref === 'string'
+      && terminal.target
+      && focusAction) {
+      await deps.desktopCall(config, requestId + ':focus-terminal-window', 'computer_element_action', {
+        target: terminal.target,
+        ref: terminal.ref,
+        action: focusAction,
+      });
+      await deps.sleep(100);
+      const focusedObservation = await deps.desktopCall(config, requestId + ':focus-terminal-window-verify', 'computer_element_observe', {
+        interactionId,
+        maxDepth: 12,
+        maxNodes: 2500,
+        includeValues: true,
+      });
+      const focusedWindows = exactTerminalWindows(focusedObservation, config);
+      if (focusedWindows.length > 1) {
+        throw rescueError('UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS', 'More than one exact configured-device UU terminal window is visible; refusing remote input.');
+      }
+      if (focusedWindows.length === 1 && focusedWindows[0].focused) return focusedObservation;
+    }
+  }
+
   const buttons = exactTerminalOpenButtons(initialObservation, config);
   if (buttons.length > 1) {
     throw rescueError('UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS', 'More than one exact configured-device UU terminal session can be opened; refusing remote input.');
@@ -397,7 +425,12 @@ async function runTerminalCommand(config, requestId, command, deps, options = {}
     const markers = markerPair(requestId);
     for (let attempt = 0; attempt < 24; attempt += 1) {
       await deps.sleep(attempt === 0 ? 300 : 250);
-      const next = await deps.desktopCall(config, `${requestId}:observe:${attempt}`, 'desktop_observe', { interaction_id: interactionId, max_depth: 10, max_nodes: 2500, include_values: true, include_actions: false, include_windows: false });
+      const next = await deps.desktopCall(config, `${requestId}:observe:${attempt}`, 'computer_element_observe', {
+        interactionId,
+        maxDepth: 12,
+        maxNodes: 2500,
+        includeValues: true,
+      });
       const payload = extractMarkedText(next, markers);
       if (payload !== undefined) return payload;
     }
