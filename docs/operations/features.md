@@ -7,7 +7,7 @@ Forge is useful without coding agents or external plugins. Start with the core w
 These features are part of the default local setup:
 
 - repository registration with stable `repoId` and `checkoutId` identities;
-- bounded repository inspection and context collection;
+- Agent-directed source discovery through `execute_command` (rg/find/sed/git) and exact `read_repository_file` reads; `rh_context` remains for repository status, capability discovery, optional Cognitive recall, and explicit LSP navigation;
 - five structured ChatGPT facade capabilities: `rh_status`, `rh_access`, `rh_inbox`, `rh_context`, and `rh_work`, plus a stable repair-capable default MCP schema;
 - Direct Edit sessions with path limits, SHA preconditions, revisions, savepoints, diffs, checks, and rollback;
 - durable Issue → Task → Run state and resumable evidence;
@@ -26,7 +26,7 @@ These features are part of the default local setup:
 | Tailscale / Cloudflare | Stable HTTPS endpoint for ChatGPT MCP | Tunnel client and appropriate account/domain configuration. |
 | Browser | Playwright navigation, screenshots, and bounded browser evidence | Browser binaries and HTTP(S) URL scheme validation. |
 | Saved website passwords | Computer/Browser `autofill_saved_password` requests OS/browser-owned autofill using a native trusted click on a single visible password field; no password bytes enter Forge. It reports field-filled state, **not** authenticated login. | Existing exact browser session, exact HTTPS form origin, optional exact visible account binding backed by a reusable/revocable rh_credential Grant, approved trusted foreground input and a password saved in the browser or OS manager. OS authorization and website MFA/CAPTCHA remain user-owned; verify a real authenticated session separately. |
-| CodeGraph | Additional code relationships and impact navigation | CodeGraph CLI; native Windows automatic setup is not yet enabled. |
+| CodeGraph | Optional external CLI for users who explicitly choose it; not used by Forge source discovery and not bundled as a Context Pack/index provider. | External CLI installation only; no Forge runtime dependency. |
 | Google Workspace | Gmail and Calendar plugin actions | Explicit OAuth setup and plugin permission. The OAuth client ID is non-secret managed configuration; refresh tokens and imported client secrets are stored in the platform credential store. Forge sends `client_secret` when one is stored and otherwise attempts the public-client/PKCE path; the live provider response remains authoritative for whether a specific OAuth client requires the secret. A stored refresh token or configured access token alone is **unverified**, not live-ready. Readiness becomes live-ready only after a successful provider action. If the provider returns `invalid_request: client_secret is missing`, restore the secret matching the configured OAuth client ID in macOS Keychain. If the original secret is irretrievable, configure a dedicated OAuth client ID, store its matching secret in Keychain, and reauthorize: refresh tokens do not transfer between OAuth clients. macOS Keychain is the single credential authority: do not cache refresh tokens or client secrets across external rotations. When the managed OAuth Client ID changes, restart the same running release to reload the environment; a runtime version switch is unnecessary. |
 | Schedules | Supervised recurring checks | Canonical Forge Runtime running; live actions remain policy-gated. |
 
@@ -36,7 +36,7 @@ Forge exposes one complete MCP tool registry without `facade` / `core` / `advanc
 
 ## Execution choices
 
-- The model can choose direct terminal execution with `execute_command`, bounded source edits, structured retrieval, or domain capabilities without any required Work or Plan.
+- The model can choose direct terminal execution with `execute_command`, exact file reads, bounded source edits, or domain capabilities without any required Work or Plan.
 - Durable Tasks, agents, and named checks remain optional capabilities for the model to select when they add value.
 - Forge enforces concrete execution authorization, resource isolation and write consistency, but does not choose the model's workflow.
 

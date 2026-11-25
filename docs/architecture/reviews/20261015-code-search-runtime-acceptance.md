@@ -1,5 +1,7 @@
 # Forge Code Search — Post-Release Acceptance Ledger (2026-10-15)
 
+> Historical record only. The `rh_context` source-search / Context Pack design documented here was retired on 2026-11-25 under [Forge #714](https://github.com/moretea-labs/forge/issues/714), work package H. Preserve the measurements as history; do not use this document as current architecture guidance.
+
 Status: **PARTIAL — not a known-good or release acceptance.** This record describes observed evidence, not a deployment decision.
 
 ## Identities and scope
