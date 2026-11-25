@@ -136,7 +136,7 @@ import {
 } from '../../src/runtime/root/status';
 import { materializeCandidateExecutionLane } from '../../src/runtime/root/runtime-lane';
 import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../../src/runtime/root/service';
-import { systemdUserUnitPath } from '../../src/runtime/platform/systemd-user';
+import { systemdUserUnitName, systemdUserUnitPath } from '../../src/runtime/platform/systemd-user';
 import {
   renderPackageRuntimeSystemdUserService,
   writePackageRuntimeSystemdUserService,
@@ -4263,6 +4263,90 @@ describe('standalone recovery on canonical Runtime', () => {
       await expect(callStandaloneRecoveryTool(home, 'runtime_status', {})).rejects.toThrow(expected);
       expect(toolCalls).toBe(0);
     }
+  });
+
+  test('runtime_status preserves exact systemd Runtime exit evidence without making it authority', async () => {
+    const home = controllerHome();
+    const config = {
+      ...createRecoveryConfig(home),
+      primaryRuntimeService: { platform: 'systemd-user' as const },
+    };
+    const calls: Array<{ commandName: string; args: string[]; timeoutMs?: number; maxOutputBytes?: number }> = [];
+    const status = await runtimeStatus(config, {
+      platform: 'linux',
+      runCommand: async (commandName, args, timeoutMs, options) => {
+        calls.push({ commandName, args, timeoutMs, maxOutputBytes: options?.maxOutputBytes });
+        return {
+          ok: true,
+          status: 0,
+          stdout: [
+            'ActiveState=failed',
+            'SubState=failed',
+            'Result=exit-code',
+            'ExecMainCode=1',
+            'ExecMainStatus=42',
+            'MainPID=0',
+            'NRestarts=3',
+            'ExecMainStartTimestamp=Wed 2026-11-25 12:00:00 JST',
+            'ExecMainExitTimestamp=Wed 2026-11-25 12:00:31 JST',
+            '',
+          ].join('\n'),
+          stderr: '',
+        };
+      },
+    });
+    const expectedUnit = systemdUserUnitName(forgeRuntimeServicePaths(home).label);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      commandName: 'systemctl',
+      timeoutMs: 5_000,
+      maxOutputBytes: 16 * 1024,
+    });
+    expect(calls[0]?.args).toEqual([
+      '--user',
+      'show',
+      expectedUnit,
+      '--property=ActiveState',
+      '--property=SubState',
+      '--property=Result',
+      '--property=ExecMainCode',
+      '--property=ExecMainStatus',
+      '--property=MainPID',
+      '--property=NRestarts',
+      '--property=ExecMainStartTimestamp',
+      '--property=ExecMainExitTimestamp',
+      '--no-pager',
+    ]);
+    expect(status.runtimeService).toEqual({
+      platform: 'systemd-user',
+      unitName: expectedUnit,
+      queryOk: true,
+      activeState: 'failed',
+      subState: 'failed',
+      result: 'exit-code',
+      execMainCode: 1,
+      execMainStatus: 42,
+      mainPid: 0,
+      nRestarts: 3,
+      execMainStartTimestamp: 'Wed 2026-11-25 12:00:00 JST',
+      execMainExitTimestamp: 'Wed 2026-11-25 12:00:31 JST',
+    });
+
+    const unavailable = await runtimeStatus(config, {
+      platform: 'linux',
+      runCommand: async () => ({
+        ok: false,
+        status: 1,
+        stdout: '',
+        stderr: 'Failed to connect to bus: No medium found\nsecond line',
+      }),
+    });
+    expect(unavailable.runtimeService).toEqual({
+      platform: 'systemd-user',
+      unitName: expectedUnit,
+      queryOk: false,
+      detail: 'Failed to connect to bus: No medium found second line',
+    });
   });
 
   test('hashes Recovery files with bounded chunks while preserving SHA-256 semantics', () => {

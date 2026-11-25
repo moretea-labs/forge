@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { mkdirSync, readFileSync } from 'fs';
 import { hostname } from 'os';
 import { join, resolve } from 'path';
+import { systemdUserUnitName } from '../platform/systemd-user';
 import { observeRuntimeStatus } from '../root/status';
 import {
   createRecoveryHttpTransport,
@@ -34,13 +35,121 @@ import {
  * (audit round 5, pure move). Read-only observation surface; core.ts remains
  * the facade and re-exports the public entry points.
  */
-export async function runtimeStatus(config: RecoveryConfig) {
-  const identity = recoveryMachineIdentity(config);
+export interface RuntimeStatusDependencies {
+  platform?: NodeJS.Platform;
+  runCommand?: CommandRunner;
+}
+
+export interface RecoverySystemdRuntimeServiceObservation {
+  platform: 'systemd-user';
+  unitName: string;
+  queryOk: boolean;
+  activeState?: string;
+  subState?: string;
+  result?: string;
+  execMainCode?: number;
+  execMainStatus?: number;
+  mainPid?: number;
+  nRestarts?: number;
+  execMainStartTimestamp?: string;
+  execMainExitTimestamp?: string;
+  detail?: string;
+}
+
+function boundedDiagnosticDetail(value: string): string | undefined {
+  const detail = value.trim().replace(/\s+/g, ' ');
+  return detail ? detail.slice(0, 240) : undefined;
+}
+
+function systemdNumericProperty(properties: Record<string, string>, key: string): number | undefined {
+  const value = Number(properties[key]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+async function observeSystemdRuntimeService(
+  identity: ReturnType<typeof recoveryMachineIdentity>,
+  runCommand: CommandRunner,
+): Promise<RecoverySystemdRuntimeServiceObservation | undefined> {
+  if (identity.platform !== 'linux' || identity.targetRuntime.servicePlatform !== 'systemd-user') return undefined;
+  const unitName = systemdUserUnitName(identity.targetRuntime.serviceLabel);
+  const observed = await runCommand(
+    'systemctl',
+    [
+      '--user',
+      'show',
+      unitName,
+      '--property=ActiveState',
+      '--property=SubState',
+      '--property=Result',
+      '--property=ExecMainCode',
+      '--property=ExecMainStatus',
+      '--property=MainPID',
+      '--property=NRestarts',
+      '--property=ExecMainStartTimestamp',
+      '--property=ExecMainExitTimestamp',
+      '--no-pager',
+    ],
+    5_000,
+    { maxOutputBytes: 16 * 1024 },
+  );
+  if (!observed.ok) {
+    return {
+      platform: 'systemd-user',
+      unitName,
+      queryOk: false,
+      ...(boundedDiagnosticDetail(observed.stderr || observed.stdout)
+        ? { detail: boundedDiagnosticDetail(observed.stderr || observed.stdout) }
+        : {}),
+    };
+  }
+  const properties = Object.fromEntries(
+    observed.stdout
+      .split(/\r?\n/)
+      .map((line) => {
+        const separator = line.indexOf('=');
+        return separator > 0 ? [line.slice(0, separator), line.slice(separator + 1)] : undefined;
+      })
+      .filter((entry): entry is [string, string] => Boolean(entry)),
+  );
+  const stringProperty = (key: string): string | undefined => properties[key]?.trim() || undefined;
+  return {
+    platform: 'systemd-user',
+    unitName,
+    queryOk: true,
+    ...(stringProperty('ActiveState') ? { activeState: stringProperty('ActiveState') } : {}),
+    ...(stringProperty('SubState') ? { subState: stringProperty('SubState') } : {}),
+    ...(stringProperty('Result') ? { result: stringProperty('Result') } : {}),
+    ...(systemdNumericProperty(properties, 'ExecMainCode') !== undefined
+      ? { execMainCode: systemdNumericProperty(properties, 'ExecMainCode') }
+      : {}),
+    ...(systemdNumericProperty(properties, 'ExecMainStatus') !== undefined
+      ? { execMainStatus: systemdNumericProperty(properties, 'ExecMainStatus') }
+      : {}),
+    ...(systemdNumericProperty(properties, 'MainPID') !== undefined
+      ? { mainPid: systemdNumericProperty(properties, 'MainPID') }
+      : {}),
+    ...(systemdNumericProperty(properties, 'NRestarts') !== undefined
+      ? { nRestarts: systemdNumericProperty(properties, 'NRestarts') }
+      : {}),
+    ...(stringProperty('ExecMainStartTimestamp')
+      ? { execMainStartTimestamp: stringProperty('ExecMainStartTimestamp') }
+      : {}),
+    ...(stringProperty('ExecMainExitTimestamp')
+      ? { execMainExitTimestamp: stringProperty('ExecMainExitTimestamp') }
+      : {}),
+  };
+}
+
+export async function runtimeStatus(config: RecoveryConfig, dependencies: RuntimeStatusDependencies = {}) {
+  const platform = dependencies.platform ?? process.platform;
+  const identity = recoveryMachineIdentity(config, { platform });
   const observation = observeRuntimeStatus(config.controllerHome);
   const watchdog = loadWatchdogState(config);
+  const runtimeService = await observeSystemdRuntimeService(identity, dependencies.runCommand ?? command);
   return {
     identity,
     ...observation,
+    ...(runtimeService ? { runtimeService } : {}),
     recoveryWatchdog: {
       lastDecision: watchdog.lastDecision,
       lastReason: watchdog.lastReason,
