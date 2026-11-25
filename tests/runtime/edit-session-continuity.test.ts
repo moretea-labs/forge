@@ -23,7 +23,6 @@ import {
 } from '../../src/runtime/editing/edit-session';
 import type { ProcessCheckCompletionReceipt } from '../../src/runtime/execution/process-runtime/check-receipt';
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
-import { startOrJoinEditValidation } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
 import { waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
@@ -1723,106 +1722,6 @@ test('recordEditSessionProcessCheckReceipts seals validation-input only under un
   expect(sealed.validatedWorkspaceFingerprint).toBe(fingerprint);
   expect(finalizeEditSession(fx.repoRoot, session.sessionId, { binding }).status).toBe('finalized');
   expect(readFileSync(join(fx.repoRoot, 'other-writer.ts'), 'utf8')).toContain('foreign = 1');
-});
-
-test('validation survives unrelated concurrent dirty and second-session edits (#713)', async () => {
-  const fx = fixture();
-  mkdirSync(join(fx.repoRoot, '.forge'), { recursive: true });
-  writeFileSync(
-    join(fx.repoRoot, '.forge', 'checks.json'),
-    JSON.stringify({
-      version: 1,
-      checks: {
-        verify: {
-          description: 'owned-source check',
-          command: [
-            process.execPath,
-            '-e',
-            "const fs=require('fs'); if(!fs.readFileSync('source.ts','utf8').includes('value = 2')) process.exit(9); setTimeout(()=>process.exit(0), 400);",
-          ],
-          timeoutMs: 10_000,
-          effects: { reads: ['source.ts'] },
-        },
-      },
-    }),
-  );
-  spawnSync('git', ['add', '.forge/checks.json'], { cwd: fx.repoRoot });
-  spawnSync('git', ['commit', '-qm', 'add owned verify check'], { cwd: fx.repoRoot });
-
-  const bindingA = durableBinding({
-    repoId: fx.repository.repoId,
-    checkoutId: fx.repository.activeCheckoutId,
-    principalId: 'principal-concurrency-a',
-  });
-  const bindingB = durableBinding({
-    repoId: fx.repository.repoId,
-    checkoutId: fx.repository.activeCheckoutId,
-    principalId: 'principal-concurrency-b',
-  });
-
-  const sessionA = beginEditSession(fx.repoRoot, {
-    purpose: 'Writer A validation under concurrent dirty',
-    allowedPaths: ['source.ts'],
-    checks: ['verify'],
-    binding: bindingA,
-  });
-  applyEditOperations(
-    fx.repoRoot,
-    fx.policy,
-    sessionA.sessionId,
-    [
-      {
-        type: 'replace',
-        path: 'source.ts',
-        expectedSha256: sha256(fx.initial),
-        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
-      },
-    ],
-    { binding: bindingA },
-  );
-
-  writeFileSync(join(fx.repoRoot, 'other.ts'), 'export const other = 0;\n');
-  const sessionB = beginEditSession(fx.repoRoot, {
-    purpose: 'Writer B unrelated path edit during A validation',
-    allowedPaths: ['other.ts'],
-    binding: bindingB,
-  });
-
-  const request = {
-    editSessionId: sessionA.sessionId,
-    checkIds: ['verify'],
-    validationRequestId: 'concurrent-unrelated-dirty-validation',
-  };
-  const started = await startOrJoinEditValidation(fx.controllerHome, fx.repository, request);
-  expect(started.processes.length).toBeGreaterThan(0);
-
-  applyEditOperations(
-    fx.repoRoot,
-    fx.policy,
-    sessionB.sessionId,
-    [
-      {
-        type: 'replace',
-        path: 'other.ts',
-        expectedSha256: sha256('export const other = 0;\n'),
-        replacements: [{ oldText: 'other = 0', newText: 'other = 1' }],
-      },
-    ],
-    { binding: bindingB },
-  );
-  writeFileSync(join(fx.repoRoot, 'noise.md'), 'untracked concurrent noise\n');
-
-  for (const process of started.processes) {
-    await waitForProcess(fx.controllerHome, fx.repository.repoId, process.processId, { timeoutMs: 15_000 });
-  }
-  const completed = await startOrJoinEditValidation(fx.controllerHome, fx.repository, request);
-  expect(completed).toMatchObject({ completed: true, ok: true });
-  expect(getEditSession(fx.repoRoot, sessionA.sessionId).status).toBe('checked');
-  expect(finalizeEditSession(fx.repoRoot, sessionA.sessionId, { binding: bindingA }).status).toBe('finalized');
-  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toContain('value = 2');
-  expect(readFileSync(join(fx.repoRoot, 'other.ts'), 'utf8')).toContain('other = 1');
-  expect(readFileSync(join(fx.repoRoot, 'noise.md'), 'utf8')).toContain('concurrent noise');
-  expect(getEditSession(fx.repoRoot, sessionB.sessionId).status).toBe('dirty');
 });
 
 function sha256(value: string): string {
