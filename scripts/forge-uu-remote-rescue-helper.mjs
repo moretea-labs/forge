@@ -7,7 +7,7 @@ import { isAbsolute, join } from 'path';
 import { pathToFileURL } from 'url';
 
 export const PLUGIN_ID = 'uu_remote_rescue';
-export const PLUGIN_VERSION = '0.1.3';
+export const PLUGIN_VERSION = '0.1.4';
 export const PROTOCOL_VERSION = 1;
 export const CAPABILITIES = [
   'uu_remote.device_identity.v1',
@@ -322,13 +322,17 @@ function accessibilityWindows(observation) {
   }));
 }
 
-function exactTerminalWindows(observation, config) {
+function exactTerminalWindows(observation, config, sessionName) {
   return accessibilityWindows(observation).filter(
-    (window) => window.identifier === 'TerminalWindow' && window.strings.includes(config.device.name),
+    (window) =>
+      window.identifier === 'TerminalWindow' &&
+      window.strings.includes(config.device.name) &&
+      window.title === sessionName &&
+      window.strings.includes(sessionName),
   );
 }
 
-function exactTerminalOpenButtons(observation, config) {
+function exactTerminalOpenButtons(observation, config, sessionName) {
   const listWindows = accessibilityWindows(observation).filter(
     (window) => window.identifier === 'TerminalListWindow' && window.strings.includes(config.device.name),
   );
@@ -338,7 +342,7 @@ function exactTerminalOpenButtons(observation, config) {
     const sessionLabels = accessibilityNodes(row, (node) => node.role === 'AXStaticText')
       .map((node) => node.value)
       .filter((value) => typeof value === 'string' && value.trim());
-    if (sessionLabels.length === 0) return [];
+    if (!sessionLabels.includes(sessionName)) return [];
     return accessibilityNodes(
       row,
       (node) =>
@@ -351,8 +355,8 @@ function exactTerminalOpenButtons(observation, config) {
   });
 }
 
-async function ensureTerminalWindowFocused(config, requestId, interactionId, initialObservation, deps) {
-  const terminals = exactTerminalWindows(initialObservation, config);
+async function ensureTerminalWindowFocused(config, requestId, interactionId, sessionName, initialObservation, deps) {
+  const terminals = exactTerminalWindows(initialObservation, config, sessionName);
   if (terminals.length > 1) {
     throw rescueError(
       'UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS',
@@ -388,7 +392,7 @@ async function ensureTerminalWindowFocused(config, requestId, interactionId, ini
           includeValues: true,
         },
       );
-      const focusedWindows = exactTerminalWindows(focusedObservation, config);
+      const focusedWindows = exactTerminalWindows(focusedObservation, config, sessionName);
       if (focusedWindows.length > 1) {
         throw rescueError(
           'UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS',
@@ -399,7 +403,7 @@ async function ensureTerminalWindowFocused(config, requestId, interactionId, ini
     }
   }
 
-  const buttons = exactTerminalOpenButtons(initialObservation, config);
+  const buttons = exactTerminalOpenButtons(initialObservation, config, sessionName);
   if (buttons.length > 1) {
     throw rescueError(
       'UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS',
@@ -427,7 +431,7 @@ async function ensureTerminalWindowFocused(config, requestId, interactionId, ini
     maxNodes: 2500,
     includeValues: true,
   });
-  const focused = exactTerminalWindows(observation, config);
+  const focused = exactTerminalWindows(observation, config, sessionName);
   if (focused.length > 1) {
     throw rescueError(
       'UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS',
@@ -615,7 +619,7 @@ async function runTerminalCommand(config, requestId, command, deps, options = {}
       maxNodes: 2500,
       includeValues: true,
     });
-    await ensureTerminalWindowFocused(config, requestId, interactionId, observed, deps);
+    await ensureTerminalWindowFocused(config, requestId, interactionId, sessionName, observed, deps);
     if (options.resetPendingInput === true) {
       await deps.desktopCall(config, requestId + ':clear-pending-input', 'desktop_key', {
         interaction_id: interactionId,

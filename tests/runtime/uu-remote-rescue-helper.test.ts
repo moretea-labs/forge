@@ -34,6 +34,8 @@ function fixture(
     terminalWindowClickAction?: boolean;
     accessibilityDeviceName?: string;
     openButtonCount?: number;
+    siblingTerminalNames?: string[];
+    duplicateExactTerminalWindow?: boolean;
   } = {},
 ) {
   const cliCalls: string[][] = [];
@@ -42,6 +44,7 @@ function fixture(
   let command = '';
   let keySent = false;
   let terminalFocused = options.terminalInitiallyFocused ?? true;
+  let currentSessionName = 'session1';
   const runCli = async (_config: unknown, args: string[]) => {
     cliCalls.push(args);
     if (args[0] === 'device')
@@ -56,6 +59,31 @@ function fixture(
       };
     return { success: true, data: { success: true } };
   };
+  const terminalWindow = (name: string, ref: string, focused: boolean, exact = false) => ({
+    role: 'AXWindow',
+    identifier: 'TerminalWindow',
+    name,
+    title: name,
+    state: { focused },
+    ...(exact && (options.terminalWindowFocusAction || options.terminalWindowClickAction)
+      ? {
+          ref,
+          target: {
+            interactionId: 'ix-1',
+            pid: 90766,
+            bundleIdentifier: config.uuBundleId,
+            appName: 'UU远程',
+            windowRef: ref,
+            snapshotRevision: 1,
+          },
+          actions: options.terminalWindowFocusAction ? ['focus'] : ['click'],
+        }
+      : {}),
+    children: [
+      { role: 'AXStaticText', value: config.device.name },
+      { role: 'AXStaticText', value: name },
+    ],
+  });
   const elementObservation = () => ({
     root: {
       role: 'AXApplication',
@@ -75,7 +103,7 @@ function fixture(
                   {
                     role: 'AXCell',
                     children: [
-                      { role: 'AXStaticText', value: 'session' + (index + 1) },
+                      { role: 'AXStaticText', value: currentSessionName },
                       {
                         role: 'AXButton',
                         name: '打开终端',
@@ -98,32 +126,22 @@ function fixture(
             },
           ],
         },
-        {
-          role: 'AXWindow',
-          identifier: 'TerminalWindow',
-          name: 'session1',
-          state: { focused: terminalFocused },
-          ...(options.terminalWindowFocusAction || options.terminalWindowClickAction
-            ? {
-                ref: 'terminal-window-1',
-                target: {
-                  interactionId: 'ix-1',
-                  pid: 90766,
-                  bundleIdentifier: config.uuBundleId,
-                  appName: 'UU远程',
-                  windowRef: 'terminal-window',
-                  snapshotRevision: 1,
-                },
-                actions: options.terminalWindowFocusAction ? ['focus'] : ['click'],
-              }
-            : {}),
-          children: [{ role: 'AXStaticText', value: config.device.name }],
-        },
+        terminalWindow(currentSessionName, 'terminal-window-1', terminalFocused, true),
+        ...(options.siblingTerminalNames ?? []).map((name, index) =>
+          terminalWindow(name, 'terminal-window-sibling-' + String(index + 1), false),
+        ),
+        ...(options.duplicateExactTerminalWindow
+          ? [terminalWindow(currentSessionName, 'terminal-window-duplicate', false)]
+          : []),
       ],
     },
   });
   const runCliText = async (_config: unknown, args: string[]) => {
     cliCalls.push(args);
+    if (args[0] === 'term' && args[1] === 'new') {
+      const sessionName = args.at(-1);
+      if (typeof sessionName === 'string') currentSessionName = sessionName;
+    }
     return { success: true, text: '' };
   };
   const desktopCall = async (_config: unknown, _requestId: string, action: string, args: Record<string, unknown>) => {
@@ -289,6 +307,35 @@ describe('UU Remote rescue helper', () => {
       fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'kill' && args.includes(config.device.id)),
     ).toBe(true);
     expect(fx.cliCalls.some((args) => ['open', 'exit'].includes(args[1]))).toBe(false);
+  });
+
+  test('ignores same-device sibling terminals when the request-owned session identity is unique', async () => {
+    const fx = fixture({
+      terminalInitiallyFocused: false,
+      terminalWindowFocusAction: true,
+      openButtonCount: 0,
+      siblingTerminalNames: ['forge-tunnel-diag', 'forge-rescue-older'],
+    });
+    await executeAction('forge_health', {}, config, { ...fx, requestId: 'exact-session-among-siblings-1' });
+    const focusCalls = fx.desktopCalls.filter(
+      (call) => call.action === 'computer_element_action' && call.args.action === 'focus',
+    );
+    expect(focusCalls).toHaveLength(1);
+    expect(focusCalls[0]?.args.ref).toBe('terminal-window-1');
+    expect(
+      fx.desktopCalls.some(
+        (call) => call.action === 'computer_element_action' && String(call.args.ref).includes('sibling'),
+      ),
+    ).toBe(false);
+    expect(fx.desktopCalls.some((call) => call.action === 'desktop_clipboard_write')).toBe(true);
+  });
+
+  test('fails closed before clipboard mutation when the request-owned session has duplicate terminal windows', async () => {
+    const fx = fixture({ duplicateExactTerminalWindow: true });
+    await expect(
+      executeAction('forge_health', {}, config, { ...fx, requestId: 'duplicate-exact-session-1' }),
+    ).rejects.toThrow('More than one exact configured-device UU terminal window');
+    expect(fx.desktopCalls.some((call) => call.action === 'desktop_clipboard_write')).toBe(false);
   });
 
   test('focuses an existing exact terminal window directly before requiring the session list button', async () => {

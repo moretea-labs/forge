@@ -2,7 +2,7 @@ import type { ExternalPluginRegistrationInput } from './external-registration';
 import type { AssistantPluginActionDescriptor } from './types';
 
 export const UU_REMOTE_RESCUE_PLUGIN_ID = 'uu_remote_rescue';
-export const UU_REMOTE_RESCUE_PLUGIN_VERSION = '0.1.3';
+export const UU_REMOTE_RESCUE_PLUGIN_VERSION = '0.1.4';
 export const UU_REMOTE_RESCUE_PROTOCOL_VERSION = '1.0';
 export const UU_REMOTE_RESCUE_CAPABILITIES = [
   'uu_remote.device_identity.v1',
@@ -20,7 +20,8 @@ function actions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'device_status',
       title: 'Read UU Remote rescue target status',
-      description: 'Verify the registration-bound UU Remote Windows device by exact device id, exact device name, platform, and online state.',
+      description:
+        'Verify the registration-bound UU Remote Windows device by exact device id, exact device name, platform, and online state.',
       readOnly: true,
       risk: 'readonly',
       confirmation: 'none',
@@ -50,7 +51,8 @@ function actions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'forge_health',
       title: 'Read remote WSL Forge health',
-      description: 'Read Controller Home presence, migration record, and the exact Runtime, Connector, and Recovery systemd-user service states through a fixed remote probe.',
+      description:
+        'Read Controller Home presence, migration record, and the exact Runtime, Connector, and Recovery systemd-user service states through a fixed remote probe.',
       readOnly: false,
       risk: 'remote_write',
       confirmation: 'authorization',
@@ -62,54 +64,73 @@ function actions(): AssistantPluginActionDescriptor[] {
       resourceClaims: REMOTE_WRITE,
       argumentsSchema: NO_ARGUMENTS,
     },
-    ...(['runtime_start', 'runtime_restart', 'connector_start', 'connector_restart', 'recovery_start', 'recovery_restart', 'runtime_recover'] as const).map((actionId): AssistantPluginActionDescriptor => ({
-      actionId,
-      title: ({
-        runtime_start: 'Start remote Forge Runtime',
-        runtime_restart: 'Restart remote Forge Runtime',
-        connector_start: 'Start remote Forge Connector',
-        connector_restart: 'Restart remote Forge Connector',
-        recovery_start: 'Start remote Forge Recovery services',
-        recovery_restart: 'Restart remote Forge Recovery services',
-        runtime_recover: 'Recover remote Forge Runtime',
-      } as const)[actionId],
-      description: actionId === 'runtime_recover'
-        ? 'Invoke only the canonical `forge recovery recover --controller-home <configured-home>` transaction inside the configured WSL distro.'
-        : 'Operate only the registration-derived canonical systemd-user unit(s); no caller-provided service name or shell command is accepted.',
-      readOnly: false,
-      risk: 'remote_write',
-      confirmation: 'authorization',
-      defaultTimeoutMs: actionId === 'runtime_recover' ? 120_000 : 30_000,
-      cancellable: true,
-      idempotent: actionId.endsWith('_start'),
-      foregroundEffect: 'required',
-      scopes: ['uu-rescue.recover'],
-      resourceClaims: REMOTE_WRITE,
-      argumentsSchema: NO_ARGUMENTS,
-    })),
-    ...(['host_task_install_dispatch', 'host_tunnel_restart_dispatch', 'host_full_recover_dispatch'] as const).map((actionId): AssistantPluginActionDescriptor => ({
-      actionId,
-      title: actionId === 'host_task_install_dispatch'
-        ? 'Install independent Windows/WSL recovery logon trigger'
-        : actionId === 'host_tunnel_restart_dispatch'
-        ? 'Dispatch independent host tunnel recovery'
-        : 'Dispatch independent host full recovery',
-      description: actionId === 'host_task_install_dispatch'
-        ? 'Safely dispatch only the fixed Windows Recovery task_install action to the registration-bound Windows host. Verify its installed status independently; no arbitrary task or shell command is accepted.'
-        : actionId === 'host_tunnel_restart_dispatch'
-        ? 'Safely dispatch the fixed independent Windows/WSL Recovery tunnel_restart action to the registration-bound UU Remote Windows host. Success proves only dispatch; Forge Cloud connectivity must verify recovery.'
-        : 'Safely dispatch the fixed independent Windows/WSL Recovery full_recover action to the registration-bound UU Remote Windows host. Success proves only dispatch; Forge Cloud connectivity must verify recovery.',
-      readOnly: false,
-      risk: 'remote_write',
-      confirmation: 'authorization',
-      defaultTimeoutMs: 30_000,
-      cancellable: true,
-      idempotent: false,
-      foregroundEffect: 'required',
-      scopes: ['uu-rescue.recover'],
-      resourceClaims: REMOTE_WRITE,
-      argumentsSchema: NO_ARGUMENTS,
-    })),
+    ...(
+      [
+        'runtime_start',
+        'runtime_restart',
+        'connector_start',
+        'connector_restart',
+        'recovery_start',
+        'recovery_restart',
+        'runtime_recover',
+      ] as const
+    ).map(
+      (actionId): AssistantPluginActionDescriptor => ({
+        actionId,
+        title: (
+          {
+            runtime_start: 'Start remote Forge Runtime',
+            runtime_restart: 'Restart remote Forge Runtime',
+            connector_start: 'Start remote Forge Connector',
+            connector_restart: 'Restart remote Forge Connector',
+            recovery_start: 'Start remote Forge Recovery services',
+            recovery_restart: 'Restart remote Forge Recovery services',
+            runtime_recover: 'Recover remote Forge Runtime',
+          } as const
+        )[actionId],
+        description:
+          actionId === 'runtime_recover'
+            ? 'Invoke only the canonical `forge recovery recover --controller-home <configured-home>` transaction inside the configured WSL distro.'
+            : 'Operate only the registration-derived canonical systemd-user unit(s); no caller-provided service name or shell command is accepted.',
+        readOnly: false,
+        risk: 'remote_write',
+        confirmation: 'authorization',
+        defaultTimeoutMs: actionId === 'runtime_recover' ? 120_000 : 30_000,
+        cancellable: true,
+        idempotent: actionId.endsWith('_start'),
+        foregroundEffect: 'required',
+        scopes: ['uu-rescue.recover'],
+        resourceClaims: REMOTE_WRITE,
+        argumentsSchema: NO_ARGUMENTS,
+      }),
+    ),
+    ...(['host_task_install_dispatch', 'host_tunnel_restart_dispatch', 'host_full_recover_dispatch'] as const).map(
+      (actionId): AssistantPluginActionDescriptor => ({
+        actionId,
+        title:
+          actionId === 'host_task_install_dispatch'
+            ? 'Install independent Windows/WSL recovery logon trigger'
+            : actionId === 'host_tunnel_restart_dispatch'
+              ? 'Dispatch independent host tunnel recovery'
+              : 'Dispatch independent host full recovery',
+        description:
+          actionId === 'host_task_install_dispatch'
+            ? 'Safely dispatch only the fixed Windows Recovery task_install action to the registration-bound Windows host. Verify its installed status independently; no arbitrary task or shell command is accepted.'
+            : actionId === 'host_tunnel_restart_dispatch'
+              ? 'Safely dispatch the fixed independent Windows/WSL Recovery tunnel_restart action to the registration-bound UU Remote Windows host. Success proves only dispatch; Forge Cloud connectivity must verify recovery.'
+              : 'Safely dispatch the fixed independent Windows/WSL Recovery full_recover action to the registration-bound UU Remote Windows host. Success proves only dispatch; Forge Cloud connectivity must verify recovery.',
+        readOnly: false,
+        risk: 'remote_write',
+        confirmation: 'authorization',
+        defaultTimeoutMs: 30_000,
+        cancellable: true,
+        idempotent: false,
+        foregroundEffect: 'required',
+        scopes: ['uu-rescue.recover'],
+        resourceClaims: REMOTE_WRITE,
+        argumentsSchema: NO_ARGUMENTS,
+      }),
+    ),
   ];
 }
 
@@ -145,14 +166,62 @@ export function createUuRemoteRescueRegistrationInput(
       maxResponseBytes: 256 * 1024,
     },
     permissions: [
-      { scope: 'uu-rescue.device', mode: 'read', description: 'Read only the exact configured UU Remote device identity and online state.', granted: true, required: true },
-      { scope: 'uu-rescue.observe', mode: 'write', description: 'Open the exact configured UU terminal transiently and send only built-in diagnostic commands.', granted: true, required: false },
-      { scope: 'uu-rescue.recover', mode: 'write', description: 'Operate only the configured WSL Forge Runtime, Connector, and Recovery service identities using fixed recovery actions.', granted: true, required: false },
+      {
+        scope: 'uu-rescue.device',
+        mode: 'read',
+        description: 'Read only the exact configured UU Remote device identity and online state.',
+        granted: true,
+        required: true,
+      },
+      {
+        scope: 'uu-rescue.observe',
+        mode: 'write',
+        description: 'Open the exact configured UU terminal transiently and send only built-in diagnostic commands.',
+        granted: true,
+        required: false,
+      },
+      {
+        scope: 'uu-rescue.recover',
+        mode: 'write',
+        description:
+          'Operate only the configured WSL Forge Runtime, Connector, and Recovery service identities using fixed recovery actions.',
+        granted: true,
+        required: false,
+      },
     ],
     capabilities: [
-      { capabilityId: 'uu-rescue.device', title: 'UU Remote rescue device identity', description: 'Exact device identity and online-state fencing.', scopes: ['uu-rescue.device'], actions: ['device_status'] },
-      { capabilityId: 'uu-rescue.observe', title: 'Remote WSL/Forge observation', description: 'Fixed WSL and Forge health probes over the UU Remote terminal.', scopes: ['uu-rescue.observe'], actions: ['wsl_status', 'forge_health'] },
-      { capabilityId: 'uu-rescue.recover', title: 'Remote Forge recovery', description: 'Allowlisted start/restart/recovery operations for the existing single Forge service authorities.', scopes: ['uu-rescue.recover'], actions: ['runtime_start', 'runtime_restart', 'connector_start', 'connector_restart', 'recovery_start', 'recovery_restart', 'runtime_recover', 'host_task_install_dispatch', 'host_tunnel_restart_dispatch', 'host_full_recover_dispatch'] },
+      {
+        capabilityId: 'uu-rescue.device',
+        title: 'UU Remote rescue device identity',
+        description: 'Exact device identity and online-state fencing.',
+        scopes: ['uu-rescue.device'],
+        actions: ['device_status'],
+      },
+      {
+        capabilityId: 'uu-rescue.observe',
+        title: 'Remote WSL/Forge observation',
+        description: 'Fixed WSL and Forge health probes over the UU Remote terminal.',
+        scopes: ['uu-rescue.observe'],
+        actions: ['wsl_status', 'forge_health'],
+      },
+      {
+        capabilityId: 'uu-rescue.recover',
+        title: 'Remote Forge recovery',
+        description: 'Allowlisted start/restart/recovery operations for the existing single Forge service authorities.',
+        scopes: ['uu-rescue.recover'],
+        actions: [
+          'runtime_start',
+          'runtime_restart',
+          'connector_start',
+          'connector_restart',
+          'recovery_start',
+          'recovery_restart',
+          'runtime_recover',
+          'host_task_install_dispatch',
+          'host_tunnel_restart_dispatch',
+          'host_full_recover_dispatch',
+        ],
+      },
     ],
     actions: registeredActions,
   };
