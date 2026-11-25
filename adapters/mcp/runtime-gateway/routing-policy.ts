@@ -26,12 +26,10 @@ const THIN_ROUTED_TOOLS = new Set([
   'git_commit_paths',
   'git_diff_paths',
   'apply_patch',
-  'apply_edit_operations',
   'read_file_range',
   'read_repository_file',
-  // Checks and edit verification use Process Runtime unless multi-phase/release requires Durable.
+  // Checks use Process Runtime unless multi-phase/release requires Durable.
   'run_check',
-  'verify_edit_session',
 ]);
 
 /** Blocking native host tools must never execute on the public MCP event loop. */
@@ -93,10 +91,7 @@ const INTERACTIVE_SYNC_WRITE_TOOLS = new Set([
   'repository_git_remove_worktree',
   'repository_git_commit',
   'repository_git_finish_workflow',
-  'begin_edit_session',
   'apply_patch',
-  'apply_edit_operations',
-  'create_edit_savepoint',
   'git_stage_paths',
   'git_commit_paths',
   // Recovery writes against an existing Run must remain available while legacy
@@ -295,7 +290,7 @@ export function classifyGatewayExecutionPath(
     };
   }
   const selfManagedProcessAsync =
-    (name === 'execute_command' || name === 'run_check' || name === 'verify_edit_session') &&
+    (name === 'execute_command' || name === 'run_check') &&
     (args.apply_mode === 'async' || args.mode === 'async' || args.async === true || args.background === true) &&
     !(name === 'run_check' && isReleaseCheckId(args.check_id ?? args.checkId));
   // Async on Process-Runtime-owned tools means return the managed Process
@@ -331,33 +326,6 @@ export function classifyGatewayExecutionPath(
       decision: {
         mode: 'fast',
         reasons: ['run_check_process_runtime'],
-        risk: 'workspace_write',
-        estimatedClass: 'short',
-        requiresIsolation: false,
-        requiresRecovery: false,
-        effects: {
-          readsWorkspace: true,
-          mutatesWorkspace: true,
-          mutatesGitRefs: false,
-          remoteWrite: false,
-        },
-      },
-    };
-  }
-
-  // verify_edit_session is a Process Runtime orchestration surface. It may
-  // return a managed handle, but it must never be promoted to a retired
-  // ExecutionJob/LocalJob merely because the edit session has checks.
-  if (name === 'verify_edit_session') {
-    if (args.mode === 'durable' || args.force_durable === true) {
-      return { path: 'durable', reasons: ['caller_requested_durable_edit_verification'] };
-    }
-    return {
-      path: 'fast',
-      reasons: ['verify_edit_session_process_runtime'],
-      decision: {
-        mode: 'fast',
-        reasons: ['verify_edit_session_process_runtime'],
         risk: 'workspace_write',
         estimatedClass: 'short',
         requiresIsolation: false,

@@ -14,7 +14,14 @@ describe('interactive sync routing policy', () => {
     );
     expect(policySource).toContain('INTERACTIVE_SYNC_WRITE_TOOLS');
     expect(policySource).toContain('repository_safe_patch_apply');
-    expect(policySource).toContain('begin_edit_session');
+    for (const retiredTool of [
+      'begin_edit_session',
+      'create_edit_savepoint',
+      'verify_edit_session',
+      'apply_edit_operations',
+    ]) {
+      expect(policySource).not.toContain(retiredTool);
+    }
     expect(policySource).toContain('apply_patch');
     expect(policySource).toContain('wantsAsyncExecution');
     expect(routerSource).toContain('EXTERNAL_CONTROLLER_REQUIRED');
@@ -29,6 +36,14 @@ describe('interactive sync routing policy', () => {
     expect(runsAsInteractiveSyncWrite('cancel_task_run')).toBe(true);
     expect(runsAsInteractiveSyncWrite('finish_task_run', { apply_mode: 'async' })).toBe(false);
     expect(runsAsInteractiveSyncWrite('dispatch_task')).toBe(false);
+    for (const retiredTool of [
+      'begin_edit_session',
+      'create_edit_savepoint',
+      'verify_edit_session',
+      'apply_edit_operations',
+    ]) {
+      expect(runsAsInteractiveSyncWrite(retiredTool)).toBe(false);
+    }
   });
 
   test('protected console unlock stays on the computer plugin and is not a public MCP tool', () => {
