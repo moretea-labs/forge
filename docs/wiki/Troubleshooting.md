@@ -13,7 +13,7 @@ A single 502 does not identify which layer failed.
 
 ## Request timed out
 
-Check the durable Work, Job, Run, or managed process before retrying. Replaying a write can create duplicate effects even when the original HTTP request failed.
+Check the exact Process, WorkflowRun, Job/Run, or external-effect receipt before retrying. Replaying a write can create duplicate effects even when the original HTTP request failed.
 
 ## External 502 or 503
 

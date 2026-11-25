@@ -1,7 +1,6 @@
 export type ResourceOwnerKind =
   | 'execution_job'
   | 'agent_run'
-  | 'work_contract'
   | 'controller_generation'
   | 'runtime_slot'
   | 'repository'
@@ -12,12 +11,7 @@ export interface ResourceOwner {
   id: string;
 }
 
-export type ManagedResourceType =
-  | 'temp_dir'
-  | 'worktree'
-  | 'branch'
-  | 'artifact'
-  | 'runtime_slot';
+export type ManagedResourceType = 'temp_dir' | 'worktree' | 'branch' | 'artifact' | 'runtime_slot';
 
 export type ManagedResourceState =
   | 'active'
@@ -57,13 +51,15 @@ export function managedResource(input: Omit<ManagedResource, 'lastSeenAt'> & { l
 export function isKnownManagedResource(value: unknown): value is ManagedResource {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const resource = value as Record<string, unknown>;
-  return typeof resource.resourceId === 'string'
-    && typeof resource.type === 'string'
-    && typeof resource.owner === 'object'
-    && resource.owner !== null
-    && typeof (resource.owner as Record<string, unknown>).kind === 'string'
-    && typeof (resource.owner as Record<string, unknown>).id === 'string'
-    && typeof resource.createdAt === 'string'
-    && typeof resource.lastSeenAt === 'string'
-    && typeof resource.state === 'string';
+  return (
+    typeof resource.resourceId === 'string' &&
+    typeof resource.type === 'string' &&
+    typeof resource.owner === 'object' &&
+    resource.owner !== null &&
+    typeof (resource.owner as Record<string, unknown>).kind === 'string' &&
+    typeof (resource.owner as Record<string, unknown>).id === 'string' &&
+    typeof resource.createdAt === 'string' &&
+    typeof resource.lastSeenAt === 'string' &&
+    typeof resource.state === 'string'
+  );
 }

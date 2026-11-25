@@ -131,10 +131,6 @@ export const REBUILDABLE_RECORD_AUDIT_NAMESPACES = [
   // lease refreshes are mechanical state transitions, not permanent semantic
   // history; retain only a bounded recent audit tail.
   'computer_interaction_target',
-  // Work is retired as a development/progress authority (#483). The remaining
-  // current contract row is compatibility state, so intermediate audit
-  // revisions must not grow without bound.
-  'work_contract',
   // One recovery-index row can accumulate 10^4–10^5 revisions; handle indexes
   // re-record on every process observation. Bound their audit tails like other
   // rebuildable locators so maintenance can converge DB size (#377).
@@ -151,8 +147,16 @@ export const REBUILDABLE_RECORD_AUDIT_NAMESPACES = [
  * compatibility authorities: keeping their rows would preserve the retired
  * Work/WorkHandle ledger that #483 explicitly removed.
  */
-export const RETIRED_CONTROL_PLANE_NAMESPACES = ['execution_work_handle', 'work_semantic_revision'] as const;
-const RETIRED_NAMESPACE_AUDIT_MAX_ROWS_PER_PASS = 20_000;
+export const RETIRED_CONTROL_PLANE_NAMESPACES = [
+  'execution_work_handle',
+  'work_semantic_revision',
+  'work_contract',
+  'chatgpt_work_conversation_binding',
+  'controller_work_binding',
+  'execution_work_validation_index',
+  'work_prepare_request',
+] as const;
+const RETIRED_NAMESPACE_AUDIT_MAX_ROWS_PER_PASS = 100_000;
 
 export interface PruneOrphanedAuditOptions {
   /** Delete only orphaned history older than this age. A negative value is test-only. */
@@ -1626,9 +1630,8 @@ function pruneOrphanedAuditRows(database: SqliteDatabase, options: PruneOrphaned
  * Bound current-record history only for explicitly approved namespaces. The
  * newest `keepTail` revisions always remain, and every prune advances the
  * record's audit floor so inspection still proves an exact contiguous chain.
- * Mutable semantic domains remain excluded; retired read-only Work history is
- * eligible because its current row, not every intermediate revision, is the
- * compatibility authority after #483.
+ * Mutable semantic domains remain excluded. Retired Work namespaces are removed
+ * by pruneRetiredControlPlaneNamespaces instead of being retained or bounded.
  */
 function pruneRebuildableRecordAuditRows(
   database: SqliteDatabase,
@@ -1808,11 +1811,51 @@ function pruneRetiredControlPlaneNamespaces(
     `SELECT 1 AS present FROM control_plane_audit WHERE namespace IN (${placeholders}) LIMIT 1`,
     (statement) => statement.get(...namespaces),
   );
-  if (!hasRetiredRecords && !hasRetiredAudit) return { recordRows: 0, auditRows: 0 };
+  const hasRetiredAuditFloor =
+    tableExists(database, AUDIT_FLOOR_TABLE) &&
+    Boolean(
+      withSqliteStatement(
+        database,
+        'SELECT 1 AS present FROM ' + AUDIT_FLOOR_TABLE + ' WHERE namespace IN (' + placeholders + ') LIMIT 1',
+        (statement) => statement.get(...namespaces),
+      ),
+    );
+  const hasRetiredRecordCursor =
+    tableExists(database, AUDIT_RECORD_CURSOR_TABLE) &&
+    Boolean(
+      withSqliteStatement(
+        database,
+        'SELECT 1 AS present FROM ' + AUDIT_RECORD_CURSOR_TABLE + ' WHERE namespace IN (' + placeholders + ') LIMIT 1',
+        (statement) => statement.get(...namespaces),
+      ),
+    );
+  const retiredCandidateIndexes = (
+    withSqliteStatement(
+      database,
+      "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL AND name GLOB 'control_plane_candidate_*'",
+      (statement) => statement.all(),
+    ) as Array<{ name: string; sql: string }>
+  ).filter(
+    (index) =>
+      /^control_plane_candidate_[a-f0-9]{16}_[a-f0-9]{16}$/.test(index.name) &&
+      namespaces.some(
+        (namespace) =>
+          index.sql.includes("namespace = '" + namespace + "'") || index.sql.includes("namespace='" + namespace + "'"),
+      ),
+  );
+  if (
+    !hasRetiredRecords &&
+    !hasRetiredAudit &&
+    !hasRetiredAuditFloor &&
+    !hasRetiredRecordCursor &&
+    retiredCandidateIndexes.length === 0
+  )
+    return { recordRows: 0, auditRows: 0 };
   let recordRows = 0;
 
   database.exec('BEGIN IMMEDIATE');
   try {
+    for (const index of retiredCandidateIndexes) database.exec('DROP INDEX ' + index.name);
     withSqliteStatement(
       database,
       `DELETE FROM control_plane_records WHERE namespace IN (${placeholders})`,
@@ -1825,6 +1868,13 @@ function pruneRetiredControlPlaneNamespaces(
       withSqliteStatement(
         database,
         `DELETE FROM ${AUDIT_FLOOR_TABLE} WHERE namespace IN (${placeholders})`,
+        (statement) => statement.run(...namespaces),
+      );
+    }
+    if (tableExists(database, AUDIT_RECORD_CURSOR_TABLE)) {
+      withSqliteStatement(
+        database,
+        `DELETE FROM ${AUDIT_RECORD_CURSOR_TABLE} WHERE namespace IN (${placeholders})`,
         (statement) => statement.run(...namespaces),
       );
     }

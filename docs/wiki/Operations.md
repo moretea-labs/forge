@@ -1,12 +1,12 @@
 # Operations
 
-Use this page to choose the right operational path. Avoid replaying writes merely because a request timed out; first inspect durable Work, Job, Run, and runtime state.
+Use this page to choose the right operational path. Avoid replaying writes merely because a request timed out; first inspect Process, WorkflowRun, Job/Run, and runtime effect state.
 
 ## Normal checks
 
 1. Confirm the selected repository and checkout.
 2. Check Controller and repository readiness.
-3. Inspect active Work or Jobs before retrying an operation.
+3. Inspect the exact Process, WorkflowRun, Job/Run, or external-effect receipt before retrying an operation.
 4. Run the smallest focused validation first.
 5. Record exact evidence before finalizing or releasing.
 

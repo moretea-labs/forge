@@ -10,7 +10,7 @@ Authenticated MCP requests enter the in-process transport and Gateway adapter. T
 
 - bounded read or eligible ephemeral action -> Direct completion;
 - repository command or check -> Unified Process Runtime;
-- genuinely long-lived/dependency-aware objective -> durable Work/Scheduler path;
+- genuinely long-lived/dependency-aware execution -> Scheduler/WorkflowRun/Process path;
 - hard external/destructive boundary -> explicit authorization or refusal.
 
 The HTTP request does not become the owner of long-running execution.

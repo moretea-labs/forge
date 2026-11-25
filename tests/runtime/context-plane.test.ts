@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import {
+  readControlPlaneRecord,
+  writeControlPlaneRecord,
+} from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   renderContextPlane,
   resolveContextPlane,
@@ -32,34 +35,72 @@ describe('Kernel V2 structured Context Plane', () => {
         expectedRevision: null,
         record: record({
           contextId: 'openai-credential-ref',
-          value: { type: 'credential_reference', reference: { kind: 'env', reference: 'OPENAI_API_KEY', provider: 'openai' } },
+          value: {
+            type: 'credential_reference',
+            reference: { kind: 'env', reference: 'OPENAI_API_KEY', provider: 'openai' },
+          },
         }),
       });
       expect(stored.revision).toBe(1);
       expect(JSON.stringify(stored.value)).not.toContain('sk-');
-      expect(() => writeContextRecord({
-        controllerHome: home,
-        expectedRevision: null,
-        record: record({ contextId: 'raw-secret', value: { type: 'policy', statement: 'Use sk-123456789012345678901234567890 for access.' } }),
-      })).toThrow('CONTROL_PLANE_METADATA_SECRET_REFUSED');
-      expect(() => writeContextRecord({
-        controllerHome: home,
-        expectedRevision: null,
-        record: record({ contextId: 'bad-env-ref', value: { type: 'credential_reference', reference: { kind: 'env', reference: 'sk-123456789012345678901234567890' } } }),
-      })).toThrow('CONTEXT_CREDENTIAL_ENV_REFERENCE_INVALID');
-    } finally { rmSync(home, { recursive: true, force: true }); }
+      expect(() =>
+        writeContextRecord({
+          controllerHome: home,
+          expectedRevision: null,
+          record: record({
+            contextId: 'raw-secret',
+            value: { type: 'policy', statement: 'Use sk-123456789012345678901234567890 for access.' },
+          }),
+        }),
+      ).toThrow('CONTROL_PLANE_METADATA_SECRET_REFUSED');
+      expect(() =>
+        writeContextRecord({
+          controllerHome: home,
+          expectedRevision: null,
+          record: record({
+            contextId: 'bad-env-ref',
+            value: {
+              type: 'credential_reference',
+              reference: { kind: 'env', reference: 'sk-123456789012345678901234567890' },
+            },
+          }),
+        }),
+      ).toThrow('CONTEXT_CREDENTIAL_ENV_REFERENCE_INVALID');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test('ranks scoped explicit preferences deterministically and enforces hard resolver budgets', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-v2-context-'));
     try {
-      writeContextRecord({ controllerHome: home, expectedRevision: null, record: record({ contextId: 'global-provider', value: { type: 'routing_preference', intent: 'implementation', preferredProviderId: 'provider-a' } }) });
-      writeContextRecord({ controllerHome: home, expectedRevision: null, record: record({
-        contextId: 'requirement-provider', scope: { schemaVersion: 1, kind: 'requirement', id: 'REQ-1' },
-        value: { type: 'routing_preference', intent: 'implementation', preferredProviderId: 'provider-b' },
-      }) });
+      writeContextRecord({
+        controllerHome: home,
+        expectedRevision: null,
+        record: record({
+          contextId: 'global-provider',
+          value: { type: 'routing_preference', intent: 'implementation', preferredProviderId: 'provider-a' },
+        }),
+      });
+      writeContextRecord({
+        controllerHome: home,
+        expectedRevision: null,
+        record: record({
+          contextId: 'requirement-provider',
+          scope: { schemaVersion: 1, kind: 'requirement', id: 'REQ-1' },
+          value: { type: 'routing_preference', intent: 'implementation', preferredProviderId: 'provider-b' },
+        }),
+      });
       for (let index = 0; index < 10; index += 1) {
-        writeContextRecord({ controllerHome: home, expectedRevision: null, record: record({ contextId: `policy-${index}`, priority: 1, value: { type: 'policy', statement: `Policy ${index}` } }) });
+        writeContextRecord({
+          controllerHome: home,
+          expectedRevision: null,
+          record: record({
+            contextId: `policy-${index}`,
+            priority: 1,
+            value: { type: 'policy', statement: `Policy ${index}` },
+          }),
+        });
       }
       const resolution = resolveContextPlane({
         controllerHome: home,
@@ -74,18 +115,42 @@ describe('Kernel V2 structured Context Plane', () => {
       const rendered = renderContextPlane(resolution);
       expect(rendered).toContain('cannot override AGENTS.md');
       expect(rendered).toContain('[context-budget]');
-    } finally { rmSync(home, { recursive: true, force: true }); }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
-  test('missing or malformed Context remains advisory and cannot mutate Work authority', () => {
+  test('missing or malformed Context remains advisory and cannot mutate Requirement authority', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-v2-context-'));
     try {
-      const workValue = { schemaVersion: 2, workId: 'WORK-AUTHORITY', status: 'running', objective: 'Keep authority unchanged.' };
-      writeControlPlaneRecord(home, { namespace: 'work_contract', scope: 'repo-1', key: 'WORK-AUTHORITY', schemaVersion: 2, value: workValue, expectedRevision: null });
-      writeControlPlaneRecord(home, { namespace: 'context_record', scope: 'global:global', key: 'malformed', schemaVersion: 1, value: { schemaVersion: 999, raw: true }, expectedRevision: null });
-      const resolution = resolveContextPlane({ controllerHome: home, intent: 'implementation', now: '2026-09-03T01:00:00.000Z' });
+      const requirementValue = { requirementId: 'REQ-AUTHORITY', state: 'open', outcome: 'Keep authority unchanged.' };
+      writeControlPlaneRecord(home, {
+        namespace: 'requirement',
+        scope: 'controller',
+        key: 'REQ-AUTHORITY',
+        schemaVersion: 1,
+        value: requirementValue,
+        expectedRevision: null,
+      });
+      writeControlPlaneRecord(home, {
+        namespace: 'context_record',
+        scope: 'global:global',
+        key: 'malformed',
+        schemaVersion: 1,
+        value: { schemaVersion: 999, raw: true },
+        expectedRevision: null,
+      });
+      const resolution = resolveContextPlane({
+        controllerHome: home,
+        intent: 'implementation',
+        now: '2026-09-03T01:00:00.000Z',
+      });
       expect(resolution.records).toEqual([]);
-      expect(readControlPlaneRecord(home, 'work_contract', 'repo-1', 'WORK-AUTHORITY')?.value).toEqual(workValue);
-    } finally { rmSync(home, { recursive: true, force: true }); }
+      expect(readControlPlaneRecord(home, 'requirement', 'controller', 'REQ-AUTHORITY')?.value).toEqual(
+        requirementValue,
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

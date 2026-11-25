@@ -20,10 +20,10 @@ Gateway + bounded 19-tool controller surface
         |            +---- Process record + output + completion receipt
         |            +---- Claims / Leases / exact process identity
         |
-        +---- Durable Work / Scheduler ---- long-lived or dependency-aware work
+        +---- Scheduler / WorkflowRun ---- long-lived or dependency-aware execution
         |            |
-        |            +---- repository/check-out ownership
-        |            +---- optional isolated worktrees / workers / agents
+        |            +---- Process/resource coordination
+        |            +---- optional isolated workers where a real boundary requires them
         |
         v
 Controller Home + repository state + evidence
@@ -45,9 +45,9 @@ The default ChatGPT-facing surface is bounded rather than exposing every interna
 
 Every registered-repository execution is bound to a stable `repoId` and an explicit `checkoutId`. The current working directory cannot silently override that identity. Explicit unregistered workspace execution is a separate authority and does not create a repository registration behind the user's back.
 
-### Direct versus durable work
+### Direct versus scheduled execution
 
-Investigation is not itself a reason to create Work. A small, understood change can stay Direct. Durable Work, worktrees, or workers are introduced when recovery, dependency tracking, isolation, long-running execution, or real risk requires them.
+A small, understood action can stay Direct. Long-running or dependency-aware execution uses the Scheduler, WorkflowRun, and Process Runtime; isolated workers or worktrees are mechanisms for real execution or Git boundaries, never a second task/progress authority.
 
 ### Process Runtime
 

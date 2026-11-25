@@ -75,7 +75,7 @@ Building successfully, seeing elements in the tree, and passing outer-rectangle 
 - Browser/ChatGPT generation state from DOM/Stop/stable text is not a provider completion receipt. Require exact operation identity and trusted completion/failure evidence for authorized external actions. Legacy Supervisor Task/Effect/Turn receipts remain historical; unknown/applied effects are never replayed. Respect Retry-After; repeated unknown observations are not productive progress.
 - Preserve staged/unstaged/untracked data and unique Git commits. No silent clean/reset/stash/force rebase, shared file overwrite, credentials in code, unauthorised production release or false DONE.
 - UI changes require rendered interaction review; backend/Runtime changes require relevant real behavior evidence. Old failing tests can be removed only after their contracts are genuinely retired; run a focused RED→GREEN regression for current defects.
-- Historical Forge Work/Plan/Requirement data may exist but is not a current progress ledger or ordinary operation prerequisite.
+- Retired Work/WorkHandle data must not persist as a compatibility ledger. Requirement/Plan data may exist only as optional semantic context and is never the development progress authority or an ordinary execution prerequisite.
 
 ## Minimum sufficient checks
 

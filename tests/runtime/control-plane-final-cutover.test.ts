@@ -156,18 +156,18 @@ describe('final SQLite control-plane cutover', () => {
         ['null', null],
       ] as const) {
         writeControlPlaneRecord(controllerHome, {
-          namespace: 'work_contract',
+          namespace: 'plan_contract',
           scope: 'repo-filter',
           key,
           schemaVersion: 1,
-          value: status === undefined ? { workId: key } : { workId: key, status },
+          value: status === undefined ? { planId: key } : { planId: key, status },
           expectedRevision: null,
         });
       }
-      const candidates = listControlPlaneRecordsExcludingPayloadTextValues<{ workId: string; status?: string | null }>(
+      const candidates = listControlPlaneRecordsExcludingPayloadTextValues<{ planId: string; status?: string | null }>(
         controllerHome,
         {
-          namespace: 'work_contract',
+          namespace: 'plan_contract',
           scope: 'repo-filter',
           field: 'status',
           excludedValues: ['completed', 'failed', 'cancelled'],
@@ -332,7 +332,7 @@ describe('final SQLite control-plane cutover', () => {
       deleteControlPlaneRecord(controllerHome, { namespace, scope: 'controller', key: 'stable-orphan' });
 
       let semantic = writeControlPlaneRecord(controllerHome, {
-        namespace: 'work_contract',
+        namespace: 'plan_contract',
         scope: 'repo-test',
         key: 'semantic-orphan',
         schemaVersion: 1,
@@ -340,7 +340,7 @@ describe('final SQLite control-plane cutover', () => {
         expectedRevision: null,
       });
       semantic = writeControlPlaneRecord(controllerHome, {
-        namespace: 'work_contract',
+        namespace: 'plan_contract',
         scope: 'repo-test',
         key: 'semantic-orphan',
         schemaVersion: 1,
@@ -348,7 +348,7 @@ describe('final SQLite control-plane cutover', () => {
         expectedRevision: semantic.revision,
       });
       deleteControlPlaneRecord(controllerHome, {
-        namespace: 'work_contract',
+        namespace: 'plan_contract',
         scope: 'repo-test',
         key: 'semantic-orphan',
       });
@@ -379,7 +379,7 @@ describe('final SQLite control-plane cutover', () => {
         expect(currentRevisions).toEqual([1, 2]);
         const semanticRevisions = database
           .query(
-            "SELECT revision FROM control_plane_audit WHERE namespace = 'work_contract' AND scope = 'repo-test' AND record_key = 'semantic-orphan' ORDER BY revision",
+            "SELECT revision FROM control_plane_audit WHERE namespace = 'plan_contract' AND scope = 'repo-test' AND record_key = 'semantic-orphan' ORDER BY revision",
           )
           .all()
           .map((row) => (row as { revision: number }).revision);
@@ -466,7 +466,7 @@ describe('final SQLite control-plane cutover', () => {
     });
   });
 
-  test('SQLite maintenance removes retired WorkHandle namespaces without touching current semantic authority', () => {
+  test('SQLite maintenance removes every retired Work namespace without touching current semantic authority', () => {
     withHome((controllerHome) => {
       let retiredHandle = writeControlPlaneRecord(controllerHome, {
         namespace: 'execution_work_handle',
@@ -492,6 +492,46 @@ describe('final SQLite control-plane cutover', () => {
         value: { goal: 'retired snapshot' },
         expectedRevision: null,
       });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'work_contract',
+        scope: 'repo-retired',
+        key: 'work-contract-a',
+        schemaVersion: 1,
+        value: { state: 'retired' },
+        expectedRevision: null,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'chatgpt_work_conversation_binding',
+        scope: 'repo-retired',
+        key: 'conversation-a',
+        schemaVersion: 1,
+        value: { state: 'retired' },
+        expectedRevision: null,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'controller_work_binding',
+        scope: 'repo-retired',
+        key: 'controller-a',
+        schemaVersion: 1,
+        value: { state: 'retired' },
+        expectedRevision: null,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'execution_work_validation_index',
+        scope: 'repo-retired',
+        key: 'validation-a',
+        schemaVersion: 1,
+        value: { state: 'retired' },
+        expectedRevision: null,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'work_prepare_request',
+        scope: 'repo-retired',
+        key: 'prepare-a',
+        schemaVersion: 1,
+        value: { state: 'retired' },
+        expectedRevision: null,
+      });
       const requirement = writeControlPlaneRecord(controllerHome, {
         namespace: 'requirement',
         scope: 'controller',
@@ -500,19 +540,67 @@ describe('final SQLite control-plane cutover', () => {
         value: { title: 'live semantic authority' },
         expectedRevision: null,
       });
+      const legacyDatabase = new Database(controlPlaneDatabasePath(controllerHome));
+      try {
+        legacyDatabase.exec(
+          'CREATE INDEX control_plane_candidate_aaaaaaaaaaaaaaaa_bbbbbbbbbbbbbbbb ' +
+            "ON control_plane_records (scope, updated_at, record_key) WHERE namespace = 'work_contract'",
+        );
+        legacyDatabase
+          .query(
+            'INSERT OR REPLACE INTO control_plane_audit_record_cursor ' +
+              '(name, namespace, scope, record_key, updated_at) VALUES (?, ?, ?, ?, ?)',
+          )
+          .run('current', 'work_contract', 'repo-retired', 'work-contract-a', new Date().toISOString());
+      } finally {
+        legacyDatabase.close();
+      }
 
       const report = maintainControlPlaneDatabase(controllerHome, {
         allowVacuum: false,
         minimumReclaimableBytes: Number.MAX_SAFE_INTEGER,
       });
-      expect(report.prunedRetiredRecordRows).toBe(2);
-      expect(report.prunedRetiredAuditRows).toBe(3);
+      expect(report.prunedRetiredRecordRows).toBe(7);
+      expect(report.prunedRetiredAuditRows).toBe(8);
       expect(
         readControlPlaneRecord(controllerHome, 'execution_work_handle', 'repo-retired', 'handle-a'),
       ).toBeUndefined();
       expect(
         readControlPlaneRecord(controllerHome, 'work_semantic_revision', 'repo-retired', 'work-a:r1'),
       ).toBeUndefined();
+      expect(
+        readControlPlaneRecord(controllerHome, 'work_contract', 'repo-retired', 'work-contract-a'),
+      ).toBeUndefined();
+      expect(
+        readControlPlaneRecord(controllerHome, 'chatgpt_work_conversation_binding', 'repo-retired', 'conversation-a'),
+      ).toBeUndefined();
+      expect(
+        readControlPlaneRecord(controllerHome, 'controller_work_binding', 'repo-retired', 'controller-a'),
+      ).toBeUndefined();
+      expect(
+        readControlPlaneRecord(controllerHome, 'execution_work_validation_index', 'repo-retired', 'validation-a'),
+      ).toBeUndefined();
+      expect(
+        readControlPlaneRecord(controllerHome, 'work_prepare_request', 'repo-retired', 'prepare-a'),
+      ).toBeUndefined();
+      const cleanedDatabase = new Database(controlPlaneDatabasePath(controllerHome));
+      try {
+        const legacyIndex = cleanedDatabase
+          .query(
+            'SELECT COUNT(*) AS count FROM sqlite_master ' +
+              "WHERE type = 'index' AND name = 'control_plane_candidate_aaaaaaaaaaaaaaaa_bbbbbbbbbbbbbbbb'",
+          )
+          .get() as { count: number };
+        const retiredCursor = cleanedDatabase
+          .query(
+            'SELECT COUNT(*) AS count FROM control_plane_audit_record_cursor ' + "WHERE namespace = 'work_contract'",
+          )
+          .get() as { count: number };
+        expect(legacyIndex.count).toBe(0);
+        expect(retiredCursor.count).toBe(0);
+      } finally {
+        cleanedDatabase.close();
+      }
       expect(readControlPlaneRecord(controllerHome, 'requirement', 'controller', 'req-live')).toMatchObject({
         revision: requirement.revision,
         value: { title: 'live semantic authority' },
@@ -521,7 +609,7 @@ describe('final SQLite control-plane cutover', () => {
     });
   });
 
-  test('SQLite maintenance bounds rebuildable and retired Work history while preserving live semantic history', () => {
+  test('SQLite maintenance bounds rebuildable history and deletes retired Work history while preserving live semantic history', () => {
     withHome((controllerHome) => {
       const namespace = 'computer_interaction_target_index';
       let current = writeControlPlaneRecord(controllerHome, {
@@ -580,7 +668,7 @@ describe('final SQLite control-plane cutover', () => {
         minimumReclaimableRatio: 0,
         pruneRebuildableRecordAudit: { olderThanMs: -1_000, keepTail: 10, maxRows: 1_000 },
       });
-      expect(report.prunedCurrentAuditRows).toBe(180);
+      expect(report.prunedCurrentAuditRows).toBe(90);
 
       const database = new Database(controlPlaneDatabasePath(controllerHome));
       try {
@@ -598,19 +686,15 @@ describe('final SQLite control-plane cutover', () => {
           .get(namespace, 'controller', 'current-long') as { floor_revision: number } | null;
         expect(currentFloor?.floor_revision).toBe(91);
 
-        const workRevisions = database
+        const workAudit = database
           .query(
-            "SELECT revision FROM control_plane_audit WHERE namespace = 'work_contract' AND scope = 'repo-test' AND record_key = 'retired-work-long' ORDER BY revision",
+            "SELECT COUNT(*) AS count FROM control_plane_audit WHERE namespace = 'work_contract' AND scope = 'repo-test' AND record_key = 'retired-work-long'",
           )
-          .all()
-          .map((row) => (row as { revision: number }).revision);
-        expect(workRevisions).toEqual(Array.from({ length: 10 }, (_, index) => 91 + index));
-        const workFloor = database
-          .query(
-            "SELECT floor_revision FROM control_plane_audit_floor WHERE namespace = 'work_contract' AND scope = 'repo-test' AND record_key = 'retired-work-long'",
-          )
-          .get() as { floor_revision: number } | null;
-        expect(workFloor?.floor_revision).toBe(91);
+          .get() as { count: number };
+        expect(workAudit.count).toBe(0);
+        expect(
+          readControlPlaneRecord(controllerHome, 'work_contract', 'repo-test', 'retired-work-long'),
+        ).toBeUndefined();
 
         const semanticRevisions = database
           .query(
@@ -622,15 +706,7 @@ describe('final SQLite control-plane cutover', () => {
       } finally {
         database.close();
       }
-      retiredWork = writeControlPlaneRecord(controllerHome, {
-        namespace: 'work_contract',
-        scope: 'repo-test',
-        key: 'retired-work-long',
-        schemaVersion: 1,
-        value: { revision: 101 },
-        expectedRevision: retiredWork.revision,
-      });
-      expect(retiredWork.revision).toBe(101);
+      expect(retiredWork.revision).toBe(100);
       expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
     });
   });
@@ -890,14 +966,6 @@ describe('final SQLite control-plane cutover', () => {
         value: { planId: 'PLAN-RESTORE', requirementId: 'REQ-RESTORE', repoId: identity.repoId, status: 'completed' },
         expectedRevision: null,
       });
-      const work = writeControlPlaneRecord(controllerHome, {
-        namespace: 'work_contract',
-        scope: identity.repoId,
-        key: 'work_restore',
-        schemaVersion: 1,
-        value: { workId: 'work_restore', goalId: 'REQ-RESTORE', planId: 'PLAN-RESTORE', status: 'completed' },
-        expectedRevision: null,
-      });
       const identityRecord = writeControlPlaneRecord(controllerHome, {
         namespace: 'repository_identity',
         scope: identity.repoId,
@@ -908,7 +976,7 @@ describe('final SQLite control-plane cutover', () => {
       });
       const backupPath = join(controllerHome, 'verified-backups', 'cutover.sqlite');
       const backupInspection = backupControlPlaneDatabase(controllerHome, backupPath);
-      expect(backupInspection).toMatchObject({ integrity: 'ok', recordCount: 4, orphanRecordCount: 0 });
+      expect(backupInspection).toMatchObject({ integrity: 'ok', recordCount: 3, orphanRecordCount: 0 });
 
       writeControlPlaneRecord(controllerHome, {
         namespace: 'requirement',
@@ -919,17 +987,13 @@ describe('final SQLite control-plane cutover', () => {
         expectedRevision: requirement.revision,
       });
       const restored = restoreControlPlaneDatabase(controllerHome, backupPath);
-      expect(restored).toMatchObject({ integrity: 'ok', recordCount: 4, orphanRecordCount: 0 });
+      expect(restored).toMatchObject({ integrity: 'ok', recordCount: 3, orphanRecordCount: 0 });
       expect(readControlPlaneRecord(controllerHome, 'requirement', 'controller', 'REQ-RESTORE')?.revision).toBe(
         requirement.revision,
       );
       expect(readControlPlaneRecord(controllerHome, 'plan_contract', identity.repoId, 'PLAN-RESTORE')).toMatchObject({
         revision: plan.revision,
         value: { requirementId: 'REQ-RESTORE' },
-      });
-      expect(readControlPlaneRecord(controllerHome, 'work_contract', identity.repoId, 'work_restore')).toMatchObject({
-        revision: work.revision,
-        value: { goalId: 'REQ-RESTORE', planId: 'PLAN-RESTORE' },
       });
       expect(
         readControlPlaneRecord(controllerHome, 'repository_identity', identity.repoId, identity.checkoutId),
@@ -956,21 +1020,13 @@ describe('final SQLite control-plane cutover', () => {
         value: { planId: 'PLAN-RESTART', requirementId: 'REQ-RESTART', status: 'executing' },
         expectedRevision: null,
       });
-      writeControlPlaneRecord(controllerHome, {
-        namespace: 'work_contract',
-        scope: 'repo_restart',
-        key: 'work_restart',
-        schemaVersion: 1,
-        value: { workId: 'work_restart', goalId: 'REQ-RESTART', status: 'running' },
-        expectedRevision: null,
-      });
-      const before = ['requirement', 'plan_contract', 'work_contract'].map((namespace) =>
+      const before = ['requirement', 'plan_contract'].map((namespace) =>
         listControlPlaneRecords(controllerHome, { namespace, limit: 10 }),
       );
       const script = `
         import { listControlPlaneRecords } from './src/runtime/control-plane/persistence/sqlite-store.ts';
         const home = process.argv[1];
-        const result = ['requirement','plan_contract','work_contract'].map((namespace) => listControlPlaneRecords(home, { namespace, limit: 10 }));
+        const result = ['requirement','plan_contract'].map((namespace) => listControlPlaneRecords(home, { namespace, limit: 10 }));
         process.stdout.write(JSON.stringify(result));
       `;
       const child = Bun.spawnSync({
@@ -1022,12 +1078,7 @@ describe('final SQLite control-plane cutover', () => {
     ]) {
       expect(retiredAgentRun).not.toContain(`function ${retired}(`);
     }
-    for (const name of [
-      'updateIssue',
-      'updateTask',
-      'acceptVerifiedTask',
-      'recordTaskVerification',
-    ]) {
+    for (const name of ['updateIssue', 'updateTask', 'acceptVerifiedTask', 'recordTaskVerification']) {
       const start = issueStore.indexOf(`export function ${name}`);
       expect(start).toBeGreaterThanOrEqual(0);
       const body = issueStore.slice(start, start + 700);
