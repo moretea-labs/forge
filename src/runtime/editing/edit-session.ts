@@ -1210,6 +1210,52 @@ export function reconcileOpenEditSessions(
  * Read-only maintenance preview. A safe result means the selected metadata-only
  * cleanup can complete without rewriting source or bypassing approval.
  */
+function committedAfterImageFailure(
+  repoRoot: string,
+  session: EditSession,
+  options: { allowProtectedIgnored?: boolean } = {},
+): string | undefined {
+  for (const operation of latestOperations(session).values()) {
+    if (operation.type === 'delete') {
+      const blob = runProcess('git', ['cat-file', '-e', 'HEAD:' + operation.path], {
+        cwd: repoRoot,
+        timeoutMs: 10_000,
+        maxOutputBytes: 1024,
+      });
+      if (blob.ok) return 'EDIT_SESSION_RECONCILIATION_DELETED_PATH_PRESENT_AT_HEAD: ' + operation.path;
+      continue;
+    }
+    const tracked = runProcess('git', ['ls-files', '--error-unmatch', '--', operation.path], {
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 1024,
+    });
+    if (tracked.ok) {
+      const blob = runProcess('git', ['show', 'HEAD:' + operation.path], {
+        cwd: repoRoot,
+        timeoutMs: 10_000,
+        maxOutputBytes: 4 * 1024 * 1024,
+        structuredStdout: true,
+      });
+      if (!blob.ok || !operation.afterSha256 || operation.afterSha256 !== hash(blob.stdout))
+        return 'EDIT_SESSION_RECONCILIATION_HEAD_BLOB_MISMATCH: ' + operation.path;
+      continue;
+    }
+    const ignored = runProcess('git', ['check-ignore', '-q', '--', operation.path], {
+      cwd: repoRoot,
+      timeoutMs: 10_000,
+      maxOutputBytes: 1024,
+    });
+    if (
+      options.allowProtectedIgnored !== true ||
+      !session.assurance?.protectedPaths.includes(operation.path) ||
+      !ignored.ok
+    )
+      return 'EDIT_SESSION_RECONCILIATION_PATH_NOT_COMMITTED: ' + operation.path;
+  }
+  return undefined;
+}
+
 export function inspectIntegratedEditSession(
   repoRoot: string,
   sessionId: string,
@@ -1230,8 +1276,7 @@ export function inspectIntegratedEditSession(
     if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0)
       return reject('EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE');
     const mismatches = currentHashMismatches(repoRoot, session);
-    if (mismatches.length === 0) return reject('EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED');
-    if (uncommittedMatchingAfterImages(repoRoot, session, mismatches).length > 0)
+    if (mismatches.length > 0 && uncommittedMatchingAfterImages(repoRoot, session, mismatches).length > 0)
       return reject('EDIT_SESSION_RECONCILIATION_PARTIAL_UNCOMMITTED_SOURCE');
     // A legacy session has no checkout identity, so compare only its tracked
     // paths against each scoped lease. Other writers' unrelated paths, builds,
@@ -1257,10 +1302,34 @@ export function inspectIntegratedEditSession(
       );
     });
     if (conflictingLease) return reject('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
+    if (mismatches.length > 0) {
+      return {
+        safe: true,
+        reason: 'EDIT_SESSION_LEGACY_SUPERSEDED_METADATA_ONLY',
+        unverifiedChecks: [],
+      };
+    }
+    if (uncommittedSessionPaths(repoRoot, sessionTrackedPaths(session)).length)
+      return reject('EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE');
+    const head = gitRevision(repoRoot);
+    if (!head || !session.baseRevision || head === session.baseRevision)
+      return reject('EDIT_SESSION_RECONCILIATION_COMMITTED_HEAD_REQUIRED');
+    if (
+      !runProcess('git', ['merge-base', '--is-ancestor', session.baseRevision, head], {
+        cwd: repoRoot,
+        timeoutMs: 10_000,
+        maxOutputBytes: 1024,
+      }).ok
+    )
+      return reject('EDIT_SESSION_RECONCILIATION_NOT_DESCENDANT');
+    const committedFailure = committedAfterImageFailure(repoRoot, session);
+    if (committedFailure) return reject(committedFailure);
     return {
       safe: true,
-      reason: 'EDIT_SESSION_LEGACY_SUPERSEDED_METADATA_ONLY',
-      unverifiedChecks: [],
+      reason: 'EDIT_SESSION_LEGACY_COMMITTED_METADATA_ONLY',
+      unverifiedChecks: session.requestedChecks.filter(
+        (id) => !session.checkResults.some((result) => result.checkId === id && result.ok),
+      ),
     };
   }
   if (session.repoId !== input.repoId || !session.checkoutId || !session.principalId)
@@ -1292,7 +1361,6 @@ export function inspectIntegratedEditSession(
       unverifiedChecks: [],
     };
   }
-  if (session.assurance?.approvalRequired) return reject('EDIT_SESSION_RECONCILIATION_APPROVAL_REQUIRED');
   if (uncommittedSessionPaths(repoRoot, sessionTrackedPaths(session)).length)
     return reject('EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE');
   const head = gitRevision(repoRoot);
@@ -1306,39 +1374,15 @@ export function inspectIntegratedEditSession(
     }).ok
   )
     return reject('EDIT_SESSION_RECONCILIATION_NOT_DESCENDANT');
-  for (const operation of latestOperations(session).values()) {
-    if (operation.type === 'delete') return reject('EDIT_SESSION_RECONCILIATION_DELETED_PATH_REQUIRES_VERIFICATION');
-    const tracked = runProcess('git', ['ls-files', '--error-unmatch', '--', operation.path], {
-      cwd: repoRoot,
-      timeoutMs: 10_000,
-      maxOutputBytes: 1024,
-    });
-    if (tracked.ok) {
-      // Hash the exact Git blob; redacted text is not a valid content digest input.
-      const blob = runProcess('git', ['show', 'HEAD:' + operation.path], {
-        cwd: repoRoot,
-        timeoutMs: 10_000,
-        maxOutputBytes: 4 * 1024 * 1024,
-        structuredStdout: true,
-      });
-      if (!blob.ok || !operation.afterSha256 || operation.afterSha256 !== hash(blob.stdout))
-        return reject('EDIT_SESSION_RECONCILIATION_HEAD_BLOB_MISMATCH: ' + operation.path);
-    } else {
-      const ignored = runProcess('git', ['check-ignore', '-q', '--', operation.path], {
-        cwd: repoRoot,
-        timeoutMs: 10_000,
-        maxOutputBytes: 1024,
-      });
-      if (!session.assurance?.protectedPaths.includes(operation.path) || !ignored.ok)
-        return reject('EDIT_SESSION_RECONCILIATION_PATH_NOT_COMMITTED: ' + operation.path);
-    }
+  if (session.assurance?.approvalRequired) {
+    const approvalCommittedFailure = committedAfterImageFailure(repoRoot, session, { allowProtectedIgnored: false });
+    if (approvalCommittedFailure) return reject('EDIT_SESSION_RECONCILIATION_APPROVAL_REQUIRED');
   }
-  const available = new Set(listControllerChecks(repoRoot).map((check) => check.id));
+  const committedFailure = committedAfterImageFailure(repoRoot, session, { allowProtectedIgnored: true });
+  if (committedFailure) return reject(committedFailure);
   const unverifiedChecks = session.requestedChecks.filter(
     (id) => !session.checkResults.some((result) => result.checkId === id && result.ok),
   );
-  if (unverifiedChecks.some((id) => available.has(id)))
-    return reject('EDIT_SESSION_RECONCILIATION_EXECUTABLE_CHECK_INCOMPLETE');
   if (!unverifiedChecks.length) {
     return {
       safe: true,
@@ -1352,6 +1396,44 @@ export function inspectIntegratedEditSession(
     reason: 'Exact committed after-images, no conflicting live lease; missing checks remain UNVERIFIED.',
     unverifiedChecks,
   };
+}
+
+function markEditSessionReconciledUnverified(
+  repoRoot: string,
+  session: EditSession,
+  inspection: { reason: string; unverifiedChecks: string[] },
+  input: { reviewer?: string; note?: string },
+): EditSession {
+  session.status = 'reconciled_unverified';
+  session.reconciledAt = now();
+  session.updatedAt = session.reconciledAt;
+  session.unverifiedChecks = inspection.unverifiedChecks;
+  session.reviewer = input.reviewer?.trim() || 'runtime-maintenance';
+  session.reviewNote =
+    'UNVERIFIED metadata-only reconciliation: ' +
+    inspection.reason +
+    (input.note?.trim() ? ' ' + input.note.trim() : '');
+  writeSession(repoRoot, session);
+  if (session.reviewer !== 'runtime-maintenance') {
+    tryAppendControllerWorklogEvent(repoRoot, {
+      category: 'edit',
+      action: 'edit_session_reconciled_unverified',
+      summary: session.purpose + ': integrated bytes retained; checks remain UNVERIFIED',
+      actor: session.reviewer,
+      issueId: session.issueId,
+      taskId: session.taskId,
+      editSessionId: session.sessionId,
+      details: {
+        head: gitRevision(repoRoot),
+        files: sessionTrackedPaths(session),
+        unverifiedChecks: inspection.unverifiedChecks,
+        approvalRequired: session.assurance?.approvalRequired ?? false,
+        currentLeaseObservation: 'none_at_reconciliation',
+        historicalLeaseDisposition: 'unknown',
+      },
+    });
+  }
+  return session;
 }
 
 /** Safe metadata cleanup, never a source rollback or a fabricated Check PASS. */
@@ -1376,12 +1458,16 @@ export function cleanupEditSession(
   // A maintenance preview is not a write authority. Revalidate every lease,
   // owner and source-state precondition under the caller's mutation exclusion
   // immediately before any metadata is terminalized.
+  let initialInspection: { safe: boolean; reason: string; unverifiedChecks: string[] } | undefined;
   if (input.controllerHome && input.repoId) {
-    const safety = inspectIntegratedEditSession(repoRoot, sessionId, {
+    initialInspection = inspectIntegratedEditSession(repoRoot, sessionId, {
       controllerHome: input.controllerHome,
       repoId: input.repoId,
     });
-    if (!safety.safe) throw new Error(safety.reason);
+    if (!initialInspection.safe) throw new Error(initialInspection.reason);
+    if (initialInspection.reason === 'EDIT_SESSION_LEGACY_COMMITTED_METADATA_ONLY') {
+      return markEditSessionReconciledUnverified(repoRoot, session, initialInspection, input);
+    }
   }
 
   const reconciled = reconcileEditSession(repoRoot, sessionId, input);
@@ -1403,41 +1489,14 @@ export function cleanupEditSession(
     });
   }
   if (input.controllerHome && input.repoId) {
-    const inspection = inspectIntegratedEditSession(repoRoot, sessionId, {
-      controllerHome: input.controllerHome,
-      repoId: input.repoId,
-    });
-    if (!inspection.safe) throw new Error(inspection.reason);
-    reconciled.status = 'reconciled_unverified';
-    reconciled.reconciledAt = now();
-    reconciled.updatedAt = reconciled.reconciledAt;
-    reconciled.unverifiedChecks = inspection.unverifiedChecks;
-    reconciled.reviewer = input.reviewer?.trim() || 'runtime-maintenance';
-    reconciled.reviewNote =
-      'UNVERIFIED metadata-only reconciliation: ' +
-      inspection.reason +
-      (input.note?.trim() ? ' ' + input.note.trim() : '');
-    writeSession(repoRoot, reconciled);
-    if (reconciled.reviewer !== 'runtime-maintenance') {
-      tryAppendControllerWorklogEvent(repoRoot, {
-        category: 'edit',
-        action: 'edit_session_reconciled_unverified',
-        summary: reconciled.purpose + ': integrated bytes retained; checks remain UNVERIFIED',
-        actor: reconciled.reviewer,
-        issueId: reconciled.issueId,
-        taskId: reconciled.taskId,
-        editSessionId: reconciled.sessionId,
-        details: {
-          head: gitRevision(repoRoot),
-          files: sessionTrackedPaths(reconciled),
-          unverifiedChecks: inspection.unverifiedChecks,
-          approvalRequired: reconciled.assurance?.approvalRequired ?? false,
-          currentLeaseObservation: 'none_at_reconciliation',
-          historicalLeaseDisposition: 'unknown',
-        },
+    const inspection =
+      initialInspection ??
+      inspectIntegratedEditSession(repoRoot, sessionId, {
+        controllerHome: input.controllerHome,
+        repoId: input.repoId,
       });
-    }
-    return reconciled;
+    if (!inspection.safe) throw new Error(inspection.reason);
+    return markEditSessionReconciledUnverified(repoRoot, reconciled, inspection, input);
   }
   throw new Error(`edit session cannot be cleaned up from ${reconciled.status}`);
 }

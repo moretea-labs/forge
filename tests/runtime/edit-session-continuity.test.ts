@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -1863,6 +1863,46 @@ function durableBinding(overrides: Partial<EditSessionBinding> = {}): EditSessio
   };
 }
 
+test('legacy exact committed after-images retire as reconciled-unverified without original identity', () => {
+  const fx = fixture();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Legacy committed identity-free retirement',
+    allowedPaths: ['source.ts'],
+  });
+  applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [
+    {
+      type: 'replace',
+      path: 'source.ts',
+      expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    },
+  ]);
+  const sessionFile = join(fx.repoRoot, '.ai/harness/edit-sessions', session.sessionId, 'session.json');
+  const stored = JSON.parse(readFileSync(sessionFile, 'utf8')) as Record<string, unknown>;
+  stored.updatedAt = new Date(Date.now() - 48 * 60 * 60_000).toISOString();
+  writeFileSync(sessionFile, JSON.stringify(stored));
+
+  const input = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+  expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, input)).toMatchObject({
+    safe: false,
+    reason: 'EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE',
+  });
+
+  spawnSync('git', ['add', '--', 'source.ts'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'commit legacy after-image'], { cwd: fx.repoRoot });
+  expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, input)).toMatchObject({
+    safe: true,
+    reason: 'EDIT_SESSION_LEGACY_COMMITTED_METADATA_ONLY',
+  });
+  const cleaned = cleanupEditSession(fx.repoRoot, session.sessionId, {
+    ...input,
+    reviewer: 'runtime-maintenance',
+  });
+  expect(cleaned.status).toBe('reconciled_unverified');
+  expect(cleaned.verifiedAt).toBeUndefined();
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 2;\n');
+});
+
 test('legacy EditSessions retire as superseded metadata only when their original bytes are gone', () => {
   const fx = fixture();
   const session = beginEditSession(fx.repoRoot, {
@@ -1882,13 +1922,13 @@ test('legacy EditSessions retire as superseded metadata only when their original
   stored.updatedAt = new Date(Date.now() - 48 * 60 * 60_000).toISOString();
   writeFileSync(sessionFile, JSON.stringify(stored));
 
-  // An old unbound session still owning its exact after-image is not garbage.
+  // An old unbound session still owning an uncommitted after-image is not garbage.
   expect(
     inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
     }),
-  ).toMatchObject({ safe: false, reason: 'EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED' });
+  ).toMatchObject({ safe: false, reason: 'EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE' });
 
   writeFileSync(join(fx.repoRoot, 'source.ts'), 'export const value = 3;\n');
   expect(
@@ -1910,6 +1950,53 @@ test('legacy EditSessions retire as superseded metadata only when their original
     ),
   ).toHaveLength(0);
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
+});
+
+test('committed deletions may retire metadata with approval/check facts preserved as unverified', () => {
+  const fx = fixture();
+  writeFileSync(join(fx.repoRoot, 'delete-me.ts'), 'export const removed = true;\n');
+  spawnSync('git', ['add', '--', 'delete-me.ts'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'track delete target'], { cwd: fx.repoRoot });
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Historical committed deletion retirement',
+    allowedPaths: ['delete-me.ts'],
+    checks: ['package:check:type'],
+    binding: durableBinding({ checkoutId: fx.repository.activeCheckoutId }),
+  });
+  applyEditOperations(
+    fx.repoRoot,
+    fx.policy,
+    session.sessionId,
+    [{ type: 'delete', path: 'delete-me.ts', expectedSha256: sha256('export const removed = true;\n') }],
+    { binding: durableBinding({ checkoutId: fx.repository.activeCheckoutId }) },
+  );
+  spawnSync('git', ['add', '-A', '--', 'delete-me.ts'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'commit historical deletion'], { cwd: fx.repoRoot });
+
+  const sessionFile = join(fx.repoRoot, '.ai/harness/edit-sessions', session.sessionId, 'session.json');
+  const stored = JSON.parse(readFileSync(sessionFile, 'utf8')) as Record<string, unknown>;
+  const assurance =
+    stored.assurance && typeof stored.assurance === 'object' && !Array.isArray(stored.assurance)
+      ? (stored.assurance as Record<string, unknown>)
+      : {};
+  stored.assurance = { ...assurance, approvalRequired: true };
+  writeFileSync(sessionFile, JSON.stringify(stored));
+
+  const input = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+  const inspection = inspectIntegratedEditSession(fx.repoRoot, session.sessionId, input);
+  expect(inspection).toMatchObject({
+    safe: true,
+    unverifiedChecks: ['package:check:type'],
+  });
+  const cleaned = cleanupEditSession(fx.repoRoot, session.sessionId, {
+    ...input,
+    reviewer: 'runtime-maintenance',
+  });
+  expect(cleaned.status).toBe('reconciled_unverified');
+  expect(cleaned.assurance?.approvalRequired).toBe(true);
+  expect(cleaned.unverifiedChecks).toEqual(['package:check:type']);
+  expect(cleaned.verifiedAt).toBeUndefined();
+  expect(existsSync(join(fx.repoRoot, 'delete-me.ts'))).toBe(false);
 });
 
 test('partially superseded multi-file legacy session retains any still-matching uncommitted after-image', () => {
