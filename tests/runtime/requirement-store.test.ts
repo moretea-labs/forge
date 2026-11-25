@@ -539,6 +539,106 @@ test('Project root Requirement uniqueness and parent hierarchy are atomic and se
   ).toThrow(/REQUIREMENT_HIERARCHY_PROJECT_MISMATCH/);
 });
 
+test('attaches historical terminal tasks without changing lifecycle, evidence or dependencies', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-terminal-hierarchy-'));
+  homes.push(home);
+  const options = { controllerHome: home };
+  const projectId = 'project-terminal-migration';
+  createProjectIdentity({
+    controllerHome: home,
+    value: { projectId, workspaceId: 'workspace-personal', displayName: 'Migration' },
+  });
+  const root = createRequirement(options, {
+    requirementId: 'REQ-MIGRATION-ROOT',
+    projectId,
+    isProjectRoot: true,
+    title: 'Root',
+    outcomeStatement: 'Project outcome',
+  });
+  const task = createRequirement(options, {
+    requirementId: 'REQ-MIGRATION-DONE',
+    projectId,
+    title: 'Historical delivery',
+    outcomeStatement: 'Delivered result',
+    priority: 'high',
+    assignee: 'owner',
+    dependsOnRequirementIds: [root.requirementId],
+    legacyAliases: ['github:example/repo#42'],
+  });
+  const done = reviseRequirementSemantic(options, task.requirementId, {
+    expectedRevision: 1,
+    state: 'completed',
+    acceptedEvidenceRefs: ['receipt:accepted'],
+  });
+  const cancelledTask = createRequirement(options, {
+    requirementId: 'REQ-MIGRATION-CANCELLED',
+    projectId,
+    title: 'Cancelled delivery',
+    outcomeStatement: 'Cancelled result',
+  });
+  const cancelled = reviseRequirementSemantic(options, cancelledTask.requirementId, {
+    expectedRevision: 1,
+    state: 'cancelled',
+  });
+  for (const before of [done, cancelled]) {
+    expect(() =>
+      reviseRequirementSemantic(options, before.requirementId, {
+        expectedRevision: 1,
+        parentRequirementId: root.requirementId,
+      }),
+    ).toThrow('REQUIREMENT_REVISION_CONFLICT');
+    expect(() =>
+      reviseRequirementSemantic(options, before.requirementId, {
+        expectedRevision: 2,
+        parentRequirementId: root.requirementId,
+        title: 'Rewrite',
+      }),
+    ).toThrow('REQUIREMENT_SEMANTIC_TERMINAL_IMMUTABLE');
+    expect(readRequirement(options, before.requirementId)?.value).toEqual(before);
+    const attached = reviseRequirementSemantic(options, before.requirementId, {
+      expectedRevision: 2,
+      parentRequirementId: root.requirementId,
+    });
+    const {
+      parentRequirementId,
+      rootRequirementId,
+      revision,
+      semanticRevision,
+      updatedAt,
+      semanticUpdatedAt,
+      ...facts
+    } = attached;
+    const {
+      revision: oldRevision,
+      semanticRevision: oldSemanticRevision,
+      updatedAt: oldUpdatedAt,
+      semanticUpdatedAt: oldSemanticUpdatedAt,
+      ...oldFacts
+    } = before;
+    expect(facts).toEqual(oldFacts);
+    expect(parentRequirementId).toBe(root.requirementId);
+    expect(rootRequirementId).toBe(root.requirementId);
+    expect(revision).toBe(oldRevision + 1);
+    expect(semanticRevision).toBe(3);
+    expect(
+      listRequirementRevisionRecords(options, before.requirementId, 10).find((row) => row.revision === 2),
+    ).toMatchObject({ status: before.state, title: before.title, acceptedEvidenceRefs: before.acceptedEvidenceRefs });
+    expect(
+      reviseRequirementSemantic(options, before.requirementId, {
+        expectedRevision: 3,
+        parentRequirementId: root.requirementId,
+      }),
+    ).toEqual(attached);
+    expect(() =>
+      reviseRequirementSemantic(options, before.requirementId, {
+        expectedRevision: 3,
+        isProjectRoot: true,
+      }),
+    ).toThrow('REQUIREMENT_HIERARCHY_ROOT_IMMUTABLE');
+  }
+  expect(listRequirements(options)).toHaveLength(3);
+});
+
 test('competing independent processes can bind exactly one canonical Project root', async () => {
   const home = mkdtempSync(join('/tmp', 'forge-project-root-race-'));
   homes.push(home);

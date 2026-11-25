@@ -619,6 +619,51 @@ export function listRequirementActivityEvents(options: RequirementStoreOptions, 
   });
 }
 
+/** Persist the same canonical semantic history for normal edits and structural-only migration. */
+function writeRequirementSemanticRevisionWithinTransaction(
+  database: SqliteDatabase,
+  current: ControlPlaneRecord<Requirement>,
+  updated: Requirement,
+  at: string,
+): ControlPlaneRecord<Requirement> {
+  const semanticRevision = currentRequirementSemanticRevision(current.value);
+  const revisionKey = requirementRevisionKey(updated.requirementId, semanticRevision);
+  if (
+    !readControlPlaneRecordWithinTransaction<SemanticInverseChangeRecord>(
+      database,
+      CHANGE_NAMESPACE,
+      SCOPE,
+      revisionKey,
+    )
+  ) {
+    const previousView = requirementSemanticView(current.value);
+    const nextView = requirementSemanticView(updated);
+    const change = createSemanticInverseChange(
+      previousView as unknown as Record<string, unknown>,
+      nextView as unknown as Record<string, unknown>,
+      { revision: semanticRevision, nextRevision: semanticRevision + 1, recordedAt: at },
+    );
+    writeControlPlaneRecordWithinTransaction(database, {
+      namespace: CHANGE_NAMESPACE,
+      scope: SCOPE,
+      key: revisionKey,
+      schemaVersion: 1,
+      value: change,
+      action: 'requirement_semantic_change_recorded',
+      expectedRevision: null,
+    });
+  }
+  return writeControlPlaneRecordWithinTransaction(database, {
+    namespace: NAMESPACE,
+    scope: SCOPE,
+    key: updated.requirementId,
+    schemaVersion: SCHEMA_VERSION,
+    value: updated,
+    action: 'requirement_semantic_revised',
+    expectedRevision: current.revision,
+  });
+}
+
 export function reviseRequirementSemantic(
   options: RequirementStoreOptions,
   requirementIdInput: string,
@@ -687,6 +732,32 @@ export function reviseRequirementSemantic(
     const hierarchyChanged =
       nextParentRequirementId !== current.value.parentRequirementId ||
       nextRootRequirementId !== current.value.rootRequirementId;
+    // Structural attachment of an already-owned legacy task is not a
+    // lifecycle/content revision. Permit exactly this operation even for
+    // terminal tasks, preserving every other field (including historical
+    // acceptance facts). Never allow terminal root promotion or mixed edits.
+    const hierarchyOnlyAttachment =
+      requestedParentRequirementId !== undefined &&
+      !input.isProjectRoot &&
+      (!requestedRepoId || requestedRepoId === current.value.repoId) &&
+      Object.entries(input).every(
+        ([key, value]) =>
+          value === undefined || ['expectedRevision', 'repoId', 'parentRequirementId', 'isProjectRoot'].includes(key),
+      );
+    if (hierarchyOnlyAttachment) {
+      if (!hierarchyChanged) return current.value;
+      const at = nowIso(options);
+      const updated: Requirement = {
+        ...current.value,
+        parentRequirementId: nextParentRequirementId,
+        rootRequirementId: nextRootRequirementId,
+        semanticRevision: semanticRevision + 1,
+        semanticUpdatedAt: at,
+        revision: current.value.revision + 1,
+        updatedAt: at,
+      };
+      return writeRequirementSemanticRevisionWithinTransaction(database, current, updated, at).value;
+    }
     const currentDependencies = [...(current.value.dependsOnRequirementIds ?? [])];
     const dependsOnRequirementIds =
       input.dependsOnRequirementIds === undefined
@@ -746,7 +817,6 @@ export function reviseRequirementSemantic(
       throw new Error(`REQUIREMENT_STATE_TRANSITION_INVALID:${current.value.state} -> ${requestedStatus}`);
     }
     const at = nowIso(options);
-    const revisionKey = requirementRevisionKey(requirementId, semanticRevision);
     const remainingWork =
       input.remainingWork === undefined ? [...(current.value.remainingWork ?? [])] : bounded(input.remainingWork, 50);
     const acceptedEvidenceRefs =
@@ -799,40 +869,7 @@ export function reviseRequirementSemantic(
       revision: current.value.revision + 1,
       updatedAt: at,
     };
-    if (
-      !readControlPlaneRecordWithinTransaction<SemanticInverseChangeRecord>(
-        database,
-        CHANGE_NAMESPACE,
-        SCOPE,
-        revisionKey,
-      )
-    ) {
-      const previousView = requirementSemanticView(current.value);
-      const nextView = requirementSemanticView(updated);
-      const change = createSemanticInverseChange(
-        previousView as unknown as Record<string, unknown>,
-        nextView as unknown as Record<string, unknown>,
-        { revision: semanticRevision, nextRevision: semanticRevision + 1, recordedAt: at },
-      );
-      writeControlPlaneRecordWithinTransaction(database, {
-        namespace: CHANGE_NAMESPACE,
-        scope: SCOPE,
-        key: revisionKey,
-        schemaVersion: 1,
-        value: change,
-        action: 'requirement_semantic_change_recorded',
-        expectedRevision: null,
-      });
-    }
-    const written = writeControlPlaneRecordWithinTransaction(database, {
-      namespace: NAMESPACE,
-      scope: SCOPE,
-      key: requirementId,
-      schemaVersion: SCHEMA_VERSION,
-      value: updated,
-      action: 'requirement_semantic_revised',
-      expectedRevision: current.revision,
-    });
+    const written = writeRequirementSemanticRevisionWithinTransaction(database, current, updated, at);
     if (projectRootToBind) bindProjectRootRequirementWithinTransaction(database, projectRootToBind, requirementId, at);
     return written.value;
   });

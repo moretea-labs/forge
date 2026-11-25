@@ -1694,6 +1694,85 @@ describe('rh_project Project operations', () => {
     expect(conflict.summary).toContain('REQUIREMENT_PROJECT_CONFLICT');
   });
 
+  test('historical task hierarchy migration preserves the existing scoped Plan and acceptance receipt', async () => {
+    const home = tempRoot('forge-historical-task-tree-');
+    ensureControllerHome(home);
+    const ctx = context(home);
+    const projectId = 'project-historical-tree';
+    const rootId = 'REQ-HISTORICAL-ROOT';
+    const taskId = 'REQ-HISTORICAL-TASK';
+    const planId = 'PLAN-HISTORICAL-TASK';
+    const call = async (args: Record<string, unknown>) =>
+      structured(await callRuntimeTool(ctx, 'rh_project', { project_id: projectId, ...args }));
+    expect((await call({ operation: 'project_create', project_display_name: 'Historical tree' })).status).toBe('ok');
+    for (const requirementId of [rootId, taskId]) {
+      expect(
+        (
+          await call({
+            operation: 'requirement_create',
+            requirement_id: requirementId,
+            requirement_title: requirementId,
+            requirement_outcome: 'Preserve existing history',
+            ...(requirementId === rootId ? { requirement_is_project_root: true } : {}),
+          })
+        ).status,
+      ).toBe('ok');
+    }
+    expect(
+      (
+        await call({
+          operation: 'plan_create',
+          plan_id: planId,
+          requirement_id: taskId,
+          scope_key: projectId,
+          objective: 'Existing plan',
+        })
+      ).status,
+    ).toBe('ok');
+    const before = await call({ operation: 'plan_get', plan_id: planId, detail_level: 'detail' });
+    expect(before.status).toBe('ok');
+    const closed = await call({
+      operation: 'requirement_revise',
+      requirement_id: taskId,
+      expected_revision: 1,
+      requirement_state: 'completed',
+      requirement_accepted_evidence_refs: ['receipt:accepted'],
+    });
+    expect(closed.status).toBe('ok');
+    const attached = await call({
+      operation: 'requirement_revise',
+      requirement_id: taskId,
+      expected_revision: 2,
+      requirement_parent_id: rootId,
+    });
+    expect(attached.status).toBe('ok');
+    expect(attached.data.requirement).toMatchObject({
+      requirementId: taskId,
+      revision: 3,
+      status: 'done',
+      parentRequirementId: rootId,
+      rootRequirementId: rootId,
+      acceptedEvidenceRefs: ['receipt:accepted'],
+    });
+    const repeat = await call({
+      operation: 'requirement_revise',
+      requirement_id: taskId,
+      expected_revision: 3,
+      requirement_parent_id: rootId,
+    });
+    expect(repeat.data.requirement).toEqual(attached.data.requirement);
+    const after = await call({ operation: 'plan_get', plan_id: planId, detail_level: 'detail' });
+    expect(after.status).toBe('ok');
+    expect(after.data.plan).toEqual(before.data.plan);
+    const detail = await call({ operation: 'project_get', detail_level: 'detail' });
+    expect(detail.data.requirementTree.rootRequirementIds).toEqual([rootId]);
+    expect(detail.data.requirementTree.nodes).toContainEqual({
+      requirementId: taskId,
+      parentRequirementId: rootId,
+      childRequirementIds: [],
+    });
+  });
+
   test('standalone Project owns an isolated Plan lineage for its Requirement', async () => {
     const home = tempRoot('forge-project-plan-scope-');
     ensureControllerHome(home);
