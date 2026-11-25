@@ -140,34 +140,39 @@ function controlPlaneEvidence(value: OpenAiSecureTunnelRuntimeStatusPayload): {
   }
 
   const remoteError = typeof value.remote_error === 'string' ? value.remote_error.trim() : '';
-  if (value.remote_lookup_attempted === true) {
-    if (remoteError)
-      return {
-        state: 'degraded',
-        detail: `remote lookup failed: ${remoteError}`,
-        ...(clientInstanceId ? { clientInstanceId } : {}),
-      };
-    if (value.remote && typeof value.remote === 'object') {
-      return {
-        state: 'ready',
-        detail: 'remote tunnel lookup succeeded',
-        ...(clientInstanceId ? { clientInstanceId } : {}),
-      };
-    }
-  }
-
   const pollHealth = value.control_plane_poll_health ?? value.local?.control_plane_poll_health;
   const pollState = pollHealth?.state?.trim().toLowerCase();
-  if (pollState === 'ready' || pollState === 'healthy') {
+
+  if (value.remote_lookup_attempted === true && remoteError) {
     return {
-      state: 'ready',
+      state: 'degraded',
+      detail: `remote lookup failed: ${remoteError}`,
+      ...(clientInstanceId ? { clientInstanceId } : {}),
+    };
+  }
+
+  // A successful metadata lookup proves the tunnel identity exists remotely; it
+  // does not prove this client instance is still polling the control plane.
+  // Explicit poll degradation therefore wins over remote metadata success.
+  if (pollState === 'degraded' || pollState === 'error' || pollState === 'failed') {
+    return {
+      state: 'degraded',
       detail: pollHealth?.reason?.trim() || `control-plane poll state is ${pollState}`,
       ...(clientInstanceId ? { clientInstanceId } : {}),
     };
   }
-  if (pollState === 'degraded' || pollState === 'error' || pollState === 'failed') {
+
+  if (value.remote_lookup_attempted === true && value.remote && typeof value.remote === 'object') {
     return {
-      state: 'degraded',
+      state: 'ready',
+      detail: 'remote tunnel lookup succeeded',
+      ...(clientInstanceId ? { clientInstanceId } : {}),
+    };
+  }
+
+  if (pollState === 'ready' || pollState === 'healthy') {
+    return {
+      state: 'ready',
       detail: pollHealth?.reason?.trim() || `control-plane poll state is ${pollState}`,
       ...(clientInstanceId ? { clientInstanceId } : {}),
     };

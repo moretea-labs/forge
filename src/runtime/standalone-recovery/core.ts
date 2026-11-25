@@ -1822,16 +1822,22 @@ async function observeWatchdogHealthTier(
   });
 }
 
-function isExternalTunnelFailure(config: RecoveryConfig, verified: VerifyResult, localVerify: VerifyResult): boolean {
+function isExternalTunnelFailure(
+  config: RecoveryConfig,
+  verified: VerifyResult,
+  localVerify: VerifyResult,
+  allowOpenAiControlPlaneReconnect = false,
+): boolean {
   const configured = configuredRecoveryTunnel(config);
   const localRecoveryGatewayHealthy = localVerify.probes.recovery_gateway?.ok ?? true;
   if (!configured || !localVerify.ok || !localRecoveryGatewayHealthy) return false;
   if (configured.platform === 'openai-secure-tunnel') {
     const observed = openAiTunnelObservationFromProbe(verified.probes.recovery_tunnel_runtime);
-    // A locally healthy tunnel with degraded/unknown OpenAI control-plane reachability
-    // is an upstream transport incident, not evidence that reconnecting the local
-    // tunnel process is a valid repair. Keep it degraded and collect evidence.
-    if (isUpstreamOpenAiControlPlaneIncident(observed)) return false;
+    // Locally healthy + degraded polling is ambiguous: it may be a genuine
+    // upstream outage, or a long-lived tunnel-client process pinned to a stale
+    // proxy environment. Reconnect only after a fresh direct/current-proxy
+    // OpenAI egress probe proves this host has a viable route now.
+    if (isUpstreamOpenAiControlPlaneIncident(observed) && !allowOpenAiControlPlaneReconnect) return false;
     return verified.probes.recovery_tunnel_runtime?.ok !== true;
   }
   const external = verified.probes.recovery_external_http ?? verified.probes.external_mcp_http;
@@ -2115,6 +2121,7 @@ export interface PublicTunnelRepairDependencies {
   runCommand?: CommandRunner;
   verify?: (config: RecoveryConfig) => Promise<VerifyResult>;
   verifyLocal?: (config: RecoveryConfig) => Promise<VerifyResult>;
+  probeOpenAiReachability?: (config: RecoveryConfig) => ReturnType<typeof probeOpenAiApiReachability>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -2440,6 +2447,7 @@ export interface PrimaryConnectorRecoveryDependencies {
   repairConnectorBinding?: (
     config: RecoveryConfig,
   ) => Promise<{ ok: boolean; attempted: boolean; noOp?: boolean; detail: string }>;
+  probeOpenAiReachability?: (config: RecoveryConfig) => ReturnType<typeof probeOpenAiApiReachability>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -2922,10 +2930,28 @@ export async function restartPrimaryConnector(
             tunnelRestarted = { ok: result.ok, attempted: true, detail: result.detail, serviceTarget: tunnel.target };
           }
         } else {
-          tunnelRestarted = await ensureOpenAiTunnelRuntimeStarted(
+          const currentTunnel = await observeOpenAiTunnelRuntime(primaryTunnel, runCommand);
+          let allowControlPlaneReconnect = false;
+          if (isUpstreamOpenAiControlPlaneIncident(currentTunnel)) {
+            const openAiReachability = await (dependencies.probeOpenAiReachability ?? probeOpenAiApiReachability)(
+              config,
+            );
+            if (!openAiReachability.ok) {
+              tunnelRestarted = {
+                ok: false,
+                attempted: false,
+                detail: `OpenAI Secure MCP Tunnel runtime ${primaryTunnel.alias} has degraded control-plane polling and fresh outbound OpenAI transport is unavailable: ${openAiReachability.detail}`,
+                serviceTarget: `tunnel-client:${primaryTunnel.alias}`,
+              };
+            } else {
+              allowControlPlaneReconnect = true;
+            }
+          }
+          tunnelRestarted ??= await ensureOpenAiTunnelRuntimeStarted(
             primaryTunnel,
             runCommand,
             tunnelClientWorkingDirectory(config.controllerHome),
+            { allowControlPlaneReconnect },
           );
         }
         if (!tunnelRestarted?.ok) {
@@ -8216,12 +8242,22 @@ export async function repairPublicTunnel(
     configured.platform === 'openai-secure-tunnel'
       ? initial.probes.recovery_tunnel_runtime
       : (initial.probes.recovery_external_http ?? initial.probes.external_mcp_http);
-  if (!isExternalTunnelFailure(config, initial, localVerify)) {
+  const initialOpenAiObservation =
+    configured.platform === 'openai-secure-tunnel' ? openAiTunnelObservationFromProbe(tunnelProbe) : undefined;
+  const initialOpenAiReachability = isUpstreamOpenAiControlPlaneIncident(initialOpenAiObservation)
+    ? await (dependencies.probeOpenAiReachability ?? probeOpenAiApiReachability)(config)
+    : undefined;
+  const allowInitialOpenAiControlPlaneReconnect = initialOpenAiReachability?.ok === true;
+  if (!isExternalTunnelFailure(config, initial, localVerify, allowInitialOpenAiControlPlaneReconnect)) {
+    const blockedByFreshOpenAiEgress =
+      isUpstreamOpenAiControlPlaneIncident(initialOpenAiObservation) && initialOpenAiReachability?.ok === false;
     return {
       ok: tunnelProbe?.ok === true,
       attempted: false,
       noOp: true,
-      detail: 'Recovery tunnel repair requires a healthy local runtime and failed managed Recovery tunnel',
+      detail: blockedByFreshOpenAiEgress
+        ? `Recovery OpenAI tunnel has degraded control-plane polling and fresh outbound OpenAI transport is unavailable: ${initialOpenAiReachability!.detail}`
+        : 'Recovery tunnel repair requires a healthy local runtime and failed managed Recovery tunnel',
       verify: initial,
       localVerify,
     };
@@ -8340,16 +8376,26 @@ export async function repairPublicTunnel(
     // Recheck after acquiring ownership so a concurrent watchdog never causes a restart storm.
     const before = await verify(config);
     const localBefore = await verifyLocal(config);
-    if (!isExternalTunnelFailure(config, before, localBefore)) {
-      const recoveredProbe =
-        configured.platform === 'openai-secure-tunnel'
-          ? before.probes.recovery_tunnel_runtime
-          : (before.probes.recovery_external_http ?? before.probes.external_mcp_http);
+    const beforeProbe =
+      configured.platform === 'openai-secure-tunnel'
+        ? before.probes.recovery_tunnel_runtime
+        : (before.probes.recovery_external_http ?? before.probes.external_mcp_http);
+    const beforeOpenAiObservation =
+      configured.platform === 'openai-secure-tunnel' ? openAiTunnelObservationFromProbe(beforeProbe) : undefined;
+    const beforeOpenAiReachability = isUpstreamOpenAiControlPlaneIncident(beforeOpenAiObservation)
+      ? await (dependencies.probeOpenAiReachability ?? probeOpenAiApiReachability)(config)
+      : undefined;
+    const allowBeforeOpenAiControlPlaneReconnect = beforeOpenAiReachability?.ok === true;
+    if (!isExternalTunnelFailure(config, before, localBefore, allowBeforeOpenAiControlPlaneReconnect)) {
+      const blockedByFreshOpenAiEgress =
+        isUpstreamOpenAiControlPlaneIncident(beforeOpenAiObservation) && beforeOpenAiReachability?.ok === false;
       return {
-        ok: recoveredProbe?.ok === true,
+        ok: beforeProbe?.ok === true,
         attempted: false,
         noOp: true,
-        detail: 'Recovery tunnel recovered before restart',
+        detail: blockedByFreshOpenAiEgress
+          ? `Recovery OpenAI tunnel still has degraded control-plane polling and fresh outbound OpenAI transport is unavailable: ${beforeOpenAiReachability!.detail}`
+          : 'Recovery tunnel recovered before restart',
         serviceLabel,
         serviceTarget,
         verify: before,

@@ -563,6 +563,7 @@ export async function ensureOpenAiTunnelRuntimeStarted(
   configured: OpenAiSecureTunnelServiceConfig,
   runCommand: CommandRunner = command,
   workingDirectory?: string,
+  options: { allowControlPlaneReconnect?: boolean } = {},
 ): Promise<{
   ok: boolean;
   attempted: boolean;
@@ -581,7 +582,8 @@ export async function ensureOpenAiTunnelRuntimeStarted(
     observed.ready &&
     observed.tunnelMatches &&
     observed.endpointMatches &&
-    observed.controlPlaneState !== 'ready'
+    observed.controlPlaneState !== 'ready' &&
+    options.allowControlPlaneReconnect !== true
   ) {
     return {
       ok: false,

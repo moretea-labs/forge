@@ -2231,6 +2231,43 @@ test('standalone Recovery classifies an externally managed OpenAI tunnel runtime
   expect(observed.detail).toContain('control plane is reachable');
 });
 
+test('standalone Recovery does not let successful remote metadata mask degraded control-plane polling', () => {
+  const home = controllerHome();
+  const profilePath = join(home, 'forge-current-poll-degraded.yaml');
+  const tunnelId = 'tunnel_6a87fd97832081919de7953008ead152';
+  const endpoint = 'http://127.0.0.1:8767/mcp';
+  writeFileSync(profilePath, `target: ${endpoint}\n`);
+
+  const observed = parseOpenAiSecureTunnelRuntimeStatus(
+    JSON.stringify({
+      process_running: true,
+      healthy: true,
+      ready: true,
+      tunnel_id: tunnelId,
+      profile_path: profilePath,
+      runtime_state: 'healthy',
+      remote_lookup_attempted: true,
+      remote_error: '',
+      remote: { id: tunnelId },
+      control_plane_poll_health: {
+        state: 'degraded',
+        reason: 'controlplane client: poll transport failed (network_error)',
+      },
+    }),
+    { alias: 'forge-current', tunnelId, mcpServerUrl: endpoint },
+  );
+
+  expect(observed).toMatchObject({
+    ok: false,
+    healthy: true,
+    ready: true,
+    tunnelMatches: true,
+    endpointMatches: true,
+    controlPlaneState: 'degraded',
+  });
+  expect(observed.controlPlaneDetail).toContain('poll transport failed');
+});
+
 test('standalone Recovery preserves a locally healthy tunnel as degraded when OpenAI control-plane lookup fails', () => {
   const home = controllerHome();
   const profilePath = join(home, 'forge-current-degraded.yaml');
@@ -2319,10 +2356,12 @@ test('stable Runtime and Watchdog treat tunnel control-plane-only degradation as
   ).toBe(true);
 });
 
-test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel without restarting a healthy Connector', async () => {
+test('standalone Recovery reconnects a Linux primary OpenAI tunnel with stale degraded polling when fresh egress is reachable', async () => {
   const home = controllerHome();
   const connectorEndpoint = 'http://127.0.0.1:8767/mcp';
   const tunnelId = 'tunnel_abcdef0123456789abcdef0123456789';
+  const profilePath = join(home, 'forge-primary.yaml');
+  writeFileSync(profilePath, `target: ${connectorEndpoint}\n`);
   const config = createRecoveryConfig(home, {
     publicMcpUrl: 'https://mcp.example.test/mcp',
     primaryConnectorService: {
@@ -2337,6 +2376,8 @@ test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel witho
       mcpServerUrl: connectorEndpoint,
       runtimeApiKeyRef: 'env:FORGE_TUNNEL_RUNTIME_KEY',
       adminProfile: 'forge-admin',
+      profile: 'forge-primary',
+      profileDir: home,
       postRestartVerifyTimeoutMs: 5_000,
     },
   });
@@ -2350,6 +2391,15 @@ test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel witho
     verifyLocal: async () => healthyVerify(),
     repairConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'binding current' }),
     probeConnectorLocal: async () => ({ ok: true, detail: 'HTTP 401 OAuth challenge', status: 401 }),
+    probeOpenAiReachability: async () => ({
+      configured: true,
+      ok: true,
+      status: 401,
+      durationMs: 1,
+      detail: 'direct=HTTP 401; configuredProxy=not configured',
+      direct: { configured: true, ok: true, status: 401, durationMs: 1, detail: 'HTTP 401' },
+      configuredProxy: { configured: false, ok: false, durationMs: 0, detail: 'not configured' },
+    }),
     reconnect: async () => {
       reconnectCalls += 1;
       return reconnectCalls >= 2
@@ -2366,14 +2416,24 @@ test('standalone Recovery repairs a Linux primary OpenAI Secure MCP Tunnel witho
         return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
       if (name === 'lsof') return { ok: true, status: 0, stdout: '4242\n', stderr: '' };
       if (name === 'tunnel-client' && args[0] === 'runtimes' && args[1] === 'status') {
-        return tunnelConnected
-          ? {
-              ok: true,
-              status: 0,
-              stdout: JSON.stringify({ process_running: true, healthy: true, ready: true, tunnel_id: tunnelId }),
-              stderr: '',
-            }
-          : { ok: false, status: 1, stdout: '', stderr: 'stopped' };
+        return {
+          ok: true,
+          status: 0,
+          stdout: JSON.stringify({
+            process_running: true,
+            healthy: true,
+            ready: true,
+            tunnel_id: tunnelId,
+            profile_path: profilePath,
+            remote_lookup_attempted: true,
+            remote_error: '',
+            remote: { id: tunnelId },
+            control_plane_poll_health: tunnelConnected
+              ? { state: 'ready', reason: 'polling operational' }
+              : { state: 'degraded', reason: 'poll transport failed through stale proxy' },
+          }),
+          stderr: '',
+        };
       }
       if (name === 'tunnel-client' && args[0] === 'runtimes' && args[1] === 'connect') {
         tunnelConnected = true;
@@ -2425,16 +2485,48 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
   const workingDirectories: Array<string | undefined> = [];
   const verification = (): VerifyResult => ({
     ...healthyVerify(),
+    ok: connected,
     probes: {
       ...healthyVerify().probes,
       recovery_gateway: { ok: true, detail: 'HTTP 200' },
-      recovery_tunnel_runtime: { ok: connected, detail: connected ? 'ready' : 'stopped' },
+      recovery_tunnel_runtime: connected
+        ? { ok: true, detail: 'ready' }
+        : {
+            ok: false,
+            detail: 'control plane degraded: stale proxy',
+            value: {
+              ok: false,
+              running: true,
+              healthy: true,
+              ready: true,
+              tunnelMatches: true,
+              endpointMatches: true,
+              controlPlaneState: 'degraded',
+              controlPlaneDetail: 'poll transport failed through stale proxy',
+              alias: 'forge-recovery',
+              tunnelId,
+              observedTunnelId: tunnelId,
+              detail: 'control plane degraded',
+            },
+          },
     },
   });
   const result = await repairPublicTunnel(config, {
     platform: 'linux',
     verify: async () => verification(),
-    verifyLocal: async () => verification(),
+    verifyLocal: async () => ({
+      ...healthyVerify(),
+      probes: { ...healthyVerify().probes, recovery_gateway: { ok: true, detail: 'HTTP 200' } },
+    }),
+    probeOpenAiReachability: async () => ({
+      configured: true,
+      ok: true,
+      status: 401,
+      durationMs: 1,
+      detail: 'direct=HTTP 401; configuredProxy=not configured',
+      direct: { configured: true, ok: true, status: 401, durationMs: 1, detail: 'HTTP 401' },
+      configuredProxy: { configured: false, ok: false, durationMs: 0, detail: 'not configured' },
+    }),
     now: () => clock,
     sleep: async (ms) => {
       clock += ms;
@@ -2447,7 +2539,6 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
         return { ok: true, status: 0, stdout: '', stderr: '' };
       }
       if (args[0] === 'runtimes' && args[1] === 'status') {
-        if (!connected) return { ok: false, status: 1, stdout: '', stderr: 'runtime alias not connected' };
         return {
           ok: true,
           status: 0,
@@ -2460,6 +2551,9 @@ test('standalone Recovery repairs its dedicated OpenAI Secure MCP Tunnel without
             remote_lookup_attempted: true,
             remote_error: '',
             remote: { id: tunnelId },
+            control_plane_poll_health: connected
+              ? { state: 'ready', reason: 'polling operational' }
+              : { state: 'degraded', reason: 'poll transport failed through stale proxy' },
           }),
           stderr: '',
         };
@@ -2547,6 +2641,14 @@ test('standalone Recovery does not reconnect a locally healthy OpenAI tunnel for
   const result = await repairPublicTunnel(config, {
     verify: async () => upstreamIncident,
     verifyLocal: async () => healthyVerify(),
+    probeOpenAiReachability: async () => ({
+      configured: true,
+      ok: false,
+      durationMs: 1,
+      detail: 'direct=network_error; configuredProxy=network_error',
+      direct: { configured: true, ok: false, durationMs: 1, detail: 'network_error' },
+      configuredProxy: { configured: true, ok: false, durationMs: 1, detail: 'network_error' },
+    }),
     runCommand: async (name, args) => {
       commands.push([name, ...args]);
       return { ok: true, status: 0, stdout: '', stderr: '' };
@@ -2554,6 +2656,7 @@ test('standalone Recovery does not reconnect a locally healthy OpenAI tunnel for
   });
 
   expect(result).toMatchObject({ ok: false, attempted: false, noOp: true });
+  expect(result.detail).toContain('fresh outbound OpenAI transport is unavailable');
   expect(
     commands.some((entry) => entry[0] === 'tunnel-client' && entry[1] === 'runtimes' && entry[2] === 'connect'),
   ).toBe(false);
