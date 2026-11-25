@@ -11,11 +11,7 @@ import { isProcessAlive } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
-import { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
-import {
-  runSchedulerPeriodicCleanup,
-  runSchedulerValidationReconciliation,
-} from './maintenance';
+import { runSchedulerPeriodicCleanup } from './maintenance';
 import { tickSchedules } from '../../workflow/schedules/engine';
 import {
   dispatchAuthorizedCrossProjectRequirements,
@@ -122,7 +118,6 @@ export class GlobalScheduler {
   private runtimeCleanup = cleanupControllerRuntimeState;
   private processGc = gcTerminalProcesses;
   private periodicCleanupSpawn = spawnSchedulerPeriodicCleanup;
-  private editValidationReconcile = reconcilePendingEditValidations;
   private repositoryList = listRepositories;
 
   constructor(
@@ -228,11 +223,6 @@ export class GlobalScheduler {
       }
     }
     if (now - this.lastReconcile >= SCHEDULER_RECONCILIATION_INTERVAL_MS) {
-      await runSchedulerValidationReconciliation({
-        controllerHome: this.controllerHome,
-        repositories,
-        editValidationReconcile: this.editValidationReconcile,
-      });
       this.lastReconcile = now;
       this.lastReconcileAt = new Date(now).toISOString();
     }

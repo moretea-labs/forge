@@ -1112,7 +1112,6 @@ fi
       periodicCleanupSpawn: () => SchedulerPeriodicCleanupSpawnResult;
       repositoryList: () => Array<{ repoId: string; enabled: boolean; canonicalRoot: string; removedAt?: string }>;
       workValidationReconcile: () => { errors: unknown[] };
-      editValidationReconcile: () => Promise<{ errors: unknown[] }>;
     };
     internal.runtimeCleanup = () => {
       inlineCleanupCalls += 1;
@@ -1123,7 +1122,6 @@ fi
     };
     internal.repositoryList = () => [];
     internal.workValidationReconcile = () => ({ errors: [] });
-    internal.editValidationReconcile = async () => ({ errors: [] });
     const originalError = console.error;
     console.error = () => undefined;
     try {
@@ -1161,12 +1159,10 @@ fi
       runtimeCleanup: () => void;
       processGc: () => { ok: boolean };
       repositoryList: () => Array<{ repoId: string; enabled: boolean; canonicalRoot: string; removedAt?: string }>;
-      editValidationReconcile: () => Promise<{ errors: unknown[] }>;
     };
     internal.runtimeCleanup = () => undefined;
     internal.processGc = () => ({ ok: true });
     internal.repositoryList = () => [];
-    internal.editValidationReconcile = async () => ({ errors: [] });
 
     await scheduler.tick();
     await scheduler.tick();
@@ -1303,22 +1299,12 @@ fi
     const internal = scheduler as unknown as {
       runtimeCleanup: () => void;
       processGc: (options: { repoId: string }) => { ok: boolean };
-      editValidationReconcile: (
-        controllerHome: string,
-        repository: { repoId: string },
-        limit: number,
-      ) => Promise<{ errors: unknown[] }>;
       repositoryList: () => Array<{ repoId: string; enabled: boolean; canonicalRoot: string; removedAt?: string }>;
     };
     internal.runtimeCleanup = () => undefined;
     internal.processGc = (options) => {
       processGcRepos.push(options.repoId);
       return { ok: true };
-    };
-    const editValidationRepos: string[] = [];
-    internal.editValidationReconcile = async (_controllerHome, repository) => {
-      editValidationRepos.push(repository.repoId);
-      return { errors: [] };
     };
     internal.repositoryList = () => [
       { repoId: 'repo-a', enabled: true, canonicalRoot: home, checkouts: [] },
@@ -1329,7 +1315,6 @@ fi
     await scheduler.tick();
     expect(processGcRepos).toHaveLength(1);
     expect(['repo-a', 'repo-b']).toContain(processGcRepos[0]!);
-    expect(editValidationRepos.sort()).toEqual(['repo-a', 'repo-b']);
   });
 
   test('real projection mutation supersedes an in-flight refresh nonce instead of being cleared by it', () => {
@@ -1400,13 +1385,11 @@ fi
       runtimeCleanup: () => void;
       processGc: () => { ok: boolean };
       workValidationReconcile: () => { errors: unknown[] };
-      editValidationReconcile: () => Promise<{ errors: unknown[] }>;
     };
     internal.repositoryList = () => [repository];
     internal.runtimeCleanup = () => undefined;
     internal.processGc = () => ({ ok: true });
     internal.workValidationReconcile = () => ({ errors: [] });
-    internal.editValidationReconcile = async () => ({ errors: [] });
     markRepositoryProjectionDirty(home, repository.repoId, 'source-scan-test', { sourceRevision: 'abc123' });
     expect(repositoryProjectionIsDirty(home, repository.repoId)).toBe(true);
 
@@ -1471,13 +1454,11 @@ fi
       runtimeCleanup: () => void;
       processGc: () => { ok: boolean };
       workValidationReconcile: () => { errors: unknown[] };
-      editValidationReconcile: () => Promise<{ errors: unknown[] }>;
     };
     internal.repositoryList = () => [repositoryA, repositoryB];
     internal.runtimeCleanup = () => undefined;
     internal.processGc = () => ({ ok: true });
     internal.workValidationReconcile = () => ({ errors: [] });
-    internal.editValidationReconcile = async () => ({ errors: [] });
     markRepositoryProjectionDirty(home, repositoryB.repoId, 'source-change-before-idle-slot', {
       sourceRevision: 'def456',
     });

@@ -6,7 +6,6 @@ import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { assertRuntimeMayWrite } from '../../root/write-fence';
 import { cleanupPersistedCheckResults } from '../../execution/process-runtime/check-result-retention';
 import { cleanupRetiredExecutionJobs } from '../../execution/jobs/store';
-import type { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import { deriveForgeActionableFailureCode, maybeRegisterFailedReleaseSessionRepairs, maybeRegisterForgeActionableFailureRepair } from '../../diagnostics/incident-repair';
 
 const GENERATED_CACHE_SWEEP_INTERVAL_MS = 60_000;
@@ -248,24 +247,5 @@ export async function runSchedulerPeriodicCleanup(input: {
     }
   } catch (error) {
     console.error(`[forge cleanup] retired ExecutionJob retention failed for ${repo.repoId}:`, error);
-  }
-}
-
-export async function runSchedulerValidationReconciliation(input: {
-  controllerHome: string;
-  repositories: readonly RepositoryRecord[];
-  editValidationReconcile: typeof reconcilePendingEditValidations;
-}): Promise<void> {
-  for (const repository of input.repositories) {
-    const editValidation = await input.editValidationReconcile(input.controllerHome, repository, 200);
-    if (editValidation.errors.length > 0) {
-      const sample = editValidation.errors
-        .slice(0, 3)
-        .map((item) => `${item.validationId}: ${item.error}`)
-        .join('; ');
-      console.error(
-        `[forge validation] background EditSession reconciliation reported ${editValidation.errors.length} error(s) for ${repository.repoId}: ${sample}`,
-      );
-    }
   }
 }
