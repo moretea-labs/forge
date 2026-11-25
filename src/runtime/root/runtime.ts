@@ -27,10 +27,7 @@ import {
   startActiveExecutionPowerAssertion,
   type RuntimePowerAssertionHandle,
 } from './active-execution-power-assertion';
-import {
-  closeRuntimeComputerChatgptExtension,
-  ensureRuntimeComputerChatgptExtension,
-} from './computer-chatgpt-extension';
+import { closeRuntimeComputerChatgptTarget, ensureRuntimeComputerChatgptTarget } from './computer-chatgpt-target';
 import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
 import {
   removeRuntimeStartupFailureEvidence,
@@ -568,7 +565,7 @@ export class CanonicalForgeRuntime {
       this.publishStatus();
 
       stage = 'computerProvider';
-      await ensureRuntimeComputerChatgptExtension(this.config.controllerHome);
+      await ensureRuntimeComputerChatgptTarget(this.config.controllerHome);
 
       stage = 'scheduler';
       const standaloneReleaseRoot =
@@ -729,7 +726,7 @@ export class CanonicalForgeRuntime {
       // Stop accepting new MCP work before quiescing Scheduler activity, then
       // release the Controller Home claim only after all in-process services stop.
       await this.transport?.close().catch(() => undefined);
-      await closeRuntimeComputerChatgptExtension(this.config.controllerHome).catch(() => undefined);
+      await closeRuntimeComputerChatgptTarget(this.config.controllerHome).catch(() => undefined);
       await this.dependencies.stopLightweightProcesses(this.config.controllerHome).catch(() => undefined);
       await this.dependencies.stopContextReadHelpers().catch(() => undefined);
       await this.localBridge?.close().catch(() => undefined);

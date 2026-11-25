@@ -26,7 +26,7 @@ import {
   type ComputerSemanticSelector,
 } from '../../../packages/protocols/computer/index';
 import { executeRuntimeComputer, executeRuntimeComputerConsoleUnlock } from '../root/computer-composition';
-import { runtimeComputerChatgptAction, runtimeComputerChatgptInventory } from '../root/computer-chatgpt-extension';
+import { runtimeComputerChatgptAction, runtimeComputerChatgptInventory } from '../root/computer-chatgpt-target';
 import { runtimeComputerInteractionTargetAuthority } from '../root/computer-target-composition';
 import { currentComputerPlatform } from '../platform/computer-platform';
 import { isProcessAlive } from '../shared/process-tree';
