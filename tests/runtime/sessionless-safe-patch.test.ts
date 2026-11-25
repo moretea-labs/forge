@@ -10,6 +10,7 @@ import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repos
 import { applyConsoleSafePatch } from '../../src/cli/local-bridge/facade-api';
 import { executeFast } from '../../src/runtime/execution/thin-harness';
 import { normalizeEditOperation } from '../../src/runtime/editing/edit-operation-contract';
+import { recoverPendingAtomicTextGroups, SAFE_PATCH_TRANSACTION_ROOT } from '../../src/effects/fs-transaction';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -549,6 +550,217 @@ test('same-file explicit semantic group lands dependent hunks in one CAS (#716)'
   const source = readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8');
   expect(source).toContain('n = 2');
   expect(source).toContain('label = 2');
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('cross-file text semantic group commits all paths through one crash-recoverable transaction (#716)', async () => {
+  const fx = fixture();
+  const secondPath = 'second.ts';
+  const secondBefore = 'export const second = 1;\n';
+  writeFileSync(join(fx.repoRoot, secondPath), secondBefore);
+
+  const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        semantic_group: 'cross-file-text-contract',
+        replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
+      },
+      {
+        type: 'replace',
+        path: secondPath,
+        semantic_group: 'cross-file-text-contract',
+        replacements: [{ old_text: 'second = 1', new_text: 'second = 2' }],
+      },
+    ],
+  });
+
+  expect(response?.isError).not.toBe(true);
+  expect(response?.structuredContent).toMatchObject({
+    status: 'applied',
+    sessionless: true,
+    createdSession: false,
+    changedFiles: ['source.ts', secondPath],
+    groups: [
+      {
+        groupId: 'cross-file-text-contract',
+        status: 'applied',
+        operationIndexes: [1, 2],
+        changedFiles: ['source.ts', secondPath],
+      },
+    ],
+  });
+  if (!response) throw new Error('repository Safe Patch returned no response');
+  const structured = response.structuredContent as { receipts?: unknown[] };
+  expect(structured.receipts).toHaveLength(2);
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toContain('n = 2');
+  expect(readFileSync(join(fx.repoRoot, secondPath), 'utf8')).toContain('second = 2');
+  const transactionRoot = join(fx.repoRoot, SAFE_PATCH_TRANSACTION_ROOT);
+  expect(existsSync(transactionRoot) ? readdirSync(transactionRoot) : []).toHaveLength(0);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('cross-file text semantic group performs zero writes when any path fails preflight (#716)', async () => {
+  const fx = fixture();
+  const secondPath = 'second-preflight.ts';
+  const secondBefore = 'export const second = 1;\n';
+  writeFileSync(join(fx.repoRoot, secondPath), secondBefore);
+
+  const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        semantic_group: 'cross-file-preflight',
+        replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
+      },
+      {
+        type: 'replace',
+        path: secondPath,
+        semantic_group: 'cross-file-preflight',
+        replacements: [{ old_text: 'missing second target', new_text: 'second = 2' }],
+      },
+    ],
+  });
+
+  expect(response?.isError).toBe(true);
+  expect(response?.structuredContent).toMatchObject({
+    status: 'failed',
+    sessionless: true,
+    changedFiles: [],
+    failures: [{ operationIndex: 2, code: 'REPLACEMENT_TEXT_NOT_FOUND' }],
+  });
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
+  expect(readFileSync(join(fx.repoRoot, secondPath), 'utf8')).toBe(secondBefore);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('cross-file transaction recovery rolls back a partial crash and reclaims a dead target lock (#716)', () => {
+  const fx = fixture();
+  const secondPath = 'second-recovery.ts';
+  const sourcePath = join(fx.repoRoot, 'source.ts');
+  const secondAbsolute = join(fx.repoRoot, secondPath);
+  const sourceBefore = fx.initial;
+  const secondBefore = 'export const second = 1;\n';
+  const sourceAfter = sourceBefore.replace('n = 1', 'n = 2');
+  const secondAfter = secondBefore.replace('second = 1', 'second = 2');
+  writeFileSync(secondAbsolute, secondBefore);
+
+  const transactionRoot = join(fx.repoRoot, SAFE_PATCH_TRANSACTION_ROOT);
+  const transactionPath = join(transactionRoot, 'crash-fixture');
+  mkdirSync(transactionPath, { recursive: true });
+  writeFileSync(join(transactionPath, '001.before'), sourceBefore);
+  writeFileSync(join(transactionPath, '001.after'), sourceAfter);
+  writeFileSync(join(transactionPath, '002.before'), secondBefore);
+  writeFileSync(join(transactionPath, '002.after'), secondAfter);
+  writeFileSync(
+    join(transactionPath, 'manifest.json'),
+    JSON.stringify(
+      {
+        protocol: 1,
+        kind: 'safe-patch-text-group',
+        transactionId: 'crash-fixture',
+        createdAt: new Date().toISOString(),
+        status: 'committing',
+        entries: [
+          {
+            path: 'source.ts',
+            beforeSha256: hash(sourceBefore),
+            afterSha256: hash(sourceAfter),
+            beforeSnapshot: '001.before',
+            afterSnapshot: '001.after',
+            mode: 0o644,
+          },
+          {
+            path: secondPath,
+            beforeSha256: hash(secondBefore),
+            afterSha256: hash(secondAfter),
+            beforeSnapshot: '002.before',
+            afterSnapshot: '002.after',
+            mode: 0o644,
+          },
+        ],
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+
+  writeFileSync(sourcePath, sourceAfter);
+  writeFileSync(sourcePath + '.forge.lock', '99999999\n');
+
+  expect(recoverPendingAtomicTextGroups(fx.repoRoot, ['source.ts'])).toBe(1);
+  expect(readFileSync(sourcePath, 'utf8')).toBe(sourceBefore);
+  expect(readFileSync(secondAbsolute, 'utf8')).toBe(secondBefore);
+  expect(existsSync(sourcePath + '.forge.lock')).toBe(false);
+  expect(existsSync(transactionPath)).toBe(false);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('cross-file recovery fails closed before rollback when any crashed path diverged (#716)', () => {
+  const fx = fixture();
+  const secondPath = 'second-recovery-conflict.ts';
+  const sourcePath = join(fx.repoRoot, 'source.ts');
+  const secondAbsolute = join(fx.repoRoot, secondPath);
+  const sourceBefore = fx.initial;
+  const secondBefore = 'export const second = 1;\n';
+  const sourceAfter = sourceBefore.replace('n = 1', 'n = 2');
+  const secondAfter = secondBefore.replace('second = 1', 'second = 2');
+  const secondDiverged = 'export const second = 99;\n';
+  writeFileSync(secondAbsolute, secondBefore);
+
+  const transactionRoot = join(fx.repoRoot, SAFE_PATCH_TRANSACTION_ROOT);
+  const transactionPath = join(transactionRoot, 'crash-conflict-fixture');
+  mkdirSync(transactionPath, { recursive: true });
+  writeFileSync(join(transactionPath, '001.before'), sourceBefore);
+  writeFileSync(join(transactionPath, '001.after'), sourceAfter);
+  writeFileSync(join(transactionPath, '002.before'), secondBefore);
+  writeFileSync(join(transactionPath, '002.after'), secondAfter);
+  writeFileSync(
+    join(transactionPath, 'manifest.json'),
+    JSON.stringify(
+      {
+        protocol: 1,
+        kind: 'safe-patch-text-group',
+        transactionId: 'crash-conflict-fixture',
+        createdAt: new Date().toISOString(),
+        status: 'committing',
+        entries: [
+          {
+            path: 'source.ts',
+            beforeSha256: hash(sourceBefore),
+            afterSha256: hash(sourceAfter),
+            beforeSnapshot: '001.before',
+            afterSnapshot: '001.after',
+            mode: 0o644,
+          },
+          {
+            path: secondPath,
+            beforeSha256: hash(secondBefore),
+            afterSha256: hash(secondAfter),
+            beforeSnapshot: '002.before',
+            afterSnapshot: '002.after',
+            mode: 0o644,
+          },
+        ],
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+
+  writeFileSync(sourcePath, sourceAfter);
+  writeFileSync(secondAbsolute, secondDiverged);
+
+  expect(() => recoverPendingAtomicTextGroups(fx.repoRoot, ['source.ts'])).toThrow(
+    'SAFE_PATCH_TRANSACTION_RECOVERY_CONFLICT',
+  );
+  expect(readFileSync(sourcePath, 'utf8')).toBe(sourceAfter);
+  expect(readFileSync(secondAbsolute, 'utf8')).toBe(secondDiverged);
+  expect(existsSync(transactionPath)).toBe(true);
   expect(fx.sessions()).toHaveLength(0);
 });
 
