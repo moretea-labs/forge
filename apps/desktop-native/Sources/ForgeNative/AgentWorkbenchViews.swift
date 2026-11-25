@@ -622,6 +622,12 @@ struct AgentPane: View {
                                                 )
                                                 .help("输入 \(usage.inputTokens.formatted()) · 输出 \(usage.outputTokens.formatted())")
                                             }
+                                            if let providerTiming = message.providerTiming {
+                                                Label(providerTiming.compactLabel, systemImage:"timer")
+                                                    .help(providerTiming.accessibilityLabel)
+                                                    .accessibilityLabel(providerTiming.accessibilityLabel)
+                                                    .accessibilityIdentifier("agent.message.provider-timing.\(message.id)")
+                                            }
                                             Spacer(minLength:0)
                                             Button {
                                                 copyAgentText(message.text)

@@ -3690,8 +3690,55 @@ impl LocalTokenTotals {
         })
     }
 }
-fn with_local_token_usage(mut reply: Value, totals: &LocalTokenTotals) -> Value {
-    reply["usage"] = totals.summary();
+#[derive(Default)]
+struct LocalProviderTimingTotals {
+    total_rounds: u32,
+    total_duration_ms: f64,
+    first_token_reported_rounds: u32,
+    final_round_time_to_first_token_ms: Option<f64>,
+    final_round_duration_ms: Option<f64>,
+    slowest_time_to_first_token_ms: Option<f64>,
+}
+impl LocalProviderTimingTotals {
+    fn observe(&mut self, response: &Value) {
+        let timing = &response["_forgeProviderTiming"];
+        let duration = timing.get("roundDurationMs").and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        let first_token = timing.get("timeToFirstTokenMs").and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        if duration.is_none() && first_token.is_none() { return; }
+        self.total_rounds = self.total_rounds.saturating_add(1);
+        if let Some(duration) = duration {
+            self.total_duration_ms += duration;
+            self.final_round_duration_ms = Some(duration);
+        }
+        self.final_round_time_to_first_token_ms = first_token;
+        if let Some(first_token) = first_token {
+            self.first_token_reported_rounds = self.first_token_reported_rounds.saturating_add(1);
+            self.slowest_time_to_first_token_ms = Some(
+                self.slowest_time_to_first_token_ms.map_or(first_token, |current| current.max(first_token))
+            );
+        }
+    }
+    fn summary(&self) -> Value {
+        if self.total_rounds == 0 { return Value::Null; }
+        json!({
+            "totalRounds":self.total_rounds,
+            "totalDurationMs":self.total_duration_ms,
+            "firstTokenReportedRounds":self.first_token_reported_rounds,
+            "finalRoundTimeToFirstTokenMs":self.final_round_time_to_first_token_ms,
+            "finalRoundDurationMs":self.final_round_duration_ms,
+            "slowestTimeToFirstTokenMs":self.slowest_time_to_first_token_ms,
+        })
+    }
+}
+fn with_local_turn_receipts(
+    mut reply: Value,
+    tokens: &LocalTokenTotals,
+    timings: &LocalProviderTimingTotals,
+) -> Value {
+    reply["usage"] = tokens.summary();
+    reply["providerTiming"] = timings.summary();
     reply
 }
 #[derive(Default)]
@@ -3704,12 +3751,25 @@ struct StreamedModelRound {
     openai_finish_reason: Option<String>,
     anthropic_stop_reason: Option<String>,
     usage: Option<Value>,
+    started_at: Option<tokio::time::Instant>,
+    first_token_ms: Option<f64>,
+    first_content_kind: Option<String>,
     finished: bool,
 }
 
 impl StreamedModelRound {
-    fn emit_delta<H: LocalApiHost + Sync>(host: &H, conversation_id: &str, kind: &str, delta: &str) {
+    fn emit_delta<H: LocalApiHost + Sync>(
+        &mut self, host: &H, conversation_id: &str, kind: &str, delta: &str,
+    ) {
         if !delta.is_empty() {
+            if self.first_token_ms.is_none() {
+                if let Some(started_at) = self.started_at {
+                    self.first_token_ms = Some(started_at.elapsed().as_secs_f64() * 1_000.0);
+                    self.first_content_kind = Some(
+                        if kind == "reasoning_summary_delta" { "reasoning_summary" } else { "text" }.to_string()
+                    );
+                }
+            }
             host.emit_model_progress(json!({
                 "conversationId":conversation_id, "kind":kind, "delta":delta
             }));
@@ -3766,7 +3826,7 @@ impl StreamedModelRound {
                 let delta = &value["choices"][0]["delta"];
                 if let Some(text) = delta.get("content").and_then(Value::as_str) {
                     self.text.push_str(text);
-                    Self::emit_delta(host, conversation_id, "text_delta", text);
+                    self.emit_delta(host, conversation_id, "text_delta", text);
                 }
                 // Chat Completions reasoning_content is a private reasoning channel,
                 // not a provider-declared summary; never forward it to the UI.
@@ -3794,12 +3854,12 @@ impl StreamedModelRound {
             "responses" => match value.get("type").and_then(Value::as_str) {
                 Some("response.output_text.delta") => {
                     if let Some(delta) = value.get("delta").and_then(Value::as_str) {
-                        Self::emit_delta(host, conversation_id, "text_delta", delta);
+                        self.emit_delta(host, conversation_id, "text_delta", delta);
                     }
                 }
                 Some("response.reasoning_summary_text.delta") => {
                     if let Some(delta) = value.get("delta").and_then(Value::as_str) {
-                        Self::emit_delta(host, conversation_id, "reasoning_summary_delta", delta);
+                        self.emit_delta(host, conversation_id, "reasoning_summary_delta", delta);
                     }
                 }
                 Some("response.completed") => {
@@ -3835,7 +3895,7 @@ impl StreamedModelRound {
                                     .or_insert_with(|| json!({"type":"text","text":""}));
                                 let content = block.get("text").and_then(Value::as_str).unwrap_or("");
                                 block["text"] = Value::String(format!("{content}{text}"));
-                                Self::emit_delta(host, conversation_id, "text_delta", text);
+                                self.emit_delta(host, conversation_id, "text_delta", text);
                             }
                         }
                         // Keep signed provider context intact for tool continuation,
@@ -3900,9 +3960,15 @@ impl StreamedModelRound {
 
     fn finish(mut self, protocol: &str) -> Result<Value, String> {
         if !self.finished { return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into()); }
-        match protocol {
-            "responses" => self.completed_response
-                .ok_or("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into()),
+        let round_duration_ms = self.started_at
+            .map(|started_at| started_at.elapsed().as_secs_f64() * 1_000.0);
+        let timing = json!({
+            "timeToFirstTokenMs":self.first_token_ms,
+            "roundDurationMs":round_duration_ms,
+            "firstContentKind":self.first_content_kind,
+        });
+        let mut result = match protocol {
+            "responses" => self.completed_response.ok_or("FORGE_DESKTOP_API_STREAM_INCOMPLETE")?,
             "anthropic" => {
                 for (index, input) in &self.anthropic_json {
                     let value: Value = serde_json::from_str(input)
@@ -3913,7 +3979,7 @@ impl StreamedModelRound {
                 }
                 let mut result = json!({"content":self.anthropic_blocks.into_values().collect::<Vec<_>>()});
                 if let Some(usage) = self.usage { result["usage"] = usage; }
-                Ok(result)
+                result
             }
             "openai" => {
                 let calls = self.tool_calls.into_values().map(|call| json!({
@@ -3926,10 +3992,12 @@ impl StreamedModelRound {
                     "tool_calls":calls
                 }}]});
                 if let Some(usage) = self.usage { result["usage"] = usage; }
-                Ok(result)
+                result
             }
-            _ => Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into()),
-        }
+            _ => return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into()),
+        };
+        result["_forgeProviderTiming"] = timing;
+        Ok(result)
     }
 }
 
@@ -3938,6 +4006,7 @@ async fn request_local_api_round_stream<H: LocalApiHost + Sync>(
     client: &reqwest::Client, endpoint: &str, protocol: &str,
     key: Option<&str>, joycode: Option<&JoyCodeSession>, body: &Value,
 ) -> Result<Value, String> {
+    let round_started_at = tokio::time::Instant::now();
     let mut response = build_local_api_request(client, endpoint, protocol, key, joycode, body)?
         .header("Accept", "text/event-stream")
         .send().await.map_err(|_| "FORGE_DESKTOP_API_REQUEST_FAILED")?;
@@ -3949,7 +4018,10 @@ async fn request_local_api_round_stream<H: LocalApiHost + Sync>(
     if !content_type.contains("text/event-stream") {
         return Err("FORGE_DESKTOP_API_STREAM_UNSUPPORTED".into());
     }
-    let mut stream = StreamedModelRound::default();
+    let mut stream = StreamedModelRound {
+        started_at: Some(round_started_at),
+        ..Default::default()
+    };
     let mut buffer = Vec::new();
     let mut data = Vec::new();
     let mut total_bytes = 0usize;
@@ -4170,6 +4242,7 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
     let mut last_effect_request_id: Option<String> = None;
     let mut patch_needs_verification = false;
     let mut validation_prompt_sent = false;
+    let mut provider_timings = LocalProviderTimingTotals::default();
     let mut token_totals = LocalTokenTotals::default();
     for round in 0..LOCAL_API_TOOL_ROUNDS {
         compact_local_api_history(&mut history);
@@ -4232,6 +4305,17 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             error, last_effect_request_id.as_deref()
         ))?;
         token_totals.observe(&output, protocol);
+        provider_timings.observe(&output);
+        if let Some(timing) = output.get("_forgeProviderTiming") {
+            host.emit_model_progress(json!({
+                "conversationId":conversation_id,
+                "kind":"round_timing",
+                "round":round + 1,
+                "timeToFirstTokenMs":timing.get("timeToFirstTokenMs"),
+                "roundDurationMs":timing.get("roundDurationMs"),
+                "firstContentKind":timing.get("firstContentKind"),
+            }));
+        }
         let requests = provider_tool_calls(protocol, &output).map_err(|error| {
             contextualize_api_turn_error(error, last_effect_request_id.as_deref())
         })?;
@@ -4263,9 +4347,9 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                 }
                 if patch_needs_verification {
                     if validation_prompt_sent {
-                        return Ok(with_local_token_usage(
+                        return Ok(with_local_turn_receipts(
                             local_api_budget_pause("修改后仍未取得成功的验证命令回执", total_calls, &tool_events),
-                            &token_totals,
+                            &token_totals, &provider_timings,
                         ));
                     }
                     validation_prompt_sent = true;
@@ -4274,8 +4358,10 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                         "Source edits were applied, but no successful focused test/build/check receipt was recorded. Use run_command for an appropriate verification. git diff --check only checks whitespace and is not sufficient. If verification fails, inspect and repair; if no applicable check exists, state that validation is incomplete. Do not claim verified completion without a successful receipt."}));
                     continue;
                 }
-                return Ok(json!({ "output": text, "toolActivityCount": total_calls,
-                    "toolEvents": tool_events, "usage": token_totals.summary() }));
+                return Ok(with_local_turn_receipts(
+                    json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }),
+                    &token_totals, &provider_timings,
+                ));
             }
             history.push(json!({ "role": "assistant", "content": blocks }));
         } else {
@@ -4299,9 +4385,9 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                     ))?;
                 if patch_needs_verification {
                     if validation_prompt_sent {
-                        return Ok(with_local_token_usage(
+                        return Ok(with_local_turn_receipts(
                             local_api_budget_pause("修改后仍未取得成功的验证命令回执", total_calls, &tool_events),
-                            &token_totals,
+                            &token_totals, &provider_timings,
                         ));
                     }
                     validation_prompt_sent = true;
@@ -4310,8 +4396,10 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                         "Source edits were applied, but no successful focused test/build/check receipt was recorded. Use run_command for an appropriate verification. git diff --check only checks whitespace and is not sufficient. If verification fails, inspect and repair; if no applicable check exists, state that validation is incomplete. Do not claim verified completion without a successful receipt."}));
                     continue;
                 }
-                return Ok(json!({ "output": text, "toolActivityCount": total_calls,
-                    "toolEvents": tool_events, "usage": token_totals.summary() }));
+                return Ok(with_local_turn_receipts(
+                    json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }),
+                    &token_totals, &provider_timings,
+                ));
             }
             history.push(message);
         }
@@ -4322,9 +4410,9 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             ));
         }
         if total_calls + requests.len() > LOCAL_API_TOOL_CALL_BUDGET {
-            return Ok(with_local_token_usage(
+            return Ok(with_local_turn_receipts(
                 local_api_budget_pause("工具调用预算上限", total_calls, &tool_events),
-                &token_totals,
+                &token_totals, &provider_timings,
             ));
         }
         let mut tool_results = Vec::new();
@@ -4391,9 +4479,9 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                                 "name":name, "ok":false, "status":"running",
                                 "processId":process_id, "requestId":effect_request_id, "toolCallId":id
                             }));
-                            return Ok(with_local_token_usage(
+                            return Ok(with_local_turn_receipts(
                                 local_api_process_pause(process_id, total_calls + 1, &tool_events),
-                                &token_totals,
+                                &token_totals, &provider_timings,
                             ));
                         }
                     }
@@ -4477,10 +4565,10 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             history.push(json!({ "role": "user", "content": tool_results }));
         }
     }
-    Ok(with_local_token_usage(local_api_budget_pause(
+    Ok(with_local_turn_receipts(local_api_budget_pause(
         if patch_needs_verification { "模型轮次上限且写入尚未取得验证回执" }
         else { "模型交互轮次上限" }, total_calls, &tool_events
-    ), &token_totals))
+    ), &token_totals, &provider_timings))
 }
 
 #[tauri::command]
@@ -4594,6 +4682,25 @@ mod tests {
         assert_eq!(project_rows(&malformed).unwrap_err(), "FORGE_DESKTOP_PROJECT_LIST_INVALID");
         let empty = json!({ "repositories": [] });
         assert!(project_rows(&empty).unwrap().is_empty());
+    }
+
+    #[test]
+    fn provider_round_timing_aggregate_keeps_final_ttft_and_total_duration() {
+        let mut timings = LocalProviderTimingTotals::default();
+        timings.observe(&json!({"_forgeProviderTiming":{
+            "timeToFirstTokenMs":120.0,"roundDurationMs":400.0,"firstContentKind":"text"
+        }}));
+        timings.observe(&json!({"_forgeProviderTiming":{
+            "timeToFirstTokenMs":80.0,"roundDurationMs":300.0,"firstContentKind":"text"
+        }}));
+        assert_eq!(timings.summary(), json!({
+            "totalRounds":2,
+            "totalDurationMs":700.0,
+            "firstTokenReportedRounds":2,
+            "finalRoundTimeToFirstTokenMs":80.0,
+            "finalRoundDurationMs":300.0,
+            "slowestTimeToFirstTokenMs":120.0,
+        }));
     }
 
     #[test]
@@ -5281,6 +5388,10 @@ mod tests {
             )).expect("native provider-neutral Agent loop");
             assert_eq!(result["output"], "Read, edited and verified.");
             assert_eq!(result["toolActivityCount"], 3);
+            assert_eq!(result["providerTiming"]["totalRounds"], 4);
+            assert!(result["providerTiming"]["totalDurationMs"].as_f64().is_some_and(|value| value > 0.0));
+            assert!(result["providerTiming"]["finalRoundTimeToFirstTokenMs"].as_f64()
+                .is_some_and(|value| value >= 0.0));
             let calls = host.tool_calls.lock().unwrap();
             assert_eq!(calls.iter().map(|call| call["tool"].as_str().unwrap()).collect::<Vec<_>>(),
                 vec!["read_file", "apply_patch", "run_command"]);
@@ -5290,6 +5401,9 @@ mod tests {
             let sequences = events.iter().map(|event| event.pointer("/payload/sequence").and_then(Value::as_u64).unwrap()).collect::<Vec<_>>();
             assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]), "native progress sequence must be monotonic");
             assert!(events.iter().any(|event| event["channel"] == "model" && event["payload"]["kind"] == "text_delta"));
+            assert_eq!(events.iter().filter(|event|
+                event["channel"] == "model" && event["payload"]["kind"] == "round_timing"
+            ).count(), 4);
             assert_eq!(events.iter().filter(|event| event["channel"] == "tool" && event["payload"]["phase"] == "completed").count(), 3);
             let read_completed = events.iter().find(|event| event["channel"] == "tool"
                 && event["payload"]["toolCallId"] == "call-read"
@@ -5951,6 +6065,16 @@ mod tests {
                 _ => unreachable!("known provider protocol"),
             }.expect("final provider text");
             assert_eq!(answer, "first second", "{protocol}: complete answer must preserve both deltas");
+            let timing = &output["_forgeProviderTiming"];
+            let first_token_ms = timing["timeToFirstTokenMs"].as_f64()
+                .expect("visible streamed text must record TTFT");
+            let round_duration_ms = timing["roundDurationMs"].as_f64()
+                .expect("streamed round must record total duration");
+            assert!(first_token_ms >= 0.0 && first_token_ms < round_duration_ms,
+                "{protocol}: TTFT must precede terminal round duration: {first_token_ms} vs {round_duration_ms}");
+            assert!(round_duration_ms >= 150.0,
+                "{protocol}: terminal duration must include the server's delayed tail");
+            assert_eq!(timing["firstContentKind"], "text");
             let deltas = host.events.lock().unwrap().iter()
                 .filter(|item| item["kind"] == "text_delta")
                 .filter_map(|item| item["delta"].as_str().map(str::to_owned))

@@ -6383,3 +6383,48 @@ extension NativeWorkspaceTests {
     XCTAssertEqual(merged.first?.runtimeTimingLabel, "内核 12 ms · 转发 7 ms")
   }
 }
+
+
+extension NativeWorkspaceTests {
+  func testAgentProviderTimingReceiptFormatsFinalTTFTAndMultiRoundDuration() {
+    let timing = AgentProviderTiming.fromProviderReceipt([
+      "totalRounds": 3,
+      "totalDurationMs": 2_450.0,
+      "firstTokenReportedRounds": 2,
+      "finalRoundTimeToFirstTokenMs": 420.0,
+      "finalRoundDurationMs": 1_100.0,
+      "slowestTimeToFirstTokenMs": 620.0,
+    ])
+
+    XCTAssertEqual(timing?.totalRounds, 3)
+    XCTAssertEqual(timing?.finalRoundTimeToFirstTokenMs ?? -1, 420, accuracy: 0.001)
+    XCTAssertEqual(timing?.compactLabel, "首 token 420 ms · 3 轮 2.5 s")
+    XCTAssertTrue(timing?.accessibilityLabel.contains("最终回复首 token 420 ms") == true)
+    XCTAssertTrue(timing?.accessibilityLabel.contains("2 轮报告了可见首 token") == true)
+  }
+
+  func testAgentProviderTimingProgressLabelDoesNotCallProviderLatencyThinkingTime() {
+    let label = AgentProviderTiming.progressLabel([
+      "round": 2,
+      "timeToFirstTokenMs": 375.0,
+      "roundDurationMs": 1_625.0,
+      "firstContentKind": "text",
+    ])
+
+    XCTAssertEqual(label, "模型第 2 轮 · 首 token 375 ms · 本轮 1.6 s")
+    XCTAssertFalse(label?.contains("思考") == true)
+  }
+
+  func testAgentProviderTimingRejectsInvalidAggregateReceipt() {
+    XCTAssertNil(AgentProviderTiming.fromProviderReceipt([
+      "totalRounds": 0,
+      "totalDurationMs": 10.0,
+      "firstTokenReportedRounds": 0,
+    ]))
+    XCTAssertNil(AgentProviderTiming.fromProviderReceipt([
+      "totalRounds": 2,
+      "totalDurationMs": 10.0,
+      "firstTokenReportedRounds": 3,
+    ]))
+  }
+}

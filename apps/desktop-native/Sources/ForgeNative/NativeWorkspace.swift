@@ -364,6 +364,82 @@ struct AgentTokenUsage: Codable, Equatable {
     )
   }
 }
+struct AgentProviderTiming: Codable, Equatable {
+  let totalRounds: Int
+  let totalDurationMs: Double
+  let firstTokenReportedRounds: Int
+  let finalRoundTimeToFirstTokenMs: Double?
+  let finalRoundDurationMs: Double?
+  let slowestTimeToFirstTokenMs: Double?
+
+  static func fromProviderReceipt(_ receipt: [String: Any]) -> AgentProviderTiming? {
+    guard let rounds = receipt["totalRounds"] as? Int, rounds > 0,
+      let totalDuration = (receipt["totalDurationMs"] as? NSNumber)?.doubleValue,
+      totalDuration.isFinite, totalDuration >= 0,
+      let reported = receipt["firstTokenReportedRounds"] as? Int,
+      reported >= 0, reported <= rounds
+    else { return nil }
+    func duration(_ key: String) -> Double? {
+      guard let value = (receipt[key] as? NSNumber)?.doubleValue,
+        value.isFinite, value >= 0
+      else { return nil }
+      return value
+    }
+    return AgentProviderTiming(
+      totalRounds: rounds,
+      totalDurationMs: totalDuration,
+      firstTokenReportedRounds: reported,
+      finalRoundTimeToFirstTokenMs: duration("finalRoundTimeToFirstTokenMs"),
+      finalRoundDurationMs: duration("finalRoundDurationMs"),
+      slowestTimeToFirstTokenMs: duration("slowestTimeToFirstTokenMs")
+    )
+  }
+
+  var compactLabel: String {
+    let total = AgentLiveActivityEvent.durationLabel(milliseconds: totalDurationMs)
+    let first = finalRoundTimeToFirstTokenMs.flatMap(AgentLiveActivityEvent.durationLabel(milliseconds:))
+    if totalRounds == 1 {
+      let round = finalRoundDurationMs.flatMap(AgentLiveActivityEvent.durationLabel(milliseconds:)) ?? total
+      if let first, let round { return "首 token \(first) · 本轮 \(round)" }
+      if let round { return "本轮 \(round)" }
+      return "模型 1 轮"
+    }
+    if let first, let total { return "首 token \(first) · \(totalRounds) 轮 \(total)" }
+    if let total { return "模型 \(totalRounds) 轮 · \(total)" }
+    return "模型 \(totalRounds) 轮"
+  }
+
+  var accessibilityLabel: String {
+    var parts = ["Provider 共 \(totalRounds) 轮"]
+    if let first = finalRoundTimeToFirstTokenMs.flatMap(AgentLiveActivityEvent.durationLabel(milliseconds:)) {
+      parts.append("最终回复首 token \(first)")
+    }
+    if let duration = AgentLiveActivityEvent.durationLabel(milliseconds: totalDurationMs) {
+      parts.append("Provider 累计响应 \(duration)")
+    }
+    if firstTokenReportedRounds < totalRounds {
+      parts.append("\(firstTokenReportedRounds) 轮报告了可见首 token")
+    }
+    return parts.joined(separator: "，")
+  }
+
+  static func progressLabel(_ payload: [String: Any]) -> String? {
+    guard let round = payload["round"] as? Int, round > 0 else { return nil }
+    var parts = ["模型第 \(round) 轮"]
+    if let first = (payload["timeToFirstTokenMs"] as? NSNumber)?.doubleValue,
+      let label = AgentLiveActivityEvent.durationLabel(milliseconds: first)
+    {
+      parts.append("首 token \(label)")
+    }
+    if let duration = (payload["roundDurationMs"] as? NSNumber)?.doubleValue,
+      let label = AgentLiveActivityEvent.durationLabel(milliseconds: duration)
+    {
+      parts.append("本轮 \(label)")
+    }
+    return parts.joined(separator: " · ")
+  }
+}
+
 struct ChatMessage: Codable, Identifiable {
   var id = UUID().uuidString
   let role: String
@@ -376,6 +452,7 @@ struct ChatMessage: Codable, Identifiable {
   var activityEvents: [AgentLiveActivityEvent]?
   var incomplete: Bool? = nil
   var usage: AgentTokenUsage? = nil
+  var providerTiming: AgentProviderTiming? = nil
   var providerUsed: String? = nil
   var modelUsed: String? = nil
   var createdAt = Date()
@@ -6362,6 +6439,11 @@ final class NativeWorkspace: ObservableObject {
         phase = "thinking"
         title = "正在接收 Provider 推理内容"
       }
+    case "round_timing":
+      if let timing = AgentProviderTiming.progressLabel(payload) {
+        title = timing
+        if (payload["timeToFirstTokenMs"] as? NSNumber) != nil { phase = "responding" }
+      }
     default: return
     }
     events = Self.boundedActivityEvents(events)
@@ -6797,6 +6879,8 @@ final class NativeWorkspace: ObservableObject {
         ?? liveActivity?.toolActivityCount
       let usage = (response["usage"] as? [String: Any])
         .flatMap(AgentTokenUsage.fromProviderReceipt)
+      let providerTiming = (response["providerTiming"] as? [String: Any])
+        .flatMap(AgentProviderTiming.fromProviderReceipt)
       let activityEvents =
         Self.matchesExternalProvider(turnProvider)
         ? Self.mergeActivityReceipts(
@@ -6809,7 +6893,7 @@ final class NativeWorkspace: ObservableObject {
           role: "assistant", text: answer, toolActivityCount: toolActivityCount,
           activityEvents: activityEvents.isEmpty ? nil : activityEvents,
           incomplete: response["incomplete"] as? Bool,
-          usage: usage, providerUsed: turnProvider,
+          usage: usage, providerTiming: providerTiming, providerUsed: turnProvider,
           modelUsed: item.model
             ?? (Self.matchesExternalProvider(turnProvider)
               ? localApiSettings?.profile(providerId: turnProvider)?.model
