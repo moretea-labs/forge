@@ -1024,6 +1024,10 @@
       "module": "process-runtime",
       "resource": "pure"
     },
+    "tests/runtime/workflow-graph-v2.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
     "tests/runtime/workflow-asset-storage.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
