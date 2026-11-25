@@ -7,7 +7,7 @@ import { isAbsolute, join } from 'path';
 import { pathToFileURL } from 'url';
 
 export const PLUGIN_ID = 'uu_remote_rescue';
-export const PLUGIN_VERSION = '0.1.4';
+export const PLUGIN_VERSION = '0.1.5';
 export const PROTOCOL_VERSION = 1;
 export const CAPABILITIES = [
   'uu_remote.device_identity.v1',
@@ -356,14 +356,30 @@ function exactTerminalOpenButtons(observation, config, sessionName) {
 }
 
 async function ensureTerminalWindowFocused(config, requestId, interactionId, sessionName, initialObservation, deps) {
-  const terminals = exactTerminalWindows(initialObservation, config, sessionName);
+  let observation = initialObservation;
+  let terminals = exactTerminalWindows(observation, config, sessionName);
+  for (let attempt = 0; attempt < 12 && terminals.length === 0; attempt += 1) {
+    await deps.sleep(250);
+    observation = await deps.desktopCall(
+      config,
+      requestId + ':await-request-terminal:' + String(attempt),
+      'computer_element_observe',
+      {
+        interactionId,
+        maxDepth: 12,
+        maxNodes: 2500,
+        includeValues: true,
+      },
+    );
+    terminals = exactTerminalWindows(observation, config, sessionName);
+  }
   if (terminals.length > 1) {
     throw rescueError(
       'UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS',
       'More than one exact configured-device UU terminal window is visible; refusing remote input.',
     );
   }
-  if (terminals.length === 1 && terminals[0].focused) return initialObservation;
+  if (terminals.length === 1 && terminals[0].focused) return observation;
 
   if (terminals.length === 1) {
     const terminal = terminals[0].node;
@@ -403,7 +419,7 @@ async function ensureTerminalWindowFocused(config, requestId, interactionId, ses
     }
   }
 
-  const buttons = exactTerminalOpenButtons(initialObservation, config, sessionName);
+  const buttons = exactTerminalOpenButtons(observation, config, sessionName);
   if (buttons.length > 1) {
     throw rescueError(
       'UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS',
@@ -425,13 +441,13 @@ async function ensureTerminalWindowFocused(config, requestId, interactionId, ses
     action: 'invoke',
   });
   await deps.sleep(150);
-  const observation = await deps.desktopCall(config, requestId + ':focus-verify', 'computer_element_observe', {
+  const openedObservation = await deps.desktopCall(config, requestId + ':focus-verify', 'computer_element_observe', {
     interactionId,
     maxDepth: 12,
     maxNodes: 2500,
     includeValues: true,
   });
-  const focused = exactTerminalWindows(observation, config, sessionName);
+  const focused = exactTerminalWindows(openedObservation, config, sessionName);
   if (focused.length > 1) {
     throw rescueError(
       'UU_RESCUE_TERMINAL_WINDOW_AMBIGUOUS',
@@ -445,7 +461,7 @@ async function ensureTerminalWindowFocused(config, requestId, interactionId, ses
       true,
     );
   }
-  return observation;
+  return openedObservation;
 }
 function markerPair(requestId) {
   const suffix = createHash('sha256').update(requestId).digest('hex').slice(0, 16);

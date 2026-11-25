@@ -2,7 +2,7 @@ import type { ExternalPluginRegistrationInput } from './external-registration';
 import type { AssistantPluginActionDescriptor } from './types';
 
 export const UU_REMOTE_RESCUE_PLUGIN_ID = 'uu_remote_rescue';
-export const UU_REMOTE_RESCUE_PLUGIN_VERSION = '0.1.4';
+export const UU_REMOTE_RESCUE_PLUGIN_VERSION = '0.1.5';
 export const UU_REMOTE_RESCUE_PROTOCOL_VERSION = '1.0';
 export const UU_REMOTE_RESCUE_CAPABILITIES = [
   'uu_remote.device_identity.v1',

@@ -36,6 +36,7 @@ function fixture(
     openButtonCount?: number;
     siblingTerminalNames?: string[];
     duplicateExactTerminalWindow?: boolean;
+    terminalAppearanceAfterObservations?: number;
   } = {},
 ) {
   const cliCalls: string[][] = [];
@@ -45,6 +46,7 @@ function fixture(
   let keySent = false;
   let terminalFocused = options.terminalInitiallyFocused ?? true;
   let currentSessionName = 'session1';
+  let elementObservationCount = 0;
   const runCli = async (_config: unknown, args: string[]) => {
     cliCalls.push(args);
     if (args[0] === 'device')
@@ -84,58 +86,64 @@ function fixture(
       { role: 'AXStaticText', value: name },
     ],
   });
-  const elementObservation = () => ({
-    root: {
-      role: 'AXApplication',
-      children: [
-        {
-          role: 'AXWindow',
-          identifier: 'TerminalListWindow',
-          name: '终端远控',
-          state: { focused: true },
-          children: [
-            { role: 'AXStaticText', value: options.accessibilityDeviceName ?? config.device.name },
-            {
-              role: 'AXTable',
-              children: Array.from({ length: options.openButtonCount ?? 1 }, (_, index) => ({
-                role: 'AXRow',
-                children: [
-                  {
-                    role: 'AXCell',
-                    children: [
-                      { role: 'AXStaticText', value: currentSessionName },
-                      {
-                        role: 'AXButton',
-                        name: '打开终端',
-                        ref: 'open-terminal-' + (index + 1),
-                        target: {
-                          interactionId: 'ix-1',
-                          pid: 90766,
-                          bundleIdentifier: config.uuBundleId,
-                          appName: 'UU远程',
-                          windowRef: 'list-window',
-                          snapshotRevision: 1,
+  const elementObservation = () => {
+    elementObservationCount += 1;
+    const requestTerminalVisible = elementObservationCount > (options.terminalAppearanceAfterObservations ?? 0);
+    return {
+      root: {
+        role: 'AXApplication',
+        children: [
+          {
+            role: 'AXWindow',
+            identifier: 'TerminalListWindow',
+            name: '终端远控',
+            state: { focused: true },
+            children: [
+              { role: 'AXStaticText', value: options.accessibilityDeviceName ?? config.device.name },
+              {
+                role: 'AXTable',
+                children: Array.from({ length: options.openButtonCount ?? 1 }, (_, index) => ({
+                  role: 'AXRow',
+                  children: [
+                    {
+                      role: 'AXCell',
+                      children: [
+                        { role: 'AXStaticText', value: currentSessionName },
+                        {
+                          role: 'AXButton',
+                          name: '打开终端',
+                          ref: 'open-terminal-' + (index + 1),
+                          target: {
+                            interactionId: 'ix-1',
+                            pid: 90766,
+                            bundleIdentifier: config.uuBundleId,
+                            appName: 'UU远程',
+                            windowRef: 'list-window',
+                            snapshotRevision: 1,
+                          },
+                          actions: ['focus', 'invoke'],
+                          state: { enabled: true },
                         },
-                        actions: ['focus', 'invoke'],
-                        state: { enabled: true },
-                      },
-                    ],
-                  },
-                ],
-              })),
-            },
-          ],
-        },
-        terminalWindow(currentSessionName, 'terminal-window-1', terminalFocused, true),
-        ...(options.siblingTerminalNames ?? []).map((name, index) =>
-          terminalWindow(name, 'terminal-window-sibling-' + String(index + 1), false),
-        ),
-        ...(options.duplicateExactTerminalWindow
-          ? [terminalWindow(currentSessionName, 'terminal-window-duplicate', false)]
-          : []),
-      ],
-    },
-  });
+                      ],
+                    },
+                  ],
+                })),
+              },
+            ],
+          },
+          ...(requestTerminalVisible
+            ? [terminalWindow(currentSessionName, 'terminal-window-1', terminalFocused, true)]
+            : []),
+          ...(options.siblingTerminalNames ?? []).map((name, index) =>
+            terminalWindow(name, 'terminal-window-sibling-' + String(index + 1), false),
+          ),
+          ...(options.duplicateExactTerminalWindow
+            ? [terminalWindow(currentSessionName, 'terminal-window-duplicate', false)]
+            : []),
+        ],
+      },
+    };
+  };
   const runCliText = async (_config: unknown, args: string[]) => {
     cliCalls.push(args);
     if (args[0] === 'term' && args[1] === 'new') {
@@ -307,6 +315,22 @@ describe('UU Remote rescue helper', () => {
       fx.cliCalls.some((args) => args[0] === 'term' && args[1] === 'kill' && args.includes(config.device.id)),
     ).toBe(true);
     expect(fx.cliCalls.some((args) => ['open', 'exit'].includes(args[1]))).toBe(false);
+  });
+
+  test('waits boundedly for term new to expose the request-owned terminal before any clipboard mutation', async () => {
+    const fx = fixture({
+      terminalAppearanceAfterObservations: 3,
+      siblingTerminalNames: ['forge-tunnel-diag'],
+    });
+    await executeAction('forge_health', {}, config, { ...fx, requestId: 'delayed-request-terminal-1' });
+    const preClipboardObservations = fx.desktopCalls
+      .slice(
+        0,
+        fx.desktopCalls.findIndex((call) => call.action === 'desktop_clipboard_read'),
+      )
+      .filter((call) => call.action === 'computer_element_observe');
+    expect(preClipboardObservations.length).toBeGreaterThanOrEqual(4);
+    expect(fx.desktopCalls.some((call) => call.action === 'desktop_clipboard_write')).toBe(true);
   });
 
   test('ignores same-device sibling terminals when the request-owned session identity is unique', async () => {

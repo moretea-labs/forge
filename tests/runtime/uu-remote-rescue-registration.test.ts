@@ -14,7 +14,7 @@ describe('UU Remote rescue registration', () => {
     expect(registration).toMatchObject({
       pluginId: 'uu_remote_rescue',
       provider: 'local-macos',
-      pluginVersion: '0.1.4',
+      pluginVersion: '0.1.5',
       scope: 'controller',
     });
     expect(registration.transport).toMatchObject({
