@@ -39,7 +39,10 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // repository.git diff/status remain canonical capability_execute routes with the same
 // protocol-neutral handlers and status-cache semantics. Refresh the complete registry
 // fingerprint for that deliberate contraction; do not relax the preferred tool contract.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '2af44825d79cf988';
+// 2026-11-25 #483: physically retire the final work_result_summary and
+// work_status_digest compatibility tools. The complete registry contracts by exactly
+// those two names; preferred controller names remain unchanged.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = '875decb924eae936';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a
