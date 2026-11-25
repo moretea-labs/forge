@@ -1,6 +1,17 @@
 import { afterEach, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
@@ -10,7 +21,11 @@ import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repos
 import { applyConsoleSafePatch } from '../../src/cli/local-bridge/facade-api';
 import { executeFast } from '../../src/runtime/execution/thin-harness';
 import { normalizeEditOperation } from '../../src/runtime/editing/edit-operation-contract';
-import { recoverPendingAtomicTextGroups, SAFE_PATCH_TRANSACTION_ROOT } from '../../src/effects/fs-transaction';
+import {
+  recoverPendingAtomicPathMutationGroups,
+  recoverPendingAtomicTextGroups,
+  SAFE_PATCH_TRANSACTION_ROOT,
+} from '../../src/effects/fs-transaction';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -1006,7 +1021,7 @@ test('recovery conflict is isolated to its semantic group while independent grou
   expect(fx.sessions()).toHaveLength(0);
 });
 
-test('unsupported cross-file semantic group is rejected before mutation while independent group continues (#716)', async () => {
+test('cross-file edit and create in one semantic group commit atomically while an independent group also continues (#716)', async () => {
   const fx = fixture();
   const groupedCreate = 'grouped-create.ts';
   const independentCreate = 'independent-create.ts';
@@ -1032,18 +1047,18 @@ test('unsupported cross-file semantic group is rejected before mutation while in
       },
     ],
   });
-  expect(response?.isError).toBe(true);
+  expect(response?.isError).not.toBe(true);
   expect(response?.structuredContent).toMatchObject({
-    status: 'partial',
+    status: 'applied',
     sessionless: true,
-    changedFiles: [independentCreate],
-    failures: [{ code: 'SEMANTIC_GROUP_UNSUPPORTED' }],
+    changedFiles: ['source.ts', groupedCreate, independentCreate],
+    failures: [],
     groups: [
       {
         groupId: 'cross-file-contract',
-        status: 'failed',
+        status: 'applied',
         operationIndexes: [1, 2],
-        changedFiles: [],
+        changedFiles: ['source.ts', groupedCreate],
       },
       {
         groupId: 'operation:3',
@@ -1053,9 +1068,212 @@ test('unsupported cross-file semantic group is rejected before mutation while in
       },
     ],
   });
-  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
-  expect(existsSync(join(fx.repoRoot, groupedCreate))).toBe(false);
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toContain('n = 2');
+  expect(readFileSync(join(fx.repoRoot, groupedCreate), 'utf8')).toContain('grouped = true');
   expect(readFileSync(join(fx.repoRoot, independentCreate), 'utf8')).toContain('independent = true');
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('mixed edit create delete and move semantic group is all-or-none (#716)', async () => {
+  const fx = fixture();
+  const createdPath = 'mixed-created.ts';
+  const deletedPath = 'mixed-deleted.ts';
+  const moveSourcePath = 'mixed-move-source.ts';
+  const moveTargetPath = 'mixed-move-target.ts';
+  const deletedContent = 'export const deleted = true;\n';
+  const moveContent = 'export const moved = true;\n';
+  writeFileSync(join(fx.repoRoot, deletedPath), deletedContent);
+  writeFileSync(join(fx.repoRoot, moveSourcePath), moveContent);
+
+  const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        semantic_group: 'mixed-contract',
+        replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
+      },
+      {
+        type: 'create',
+        path: createdPath,
+        semantic_group: 'mixed-contract',
+        content: 'export const created = true;\n',
+      },
+      {
+        type: 'delete',
+        path: deletedPath,
+        semantic_group: 'mixed-contract',
+        expected_sha256: hash(deletedContent),
+      },
+      {
+        type: 'move',
+        path: moveSourcePath,
+        to_path: moveTargetPath,
+        semantic_group: 'mixed-contract',
+        expected_sha256: hash(moveContent),
+      },
+    ],
+  });
+
+  expect(response?.isError).not.toBe(true);
+  expect(response?.structuredContent).toMatchObject({
+    status: 'applied',
+    sessionless: true,
+    failures: [],
+    groups: [
+      {
+        groupId: 'mixed-contract',
+        status: 'applied',
+        operationIndexes: [1, 2, 3, 4],
+        changedFiles: ['source.ts', createdPath, deletedPath, moveSourcePath, moveTargetPath],
+      },
+    ],
+  });
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toContain('n = 2');
+  expect(readFileSync(join(fx.repoRoot, createdPath), 'utf8')).toContain('created = true');
+  expect(existsSync(join(fx.repoRoot, deletedPath))).toBe(false);
+  expect(existsSync(join(fx.repoRoot, moveSourcePath))).toBe(false);
+  expect(readFileSync(join(fx.repoRoot, moveTargetPath), 'utf8')).toBe(moveContent);
+  const transactionRoot = join(fx.repoRoot, SAFE_PATCH_TRANSACTION_ROOT);
+  expect(existsSync(transactionRoot) ? readdirSync(transactionRoot) : []).toHaveLength(0);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('mixed semantic group performs zero writes when a structural preflight fails (#716)', async () => {
+  const fx = fixture();
+  const existingCreatePath = 'already-exists.ts';
+  const deletePath = 'delete-remains.ts';
+  const existingContent = 'export const existing = true;\n';
+  const deleteContent = 'export const keep = true;\n';
+  writeFileSync(join(fx.repoRoot, existingCreatePath), existingContent);
+  writeFileSync(join(fx.repoRoot, deletePath), deleteContent);
+
+  const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+    repo_id: fx.repository.repoId,
+    operations: [
+      {
+        type: 'replace',
+        path: 'source.ts',
+        semantic_group: 'mixed-preflight',
+        replacements: [{ old_text: 'n = 1', new_text: 'n = 2' }],
+      },
+      {
+        type: 'create',
+        path: existingCreatePath,
+        semantic_group: 'mixed-preflight',
+        content: 'should never land\n',
+      },
+      {
+        type: 'delete',
+        path: deletePath,
+        semantic_group: 'mixed-preflight',
+        expected_sha256: hash(deleteContent),
+      },
+    ],
+  });
+
+  expect(response?.isError).toBe(true);
+  expect(response?.structuredContent).toMatchObject({
+    status: 'failed',
+    sessionless: true,
+    changedFiles: [],
+    failures: [{ operationIndex: 2, code: 'CREATE_TARGET_EXISTS' }],
+  });
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
+  expect(readFileSync(join(fx.repoRoot, existingCreatePath), 'utf8')).toBe(existingContent);
+  expect(readFileSync(join(fx.repoRoot, deletePath), 'utf8')).toBe(deleteContent);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('path-state transaction recovery restores edited/deleted paths and removes partially created path (#716)', () => {
+  const fx = fixture();
+  const sourcePath = join(fx.repoRoot, 'source.ts');
+  const createdPath = 'crash-created.ts';
+  const createdAbsolute = join(fx.repoRoot, createdPath);
+  const deletedPath = 'crash-deleted.ts';
+  const deletedAbsolute = join(fx.repoRoot, deletedPath);
+  const sourceBefore = fx.initial;
+  const sourceAfter = sourceBefore.replace('n = 1', 'n = 2');
+  const createdAfter = 'export const created = true;\n';
+  const deletedBefore = 'export const deleted = true;\n';
+  writeFileSync(deletedAbsolute, deletedBefore);
+
+  const transactionRoot = join(fx.repoRoot, SAFE_PATCH_TRANSACTION_ROOT);
+  const transactionPath = join(transactionRoot, 'path-state-crash-fixture');
+  mkdirSync(transactionPath, { recursive: true });
+  writeFileSync(join(transactionPath, '001.before'), sourceBefore);
+  writeFileSync(join(transactionPath, '001.after'), sourceAfter);
+  writeFileSync(join(transactionPath, '002.after'), createdAfter);
+  writeFileSync(join(transactionPath, '003.before'), deletedBefore);
+  writeFileSync(
+    join(transactionPath, 'manifest.json'),
+    JSON.stringify(
+      {
+        protocol: 1,
+        kind: 'safe-patch-path-group',
+        transactionId: 'path-state-crash-fixture',
+        createdAt: new Date().toISOString(),
+        status: 'committing',
+        entries: [
+          {
+            path: 'source.ts',
+            beforeExists: true,
+            afterExists: true,
+            beforeSha256: hash(sourceBefore),
+            afterSha256: hash(sourceAfter),
+            beforeSnapshot: '001.before',
+            afterSnapshot: '001.after',
+            beforeMode: 0o644,
+            afterMode: 0o644,
+          },
+          {
+            path: createdPath,
+            beforeExists: false,
+            afterExists: true,
+            afterSha256: hash(createdAfter),
+            afterSnapshot: '002.after',
+            afterMode: 0o644,
+          },
+          {
+            path: deletedPath,
+            beforeExists: true,
+            afterExists: false,
+            beforeSha256: hash(deletedBefore),
+            beforeSnapshot: '003.before',
+            beforeMode: 0o644,
+          },
+        ],
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+
+  writeFileSync(sourcePath, sourceAfter);
+  writeFileSync(createdAbsolute, createdAfter);
+  rmSync(deletedAbsolute);
+
+  expect(recoverPendingAtomicPathMutationGroups(fx.repoRoot, ['source.ts'])).toBe(1);
+  expect(readFileSync(sourcePath, 'utf8')).toBe(sourceBefore);
+  expect(existsSync(createdAbsolute)).toBe(false);
+  expect(readFileSync(deletedAbsolute, 'utf8')).toBe(deletedBefore);
+  expect(existsSync(transactionPath)).toBe(false);
+  expect(fx.sessions()).toHaveLength(0);
+});
+
+test('corrupt transient path-state manifest fails closed instead of being skipped (#716)', () => {
+  const fx = fixture();
+  const transactionRoot = join(fx.repoRoot, SAFE_PATCH_TRANSACTION_ROOT);
+  const transactionPath = join(transactionRoot, 'corrupt-path-state-manifest');
+  mkdirSync(transactionPath, { recursive: true });
+  writeFileSync(join(transactionPath, 'manifest.json'), '{not-json\n');
+
+  expect(() => recoverPendingAtomicPathMutationGroups(fx.repoRoot, ['source.ts'])).toThrow(
+    'SAFE_PATCH_TRANSACTION_INVALID',
+  );
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
+  expect(existsSync(transactionPath)).toBe(true);
   expect(fx.sessions()).toHaveLength(0);
 });
 

@@ -458,6 +458,19 @@ function recoverAtomicTextGroupTransaction(repoRoot: string, root: string, trans
  * requested paths. A transaction that returned success is marked committed;
  * any crash before that point is rolled back to its complete before-image.
  */
+function safePatchTransactionKind(transactionPath: string): string {
+  let parsed: { kind?: unknown };
+  try {
+    parsed = JSON.parse(readFileSync(manifestPath(transactionPath), 'utf-8')) as { kind?: unknown };
+  } catch (error) {
+    throw new Error('SAFE_PATCH_TRANSACTION_INVALID: ' + transactionPath + ': ' + errorMessage(error));
+  }
+  if (typeof parsed.kind !== 'string') {
+    throw new Error('SAFE_PATCH_TRANSACTION_INVALID: missing kind in ' + transactionPath);
+  }
+  return parsed.kind;
+}
+
 export function recoverPendingAtomicTextGroups(repoRoot: string, overlappingPaths?: readonly string[]): number {
   const root = safePatchTransactionRootPath(repoRoot);
   if (!existsSync(root)) return 0;
@@ -466,12 +479,406 @@ export function recoverPendingAtomicTextGroups(repoRoot: string, overlappingPath
   for (const name of readdirSync(root).sort()) {
     const transactionPath = resolve(root, name);
     if (!existsSync(manifestPath(transactionPath))) continue;
+    if (safePatchTransactionKind(transactionPath) !== 'safe-patch-text-group') continue;
     const manifest = readAtomicTextGroupManifest(transactionPath);
     if (overlap && !manifest.entries.some((entry) => overlap.has(entry.path))) continue;
     recoverAtomicTextGroupTransaction(repoRoot, root, transactionPath);
     recovered += 1;
   }
   return recovered;
+}
+
+export interface AtomicPathMutationEntry {
+  readonly path: string;
+  readonly before: { readonly exists: false } | { readonly exists: true; readonly expectedSha256: string };
+  readonly after:
+    | { readonly exists: false }
+    | { readonly exists: true; readonly content: string; readonly mode?: number };
+}
+
+export interface AtomicPathMutationReceipt {
+  readonly path: string;
+  readonly beforeSha256?: string;
+  readonly afterSha256?: string;
+}
+
+interface AtomicPathMutationManifestEntry extends AtomicPathMutationReceipt {
+  readonly beforeExists: boolean;
+  readonly afterExists: boolean;
+  readonly beforeSnapshot?: string;
+  readonly afterSnapshot?: string;
+  readonly beforeMode?: number;
+  readonly afterMode?: number;
+}
+
+interface AtomicPathMutationManifest {
+  readonly protocol: 1;
+  readonly kind: 'safe-patch-path-group';
+  readonly transactionId: string;
+  readonly createdAt: string;
+  readonly status: AtomicTextGroupTransactionStatus;
+  readonly entries: readonly AtomicPathMutationManifestEntry[];
+}
+
+function readAtomicPathMutationManifest(transactionPath: string): AtomicPathMutationManifest {
+  const parsed = JSON.parse(readFileSync(manifestPath(transactionPath), 'utf-8')) as AtomicPathMutationManifest;
+  if (
+    parsed?.protocol !== 1 ||
+    parsed.kind !== 'safe-patch-path-group' ||
+    typeof parsed.transactionId !== 'string' ||
+    !['prepared', 'committing', 'committed'].includes(parsed.status) ||
+    !Array.isArray(parsed.entries) ||
+    parsed.entries.length < 2
+  ) {
+    throw new Error('SAFE_PATCH_TRANSACTION_INVALID: ' + transactionPath);
+  }
+  for (const entry of parsed.entries) {
+    if (
+      typeof entry?.path !== 'string' ||
+      typeof entry.beforeExists !== 'boolean' ||
+      typeof entry.afterExists !== 'boolean'
+    ) {
+      throw new Error('SAFE_PATCH_TRANSACTION_INVALID: ' + transactionPath);
+    }
+    if (!entry.beforeExists && !entry.afterExists) {
+      throw new Error('SAFE_PATCH_TRANSACTION_INVALID: empty path state for ' + entry.path);
+    }
+    if (
+      entry.beforeExists &&
+      (typeof entry.beforeSha256 !== 'string' ||
+        typeof entry.beforeSnapshot !== 'string' ||
+        !/^\d{3}\.before$/.test(entry.beforeSnapshot) ||
+        !Number.isInteger(entry.beforeMode))
+    ) {
+      throw new Error('SAFE_PATCH_TRANSACTION_INVALID: missing before-image for ' + entry.path);
+    }
+    if (
+      entry.afterExists &&
+      (typeof entry.afterSha256 !== 'string' ||
+        typeof entry.afterSnapshot !== 'string' ||
+        !/^\d{3}\.after$/.test(entry.afterSnapshot) ||
+        !Number.isInteger(entry.afterMode))
+    ) {
+      throw new Error('SAFE_PATCH_TRANSACTION_INVALID: missing after-image for ' + entry.path);
+    }
+  }
+  return parsed;
+}
+
+function updateAtomicPathMutationManifest(
+  transactionPath: string,
+  manifest: AtomicPathMutationManifest,
+  status: AtomicTextGroupTransactionStatus,
+): AtomicPathMutationManifest {
+  const next = { ...manifest, status };
+  writeJsonDurably(manifestPath(transactionPath), next);
+  return next;
+}
+
+function pathStateMatches(targetPath: string, expected: { exists: boolean; sha256?: string }): boolean {
+  if (!expected.exists) return !existsSync(targetPath);
+  if (!existsSync(targetPath)) return false;
+  statModeForCas(targetPath);
+  const sha256 = createHash('sha256').update(readFileSync(targetPath, 'utf-8')).digest('hex');
+  return sha256 === expected.sha256;
+}
+
+function rollbackAtomicPathMutationTransactionLocked(
+  repoRoot: string,
+  root: string,
+  transactionPath: string,
+  targets: readonly string[],
+): void {
+  if (!existsSync(manifestPath(transactionPath))) return;
+  const manifest = readAtomicPathMutationManifest(transactionPath);
+  if (manifest.status === 'committed' || manifest.status === 'prepared') {
+    removeSafePatchTransaction(root, transactionPath);
+    return;
+  }
+
+  const states = manifest.entries.map((entry, index) => {
+    const targetPath = targets[index]!;
+    const resolved = resolveInsideRepo(repoRoot, entry.path);
+    if (!targetPath || !resolved.ok || resolved.path !== targetPath) {
+      throw new Error('SAFE_PATCH_TRANSACTION_RECOVERY_CONFLICT: invalid target identity for ' + entry.path);
+    }
+    const matchesBefore = pathStateMatches(targetPath, {
+      exists: entry.beforeExists,
+      sha256: entry.beforeSha256,
+    });
+    const matchesAfter = pathStateMatches(targetPath, {
+      exists: entry.afterExists,
+      sha256: entry.afterSha256,
+    });
+    if (!matchesBefore && !matchesAfter) {
+      throw new Error(
+        'SAFE_PATCH_TRANSACTION_RECOVERY_CONFLICT: ' + entry.path + ' diverged from both transaction images',
+      );
+    }
+    let beforeContent: string | undefined;
+    if (matchesAfter && !matchesBefore && entry.beforeExists) {
+      const snapshotPath = resolve(transactionPath, entry.beforeSnapshot!);
+      beforeContent = readFileSync(snapshotPath, 'utf-8');
+      const snapshotSha256 = createHash('sha256').update(beforeContent).digest('hex');
+      if (snapshotSha256 !== entry.beforeSha256) {
+        throw new Error('SAFE_PATCH_TRANSACTION_SNAPSHOT_INVALID: ' + entry.path);
+      }
+    }
+    return { entry, targetPath, matchesBefore, matchesAfter, beforeContent };
+  });
+
+  for (const state of states) {
+    if (state.matchesBefore || !state.matchesAfter) continue;
+    if (state.entry.beforeExists) {
+      restoreTextSnapshot(state.targetPath, state.beforeContent!, state.entry.beforeMode!);
+    } else {
+      rmSync(state.targetPath, { force: true });
+      fsyncDirectory(dirname(state.targetPath));
+    }
+  }
+  removeSafePatchTransaction(root, transactionPath);
+}
+
+function recoverAtomicPathMutationTransaction(repoRoot: string, root: string, transactionPath: string): void {
+  if (!existsSync(manifestPath(transactionPath))) return;
+  const initial = readAtomicPathMutationManifest(transactionPath);
+  const targets = initial.entries.map((entry) => {
+    const resolved = resolveInsideRepo(repoRoot, entry.path);
+    if (!resolved.ok || !resolved.path) throw new Error(resolved.error ?? 'invalid transaction path: ' + entry.path);
+    return resolved.path;
+  });
+  withTargetLocks(
+    targets,
+    () => rollbackAtomicPathMutationTransactionLocked(repoRoot, root, transactionPath, targets),
+    { busyRetries: 12, retryDelayMs: 5 },
+  );
+}
+
+export function recoverPendingAtomicPathMutationGroups(repoRoot: string, overlappingPaths?: readonly string[]): number {
+  const root = safePatchTransactionRootPath(repoRoot);
+  if (!existsSync(root)) return 0;
+  const overlap = overlappingPaths ? new Set(overlappingPaths) : undefined;
+  let recovered = 0;
+  for (const name of readdirSync(root).sort()) {
+    const transactionPath = resolve(root, name);
+    if (!existsSync(manifestPath(transactionPath))) continue;
+    if (safePatchTransactionKind(transactionPath) !== 'safe-patch-path-group') continue;
+    const manifest = readAtomicPathMutationManifest(transactionPath);
+    if (overlap && !manifest.entries.some((entry) => overlap.has(entry.path))) continue;
+    recoverAtomicPathMutationTransaction(repoRoot, root, transactionPath);
+    recovered += 1;
+  }
+  return recovered;
+}
+
+type ResolvedAtomicPathMutationEntry = AtomicPathMutationEntry & { readonly targetPath: string };
+
+type PreparedAtomicPathMutationEntry = ResolvedAtomicPathMutationEntry & {
+  readonly beforeContent?: string;
+  readonly beforeSha256?: string;
+  readonly beforeMode?: number;
+  readonly afterSha256?: string;
+  readonly afterMode?: number;
+};
+
+function resolveAtomicPathMutationEntries(
+  repoRoot: string,
+  entries: readonly AtomicPathMutationEntry[],
+): ResolvedAtomicPathMutationEntry[] {
+  const resolved = entries.map((entry) => {
+    const target = resolveInsideRepo(repoRoot, entry.path);
+    if (!target.ok || !target.path) throw new Error(target.error ?? 'invalid path: ' + entry.path);
+    return { ...entry, targetPath: target.path };
+  });
+  if (new Set(resolved.map((entry) => entry.targetPath)).size !== resolved.length) {
+    throw new Error('ATOMIC_PATH_GROUP_DUPLICATE_PATH');
+  }
+  return resolved;
+}
+
+function prepareAtomicPathMutationEntry(
+  repoRoot: string,
+  entry: ResolvedAtomicPathMutationEntry,
+): PreparedAtomicPathMutationEntry {
+  let beforeContent: string | undefined;
+  let beforeSha256: string | undefined;
+  let beforeMode: number | undefined;
+
+  if (entry.before.exists) {
+    if (!existsSync(entry.targetPath)) throw new Error('TARGET_MISSING: ' + entry.path);
+    beforeMode = statModeForCas(entry.targetPath);
+    beforeContent = readFileSync(entry.targetPath, 'utf-8');
+    beforeSha256 = createHash('sha256').update(beforeContent).digest('hex');
+    if (beforeSha256 !== entry.before.expectedSha256) {
+      throw new Error(
+        'STALE_FILE_SHA: ' + entry.path + ': expected ' + entry.before.expectedSha256 + ', got ' + beforeSha256,
+      );
+    }
+  } else if (existsSync(entry.targetPath)) {
+    throw new Error('CREATE_TARGET_EXISTS: ' + entry.path);
+  }
+
+  if (entry.after.exists) {
+    const parentError = ensureParent(repoRoot, entry.path);
+    if (parentError) throw new Error(parentError);
+  }
+  const afterSha256 = entry.after.exists ? createHash('sha256').update(entry.after.content).digest('hex') : undefined;
+  const afterMode = entry.after.exists ? (entry.after.mode ?? beforeMode ?? 0o644) : undefined;
+  if (entry.before.exists && entry.after.exists && beforeSha256 === afterSha256) {
+    throw new Error('NO_CHANGE: ' + entry.path);
+  }
+
+  return {
+    ...entry,
+    beforeContent,
+    beforeSha256,
+    beforeMode,
+    afterSha256,
+    afterMode,
+  };
+}
+
+function persistAtomicPathMutationEntry(
+  transactionPath: string,
+  entry: PreparedAtomicPathMutationEntry,
+  index: number,
+): AtomicPathMutationManifestEntry {
+  const prefix = String(index + 1).padStart(3, '0');
+  const beforeSnapshot = entry.before.exists ? prefix + '.before' : undefined;
+  const afterSnapshot = entry.after.exists ? prefix + '.after' : undefined;
+
+  if (beforeSnapshot) {
+    writeFileDurably(resolve(transactionPath, beforeSnapshot), entry.beforeContent!, 0o600);
+  }
+  if (entry.after.exists && afterSnapshot) {
+    writeFileDurably(resolve(transactionPath, afterSnapshot), entry.after.content, 0o600);
+  }
+
+  return {
+    path: entry.path,
+    beforeExists: entry.before.exists,
+    afterExists: entry.after.exists,
+    ...(entry.beforeSha256 ? { beforeSha256: entry.beforeSha256 } : {}),
+    ...(entry.afterSha256 ? { afterSha256: entry.afterSha256 } : {}),
+    ...(beforeSnapshot ? { beforeSnapshot } : {}),
+    ...(afterSnapshot ? { afterSnapshot } : {}),
+    ...(entry.beforeMode !== undefined ? { beforeMode: entry.beforeMode } : {}),
+    ...(entry.afterMode !== undefined ? { afterMode: entry.afterMode } : {}),
+  };
+}
+
+function applyPreparedAtomicPathMutationEntry(entry: PreparedAtomicPathMutationEntry): void {
+  if (!entry.after.exists) {
+    rmSync(entry.targetPath);
+    fsyncDirectory(dirname(entry.targetPath));
+    return;
+  }
+
+  const temporary = resolve(
+    dirname(entry.targetPath),
+    '.' + basename(entry.targetPath) + '.' + process.pid + '.' + Date.now() + '.path-group.tmp',
+  );
+  try {
+    writeFileDurably(temporary, entry.after.content, entry.afterMode);
+    renameSync(temporary, entry.targetPath);
+    fsyncDirectory(dirname(entry.targetPath));
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
+function atomicPathMutationReceipts(manifest: AtomicPathMutationManifest): AtomicPathMutationReceipt[] {
+  return manifest.entries.map((entry) => ({
+    path: entry.path,
+    ...(entry.beforeSha256 ? { beforeSha256: entry.beforeSha256 } : {}),
+    ...(entry.afterSha256 ? { afterSha256: entry.afterSha256 } : {}),
+  }));
+}
+
+function rollbackAtomicPathMutationAttempt(
+  repoRoot: string,
+  transaction: { root: string; path: string },
+  prepared: readonly PreparedAtomicPathMutationEntry[],
+): void {
+  if (existsSync(manifestPath(transaction.path))) {
+    rollbackAtomicPathMutationTransactionLocked(
+      repoRoot,
+      transaction.root,
+      transaction.path,
+      prepared.map((entry) => entry.targetPath),
+    );
+    return;
+  }
+  removeSafePatchTransaction(transaction.root, transaction.path);
+}
+
+function commitAtomicPathMutationGroupLocked(
+  repoRoot: string,
+  prepared: readonly PreparedAtomicPathMutationEntry[],
+): { receipts: AtomicPathMutationReceipt[] } {
+  const transaction = safePatchTransactionDir(repoRoot);
+  let manifest: AtomicPathMutationManifest = {
+    protocol: 1,
+    kind: 'safe-patch-path-group',
+    transactionId: transaction.transactionId,
+    createdAt: new Date().toISOString(),
+    status: 'prepared',
+    entries: [],
+  };
+
+  try {
+    const manifestEntries = prepared.map((entry, index) =>
+      persistAtomicPathMutationEntry(transaction.path, entry, index),
+    );
+    fsyncDirectory(transaction.path);
+    manifest = { ...manifest, entries: manifestEntries };
+    writeJsonDurably(manifestPath(transaction.path), manifest);
+    manifest = updateAtomicPathMutationManifest(transaction.path, manifest, 'committing');
+
+    for (const entry of prepared) applyPreparedAtomicPathMutationEntry(entry);
+
+    manifest = updateAtomicPathMutationManifest(transaction.path, manifest, 'committed');
+    const receipts = atomicPathMutationReceipts(manifest);
+    try {
+      removeSafePatchTransaction(transaction.root, transaction.path);
+    } catch {
+      // A committed journal is safe to reclaim on the next recovery scan.
+    }
+    return { receipts };
+  } catch (error) {
+    try {
+      rollbackAtomicPathMutationAttempt(repoRoot, transaction, prepared);
+    } catch (recoveryError) {
+      throw new Error(
+        'ATOMIC_PATH_GROUP_RECOVERY_REQUIRED: ' +
+          errorMessage(error) +
+          '; recovery failed: ' +
+          errorMessage(recoveryError),
+      );
+    }
+    throw error;
+  }
+}
+
+export function atomicApplyPathMutationGroup(
+  repoRoot: string,
+  entries: readonly AtomicPathMutationEntry[],
+): { receipts: AtomicPathMutationReceipt[] } {
+  if (entries.length < 2) throw new Error('ATOMIC_PATH_GROUP_REQUIRES_MULTIPLE_PATHS');
+  const resolved = resolveAtomicPathMutationEntries(repoRoot, entries);
+  const paths = resolved.map((entry) => entry.path);
+  recoverPendingAtomicTextGroups(repoRoot, paths);
+  recoverPendingAtomicPathMutationGroups(repoRoot, paths);
+
+  return withTargetLocks(
+    resolved.map((entry) => entry.targetPath),
+    () =>
+      commitAtomicPathMutationGroupLocked(
+        repoRoot,
+        resolved.map((entry) => prepareAtomicPathMutationEntry(repoRoot, entry)),
+      ),
+    { busyRetries: 12, retryDelayMs: 5 },
+  );
 }
 
 /**
@@ -494,10 +901,9 @@ export function atomicCompareAndSwapTextGroup(
     throw new Error('ATOMIC_TEXT_GROUP_DUPLICATE_PATH');
   }
 
-  recoverPendingAtomicTextGroups(
-    repoRoot,
-    normalized.map((entry) => entry.path),
-  );
+  const paths = normalized.map((entry) => entry.path);
+  recoverPendingAtomicTextGroups(repoRoot, paths);
+  recoverPendingAtomicPathMutationGroups(repoRoot, paths);
 
   return withTargetLocks(
     normalized.map((entry) => entry.targetPath),

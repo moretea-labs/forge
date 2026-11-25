@@ -1,15 +1,18 @@
 import { createHash } from 'crypto';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, lstatSync, readFileSync } from 'fs';
 import { join, relative, resolve } from 'path';
 import { findOccurrence, normalizeEditOperation, type EditOperation } from '../editing/edit-operation-contract';
 import { getToolPolicy } from '../control-plane/tool-policy';
 import {
+  atomicApplyPathMutationGroup,
   atomicCompareAndDeleteText,
   atomicCompareAndMoveText,
   atomicCompareAndSwapText,
   atomicCompareAndSwapTextGroup,
   atomicCreateText,
+  recoverPendingAtomicPathMutationGroups,
   recoverPendingAtomicTextGroups,
+  type AtomicPathMutationEntry,
 } from '../../effects/fs-transaction';
 import { globMatches, resolveMcpPath } from '../safe-tooling/path-policy';
 import type { RepositoryRecord } from '../../core/repository/types';
@@ -135,12 +138,13 @@ function fingerprint(repository: RepositoryRecord, rawPath: string): SafePatchFi
 function currentFile(
   repository: RepositoryRecord,
   rawPath: string,
-): { path: string; absolute: string; exists: boolean; content: string; sha256?: string } {
+): { path: string; absolute: string; exists: boolean; content: string; sha256?: string; mode?: number } {
   const path = repoRelativePath(repository, rawPath);
   const absolute = join(repository.canonicalRoot, path);
   if (!existsSync(absolute)) return { path, absolute, exists: false, content: '' };
   const content = readFileSync(absolute, 'utf-8');
-  return { path, absolute, exists: true, content, sha256: hash(content) };
+  const mode = lstatSync(absolute).mode & 0o777;
+  return { path, absolute, exists: true, content, sha256: hash(content), mode };
 }
 
 function buildChunks(operations: NormalizedOperation[], size: number): NormalizedOperation[][] {
@@ -949,6 +953,405 @@ function applySessionlessMultiPathTextGroup(
   }
 }
 
+type MixedResolvedPaths = Map<NormalizedOperation, string[]>;
+
+type MixedEntryPreparation =
+  | { entries: AtomicPathMutationEntry[]; failure?: undefined }
+  | { entries?: undefined; failure: SessionlessSafePatchResult };
+
+function resolveMixedMutationPaths(
+  repository: RepositoryRecord,
+  group: SessionlessMutationGroup,
+  allowedPaths?: unknown,
+): MixedResolvedPaths {
+  const resolved = new Map<NormalizedOperation, string[]>();
+  for (const operation of group.operations) {
+    const paths = [resolveSessionlessPath(repository, operation.path, allowedPaths)];
+    if (operation.type === 'move') paths.push(resolveSessionlessPath(repository, operation.toPath, allowedPaths));
+    resolved.set(operation, paths);
+  }
+  return resolved;
+}
+
+function structuralOverlapPath(group: SessionlessMutationGroup, resolvedPaths: MixedResolvedPaths): string | undefined {
+  const usage = new Map<string, NormalizedOperation[]>();
+  for (const operation of group.operations) {
+    for (const path of resolvedPaths.get(operation) ?? []) {
+      const current = usage.get(path);
+      if (current) current.push(operation);
+      else usage.set(path, [operation]);
+    }
+  }
+  for (const operation of group.operations) {
+    if (operation.type !== 'create' && operation.type !== 'delete' && operation.type !== 'move') continue;
+    for (const path of resolvedPaths.get(operation) ?? []) {
+      if ((usage.get(path)?.length ?? 0) > 1) return path;
+    }
+  }
+  return undefined;
+}
+
+function textOperationsByPath(
+  group: SessionlessMutationGroup,
+  resolvedPaths: MixedResolvedPaths,
+): Map<string, Array<NormalizedOperation & SessionlessTextOperation>> {
+  const grouped = new Map<string, Array<NormalizedOperation & SessionlessTextOperation>>();
+  for (const operation of group.operations) {
+    if (operation.type === 'create' || operation.type === 'delete' || operation.type === 'move') continue;
+    const path = resolvedPaths.get(operation)![0]!;
+    const current = grouped.get(path);
+    if (current) current.push(operation);
+    else grouped.set(path, [operation]);
+  }
+  return grouped;
+}
+
+function prepareMixedTextEntries(
+  repository: RepositoryRecord,
+  grouped: Map<string, Array<NormalizedOperation & SessionlessTextOperation>>,
+  plan: SafePatchPlan,
+  groupIndex: number,
+): MixedEntryPreparation {
+  const entries: AtomicPathMutationEntry[] = [];
+  for (const [path, operations] of grouped) {
+    const expected = explicitGroupExpectedSha256(operations);
+    if (expected.conflict) {
+      const first = operations[0]!;
+      return {
+        failure: sessionlessFailure(plan, [
+          {
+            chunkIndex: groupIndex,
+            operationIndex: first.__originalIndex + 1,
+            type: first.type,
+            path,
+            code: 'SEMANTIC_GROUP_UNSUPPORTED',
+            message: expected.conflict,
+          },
+        ]),
+      };
+    }
+
+    const current = currentFile(repository, path);
+    const preconditionFailure = sessionlessTextGroupPreconditionFailure(
+      path,
+      operations,
+      groupIndex,
+      current,
+      expected.expectedSha256,
+    );
+    if (preconditionFailure) return { failure: sessionlessFailure(plan, [preconditionFailure]) };
+
+    const retryLocal = !expected.expectedSha256 && operations.every(isRetryableLocalEdit);
+    const preview = previewSessionlessTextGroup(
+      path,
+      operations,
+      groupIndex,
+      current.content,
+      current.sha256!,
+      retryLocal,
+    );
+    if ('failure' in preview) return { failure: sessionlessFailure(plan, [preview.failure]) };
+
+    entries.push({
+      path,
+      before: { exists: true, expectedSha256: current.sha256! },
+      after: {
+        exists: true,
+        content: preview.content,
+        ...(current.mode !== undefined ? { mode: current.mode } : {}),
+      },
+    });
+  }
+  return { entries };
+}
+
+function structuralPreflightFailure(
+  plan: SafePatchPlan,
+  groupIndex: number,
+  operation: NormalizedOperation,
+  path: string,
+  code: SafePatchPreflightFailure['code'],
+  message: string,
+  current?: ReturnType<typeof currentFile>,
+): MixedEntryPreparation {
+  return {
+    failure: sessionlessFailure(plan, [
+      {
+        chunkIndex: groupIndex,
+        operationIndex: operation.__originalIndex + 1,
+        type: operation.type,
+        path,
+        code,
+        message,
+        currentSha256: current?.sha256,
+        ...(operation.type === 'delete' || operation.type === 'move'
+          ? { expectedSha256: operation.expectedSha256 }
+          : {}),
+        ...(current?.content ? { context: snippetAround(current.content, '') } : {}),
+      },
+    ]),
+  };
+}
+
+function prepareStructuralOperationEntries(
+  repository: RepositoryRecord,
+  operation: NormalizedOperation,
+  paths: readonly string[],
+  plan: SafePatchPlan,
+  groupIndex: number,
+): MixedEntryPreparation {
+  const path = paths[0]!;
+  if (operation.type === 'create') {
+    const current = currentFile(repository, path);
+    if (current.exists) {
+      return structuralPreflightFailure(
+        plan,
+        groupIndex,
+        operation,
+        path,
+        'CREATE_TARGET_EXISTS',
+        'create target already exists: ' + path,
+        current,
+      );
+    }
+    return {
+      entries: [{ path, before: { exists: false }, after: { exists: true, content: operation.content } }],
+    };
+  }
+
+  if (operation.type !== 'delete' && operation.type !== 'move') return { entries: [] };
+  const current = currentFile(repository, path);
+  if (!current.exists || !current.sha256) {
+    return structuralPreflightFailure(
+      plan,
+      groupIndex,
+      operation,
+      path,
+      'TARGET_MISSING',
+      'target is no longer present',
+    );
+  }
+  if (operation.expectedSha256 !== current.sha256) {
+    return structuralPreflightFailure(
+      plan,
+      groupIndex,
+      operation,
+      path,
+      'STALE_FILE_SHA',
+      'stale file version for ' + path,
+      current,
+    );
+  }
+
+  const sourceEntry: AtomicPathMutationEntry = {
+    path,
+    before: { exists: true, expectedSha256: current.sha256 },
+    after: { exists: false },
+  };
+  if (operation.type === 'delete') return { entries: [sourceEntry] };
+
+  const toPath = paths[1]!;
+  const destination = currentFile(repository, toPath);
+  if (destination.exists) {
+    return structuralPreflightFailure(
+      plan,
+      groupIndex,
+      operation,
+      toPath,
+      'MOVE_TARGET_EXISTS',
+      'move target already exists: ' + toPath,
+      destination,
+    );
+  }
+  return {
+    entries: [
+      sourceEntry,
+      {
+        path: toPath,
+        before: { exists: false },
+        after: {
+          exists: true,
+          content: current.content,
+          ...(current.mode !== undefined ? { mode: current.mode } : {}),
+        },
+      },
+    ],
+  };
+}
+
+function prepareMixedStructuralEntries(
+  repository: RepositoryRecord,
+  group: SessionlessMutationGroup,
+  resolvedPaths: MixedResolvedPaths,
+  plan: SafePatchPlan,
+  groupIndex: number,
+): MixedEntryPreparation {
+  const entries: AtomicPathMutationEntry[] = [];
+  for (const operation of group.operations) {
+    if (operation.type !== 'create' && operation.type !== 'delete' && operation.type !== 'move') continue;
+    const prepared = prepareStructuralOperationEntries(
+      repository,
+      operation,
+      resolvedPaths.get(operation)!,
+      plan,
+      groupIndex,
+    );
+    if (prepared.failure) return prepared;
+    entries.push(...prepared.entries);
+  }
+  return { entries };
+}
+
+function mixedMutationFailureCode(
+  message: string,
+  touching: NormalizedOperation | undefined,
+): SafePatchPreflightFailure['code'] {
+  if (message.startsWith('STALE_FILE_SHA:')) return 'STALE_FILE_SHA';
+  if (message.startsWith('TARGET_MISSING:')) return 'TARGET_MISSING';
+  if (message.startsWith('CREATE_TARGET_EXISTS:')) {
+    return touching?.type === 'move' ? 'MOVE_TARGET_EXISTS' : 'CREATE_TARGET_EXISTS';
+  }
+  if (message.startsWith('NO_CHANGE:')) return 'NO_CHANGE';
+  return 'APPLY_FAILED';
+}
+
+function mixedMutationFailedPath(message: string, fallback: string): string {
+  return (
+    message.match(/^STALE_FILE_SHA: ([^:]+):/)?.[1] ??
+    message.match(/^TARGET_MISSING: (.+)$/)?.[1] ??
+    message.match(/^CREATE_TARGET_EXISTS: (.+)$/)?.[1] ??
+    fallback
+  );
+}
+
+function shouldRetryMixedMutation(
+  code: SafePatchPreflightFailure['code'],
+  touching: NormalizedOperation | undefined,
+  attempt: number,
+): boolean {
+  return (
+    code === 'STALE_FILE_SHA' &&
+    touching !== undefined &&
+    touching.type !== 'create' &&
+    touching.type !== 'delete' &&
+    touching.type !== 'move' &&
+    isRetryableLocalEdit(touching) &&
+    attempt < 2
+  );
+}
+
+function mixedMutationFailureResult(
+  repository: RepositoryRecord,
+  group: SessionlessMutationGroup,
+  resolvedPaths: MixedResolvedPaths,
+  entries: readonly AtomicPathMutationEntry[],
+  plan: SafePatchPlan,
+  groupIndex: number,
+  message: string,
+): { result: SessionlessSafePatchResult; retryable: boolean } {
+  const failedPath = mixedMutationFailedPath(message, entries[0]!.path);
+  const touching = group.operations.find((operation) => resolvedPaths.get(operation)?.includes(failedPath));
+  const code = mixedMutationFailureCode(message, touching);
+  const latest = currentFile(repository, failedPath);
+  const failedEntry = entries.find((entry) => entry.path === failedPath);
+  const expectedSha256 = failedEntry?.before.exists ? failedEntry.before.expectedSha256 : undefined;
+  const operation = touching ?? group.operations[0]!;
+  return {
+    retryable: shouldRetryMixedMutation(code, touching, 0),
+    result: sessionlessFailure(plan, [
+      {
+        chunkIndex: groupIndex,
+        operationIndex: operation.__originalIndex + 1,
+        type: operation.type,
+        path: failedPath,
+        code,
+        message,
+        currentSha256: latest.sha256,
+        expectedSha256,
+        context: snippetAround(
+          latest.content,
+          touching && touching.type !== 'create' && touching.type !== 'delete' && touching.type !== 'move'
+            ? sessionlessNeedle(touching)
+            : '',
+        ),
+      },
+    ]),
+  };
+}
+
+function applySessionlessMixedMutationGroup(
+  repository: RepositoryRecord,
+  group: SessionlessMutationGroup,
+  plan: SafePatchPlan,
+  groupIndex: number,
+  allowedPaths?: unknown,
+): SessionlessSafePatchResult {
+  let resolvedPaths: MixedResolvedPaths;
+  try {
+    resolvedPaths = resolveMixedMutationPaths(repository, group, allowedPaths);
+  } catch (error) {
+    return semanticGroupFailure(
+      plan,
+      group,
+      groupIndex,
+      'PATH_DENIED',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+
+  const overlap = structuralOverlapPath(group, resolvedPaths);
+  if (overlap) {
+    return semanticGroupFailure(
+      plan,
+      group,
+      groupIndex,
+      'SEMANTIC_GROUP_UNSUPPORTED',
+      'semantic group ' +
+        group.groupId +
+        ' overlaps structural mutation path ' +
+        overlap +
+        '; split same-path structural sequencing into one explicit final-state operation',
+    );
+  }
+
+  for (let attempt = 0; ; attempt++) {
+    const text = prepareMixedTextEntries(repository, textOperationsByPath(group, resolvedPaths), plan, groupIndex);
+    if (text.failure) return text.failure;
+    const structural = prepareMixedStructuralEntries(repository, group, resolvedPaths, plan, groupIndex);
+    if (structural.failure) return structural.failure;
+    const entries = [...text.entries, ...structural.entries];
+    if (entries.length < 2) {
+      return semanticGroupFailure(
+        plan,
+        group,
+        groupIndex,
+        'SEMANTIC_GROUP_UNSUPPORTED',
+        'mixed semantic group did not produce a multi-path transaction',
+      );
+    }
+
+    try {
+      const applied = atomicApplyPathMutationGroup(repository.canonicalRoot, entries);
+      const changedFiles = entries.map((entry) => entry.path);
+      return {
+        status: 'applied',
+        sessionless: true,
+        createdSession: false,
+        changedFiles,
+        appliedChunks: [{ index: groupIndex, operationCount: group.operations.length, paths: changedFiles }],
+        failures: [],
+        receipts: applied.receipts,
+        plan,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failure = mixedMutationFailureResult(repository, group, resolvedPaths, entries, plan, groupIndex, message);
+      if (failure.retryable && attempt < 2) continue;
+      return failure.result;
+    }
+  }
+}
+
 function executeSessionlessMutationGroup(
   repository: RepositoryRecord,
   group: SessionlessMutationGroup,
@@ -1009,13 +1412,7 @@ function executeSessionlessMutationGroup(
       (operation) => operation.type === 'create' || operation.type === 'delete' || operation.type === 'move',
     )
   ) {
-    return semanticGroupFailure(
-      plan,
-      group,
-      groupIndex,
-      'SEMANTIC_GROUP_UNSUPPORTED',
-      `semantic group ${group.groupId} mixes create/delete/move with other operations; planner refused partial execution before mutation`,
-    );
+    return applySessionlessMixedMutationGroup(repository, group, plan, groupIndex, allowedPaths);
   }
 
   if (paths.length > 1) {
@@ -1061,7 +1458,12 @@ function recoverPendingTextTransactionsForOperations(
       }
     }
   }
-  return paths.size > 0 ? recoverPendingAtomicTextGroups(repository.canonicalRoot, [...paths]) : 0;
+  if (paths.size === 0) return 0;
+  const scopedPaths = [...paths];
+  return (
+    recoverPendingAtomicTextGroups(repository.canonicalRoot, scopedPaths) +
+    recoverPendingAtomicPathMutationGroups(repository.canonicalRoot, scopedPaths)
+  );
 }
 
 export function applySessionlessMutationBatch(
