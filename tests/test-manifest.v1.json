@@ -575,6 +575,10 @@
       "module": "core",
       "resource": "pure"
     },
+    "tests/runtime/model-profile-store.test.ts": {
+      "module": "core",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/agentmail-watch-adapter.test.ts": {
       "module": "core",
       "resource": "pure"
