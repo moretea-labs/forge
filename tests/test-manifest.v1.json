@@ -595,6 +595,10 @@
       "module": "core",
       "resource": "temp-isolated"
     },
+    "tests/runtime/model-decision-artifact-store.test.ts": {
+      "module": "core",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/agentmail-watch-adapter.test.ts": {
       "module": "core",
       "resource": "pure"

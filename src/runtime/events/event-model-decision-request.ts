@@ -6,6 +6,8 @@ import {
   type EventPolicyV1,
 } from '../../../packages/kernel/events';
 import {
+  validateModelInstructionTemplateV1,
+  validateModelOutputSchemaV1,
   validateModelProfileV1,
   type ModelInstructionTemplateV1,
   type ModelOutputSchemaV1,
@@ -20,34 +22,6 @@ export interface EventDecisionContextV1 {
 }
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-
-function validateInstruction(value: ModelInstructionTemplateV1): ModelInstructionTemplateV1 {
-  if (
-    value.schemaVersion !== 1 ||
-    !IDENTIFIER.test(value.templateId) ||
-    !Number.isSafeInteger(value.revision) ||
-    value.revision < 1
-  )
-    throw new Error('MODEL_INSTRUCTION_TEMPLATE_INVALID');
-  if (!value.content.trim() || value.content.length > 32_000)
-    throw new Error('MODEL_INSTRUCTION_TEMPLATE_CONTENT_INVALID');
-  return { ...value };
-}
-
-function validateOutputSchema(value: ModelOutputSchemaV1): ModelOutputSchemaV1 {
-  if (
-    value.schemaVersion !== 1 ||
-    !IDENTIFIER.test(value.schemaId) ||
-    !Number.isSafeInteger(value.revision) ||
-    value.revision < 1
-  )
-    throw new Error('MODEL_OUTPUT_SCHEMA_INVALID');
-  const serialized = JSON.stringify(value.jsonSchema);
-  if (!serialized || serialized.length > 64_000) throw new Error('MODEL_OUTPUT_SCHEMA_SIZE_INVALID');
-  if (serialized.includes('"$ref"') || serialized.includes('"$dynamicRef"'))
-    throw new Error('MODEL_OUTPUT_SCHEMA_REMOTE_REFERENCE_UNSUPPORTED');
-  return { ...value, jsonSchema: structuredClone(value.jsonSchema) };
-}
 
 function validateContext(value: EventDecisionContextV1, maxInputBytes: number): EventDecisionContextV1 {
   if (value.schemaVersion !== 1 || !value.facts || typeof value.facts !== 'object' || Array.isArray(value.facts))
@@ -98,10 +72,10 @@ export function buildEventModelDecisionRequest(input: {
   const profile = validateModelProfileV1(input.profile);
   if (policy.decision.mode !== 'model' || policy.decision.modelProfileId !== profile.profileId)
     throw new Error('EVENT_DECISION_MODEL_PROFILE_MISMATCH');
-  const instruction = validateInstruction(input.instruction);
+  const instruction = validateModelInstructionTemplateV1(input.instruction);
   const requiredTemplateId = policy.decision.instructionTemplateId ?? profile.instructionTemplateId;
   if (instruction.templateId !== requiredTemplateId) throw new Error('EVENT_DECISION_INSTRUCTION_TEMPLATE_MISMATCH');
-  const output = validateOutputSchema(input.outputSchema);
+  const output = validateModelOutputSchemaV1(input.outputSchema);
   if (output.schemaId !== profile.outputSchemaId) throw new Error('EVENT_DECISION_OUTPUT_SCHEMA_MISMATCH');
   const context = validateContext(input.context, policy.budget.maxInputBytes);
 
