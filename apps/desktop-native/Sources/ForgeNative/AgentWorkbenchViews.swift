@@ -1442,6 +1442,14 @@ struct AgentPane: View {
                         .textSelection(.enabled)
                         .help(event.detail ?? detail)
                 }
+                if let runtimeTiming = event.runtimeTimingLabel {
+                    Text(runtimeTiming)
+                        .font(.system(size:9,design:.monospaced))
+                        .foregroundStyle(ForgePalette.secondary.opacity(0.72))
+                        .help("Forge 服务端分解计时；顶部耗时是本次调用的可见墙钟耗时。")
+                        .accessibilityLabel("Forge 服务端计时：\(runtimeTiming)")
+                        .accessibilityIdentifier("agent.activity.runtime-timing.\(event.id)")
+                }
                 if let output=NativeWorkspace.activityOutputPresentation(for:event) {
                     let isExpanded=expandedActivityEventIDs.contains(event.id)
                     let isCopied=copiedActivityEventID == event.id

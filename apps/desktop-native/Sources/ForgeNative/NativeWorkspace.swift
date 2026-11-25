@@ -183,6 +183,8 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
   var output: String? = nil
   var outputTruncated: Bool? = nil
   var durationMs: Double? = nil
+  var serverDurationMs: Double? = nil
+  var canonicalDurationMs: Double? = nil
 
   var id: String { eventId ?? toolCallId ?? "\(startedAt)|\(phase)|\(label)|\(detail ?? "")" }
   var displayTitle: String { Self.displayTitle(for: label) }
@@ -221,6 +223,20 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
       return "\(tenths / 10).\(tenths % 10) s"
     }
     return "\(milliseconds / 60_000)m \((milliseconds % 60_000) / 1_000)s"
+  }
+
+  var runtimeTimingLabel: String? {
+    let canonical = canonicalDurationMs.flatMap(Self.durationLabel(milliseconds:))
+    let server = serverDurationMs.flatMap(Self.durationLabel(milliseconds:))
+    if let canonicalDurationMs, let canonical {
+      if let serverDurationMs, serverDurationMs > canonicalDurationMs,
+        let forwarding = Self.durationLabel(milliseconds: serverDurationMs - canonicalDurationMs)
+      {
+        return "内核 \(canonical) · 转发 \(forwarding)"
+      }
+      return "内核 \(canonical)"
+    }
+    return server.map { "内核 \($0)" }
   }
 
   static func displayTitle(for label: String) -> String {
@@ -6200,6 +6216,8 @@ final class NativeWorkspace: ObservableObject {
             ? nil
             : AgentLiveActivityEvent.elapsedMilliseconds(startedAt: startedAt, completedAt: $0)
         }
+      let serverDurationMs = (row["serverDurationMs"] as? NSNumber)?.doubleValue
+      let canonicalDurationMs = (row["canonicalDurationMs"] as? NSNumber)?.doubleValue
       return AgentLiveActivityEvent(
         phase: "tool", label: name,
         detail: row["processId"] as? String ?? row["requestId"] as? String,
@@ -6208,7 +6226,9 @@ final class NativeWorkspace: ObservableObject {
         eventId: toolCallId == nil ? UUID().uuidString : nil,
         output: rawOutput.map { String($0.prefix(2_000)) },
         outputTruncated: rawOutput.map { $0.count > 2_000 },
-        durationMs: durationMs
+        durationMs: durationMs,
+        serverDurationMs: serverDurationMs,
+        canonicalDurationMs: canonicalDurationMs
       )
     }
     let bounded = boundedActivityEvents(events)
@@ -6229,6 +6249,8 @@ final class NativeWorkspace: ObservableObject {
     let rawOutput = payload["output"] as? String
     let output = rawOutput.map { String($0.prefix(2_000)) }
     let outputTruncated = rawOutput.map { $0.count > 2_000 }
+    let serverDurationMs = (payload["serverDurationMs"] as? NSNumber)?.doubleValue
+    let canonicalDurationMs = (payload["canonicalDurationMs"] as? NSNumber)?.doubleValue
     var events = existing
     let activeMatches = events.indices.filter { index in
       let event = events[index]
@@ -6262,7 +6284,9 @@ final class NativeWorkspace: ObservableObject {
         durationMs: completedAt.flatMap {
           started.durationMs
             ?? AgentLiveActivityEvent.elapsedMilliseconds(startedAt: started.startedAt, completedAt: $0)
-        }
+        },
+        serverDurationMs: serverDurationMs ?? started.serverDurationMs,
+        canonicalDurationMs: canonicalDurationMs ?? started.canonicalDurationMs
       )
       return boundedActivityEvents(events)
     }
@@ -6281,7 +6305,9 @@ final class NativeWorkspace: ObservableObject {
         startedAt: now, completedAt: activeStatuses.contains(eventStatus) ? nil : now,
         toolCallId: toolCallId,
         eventId: toolCallId == nil ? UUID().uuidString : nil,
-        output: output, outputTruncated: outputTruncated
+        output: output, outputTruncated: outputTruncated,
+        serverDurationMs: serverDurationMs,
+        canonicalDurationMs: canonicalDurationMs
       ))
     return boundedActivityEvents(events)
   }
@@ -6298,7 +6324,9 @@ final class NativeWorkspace: ObservableObject {
         toolCallId: event.toolCallId, eventId: event.eventId,
         output: event.output, outputTruncated: event.outputTruncated,
         durationMs: event.durationMs
-          ?? AgentLiveActivityEvent.elapsedMilliseconds(startedAt: event.startedAt, completedAt: now)
+          ?? AgentLiveActivityEvent.elapsedMilliseconds(startedAt: event.startedAt, completedAt: now),
+        serverDurationMs: event.serverDurationMs,
+        canonicalDurationMs: event.canonicalDurationMs
       )
     })
   }
@@ -6434,7 +6462,9 @@ final class NativeWorkspace: ObservableObject {
             eventId: event.eventId ?? receipt.eventId,
             output: event.output ?? receipt.output,
             outputTruncated: event.outputTruncated ?? receipt.outputTruncated,
-            durationMs: durationMs
+            durationMs: durationMs,
+            serverDurationMs: event.serverDurationMs ?? receipt.serverDurationMs,
+            canonicalDurationMs: event.canonicalDurationMs ?? receipt.canonicalDurationMs
           ))
       } else {
         // Missing or ambiguous correlation is an unknown outcome, never
@@ -6446,7 +6476,9 @@ final class NativeWorkspace: ObservableObject {
             completedAt: event.completedAt, toolCallId: event.toolCallId,
             eventId: event.eventId,
             output: event.output, outputTruncated: event.outputTruncated,
-            durationMs: event.durationMs
+            durationMs: event.durationMs,
+            serverDurationMs: event.serverDurationMs,
+            canonicalDurationMs: event.canonicalDurationMs
           ))
       }
     }

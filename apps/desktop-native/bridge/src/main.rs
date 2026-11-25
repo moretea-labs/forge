@@ -2985,6 +2985,28 @@ fn local_running_process_id(receipt: &Value) -> Option<&str> {
         .then_some(id)
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct LocalToolTiming {
+    server_duration_ms: Option<f64>,
+    canonical_duration_ms: Option<f64>,
+}
+
+fn local_tool_timing(receipt: &Value) -> LocalToolTiming {
+    let meta = receipt.pointer("/result/responseMeta")
+        .or_else(|| receipt.get("responseMeta"));
+    let finite_non_negative = |value: Option<f64>| {
+        value.filter(|duration| duration.is_finite() && *duration >= 0.0)
+    };
+    LocalToolTiming {
+        server_duration_ms: finite_non_negative(
+            meta.and_then(|value| value.get("serverDurationMs")).and_then(Value::as_f64)
+        ),
+        canonical_duration_ms: finite_non_negative(
+            meta.and_then(|value| value.get("canonicalServerDurationMs")).and_then(Value::as_f64)
+        ),
+    }
+}
+
 // Live activity output has a smaller budget than the model's tool result.
 fn local_api_tool_output(name: &str, receipt: &Value) -> String {
     const LIMIT: usize = 2_000;
@@ -4400,10 +4422,13 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                 format!("{}...[truncated; re-read from Forge if needed]",
                     serialized.chars().take(LOCAL_API_TOOL_RESULT_MAX_CHARS - 60).collect::<String>())
             } else { serialized };
+            let timing = local_tool_timing(&result);
             host.emit_tool_progress(json!({
                 "conversationId":conversation_id, "name":name, "phase":"output",
                 "output":local_api_tool_output(&name, &result),
                 "processId":process_id, "requestId":effect_request_id, "toolCallId":id,
+                "serverDurationMs":timing.server_duration_ms,
+                "canonicalDurationMs":timing.canonical_duration_ms,
             }));
             let progress_phase = match effect_outcome {
                 Some(LocalEffectOutcome::Succeeded) => "completed",
@@ -4415,9 +4440,13 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             host.emit_tool_progress(json!({
                 "conversationId":conversation_id, "name":name, "phase":progress_phase,
                 "processId":process_id, "requestId":effect_request_id, "toolCallId":id,
+                "serverDurationMs":timing.server_duration_ms,
+                "canonicalDurationMs":timing.canonical_duration_ms,
             }));
             tool_events.push(json!({ "name": name, "ok": ok,
-                "processId":process_id, "requestId": effect_request_id, "toolCallId": id }));
+                "processId":process_id, "requestId": effect_request_id, "toolCallId": id,
+                "serverDurationMs":timing.server_duration_ms,
+                "canonicalDurationMs":timing.canonical_duration_ms }));
             if effect_outcome == Some(LocalEffectOutcome::Unknown) {
                 // Even when cancelled, an ambiguous tool outcome needs reconciliation.
                 return Err(format!("FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:{}",
@@ -4629,7 +4658,13 @@ mod tests {
             self.tool_calls.lock().unwrap().push(payload.clone());
             let name = payload.get("tool").and_then(Value::as_str).unwrap_or("");
             let result = match name {
-                "read_file" => json!({"ok":true,"result":{"content":"before"}}),
+                "read_file" => json!({"ok":true,"result":{
+                    "content":"before",
+                    "responseMeta":{
+                        "serverDurationMs":12.5,
+                        "canonicalServerDurationMs":8.0
+                    }
+                }}),
                 "apply_patch" => {
                     assert_eq!(payload.pointer("/arguments/operations/0/path").and_then(Value::as_str),Some("fixture.txt"));
                     json!({"ok":true,"result":{"status":"applied"}})
@@ -5256,6 +5291,15 @@ mod tests {
             assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]), "native progress sequence must be monotonic");
             assert!(events.iter().any(|event| event["channel"] == "model" && event["payload"]["kind"] == "text_delta"));
             assert_eq!(events.iter().filter(|event| event["channel"] == "tool" && event["payload"]["phase"] == "completed").count(), 3);
+            let read_completed = events.iter().find(|event| event["channel"] == "tool"
+                && event["payload"]["toolCallId"] == "call-read"
+                && event["payload"]["phase"] == "completed").expect("read terminal event");
+            assert_eq!(read_completed["payload"]["serverDurationMs"], 12.5);
+            assert_eq!(read_completed["payload"]["canonicalDurationMs"], 8.0);
+            let read_receipt = result["toolEvents"].as_array().unwrap().iter()
+                .find(|event| event["toolCallId"] == "call-read").expect("read tool receipt");
+            assert_eq!(read_receipt["serverDurationMs"], 12.5);
+            assert_eq!(read_receipt["canonicalDurationMs"], 8.0);
             for call_id in ["call-read", "call-patch", "call-test"] {
                 let phases = events.iter()
                     .filter(|event| event["channel"] == "tool" && event["payload"]["toolCallId"] == call_id)

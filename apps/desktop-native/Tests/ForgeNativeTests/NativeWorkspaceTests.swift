@@ -6325,3 +6325,61 @@ extension NativeWorkspaceTests {
     XCTAssertEqual(narrativeSummary.accessibilityLabel, "有执行记录")
   }
 }
+
+
+extension NativeWorkspaceTests {
+  func testAgentToolRuntimeTimingBreakdownFormatsKernelAndForwarding() {
+    let gatewayEvent = AgentLiveActivityEvent(
+      phase: "tool", label: "rh_status", detail: nil,
+      status: "completed", startedAt: "2026-11-25T00:00:00.000Z",
+      completedAt: "2026-11-25T00:00:00.030Z", toolCallId: "gateway",
+      serverDurationMs: 25.5, canonicalDurationMs: 20
+    )
+    XCTAssertEqual(gatewayEvent.runtimeTimingLabel, "内核 20 ms · 转发 6 ms")
+
+    let directEvent = AgentLiveActivityEvent(
+      phase: "tool", label: "execute_command", detail: nil,
+      status: "completed", startedAt: "2026-11-25T00:00:00.000Z",
+      completedAt: "2026-11-25T00:00:00.020Z", toolCallId: "direct",
+      serverDurationMs: 12.5
+    )
+    XCTAssertEqual(directEvent.runtimeTimingLabel, "内核 13 ms")
+  }
+
+  func testAgentToolTimingProjectionSurvivesProgressAndReceiptMerge() {
+    let started = NativeWorkspace.apiToolProgressEvents(
+      [],
+      payload: ["name": "rh_status", "phase": "started", "toolCallId": "timed"],
+      now: "2026-11-25T00:00:00.000Z"
+    )
+    let output = NativeWorkspace.apiToolProgressEvents(
+      started,
+      payload: [
+        "name": "rh_status", "phase": "output", "toolCallId": "timed",
+        "serverDurationMs": 18.5, "canonicalDurationMs": 12.0,
+      ],
+      now: "2026-11-25T00:00:00.020Z"
+    )
+    let completed = NativeWorkspace.apiToolProgressEvents(
+      output,
+      payload: ["name": "rh_status", "phase": "completed", "toolCallId": "timed"],
+      now: "2026-11-25T00:00:00.025Z"
+    )
+
+    XCTAssertEqual(completed.first?.serverDurationMs ?? -1, 18.5, accuracy: 0.001)
+    XCTAssertEqual(completed.first?.canonicalDurationMs ?? -1, 12, accuracy: 0.001)
+
+    let receipts = NativeWorkspace.apiActivityEvents([
+      [
+        "name": "rh_status", "ok": true, "toolCallId": "timed",
+        "serverDurationMs": 18.5, "canonicalDurationMs": 12.0,
+      ]
+    ])
+    XCTAssertEqual(receipts?.first?.runtimeTimingLabel, "内核 12 ms · 转发 7 ms")
+
+    let merged = NativeWorkspace.mergeActivityReceipts(completed, receipts: receipts ?? [])
+    XCTAssertEqual(merged.first?.serverDurationMs ?? -1, 18.5, accuracy: 0.001)
+    XCTAssertEqual(merged.first?.canonicalDurationMs ?? -1, 12, accuracy: 0.001)
+    XCTAssertEqual(merged.first?.runtimeTimingLabel, "内核 12 ms · 转发 7 ms")
+  }
+}
