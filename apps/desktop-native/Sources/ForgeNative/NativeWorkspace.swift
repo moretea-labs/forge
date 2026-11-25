@@ -6252,7 +6252,7 @@ final class NativeWorkspace: ObservableObject {
   ) -> [AgentLiveActivityEvent] {
     events.enumerated().sorted { lhs, rhs in
       switch (lhs.element.eventSeq, rhs.element.eventSeq) {
-      case let (left?, right?):
+      case (let left?, let right?):
         return left == right ? lhs.offset < rhs.offset : left < right
       case (.some, nil):
         return true

@@ -6140,7 +6140,6 @@ extension NativeWorkspaceTests {
   }
 }
 
- 
 extension NativeWorkspaceTests {
   func testAgentToolActivityDurationAndLocalizedDisplay() {
     let started = NativeWorkspace.apiToolProgressEvents(
@@ -6337,7 +6336,8 @@ extension NativeWorkspaceTests {
       status: "completed", startedAt: start, completedAt: end,
       toolCallId: nil, eventId: "receipt-1"
     )
-    let uniqueMerge = NativeWorkspace.mergeActivityReceipts([uniqueEvent], receipts: [uniqueReceipt])
+    let uniqueMerge = NativeWorkspace.mergeActivityReceipts(
+      [uniqueEvent], receipts: [uniqueReceipt])
     XCTAssertEqual(uniqueMerge.count, 1)
     XCTAssertEqual(uniqueMerge.first?.status, "completed")
     XCTAssertEqual(uniqueMerge.first?.durationMs ?? -1, 1_250, accuracy: 0.001)
@@ -6419,12 +6419,12 @@ extension NativeWorkspaceTests {
       completedAt: "2026-11-25T00:00:00.100Z", toolCallId: nil,
       eventId: "message"
     )
-    let narrativeSummary = NativeWorkspace.activitySummary(events: [narrativeOnly], reportedCount: nil)
+    let narrativeSummary = NativeWorkspace.activitySummary(
+      events: [narrativeOnly], reportedCount: nil)
     XCTAssertEqual(narrativeSummary.compactLabel, "执行过程")
     XCTAssertEqual(narrativeSummary.accessibilityLabel, "有执行记录")
   }
 }
-
 
 extension NativeWorkspaceTests {
   func testAgentToolRuntimeTimingBreakdownFormatsKernelAndForwarding() {
@@ -6483,7 +6483,6 @@ extension NativeWorkspaceTests {
   }
 }
 
-
 extension NativeWorkspaceTests {
   func testAgentProviderTimingReceiptFormatsFinalTTFTAndMultiRoundDuration() {
     let timing = AgentProviderTiming.fromProviderReceipt([
@@ -6515,15 +6514,17 @@ extension NativeWorkspaceTests {
   }
 
   func testAgentProviderTimingRejectsInvalidAggregateReceipt() {
-    XCTAssertNil(AgentProviderTiming.fromProviderReceipt([
-      "totalRounds": 0,
-      "totalDurationMs": 10.0,
-      "firstTokenReportedRounds": 0,
-    ]))
-    XCTAssertNil(AgentProviderTiming.fromProviderReceipt([
-      "totalRounds": 2,
-      "totalDurationMs": 10.0,
-      "firstTokenReportedRounds": 3,
-    ]))
+    XCTAssertNil(
+      AgentProviderTiming.fromProviderReceipt([
+        "totalRounds": 0,
+        "totalDurationMs": 10.0,
+        "firstTokenReportedRounds": 0,
+      ]))
+    XCTAssertNil(
+      AgentProviderTiming.fromProviderReceipt([
+        "totalRounds": 2,
+        "totalDurationMs": 10.0,
+        "firstTokenReportedRounds": 3,
+      ]))
   }
 }
