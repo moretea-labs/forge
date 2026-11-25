@@ -16,18 +16,10 @@ export interface PlanAdoptionOptions {
   readonly apply?: boolean;
 }
 
-const MINIMAL_DIRS = [
-  "docs",
-  "tasks",
-] as const;
+const REQUIRED_DIRS = ["tasks"] as const;
 
-const STANDARD_EXTRA_DIRS = [
-  "docs/reference-configs",
-  "docs/researches",
-] as const;
-
-function directoryPaths(mode: AdoptionMode): readonly string[] {
-  return mode === "minimal" ? MINIMAL_DIRS : [...MINIMAL_DIRS, ...STANDARD_EXTRA_DIRS];
+function directoryPaths(_mode: AdoptionMode): readonly string[] {
+  return REQUIRED_DIRS;
 }
 
 function repoFileStatus(repoRoot: string, relPath: string): "planned" | "skipped" {
@@ -41,7 +33,6 @@ function repoDirStatus(repoRoot: string, relPath: string): "planned" | "skipped"
 
 function writeIfMissingOperations(repoRoot: string): AdoptionOperation[] {
   const files = [
-    adoptionTemplateFile(repoRoot, "spec"),
     adoptionTemplateFile(repoRoot, "deferredGoalLedger"),
     adoptionTemplateFile(repoRoot, "lessonsLog"),
   ] as const;

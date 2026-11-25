@@ -19,7 +19,6 @@ Keep this file focused on the local contract for this primary functional block.
 - Domain: `runtime-harness`
 - Name: `hook-adapters`
 - Primary prefix: `assets/hooks`
-- Architecture module: `docs/architecture/modules/runtime-harness/hook-adapters.md`
 
 ## Positioning
 
@@ -28,7 +27,6 @@ Owns the runtime-harness-hook-adapters capability boundary declared in .ai/conte
 ## Source Map
 
 - Primary prefix: `assets/hooks` (entrypoint)
-- Architecture module: `docs/architecture/modules/runtime-harness/hook-adapters.md` (design-source)
 
 ## Refresh Hints
 
@@ -36,29 +34,13 @@ Owns the runtime-harness-hook-adapters capability boundary declared in .ai/conte
 - `forge run check-task-workflow --strict`
 <!-- END CAPABILITY CONTEXT -->
 
-<!-- BEGIN ARCHITECTURE CONTRACT -->
-## Architecture Contract
+<!-- BEGIN LOCAL SOURCE CONTRACT -->
+## Local Source Contract
 
-- Functional block: `.ai/hooks`
+- Functional block: `assets/hooks`
 - Capability ID: `runtime-harness-hook-adapters`
-- Matched prefix: `.ai/hooks`
-- Architecture domain: `runtime-harness`
-- Architecture capability: `hook-adapters`
-- Architecture module: `docs/architecture/modules/runtime-harness/hook-adapters.md`
-- Last architecture event: 2026-06-13T00:04:13+0800
-- Last changed path: `.ai/hooks/post-tool-observer.sh`
-- Severity: high
-- Change type: workflow-surface
-- Module responsibility: Keep this block aligned with the local boundary described by surrounding human-owned context.
-- Entrypoints: `.ai/hooks`
-- Allowed dependencies: Follow root `AGENTS.md` / `CLAUDE.md` and this local contract.
-- Forbidden dependencies: Do not cross sibling app/service/package boundaries without an architecture snapshot or explicit plan.
-- Runtime path: `.ai/hooks`
-- LSP/tooling profile: `typescript-lsp`
-- Verification: Use root required checks plus local commands recorded in this capability contract.
-- Latest snapshot: `(none yet)`
-- Semantic diagram source: `docs/architecture/modules/runtime-harness/hook-adapters.md`
-- Latest human diagram: `(none yet)`
-- Pending architecture request: `(none)`
-- Development progress authority: existing GitHub Issues/Projects; Forge retains only runtime execution and effect receipts. This block contains authored architecture context only.
-<!-- END ARCHITECTURE CONTRACT -->
+- Entrypoint: `assets/hooks`
+- Authority: current source/public APIs/static checks/tests plus the project Requirement/Issue; no repo-local architecture document or event ledger is required.
+- Allowed dependencies: follow root `AGENTS.md` / `CLAUDE.md` and preserve real path, permission, resource, process, Git/CAS, and effect-safety boundaries.
+- Verification: `bun test tests/hook-runtime.test.ts tests/hook-contracts.test.ts tests/workflow-contract.test.ts`
+<!-- END LOCAL SOURCE CONTRACT -->

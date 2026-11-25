@@ -5,7 +5,7 @@
 # Creates the three-layer project structure:
 #   IMMUTABLE LAYER (资产层): specs, contracts, tests
 #   MUTABLE LAYER (厕纸层): src
-#   SUPPORTING (支撑层): authored docs/deploy/tasks only; Runtime state lives in Controller Home
+#   SUPPORTING (支撑层): README/public docs, deploy, and task-local notes only
 
 set -euo pipefail
 
@@ -17,7 +17,6 @@ if [[ -f "$PI_LIB_DIR/project-init-lib.sh" ]]; then
 fi
 ASSETS_TEMPLATES_DIR="$SCRIPT_DIR/../assets/templates"
 ASSETS_HOOKS_DIR="$SCRIPT_DIR/../assets/hooks"
-ASSETS_REF_DIR="$SCRIPT_DIR/../assets/reference-configs"
 ASSETS_FACTOR_FACTORY_DIR="$ASSETS_TEMPLATES_DIR/factor-factory"
 ASSETS_WORKFLOW_CONTRACT="$SCRIPT_DIR/../assets/workflow-contract.v1.json"
 
@@ -60,13 +59,6 @@ mkdir -p tests/e2e
 mkdir -p src/modules
 
 # ===== SUPPORTING (支撑层) =====
-mkdir -p docs/reference-configs
-if pi_should_generate_full_docs; then
-  mkdir -p docs/architecture
-  mkdir -p docs/api
-  mkdir -p docs/guides
-  mkdir -p docs/archives
-fi
 mkdir -p deploy/env
 mkdir -p deploy/scripts
 mkdir -p deploy/submissions
@@ -76,12 +68,7 @@ mkdir -p deploy/sql
 create_contract_directories
 
 # ===== Initial Files =====
-touch docs/CHANGELOG.md
-if pi_should_generate_full_docs; then
-  touch docs/brief.md
-  touch docs/tech-stack.md
-  touch docs/decisions.md
-fi
+touch CHANGELOG.md
 
 cat > tasks/todos.md << 'TASK_TODO_EOF'
 # Deferred Goal Ledger
@@ -114,17 +101,6 @@ cat > tasks/lessons.md << 'TASK_LESSONS_EOF'
 - Where to apply next time:
 TASK_LESSONS_EOF
 
-mkdir -p docs/researches
-cat > docs/researches/README.md << 'RESEARCH_README_EOF'
-# Research Reports
-
-Durable research reports live in this directory as topic-scoped Markdown files.
-
-Use `YYYYMMDD-topic.md` names when chronology matters, or `<topic>.md` for
-stable subject reports. Keep durable product/architecture decisions in authored
-documentation; mutable Requirement/Plan/Work execution state stays in Controller Home.
-RESEARCH_README_EOF
-
 install_workflow_contract
 if pi_should_enable_factor_factory "$(pi_plan_type)"; then
   pi_install_factor_factory "$PWD" "$ASSETS_FACTOR_FACTORY_DIR" "$SCRIPT_DIR" "apply"
@@ -133,12 +109,6 @@ ensure_task_sync_package_script
 write_runtime_gitignore_block
 
 
-cat > docs/spec.md << 'DOCS_SPEC_EOF'
-# Product Spec
-
-> **Status**: Draft
-> **Owner**: Planner
-DOCS_SPEC_EOF
 # Mutable Forge Runtime state is intentionally not scaffolded into the repository.
 # Repository registration binds Runtime state to Controller Home.
 
@@ -179,13 +149,6 @@ TESTS_README_EOF
 
 pi_install_root_context_files "$PWD" "apply"
 pi_install_directory_context_files "$PWD" "apply"
-
-if [[ -d "$ASSETS_REF_DIR" ]]; then
-  pi_install_reference_configs "$PWD" "$ASSETS_REF_DIR" "apply"
-else
-  pi_write_reference_config_stub "docs/reference-configs/agentic-development-flow.md" "agentic-development-flow.md" "$SCRIPT_DIR/../assets/reference-configs"
-  pi_write_reference_config_stub "docs/reference-configs/external-tooling.md" "external-tooling.md" "$SCRIPT_DIR/../assets/reference-configs"
-fi
 
 touch deploy/env/.gitkeep
 touch deploy/scripts/.gitkeep

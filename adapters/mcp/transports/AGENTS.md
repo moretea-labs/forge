@@ -2,29 +2,13 @@
 
 Keep this file focused on the local contract for this primary functional block.
 
-<!-- BEGIN ARCHITECTURE CONTRACT -->
-## Architecture Contract
+<!-- BEGIN LOCAL SOURCE CONTRACT -->
+## Local Source Contract
 
 - Functional block: `adapters/mcp/transports`
 - Capability ID: `mcp-http-transport-lifecycle`
-- Matched prefix: `adapters/mcp/transports`
-- Architecture domain: `controller-runtime`
-- Architecture capability: `transport-lifecycle`
-- Architecture module: `docs/architecture/modules/controller-runtime/transport-lifecycle.md`
-- Last architecture event: 2026-07-18T07:08:47.902Z
-- Last changed path: `adapters/mcp/transports`
-- Severity: medium
-- Change type: capability-config
-- Module responsibility: Keep this block aligned with the local boundary described by surrounding human-owned context.
-- Entrypoints: `adapters/mcp/transports`
-- Allowed dependencies: Follow root `AGENTS.md` / `CLAUDE.md` and this local contract.
-- Forbidden dependencies: Do not cross sibling app/service/package boundaries without an architecture snapshot or explicit plan.
-- Runtime path: `adapters/mcp/transports`
-- LSP/tooling profile: `typescript-lsp`
-- Verification: Use root required checks plus local commands recorded in this capability contract.
-- Latest snapshot: `(none yet)`
-- Semantic diagram source: `docs/architecture/modules/controller-runtime/transport-lifecycle.md`
-- Latest human diagram: `(none yet)`
-- Pending architecture request: `none`
-- Runtime progress authority: Forge Controller Home Requirement/Plan/Work/Evidence; this repository block contains authored architecture context only.
-<!-- END ARCHITECTURE CONTRACT -->
+- Entrypoint: `adapters/mcp/transports`
+- Authority: current source/public APIs/static checks/tests plus the project Requirement/Issue; no repo-local architecture document or event ledger is required.
+- Allowed dependencies: follow root `AGENTS.md` / `CLAUDE.md` and preserve real path, permission, resource, process, Git/CAS, and effect-safety boundaries.
+- Verification: `bun test tests/cli/mcp-http.test.ts`
+<!-- END LOCAL SOURCE CONTRACT -->

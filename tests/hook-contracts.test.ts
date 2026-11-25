@@ -107,13 +107,11 @@ describe("Hook contracts", () => {
     expect(script).toContain("hook will not plan or create assets");
     expect(script).not.toContain("Waza /hunt");
     expect(script).not.toContain("Waza /learn");
-    expect(script).toContain("ResearchGuard");
     expect(script).toContain("AnnotationGuard");
     expect(script).toContain("PlanStatusGuard");
     expect(script).toContain("PlanDiscussionGate");
     expect(script).toContain("workflow_write_pending_orchestration");
     expect(script).toContain("ContractGuard");
-    expect(script).toContain("ResearchGate");
     expect(script).toContain("done");
     expect(script).toContain("scripts/verify-contract.sh");
     expect(script).toContain("HarnessMaintenance");
@@ -201,46 +199,13 @@ describe("Hook contracts", () => {
     expect(script).toContain("[DocDrift]");
     expect(script).toContain("[DeployAsset]");
     expect(script).toContain("[SessionContinuation]");
-    expect(script).toContain("architecture-queue.sh");
-    expect(script).toContain("context-contract-sync.sh");
     expect(script).toContain("sync-brain-docs.sh");
-    expect(read("assets/templates/helpers/architecture-queue.sh")).toContain("resolve --file");
-    expect(read("assets/templates/helpers/workstream-sync.sh")).toContain("tasks/workstreams");
     expect(script).toContain("tasks/todos.md");
     expect(script).toContain("--quiet");
     expect(script).toContain("contract_references_path");
   });
 
-  test("architecture drift helpers should keep detection and context sync separated", () => {
-    const eventHelper = read("assets/templates/helpers/architecture-event.ts");
-    const drift = read("assets/templates/helpers/architecture-queue.sh");
-    const sync = read("assets/templates/helpers/context-contract-sync.sh");
-    const workstream = read("assets/templates/helpers/workstream-sync.sh");
 
-    expect(eventHelper).toContain("sync-context-map");
-    expect(eventHelper).toContain("sync-contract-files");
-    expect(eventHelper).toContain("event-json");
-    expect(drift).toContain("docs/architecture/requests");
-    expect(drift).toContain("architecture-event.ts");
-    expect(drift).toContain(".ai/harness/architecture/events.jsonl");
-    expect(eventHelper).not.toContain("scripts/workstream-sync.sh ensure");
-    expect(eventHelper).toContain("Controller Home");
-    expect(drift).not.toContain("BEGIN ARCHITECTURE CONTRACT");
-    expect(sync).toContain("architecture-event.ts");
-    expect(sync).toContain("BEGIN ARCHITECTURE CONTRACT");
-    expect(sync).not.toContain("## Active Workstreams");
-    expect(sync).not.toContain("## Current Session Projection");
-    expect(sync).toContain("Runtime progress authority");
-    expect(sync).toContain("discoverable_contexts");
-    expect(sync).toContain("Semantic diagram source");
-    expect(sync).toContain("Latest human diagram");
-    expect(sync).toContain("docs/architecture/diagrams");
-    expect(eventHelper).toContain("Mermaid fenced block");
-    expect(eventHelper).toContain("Markdown semantic source");
-    // Legacy helper remains readable for migration, but modern producers must not invoke it.
-    expect(workstream).toContain("tasks/workstreams");
-    expect(workstream).toContain("context-contract-sync.sh");
-  });
 
 
   test("first-principles guard should parse file path and keep anti-overengineering advisory semantics", () => {

@@ -33,5 +33,5 @@
 ## Promotion Candidates
 
 - Promote to `tasks/lessons.md` only after a repeated correction or failure pattern.
-- Promote to `docs/researches/` only when it is durable repo knowledge with evidence.
+- Record durable product or architecture decisions in the project Requirement/Issue authority; keep task-local notes under `tasks/notes/`.
 - Promote to harness asset files only after verification across more than one task or fixture.

@@ -4,7 +4,7 @@
 > **Slug**: {{PRD_SLUG}}
 > **Created**: {{TIMESTAMP}}
 > **Updated**: {{TIMESTAMP}}
-> **Source Spec**: `docs/spec.md`
+> **Product Authority**: project Requirement/Issue
 > **Tier**: compact
 
 <!--

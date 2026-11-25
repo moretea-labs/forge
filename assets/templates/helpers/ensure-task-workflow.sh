@@ -46,68 +46,6 @@ get_active_plan() {
 ensure_templates() {
   mkdir -p .claude/templates
 
-  if [[ ! -f ".claude/templates/spec.template.md" ]]; then
-    cat >.claude/templates/spec.template.md <<'SPEC_TEMPLATE_EOF'
-# Product Spec: {{PROJECT_NAME}}
-
-> **Status**: Draft
-> **Last Updated**: {{TIMESTAMP}}
-> **Owner**: Planner
-
-## Product Outcome
-
-Describe the stable user or operator outcome this repo should deliver.
-
-## Success Criteria
-
-- Primary workflow:
-- Quality bar:
-- Out of scope:
-
-## Constraints
-
-- Technical:
-- Compliance:
-- Delivery:
-
-## Acceptance Scenarios
-
-- Given
-  When
-  Then
-
-## Open Questions
-
-- ...
-SPEC_TEMPLATE_EOF
-  fi
-
-  if [[ ! -f ".claude/templates/research.template.md" ]]; then
-    cat >.claude/templates/research.template.md <<'RESEARCH_TEMPLATE_EOF'
-# {{PROJECT_NAME}} — Research Notes
-
-> **Last Updated**: {{DATE}}
-> **Scope**: (what area of the codebase was researched)
-> **Usage**: Store deep codebase findings and hidden contracts here, not in chat-only summaries.
-
-## Codebase Map
-| File | Purpose | Key Exports |
-|------|---------|-------------|
-
-## Architecture Observations
-### Patterns & Conventions
-### Implicit Contracts
-### Edge Cases & Intricacies
-
-## Technical Debt / Risks
-
-## Research Conclusions
-### What to Preserve
-### What to Change
-### Open Questions
-RESEARCH_TEMPLATE_EOF
-  fi
-
   if [[ ! -f ".claude/templates/prd.template.md" ]]; then
     cat >.claude/templates/prd.template.md <<'PRD_TEMPLATE_EOF'
 # PRD: {{PRD_TITLE}}
@@ -116,7 +54,7 @@ RESEARCH_TEMPLATE_EOF
 > **Slug**: {{PRD_SLUG}}
 > **Created**: {{TIMESTAMP}}
 > **Updated**: {{TIMESTAMP}}
-> **Source Spec**: `docs/spec.md`
+> **Source Requirement**: GitHub Issue/Project
 > **Tier**: compact
 
 <!--
@@ -285,8 +223,8 @@ PRD_TEMPLATE_EOF
 > **Status**: Draft
 > **Created**: {{TIMESTAMP}}
 > **Slug**: {{SLUG}}
-> **Spec**: `docs/spec.md`
-> **Research**: See `docs/researches/`
+> **Requirement**: GitHub Issue/Project
+> **Research Notes**: `tasks/notes/`
 > **Task Contract**: `tasks/contracts/{{ARTIFACT_STEM}}.contract.md`
 > **Task Review**: `tasks/reviews/{{ARTIFACT_STEM}}.review.md`
 > **Implementation Notes**: `tasks/notes/{{ARTIFACT_STEM}}.notes.md`
@@ -542,7 +480,7 @@ REVIEW_TEMPLATE_EOF
 ## Promotion Candidates
 
 - Promote to `tasks/lessons.md` only after a repeated correction or failure pattern.
-- Promote to `docs/researches/` only when it is durable repo knowledge with evidence.
+- Promote durable product or architecture conclusions into the tracked GitHub Issue/Project with evidence.
 - Promote to harness asset files only after verification across more than one task or fixture.
 NOTES_TEMPLATE_EOF
   fi
@@ -600,16 +538,7 @@ CURRENT_STATUS_EOF
 }
 
 ensure_auxiliary_files() {
-  mkdir -p plans plans/prds plans/sprints tasks/issues tasks/contracts tasks/reviews tasks/notes tasks/workstreams docs/architecture/domains docs/architecture/modules docs/architecture/requests docs/architecture/snapshots docs/architecture/diagrams scripts .ai/context .ai/harness/checks .ai/harness/session .ai/harness/controller/packets .ai/harness/projections .ai/harness/transfers .ai/harness/scripts .ai/harness/failures .ai/harness/security .ai/harness/planning .ai/harness/architecture .ai/harness/worktrees .ai/harness/runs .ai/harness/jobs .ai/harness/local-jobs .ai/harness/controller .ai/harness/edit-sessions
-
-  if [[ ! -f "docs/spec.md" ]]; then
-    cat >docs/spec.md <<'SPEC_EOF'
-# Product Spec
-
-> **Status**: Draft
-> **Owner**: Planner
-SPEC_EOF
-  fi
+  mkdir -p plans plans/prds plans/sprints tasks/issues tasks/contracts tasks/reviews tasks/notes scripts .ai/context .ai/harness/checks .ai/harness/session .ai/harness/controller/packets .ai/harness/projections .ai/harness/transfers .ai/harness/scripts .ai/harness/failures .ai/harness/security .ai/harness/planning .ai/harness/worktrees .ai/harness/runs .ai/harness/jobs .ai/harness/local-jobs .ai/harness/controller .ai/harness/edit-sessions
 
   if [[ ! -f "tasks/lessons.md" ]]; then
     cat >tasks/lessons.md <<'LESSONS_EOF'
@@ -625,19 +554,6 @@ SPEC_EOF
 - Prevention rule:
 - Where to apply next time:
 LESSONS_EOF
-  fi
-
-  mkdir -p docs/researches
-  if [[ ! -f "docs/researches/README.md" ]]; then
-    cat >docs/researches/README.md <<'RESEARCH_README_EOF'
-# Research Reports
-
-Durable research reports live in this directory as dated Markdown files.
-
-Use `YYYYMMDD-topic.md` names for new reports. Keep task-local implementation
-decisions in `tasks/notes/`, and keep repeated correction-derived rules in
-`tasks/lessons.md`.
-RESEARCH_README_EOF
   fi
 
   if [[ ! -f ".ai/harness/checks/latest.json" ]]; then
@@ -664,14 +580,6 @@ RESUME_EOF
     : >".ai/harness/events.jsonl"
   fi
 
-  if [[ ! -f ".ai/harness/architecture/events.jsonl" ]]; then
-    : >".ai/harness/architecture/events.jsonl"
-  fi
-
-  if [[ ! -f ".ai/harness/architecture/.gitkeep" ]]; then
-    : >".ai/harness/architecture/.gitkeep"
-  fi
-
   if [[ ! -f ".ai/harness/failures/latest.jsonl" ]]; then
     : >".ai/harness/failures/latest.jsonl"
   fi
@@ -693,30 +601,6 @@ RESUME_EOF
     : >".ai/harness/edit-sessions/.gitkeep"
   fi
 
-  if [[ ! -f "docs/architecture/requests/.gitkeep" ]]; then
-    : >"docs/architecture/requests/.gitkeep"
-  fi
-
-  if [[ ! -f "docs/architecture/snapshots/.gitkeep" ]]; then
-    : >"docs/architecture/snapshots/.gitkeep"
-  fi
-
-  if [[ ! -f "docs/architecture/diagrams/.gitkeep" ]]; then
-    : >"docs/architecture/diagrams/.gitkeep"
-  fi
-
-  if [[ ! -f "docs/architecture/domains/.gitkeep" ]]; then
-    : >"docs/architecture/domains/.gitkeep"
-  fi
-
-  if [[ ! -f "docs/architecture/modules/.gitkeep" ]]; then
-    : >"docs/architecture/modules/.gitkeep"
-  fi
-
-  if [[ ! -f "tasks/workstreams/.gitkeep" ]]; then
-    : >"tasks/workstreams/.gitkeep"
-  fi
-
   if [[ ! -f ".ai/context/capabilities.json" ]]; then
     cat >".ai/context/capabilities.json" <<'CAPABILITIES_EOF'
 {
@@ -724,36 +608,6 @@ RESUME_EOF
   "capabilities": []
 }
 CAPABILITIES_EOF
-  fi
-
-  if [[ ! -f "docs/architecture/index.md" ]]; then
-    cat >"docs/architecture/index.md" <<'ARCHITECTURE_INDEX_EOF'
-# Architecture Index
-
-> Umbrella architecture ledger for current boundaries, drift requests, snapshots, and diagrams.
-
-## Current Snapshot
-
-- Latest snapshot: (none yet)
-- Semantic diagram source: (none yet)
-- Latest human diagram: (none yet)
-
-## Architecture Drift Flow
-
-- `scripts/architecture-queue.sh` records architecture-sensitive edits as requests.
-- `scripts/architecture-queue.sh resolve --file <request>` removes a handled request, clears stale context pointers, and reindexes the live queue; Git history is the archive.
-- `scripts/context-contract-sync.sh` keeps only the controlled architecture block in functional-block `AGENTS.md` and `CLAUDE.md` files aligned.
-- `scripts/workstream-sync.sh` keeps durable multi-session progress under `tasks/workstreams/<domain>/<capability>/` and projects only pointers into local contracts.
-- Semantic architecture diagrams live as Mermaid fenced blocks in the relevant module or snapshot Markdown.
-- Human-readable architecture diagrams are optional `mermaid` HTML files in `docs/architecture/diagrams/` and should link back to the Markdown semantic source.
-
-## Pending Requests
-
-<!-- BEGIN ARCHITECTURE PENDING REQUESTS -->
-- (none)
-<!-- END ARCHITECTURE PENDING REQUESTS -->
-
-ARCHITECTURE_INDEX_EOF
   fi
 
   if [[ ! -f ".ai/harness/policy.json" ]]; then
@@ -772,8 +626,6 @@ ARCHITECTURE_INDEX_EOF
     "todo_file": "tasks/todos.md",
     "current_status_file": "tasks/current.md",
     "lessons_file": "tasks/lessons.md",
-    "research_dir": "docs/researches",
-    "workstreams_dir": "tasks/workstreams",
     "contracts_dir": "tasks/contracts",
     "reviews_dir": "tasks/reviews",
     "notes_dir": "tasks/notes"
@@ -782,7 +634,7 @@ ARCHITECTURE_INDEX_EOF
     "dir": "_ref",
     "mode": "external-ignored",
     "commit_policy": "never commit _ref contents",
-    "rule": "use _ref as an occasional ignored external reference checkout cache for upstream/source comparison only; refresh from external sources instead of editing as product code; when it influences a decision, cite the source repo plus commit/tag and path in tasks/notes/ or docs/researches/"
+    "rule": "use _ref as an occasional ignored external reference checkout cache for upstream/source comparison only; refresh from external sources instead of editing as product code; when it influences a decision, cite the source repo plus commit/tag and path in tasks/notes/ and the tracked GitHub Issue/Project"
   },
   "operations": {
     "dir": "deploy",
@@ -809,38 +661,10 @@ ARCHITECTURE_INDEX_EOF
     "checks_file": ".ai/harness/checks/latest.json",
     "failure_log_file": ".ai/harness/failures/latest.jsonl",
     "events_file": ".ai/harness/events.jsonl",
-    "architecture_events_file": ".ai/harness/architecture/events.jsonl",
     "runs_dir": ".ai/harness/runs",
     "helper_runtime_dir": "scripts",
     "helper_compat_dir": "scripts",
     "helper_source": "compat-bootstrap"
-  },
-  "architecture": {
-    "index_file": "docs/architecture/index.md",
-    "requests_dir": "docs/architecture/requests",
-    "snapshots_dir": "docs/architecture/snapshots",
-    "diagrams_dir": "docs/architecture/diagrams",
-    "domains_dir": "docs/architecture/domains",
-    "modules_dir": "docs/architecture/modules",
-    "diagram_skill": "mermaid",
-    "diagram_skill_source": "~/.codex/skills/mermaid",
-    "vendoring_policy": "do-not-vendor-diagram-skill-assets",
-    "freshness_gate": "advisory",
-    "gate_min_severity": "medium",
-    "pending_card_scope": "capability",
-    "pending_block_begin": "<!-- BEGIN ARCHITECTURE PENDING REQUESTS -->",
-    "pending_block_end": "<!-- END ARCHITECTURE PENDING REQUESTS -->",
-    "queue_script": "scripts/architecture-queue.sh",
-    "contract_block_begin": "<!-- BEGIN ARCHITECTURE CONTRACT -->",
-    "contract_block_end": "<!-- END ARCHITECTURE CONTRACT -->",
-    "rule": "hooks record architecture queue cards and sync controlled local context blocks; agents author semantic snapshots and diagrams"
-  },
-  "workstreams": {
-    "dir": "tasks/workstreams",
-    "scope": "capability",
-    "projection": "local-contract-active-pointer-and-current-slice",
-    "todo_projection": "tasks/todos.md",
-    "rule": "durable multi-session progress lives under tasks/workstreams/<domain>/<capability>; current plan execution lives in the plan Task Breakdown; tasks/todos.md records deferred goals only"
   },
   "information_lifecycle": {
     "notes": {
@@ -854,11 +678,11 @@ ARCHITECTURE_INDEX_EOF
       "purpose": "raw verification records used to audit notes, reviews, and future promotion"
     },
     "assets": {
-      "sources": [".ai/harness/policy.json", ".ai/harness/workflow-contract.json", ".ai/hooks/", "scripts/", "docs/reference-configs/"],
+      "sources": [".ai/harness/policy.json", ".ai/harness/workflow-contract.json", ".ai/hooks/", "scripts/"],
       "promotion_rule": "only promote patterns after verified reuse across tasks or fixtures"
     },
     "memory": {
-      "sources": ["docs/researches/", "tasks/lessons.md", "gbrain"],
+      "sources": ["tasks/notes/", "tasks/lessons.md", "gbrain"],
       "rule": "memory is advisory; current repo state and evidence override summaries"
     },
     "external_knowledge": {
@@ -886,30 +710,27 @@ ARCHITECTURE_INDEX_EOF
   },
   "planning": {
     "pending_orchestration_file": ".ai/harness/planning/pending.json",
-    "source_of_truth": "transient host planning bridge only; captured plans are source artifacts, while migrated Runtime Plan/Work lifecycle state is authoritative in the Canonical Runtime"
+    "source_of_truth": "transient host planning bridge only; Forge source requirements, decisions, progress, and acceptance are authoritative in the tracked GitHub Issue/Project"
   },
   "guards": {
     "edit_plan_gate": "advice",
     "edit_plan_gate_modes": ["advice", "off"],
-    "rule": "pre-edit-guard may expose Plan/spec context, but Plan lifecycle never authorizes implementation; only real safety/resource boundaries block execution"
+    "rule": "pre-edit-guard may expose optional semantic context, but no local Plan/spec lifecycle authorizes implementation; only real safety/resource boundaries block execution"
   },
   "sidecar_research": {
     "default": true,
-    "output_dir": "docs/researches",
+    "output_dir": "tasks/notes",
     "preferred_runners": ["subagent", "codex exec --json", "main-thread trace"],
     "spawn_decision": "main agent decides from task breadth, context impact, raw-log volume, and callable runner availability; do not ask the user for spawn confirmation",
     "fallback_runner": "main-thread trace",
     "main_thread_policy": "if spawning is not worthwhile or no sidecar runner is callable, perform bounded research in the main thread; consume conclusions and evidence paths, not raw logs"
   },
   "documentation": {
-    "profile": "minimal-agentic",
-    "required": ["docs/spec.md", "docs/architecture/index.md"],
-    "on_demand": ["docs/brief.md", "docs/tech-stack.md", "docs/decisions.md", "docs/architecture.md", "docs/packages.md"],
-    "reference_configs": ["harness-overview.md", "agentic-development-flow.md", "external-tooling.md", "sprint-contracts.md", "handoff-protocol.md", "document-generation.md", "global-working-rules.md"],
+    "profile": "readme-pages-only",
+    "required": ["README.md"],
+    "public_surfaces": ["README.md", "GitHub Pages"],
     "reference_source": "user-level-runtime-docs",
-    "reference_stub_marker": "<!-- forge: reference-config-stub v1 -->",
-    "reference_resolver": "forge docs path <doc-id>",
-    "rule": "create optional docs only when the agent has concrete repo evidence or the user asks; docs/reference-configs contains repo-local pointer stubs while full generic runtime docs live in the user-level/package forge install"
+    "rule": "do not create a parallel internal docs authority; requirements, architecture decisions, progress, and acceptance live in GitHub Issue/Project"
   },
   "lsp_profiles": {
     "default": "typescript-lsp",
@@ -1058,7 +879,6 @@ BRAIN_MANIFEST_EOF
   "root_context_files": [
     "CLAUDE.md",
     "AGENTS.md",
-    "docs/spec.md",
     "tasks/current.md",
     "tasks/todos.md",
     "tasks/lessons.md",
@@ -1066,18 +886,6 @@ BRAIN_MANIFEST_EOF
     ".ai/harness/policy.json"
   ],
   "discoverable_contexts": [
-    {
-      "path": "docs/reference-configs/*.md",
-      "priority": "low",
-      "char_budget": 900,
-      "purpose": "deep-doc"
-    },
-    {
-      "path": "tasks/workstreams/**/*.md",
-      "priority": "high",
-      "char_budget": 1200,
-      "purpose": "capability-workstream"
-    }
   ],
   "budgets": {
     "root_total_chars": 12000,
@@ -1137,12 +945,6 @@ active_plan="$(get_active_plan || true)"
 if [[ -n "$active_plan" && "$new_plan" -eq 0 ]]; then
   echo "Workflow ready. Active plan: $active_plan"
   exit 0
-fi
-
-if [[ ! -f "docs/spec.md" ]]; then
-  if [[ -x "scripts/new-spec.sh" ]]; then
-    bash "scripts/new-spec.sh"
-  fi
 fi
 
 if [[ -z "$slug" ]]; then

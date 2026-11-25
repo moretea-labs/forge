@@ -3,8 +3,7 @@
 > **Status**: Draft
 > **Created**: {{TIMESTAMP}}
 > **Slug**: {{SLUG}}
-> **Spec**: `docs/spec.md`
-> **Research**: See `docs/researches/`
+> **Product Authority**: project Requirement/Issue
 > **Task Contract**: `tasks/contracts/{{ARTIFACT_STEM}}.contract.md`
 > **Task Review**: `tasks/reviews/{{ARTIFACT_STEM}}.review.md`
 > **Implementation Notes**: `tasks/notes/{{ARTIFACT_STEM}}.notes.md`

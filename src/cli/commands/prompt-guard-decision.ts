@@ -75,7 +75,6 @@ function readFactsFromEnv(): PromptGuardIntentFacts {
 
 function readStateFromEnv(): PromptGuardState {
   return {
-    spec: envEnum('PROMPT_GUARD_SPEC_STATE', ['present', 'missing'] as const, 'missing'),
     plan: envEnum(
       'PROMPT_GUARD_PLAN_STATE',
       PROMPT_GUARD_PLAN_STATES,

@@ -37,4 +37,4 @@ It is excluded when:
 
 - Partials are flat files; no partial includes
 - One conceptual purpose per partial
-- Keep core rules concise and move details to the harness reference docs under `docs/reference-configs/*`
+- Keep core rules concise; use source/tests/static checks and the project Requirement/Issue authority instead of a mirrored internal docs tree.

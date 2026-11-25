@@ -203,7 +203,7 @@ latest_global_handoff() {
 resume_file="$(safe_repo_file "$(policy_get '.session.resume_file' '.ai/harness/session/resume.md')" '.ai/harness/session/resume.md' '.ai/harness/')"
 repo_handoff="$(safe_repo_file "$(policy_get '.session.continuation_file' '.ai/harness/session/continuation.md')" '.ai/harness/session/continuation.md' '.ai/harness/')"
 checks_file="$(safe_repo_file "$(policy_get '.harness.checks_file' '.ai/harness/checks/latest.json')" '.ai/harness/checks/latest.json' '.ai/harness/')"
-research_dir="$(safe_repo_file "$(policy_get '.tasks.research_dir' 'docs/researches')" 'docs/researches' 'docs/researches')"
+notes_dir="$(safe_repo_file "$(policy_get '.tasks.notes_dir' 'tasks/notes')" 'tasks/notes' 'tasks/')"
 todo_file="$(safe_repo_file "$(policy_get '.tasks.todo_file' 'tasks/todos.md')" 'tasks/todos.md' 'tasks/')"
 plan_file="$(active_plan || true)"
 contract_file="$(derive_contract "$plan_file" || true)"
@@ -233,7 +233,7 @@ Required first reads:
 - ${repo_handoff}
 - ${todo_file}
 - ${notes_file:-(none)}
-- ${research_dir}/
+- ${notes_dir}/
 - ${checks_file}
 
 Conditional first reads:
@@ -243,9 +243,9 @@ Conditional first reads:
 - Global handoff: ${global_handoff:-(none)}
 
 Execution rules:
-- Treat Canonical Runtime lifecycle state as authoritative for migrated Requirement/Plan/Work state; treat Git source/evidence as authoritative in their own domains and session Markdown as rebuildable cache only.
+- For Forge source development, use the tracked GitHub Issue/Project for requirements, decisions, progress, and acceptance; use Git/source/tests and native Runtime facts in their own domains.
 - Decide in the main agent whether to use subagents, parallel sidecars, sidecar \`codex exec --json\`, or a bounded main-thread trace for broad research/log scans based on context impact and callable tools; do not ask the user for spawn confirmation.
-- Keep deep research conclusions in \`${research_dir}/\`, not only in chat.
+- Keep task-local research in \`${notes_dir}/\`; promote durable product or architecture conclusions to the tracked GitHub Issue/Project.
 - Do not run \`/compact\` as the primary recovery path.
 - Preserve the current dirty worktree and do not touch unrelated untracked files.
 
@@ -255,7 +255,7 @@ Execution rules:
 - Resume packet: ${resume_file}
 - Checks: ${checks_file}
 - Todo: ${todo_file}
-- Research: ${research_dir}/
+- Research Notes: ${notes_dir}/
 - Plan: ${plan_file:-(none)}
 - Contract: ${contract_file:-(none)}
 - Notes: ${notes_file:-(none)}

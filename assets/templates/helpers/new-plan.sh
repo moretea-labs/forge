@@ -78,8 +78,8 @@ if [[ ! -f "$template_file" ]]; then
 > **Status**: Draft
 > **Created**: {{TIMESTAMP}}
 > **Slug**: {{SLUG}}
-> **Spec**: `docs/spec.md`
-> **Research**: See `docs/researches/`
+> **Requirement**: GitHub Issue/Project
+> **Research Notes**: `tasks/notes/`
 > **Task Contract**: `tasks/contracts/{{ARTIFACT_STEM}}.contract.md`
 > **Task Review**: `tasks/reviews/{{ARTIFACT_STEM}}.review.md`
 > **Implementation Notes**: `tasks/notes/{{ARTIFACT_STEM}}.notes.md`

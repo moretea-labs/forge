@@ -440,7 +440,6 @@ describe('controller check provenance and failure classification', () => {
         scripts: {
           'check:type': 'bun x tsc --noEmit',
           'check:runtime-architecture': 'node scripts/check-runtime-architecture.mjs',
-          'check:architecture-sync': 'bun src/cli/index.ts run check-architecture-sync',
           'check:mcp-compatibility': 'bun scripts/check-mcp-compatibility.ts',
           'test:browser-live': 'bun tests/live/browser-native-silent.e2e.ts',
           'check:custom': 'node generate.js',
@@ -450,7 +449,6 @@ describe('controller check provenance and failure classification', () => {
     const checks = listControllerChecks(repoRoot);
     expect(checks.find((entry) => entry.id === 'package:check:type')?.effects).toEqual({ reads: ['.'] });
     expect(checks.find((entry) => entry.id === 'package:check:runtime-architecture')?.effects).toBeUndefined();
-    expect(checks.find((entry) => entry.id === 'package:check:architecture-sync')?.effects).toBeUndefined();
     expect(checks.find((entry) => entry.id === 'package:check:mcp-compatibility')?.effects).toBeUndefined();
     expect(checks.find((entry) => entry.id === 'package:test:browser-live')?.effects).toEqual({
       reads: ['.'],

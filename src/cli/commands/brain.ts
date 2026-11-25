@@ -203,7 +203,6 @@ function logicalBrainPath(project: string, subdir: string, fileName: string): st
 
 function sourceDerivedFileName(sourcePath: string): string {
   const parsed = path.posix.parse(sourcePath);
-  if (sourcePath.startsWith('docs/reference-configs/')) return `${parsed.name}.md`;
   const stem = sourcePath
     .replace(/\.md$/i, '')
     .replace(/[^A-Za-z0-9._-]+/g, '-')

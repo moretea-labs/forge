@@ -483,32 +483,6 @@ check_required_file() {
   esac
 }
 
-check_reference_config_stub() {
-  local path="$1"
-  [[ -f "$path" ]] || return 0
-  grep -Fq "<!-- forge: reference-config-stub v1 -->" "$path" || return 0
-
-  local name="${path##*/}"
-  local doc_id="${name%.md}"
-  if ! grep -Fq "> **Doc ID**: $doc_id" "$path"; then
-    report_issue "Reference config stub has wrong or missing Doc ID: $path"
-  fi
-  if ! grep -Fq "forge docs path $doc_id" "$path"; then
-    report_issue "Reference config stub is missing resolver command: $path"
-  fi
-}
-
-check_reference_config_stubs() {
-  local path
-  if [[ ! -d "docs/reference-configs" ]]; then
-    return 0
-  fi
-  for path in docs/reference-configs/*.md; do
-    [[ -e "$path" ]] || continue
-    check_reference_config_stub "$path"
-  done
-}
-
 check_generation_surface_terminology() {
   local file
   local surfaces=(
@@ -665,17 +639,16 @@ check_helper_runtime_files() {
 
   if [[ "${#helper_names[@]}" -eq 0 ]]; then
     helper_names=(
-      new-spec.sh new-sprint.sh new-plan.sh capture-plan.sh plan-to-todo.sh
+      new-sprint.sh new-plan.sh capture-plan.sh plan-to-todo.sh
       contract-run.ts contract-worktree.sh ship-worktrees.sh archive-workflow.sh
       refresh-current-status.sh prepare-handoff.sh verify-contract.sh summarize-failures.sh
       verify-sprint.sh sprint-backlog.sh check-task-sync.sh check-deploy-sql-order.sh
-      check-architecture-sync.sh check-agent-tooling.sh check-context-files.sh
+      check-agent-tooling.sh check-context-files.sh
       check-brain-manifest.sh sync-brain-docs.sh
       select-agent-context-blocks.sh ensure-task-workflow.sh check-task-workflow.sh
       switch-plan.sh workflow-contract.ts
       inspect-project-state.ts migrate-workflow-docs.ts migrate-project-template.sh
-      capability-resolver.ts architecture-event.ts capability-config.ts architecture-queue.sh
-      context-contract-sync.sh workstream-sync.sh
+      capability-resolver.ts capability-config.ts
       prepare-codex-handoff.sh codex-handoff-resume.sh
     )
   fi
@@ -712,11 +685,9 @@ policy_get() {
 todo_file="$(policy_get '.tasks.todo_file' 'tasks/todos.md')"
 current_status_file="$(policy_get '.tasks.current_status_file' 'tasks/current.md')"
 lessons_file="$(policy_get '.tasks.lessons_file' 'tasks/lessons.md')"
-research_dir="$(policy_get '.tasks.research_dir' 'docs/researches')"
 contracts_dir="$(policy_get '.tasks.contracts_dir' 'tasks/contracts')"
 reviews_dir="$(policy_get '.tasks.reviews_dir' 'tasks/reviews')"
 notes_dir="$(policy_get '.tasks.notes_dir' 'tasks/notes')"
-workstreams_dir="$(policy_get '.tasks.workstreams_dir' 'tasks/workstreams')"
 runs_dir="$(policy_get '.harness.runs_dir' '.ai/harness/runs')"
 checks_file="$(policy_get '.harness.checks_file' '.ai/harness/checks/latest.json')"
 helper_runtime_dir="$(policy_get '.harness.helper_runtime_dir' '.ai/harness/scripts')"
@@ -741,7 +712,6 @@ check_required_dir "tasks"
 check_required_dir "$contracts_dir"
 check_required_dir "$reviews_dir"
 check_required_dir "$notes_dir"
-check_required_dir "$workstreams_dir"
 check_required_dir ".claude/templates"
 check_required_dir ".ai/context"
 check_required_dir ".ai/harness"
@@ -754,10 +724,7 @@ helper_file() {
   printf '%s/%s' "$helper_runtime_dir" "$1"
 }
 
-check_required_file "docs/spec.md"
-check_required_file ".claude/templates/spec.template.md"
 check_required_file ".claude/templates/plan.template.md"
-check_required_file ".claude/templates/research.template.md"
 check_required_file ".claude/templates/contract.template.md"
 check_required_file ".claude/templates/review.template.md"
 check_required_file ".claude/templates/implementation-notes.template.md"
@@ -766,7 +733,6 @@ check_helper_runtime_files
 check_required_file "$todo_file"
 check_required_file "$current_status_file"
 check_required_file "$lessons_file"
-check_required_dir "$research_dir"
 check_required_file "$context_map_file"
 check_required_file "$policy_file"
 check_required_file "$brain_manifest_file"
@@ -798,7 +764,6 @@ else
   fi
 fi
 
-check_reference_config_stubs
 check_generation_surface_terminology
 if [[ -f "$checks_file" ]] && ! trace_error="$(trace_schema_error "$checks_file")"; then
   report_issue "Latest checks trace is not forge-run-trace.v1 compatible: ${trace_error//$'\n'/; }"

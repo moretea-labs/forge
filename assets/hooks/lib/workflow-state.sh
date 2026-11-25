@@ -910,46 +910,6 @@ workflow_pending_orchestration_summary() {
   printf '\n'
 }
 
-latest_research_report() {
-  local research_dir="${1:-docs/researches}"
-  local file mtime latest_file="" latest_mtime=0
-
-  [[ -d "$research_dir" ]] || return 1
-
-  while IFS= read -r -d '' file; do
-    case "$(basename "$file")" in
-      README.md)
-        continue
-        ;;
-    esac
-
-    mtime="$(workflow_read_file_mtime "$file" || true)"
-    if [[ -n "$mtime" && "$mtime" -gt "$latest_mtime" ]]; then
-      latest_mtime="$mtime"
-      latest_file="$file"
-    fi
-  done < <(find "$research_dir" -type f -name '*.md' -print0 2>/dev/null)
-
-  [[ -n "$latest_file" ]] || return 1
-  printf '%s' "$latest_file"
-}
-
-has_research_for_new_plan() {
-  local latest_plan latest_report research_mtime plan_mtime
-
-  latest_report="$(latest_research_report || true)"
-  [[ -n "$latest_report" ]] || return 1
-
-  latest_plan="$(get_latest_plan || true)"
-  if [[ -z "$latest_plan" ]]; then
-    return 0
-  fi
-
-  research_mtime="$(workflow_read_file_mtime "$latest_report" || true)"
-  plan_mtime="$(workflow_read_file_mtime "$latest_plan" || true)"
-
-  [[ -n "$research_mtime" && -n "$plan_mtime" && "$research_mtime" -gt "$plan_mtime" ]]
-}
 
 workflow_extract_status_from_text() {
   local text="${1:-}"
@@ -1388,7 +1348,7 @@ workflow_contract_allows_path() {
 workflow_write_session_continuation() {
   # This file is a rebuildable host-session cache. Runtime HandoffItem/rh_inbox owns decisions that require ChatGPT or user judgement.
   local reason="${1:-session-stop}"
-  local continuation_file active_plan active_contract active_review active_notes checks_file next_task changed_files diff_stat spec_file source_plan parent_run_id supersedes
+  local continuation_file active_plan active_contract active_review active_notes checks_file next_task changed_files diff_stat source_plan parent_run_id supersedes
   local next_action next_stage next_command next_message
   local resume_file trace_file recent_commands blockers decisions goal latest_trace_file
   local active_sprint active_sprint_row
@@ -1398,7 +1358,6 @@ workflow_write_session_continuation() {
   continuation_file="$(workflow_session_continuation_file)"
   checks_file="$(workflow_checks_file)"
   resume_file="$(workflow_resume_packet_file)"
-  spec_file="docs/spec.md"
   active_plan="$(get_active_plan || true)"
   active_contract="$(workflow_active_contract || true)"
   active_review="$(workflow_active_review || true)"
@@ -1554,7 +1513,6 @@ ${recent_commands}
 
 ## Source Artifacts
 
-- Spec: ${spec_file}
 - Plan: ${active_plan:-(none)}
 - Todo Source Plan: ${source_plan:-(none)}
 - Contract: ${active_contract:-(none)}

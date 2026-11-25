@@ -246,25 +246,6 @@ checks_summary() {
   printf 'file=%s' "$checks_file"
 }
 
-workstream_summary() {
-  local workstreams_dir file count status current_slice source_plan
-  workstreams_dir="$(json_get '.tasks.workstreams_dir' 'tasks/workstreams')"
-  [[ -d "$workstreams_dir" ]] || { printf -- '- (none)\n'; return 0; }
-
-  count=0
-  while IFS= read -r file; do
-    [[ -n "$file" ]] || continue
-    status="$(file_metadata_value "$file" "Status" || printf 'unknown')"
-    current_slice="$(file_metadata_value "$file" "Current Slice" || printf 'unknown')"
-    source_plan="$(file_metadata_value "$file" "Source Plan" || printf 'unknown')"
-    printf -- '- `%s`: status=%s, current_slice=%s, source_plan=%s\n' "$file" "$status" "$current_slice" "$source_plan"
-    count=$((count + 1))
-    [[ "$count" -ge 8 ]] && break
-  done < <(find "$workstreams_dir" -type f -name '*.md' 2>/dev/null | sort)
-
-  [[ "$count" -gt 0 ]] || printf -- '- (none)\n'
-}
-
 sprint_backlog_progress() {
   local sprint_file="$1"
   awk -F '|' '
@@ -423,9 +404,6 @@ ${active_work:-- (none)}
 ## Active Sprint
 
 $(sprint_summary)
-## Workstreams
-
-$(workstream_summary)
 ## Handoff
 
 - Exact Next Step: ${handoff_next}
@@ -450,7 +428,6 @@ $(git_status_files)
 - PRDs: \`plans/prds/*.prd.md\`
 - Sprints: \`$(json_get '.sprints.dir' 'plans/sprints')/*.sprint.md\`
 - Active sprint marker: \`.ai/harness/sprint/active-sprint\`
-- Workstreams: \`tasks/workstreams/**/*.md\`
 - Handoff: \`.ai/harness/session/continuation.md\`
 - Checks: \`.ai/harness/checks/latest.json\`
 EOF_STATUS

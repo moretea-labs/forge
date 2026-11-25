@@ -230,8 +230,8 @@ cat > "$plan_file" <<PLAN_EOF
 > **Planning Source**: ${source_name}
 > **Orchestration Kind**: ${orchestration_kind}
 > **Source Ref**: ${source_ref:-"(none)"}
-> **Spec**: \`docs/spec.md\`
-> **Research**: See \`docs/researches/\`
+> **Requirement**: GitHub Issue/Project
+> **Research Notes**: \`tasks/notes/\`
 > **Task Contract**: \`tasks/contracts/${artifact_stem}.contract.md\`
 > **Task Review**: \`tasks/reviews/${artifact_stem}.review.md\`
 > **Implementation Notes**: \`tasks/notes/${artifact_stem}.notes.md\`

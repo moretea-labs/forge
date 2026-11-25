@@ -5,10 +5,8 @@ FORGE_WORKFLOW:
   STATE: {{STATE_PROFILE}}
   PHASES: understand -> design -> execute -> verify -> review -> terminalize
   REPO_AUTHORED:
-    - docs/spec.md
-    - docs/researches/
-    - tasks/todos.md
-    - tasks/lessons.md
+    - source/
+    - tests/
     - forge.config.json
   RUNTIME_AUTHORITY: Controller Home
 ```
@@ -20,5 +18,5 @@ Rules:
 - Before high-risk or architecture-changing mutation, close the cross-cutting Engineering Design contract instead of reviewing only the touched module.
 - A successor Plan must explicitly reconcile every unfinished predecessor obligation as KEEP/CHANGE/DEFER/DROP.
 - Mutable checks, sessions, leases, Work/Plan state, Plugin config, run receipts, and caches belong to Controller Home, never new repo-local `.ai/harness` or generated `tasks/*` lifecycle files.
-- Human-authored research, stable product intent, deferred goals, lessons, and intentionally maintained planning documents may remain in Git.
+- Requirements, architecture decisions, progress, and acceptance belong to the project Requirement/Issue authority; README/public Pages are the maintained documentation surface.
 - Completion requires exact verification/review evidence and terminal cleanup; no prompt text or generated status Markdown may declare semantic success.

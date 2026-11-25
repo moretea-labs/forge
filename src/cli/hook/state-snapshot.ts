@@ -20,7 +20,6 @@ export interface StateSnapshot {
   readonly protocol: 1;
   readonly kind: 'forge-state-snapshot';
   readonly states: {
-    readonly spec: 'present' | 'missing';
     readonly plan: SnapshotPlanState;
     readonly pending: 'none' | 'fresh' | 'stale';
     readonly worktree: 'current' | 'linked_target' | 'foreign_marker';
@@ -345,7 +344,6 @@ export function buildStateSnapshot(
     protocol: 1,
     kind: 'forge-state-snapshot',
     states: {
-      spec: fileExists(cwd, 'docs/spec.md') ? 'present' : 'missing',
       plan,
       pending: pendingState(cwd, nowMs),
       worktree: active.problem === 'foreign_worktree' ? 'foreign_marker' : 'current',

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { existsSync, readdirSync, readFileSync } from "fs";
-import { relative, resolve } from "path";
+import { existsSync, readFileSync } from "fs";
+import { resolve } from "path";
 import { spawnSync } from "child_process";
 
 type ContractFiles = {
@@ -14,9 +14,6 @@ type Capability = {
   name: string;
   prefixes: string[];
   contract_files: ContractFiles;
-  architecture_module: string;
-  /** Legacy migration metadata only. Modern capability authority uses Controller Home Work. */
-  workstream_dir?: string;
   lsp_profile: string;
   verification_hints: string[];
 };
@@ -152,7 +149,6 @@ function defaultCapabilityForPrefix(prefix: string): Capability {
       agents: `${prefix}/AGENTS.md`,
       claude: `${prefix}/CLAUDE.md`,
     },
-    architecture_module: `docs/architecture/modules/${domain}/${name}.md`,
     lsp_profile: "typescript-lsp",
     verification_hints: ["record local commands here before implementation"],
   };
@@ -220,7 +216,6 @@ function validateCapability(capability: Capability, repo: string): string[] {
     ["id", capability.id],
     ["domain", capability.domain],
     ["name", capability.name],
-    ["architecture_module", capability.architecture_module],
     ["lsp_profile", capability.lsp_profile],
   ];
 
@@ -260,23 +255,6 @@ function validateCapability(capability: Capability, repo: string): string[] {
     }
   }
 
-  try {
-    normalizeRepoPath(capability.architecture_module, repo);
-  } catch (error) {
-    errors.push(`${capability.id}: invalid architecture_module: ${(error as Error).message}`);
-  }
-  if (capability.workstream_dir !== undefined) {
-    if (typeof capability.workstream_dir !== "string" || capability.workstream_dir.trim() === "") {
-      errors.push(`${capability.id}: legacy workstream_dir must be a non-empty repository path when present`);
-    } else {
-      try {
-        normalizeRepoPath(capability.workstream_dir, repo);
-      } catch (error) {
-        errors.push(`${capability.id}: invalid legacy workstream_dir: ${(error as Error).message}`);
-      }
-    }
-  }
-
   if (!Array.isArray(capability.verification_hints)) {
     errors.push(`${capability.id}: verification_hints must be an array`);
   }
@@ -288,8 +266,6 @@ function validateRegistry(registry: CapabilityRegistry, repo: string): string[] 
   const errors: string[] = [];
   const ids = new Map<string, string>();
   const prefixes = new Map<string, string>();
-  const architectureModules = new Set<string>();
-  const workstreamDirs = new Set<string>();
 
   if (!Number.isInteger(registry.version)) {
     errors.push("version must be an integer");
@@ -316,59 +292,6 @@ function validateRegistry(registry: CapabilityRegistry, repo: string): string[] 
       prefixes.set(normalized, capability.id);
     }
 
-    try {
-      architectureModules.add(normalizeRepoPath(capability.architecture_module, repo));
-    } catch {
-      // Field-specific validation already recorded the concrete error.
-    }
-    if (capability.workstream_dir) {
-      try {
-        workstreamDirs.add(normalizeRepoPath(capability.workstream_dir, repo));
-      } catch {
-        // Legacy field-specific validation already recorded the concrete error.
-      }
-    }
-  }
-
-  const modulesRoot = resolve(repo, "docs/architecture/modules");
-  if (existsSync(modulesRoot)) {
-    const stack = [modulesRoot];
-    while (stack.length > 0) {
-      const current = stack.pop()!;
-      for (const entry of readdirSync(current, { withFileTypes: true })) {
-        const absPath = resolve(current, entry.name);
-        if (entry.isDirectory()) {
-          stack.push(absPath);
-        } else if (entry.isFile() && entry.name.endsWith(".md")) {
-          const relPath = relative(repo, absPath).replaceAll("\\", "/");
-          if (!architectureModules.has(relPath)) {
-            errors.push(`orphan architecture module: ${relPath}`);
-          }
-        }
-      }
-    }
-  }
-
-  const workstreamsRoot = resolve(repo, "tasks/workstreams");
-  // Only legacy registries that still declare workstream ownership participate
-  // in orphan validation. Modern registries do not synthesize this retired surface.
-  if (workstreamDirs.size > 0 && existsSync(workstreamsRoot)) {
-    const stack = [workstreamsRoot];
-    while (stack.length > 0) {
-      const current = stack.pop()!;
-      for (const entry of readdirSync(current, { withFileTypes: true })) {
-        const absPath = resolve(current, entry.name);
-        if (entry.isDirectory()) {
-          stack.push(absPath);
-        } else if (entry.isFile() && entry.name.endsWith(".md")) {
-          const relPath = relative(repo, absPath).replaceAll("\\", "/");
-          const owned = [...workstreamDirs].some((dir) => relPath === dir || relPath.startsWith(`${dir}/`));
-          if (!owned) {
-            errors.push(`orphan workstream: ${relPath}`);
-          }
-        }
-      }
-    }
   }
 
   return errors;
@@ -396,7 +319,6 @@ function findMatch(registry: CapabilityRegistry, repo: string, inputPath: string
       capability_id: "root",
       architecture_domain: "root",
       architecture_capability: "_root",
-      architecture_module: "docs/architecture/index.md",
     };
   }
 
@@ -421,8 +343,6 @@ function findMatch(registry: CapabilityRegistry, repo: string, inputPath: string
     capability_id: winner.capability.id,
     architecture_domain: winner.capability.domain,
     architecture_capability: winner.capability.name,
-    architecture_module: winner.capability.architecture_module,
-    ...(winner.capability.workstream_dir ? { workstream_dir: winner.capability.workstream_dir } : {}),
     contract_agents: winner.capability.contract_files.agents,
     contract_claude: winner.capability.contract_files.claude,
     lsp_profile: winner.capability.lsp_profile,

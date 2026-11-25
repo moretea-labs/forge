@@ -213,7 +213,7 @@ render_sprint_file() {
 > **Created**: {{TIMESTAMP}}
 > **Updated**: {{TIMESTAMP}}
 > **Source PRD**: (optional) `plans/prds/<prd>.prd.md`
-> **Source Spec**: `docs/spec.md`
+> **Source Requirement**: GitHub Issue/Project
 > **Goal Mode**: incremental
 
 Program-level sprint container. The Source PRD summary and ordered backlog

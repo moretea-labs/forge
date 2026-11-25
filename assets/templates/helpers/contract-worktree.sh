@@ -47,25 +47,6 @@ policy_get() {
   printf '%s' "$default_value"
 }
 
-check_architecture_freshness() {
-  local target_branch="$1"
-  local mode
-
-  if [[ -x "scripts/check-architecture-sync.sh" ]]; then
-    bash "scripts/check-architecture-sync.sh" --target "$target_branch"
-    return $?
-  fi
-
-  mode="$(policy_get '.architecture.freshness_gate' 'advisory')"
-  if [[ "$mode" == "strict" ]]; then
-    echo "contract-worktree: strict architecture freshness gate failed: missing scripts/check-architecture-sync.sh" >&2
-    return 1
-  fi
-
-  echo "contract-worktree: WARN missing scripts/check-architecture-sync.sh; skipping advisory architecture freshness gate" >&2
-  return 0
-}
-
 normalize_slug() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g'
 }

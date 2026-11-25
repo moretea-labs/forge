@@ -111,7 +111,6 @@ function fixture(targetPackageRoot?: string): { home: string; packageRoot: strin
     join(packageRoot, 'scripts', 'stage-runtime-release.ts'),
     'throw new Error(\"release staging only\");\n',
   );
-  writeFileSync(join(packageRoot, 'scripts', 'route-nl-vs-ts-eval.ts'), 'throw new Error(\"evaluation only\");\n');
   writeFileSync(join(packageRoot, 'scripts', 'verify-forge-runtime.sh'), 'exit 0\n');
   writeFileSync(join(packageRoot, 'scripts', 'bootstrap-runtime-maintenance-recovery.sh'), 'exit 0\n');
   mkdirSync(join(packageRoot, 'node_modules', 'runtime-dependency'), { recursive: true });
@@ -358,7 +357,6 @@ describe('package Runtime release immutability', () => {
     expect(paths.has('scripts/check-release-readiness.sh')).toBe(false);
     expect(paths.has('scripts/public-release.ts')).toBe(false);
     expect(paths.has('scripts/stage-runtime-release.ts')).toBe(false);
-    expect(paths.has('scripts/route-nl-vs-ts-eval.ts')).toBe(false);
     expect(paths.has('scripts/verify-forge-runtime.sh')).toBe(true);
     expect(paths.has('scripts/bootstrap-runtime-maintenance-recovery.sh')).toBe(true);
 

@@ -75,7 +75,7 @@ function writeActiveSprintFixture(cwd: string, sprintRelPath: string) {
       "> **Slug**: fixture-sprint",
       "> **Created**: 2026-06-10 00:00",
       "> **Updated**: 2026-06-10 00:00",
-      "> **Source Spec**: `docs/spec.md`",
+      "> **Product Authority**: project Requirement/Issue",
       "> **Goal Mode**: incremental",
       "",
       "## PRD",
@@ -666,11 +666,6 @@ describe("sprint asset parity", () => {
     expect(readFileSync(join(ROOT, "scripts/refresh-current-status.sh"), "utf-8")).toContain(
       'run-forge-helper.sh" "refresh-current-status.sh"'
     );
-    expect(readFileSync(join(ROOT, "docs/reference-configs/sprint-contracts.md"), "utf-8")).toContain(
-      "<!-- forge: reference-config-stub v1 -->"
-    );
-    expect(readFileSync(join(ROOT, "docs/reference-configs/sprint-contracts.md"), "utf-8")).toContain(
-      "forge docs path sprint-contracts"
-    );
+    expect(existsSync(join(ROOT, "docs/reference-configs/sprint-contracts.md"))).toBe(false);
   });
 });

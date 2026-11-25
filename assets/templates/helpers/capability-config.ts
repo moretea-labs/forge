@@ -14,9 +14,6 @@ type Capability = {
   name: string;
   prefixes: string[];
   contract_files: ContractFiles;
-  architecture_module: string;
-  /** Legacy migration metadata; new capability config never writes it. */
-  workstream_dir?: string;
   lsp_profile: string;
   verification_hints: string[];
 };
@@ -37,14 +34,9 @@ type Args = {
   name: string;
   agents: string;
   claude: string;
-  architectureModule: string;
-  workstreamDir: string;
   lspProfile: string;
   verificationHints: string[];
   createPrefix: boolean;
-  createArchitectureModule: boolean;
-  createWorkstream: boolean;
-  syncContracts: boolean;
   dryRun: boolean;
   format: Format;
 };
@@ -64,14 +56,9 @@ function usage(): never {
       "  --name <name>                    Capability name (default derived from prefix)",
       "  --agents <path>                  AGENTS.md path (default: <prefix>/AGENTS.md)",
       "  --claude <path>                  CLAUDE.md path (default: <prefix>/CLAUDE.md)",
-      "  --architecture-module <path>     Architecture module path",
-      "  --workstream-dir <path>          RETIRED: repo-local Workstreams are no longer writable",
       "  --lsp-profile <profile>          LSP/tooling profile (default: typescript-lsp)",
       "  --verification-hint <command>    Repeatable local verification hint",
       "  --create-prefix                  Create the prefix directory when missing",
-      "  --create-architecture-module     Create a minimal architecture module when missing",
-      "  --create-workstream              RETIRED: use Controller Home Requirement/Plan/Work",
-      "  --no-sync-contracts              Only update the registry",
       "  --dry-run                        Print planned changes without writing",
       "  --format text|json               Output format (default: text)",
     ].join("\n")
@@ -89,14 +76,9 @@ function parseArgs(argv: string[]): Args {
     name: "",
     agents: "",
     claude: "",
-    architectureModule: "",
-    workstreamDir: "",
     lspProfile: "typescript-lsp",
     verificationHints: [],
     createPrefix: false,
-    createArchitectureModule: false,
-    createWorkstream: false,
-    syncContracts: true,
     dryRun: false,
     format: "text",
   };
@@ -125,12 +107,6 @@ function parseArgs(argv: string[]): Args {
       case "--claude":
         args.claude = argv[++index] || usage();
         break;
-      case "--architecture-module":
-        args.architectureModule = argv[++index] || usage();
-        break;
-      case "--workstream-dir":
-        args.workstreamDir = argv[++index] || usage();
-        break;
       case "--lsp-profile":
         args.lspProfile = argv[++index] || usage();
         break;
@@ -139,15 +115,6 @@ function parseArgs(argv: string[]): Args {
         break;
       case "--create-prefix":
         args.createPrefix = true;
-        break;
-      case "--create-architecture-module":
-        args.createArchitectureModule = true;
-        break;
-      case "--create-workstream":
-        args.createWorkstream = true;
-        break;
-      case "--no-sync-contracts":
-        args.syncContracts = false;
         break;
       case "--dry-run":
         args.dryRun = true;
@@ -235,10 +202,6 @@ function buildCapability(args: Args, repo: string): Capability {
       agents: normalizeRepoPath(args.agents || `${prefix}/AGENTS.md`, repo),
       claude: normalizeRepoPath(args.claude || `${prefix}/CLAUDE.md`, repo),
     },
-    architecture_module: normalizeRepoPath(
-      args.architectureModule || `docs/architecture/modules/${domain}/${name}.md`,
-      repo
-    ),
     lsp_profile: args.lspProfile,
     verification_hints:
       args.verificationHints.length > 0 ? args.verificationHints : ["record local commands here before implementation"],
@@ -293,59 +256,8 @@ function validateRegistry(repo: string): void {
   runChecked(repo, process.execPath, ["scripts/capability-resolver.ts", "validate", "--repo", repo, "--format", "text"]);
 }
 
-function syncContracts(repo: string, capability: Capability): void {
-  const event = {
-    ts: new Date().toISOString(),
-    file_path: capability.prefixes[0],
-    severity: "medium",
-    functional_block: capability.prefixes[0],
-    capability_id: capability.id,
-    matched_prefix: capability.prefixes[0],
-    architecture_domain: capability.domain,
-    architecture_capability: capability.name,
-    architecture_module: capability.architecture_module,
-    ...(capability.workstream_dir ? { workstream_dir: capability.workstream_dir } : {}),
-    contract_agents: capability.contract_files.agents,
-    contract_claude: capability.contract_files.claude,
-    lsp_profile: capability.lsp_profile,
-    change_type: "capability-config",
-    request_file: "none",
-    spawn_recommended: false,
-    contract_sync_required: true,
-  };
-
-  runChecked(repo, "bash", ["scripts/context-contract-sync.sh", "sync-event", "--json", JSON.stringify(event)]);
-}
-
-function createArchitectureModule(repo: string, capability: Capability): void {
-  const path = resolve(repo, capability.architecture_module);
-  if (existsSync(path)) return;
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(
-    path,
-    [
-      `# Architecture Module: ${capability.domain}/${capability.name}`,
-      "",
-      `> **Capability ID**: \`${capability.id}\``,
-      `> **Source**: \`${REGISTRY_PATH}\``,
-      "",
-      "## Responsibility",
-      "",
-      `Record stable boundaries, entrypoints, runtime paths, dependency rules, and verification hints for \`${capability.id}\`.`,
-      "",
-      "## Entrypoints",
-      "",
-      `- \`${capability.prefixes[0]}\``,
-      "",
-    ].join("\n")
-  );
-}
-
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
-  if (args.workstreamDir || args.createWorkstream) {
-    throw new Error("LEGACY_WORKSTREAM_WRITES_RETIRED: repo-local tasks/workstreams are migration-only; use Forge Controller Home Requirement/Plan/Work");
-  }
   const repo = repoRoot(args.repo);
   const requestedCapability = buildCapability(args, repo);
   const prefixPath = resolve(repo, requestedCapability.prefixes[0]);
@@ -363,14 +275,10 @@ function main(): void {
   const { status, capability } = upsertCapability(registry, requestedCapability);
   actions.push(`${status}:${capability.id}`);
 
-  if (args.syncContracts) actions.push(`sync-contracts:${capability.contract_files.agents},${capability.contract_files.claude}`);
-  if (args.createArchitectureModule) actions.push(`create-architecture-module:${capability.architecture_module}`);
   actions.push("validate:capability-registry");
 
   if (!args.dryRun) {
     if (status === "added") writeRegistry(repo, registry);
-    if (args.syncContracts) syncContracts(repo, capability);
-    if (args.createArchitectureModule) createArchitectureModule(repo, capability);
     validateRegistry(repo);
   }
 

@@ -9,9 +9,7 @@ README.zh-CN.md
 README.es.md
 README.fr.md
 README.ja.md
-docs/forge-chatgpt-mcp-setup.md
 docs/forge-app-store-connect-api.md
-docs/operations/controller-browser-plugin.md
 src/cli/mcp/setup.ts
 tests/readme-dx.test.ts
 
@@ -28,7 +26,6 @@ tests/runtime/result-store-redaction.test.ts
 
 # Historical research / release checklists retain maintainer path evidence.
 # Prefer scrubbing over expanding this list for new files.
-docs/architecture/global-hook-runtime.md
 deploy/release-checklists/**
 plans/**
 tasks/**

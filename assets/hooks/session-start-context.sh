@@ -301,48 +301,6 @@ ${pending_lines}
 EOF_CONTEXT
 }
 
-architecture_queue_pending() {
-  local requests_dir="docs/architecture/requests"
-  local pending_count="0"
-  local oldest_epoch="" oldest_days="unknown"
-  local now_epoch request detected detected_date detected_epoch
-  local queue_script
-
-  [[ -d "$requests_dir" ]] || return 1
-  queue_script="$(helper_script_path "architecture-queue.sh")"
-
-  now_epoch="$(date '+%s' 2>/dev/null || true)"
-  while IFS= read -r request; do
-    [[ -f "$request" ]] || continue
-    grep -Eq '^> \*\*Status\*\*:[[:space:]]*Pending[[:space:]]*$' "$request" || continue
-    pending_count=$((pending_count + 1))
-    detected="$(awk '/^> \*\*Detected\*\*:/ {sub(/^.*> \*\*Detected\*\*:[[:space:]]*/, ""); print; exit}' "$request" | xargs || true)"
-    detected_date="${detected%%T*}"
-    detected_epoch=""
-    if [[ "$detected_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
-      detected_epoch="$(date -j -f '%Y-%m-%d' "$detected_date" '+%s' 2>/dev/null || date -d "$detected_date" '+%s' 2>/dev/null || true)"
-    fi
-    if [[ -n "$detected_epoch" && ( -z "$oldest_epoch" || "$detected_epoch" -lt "$oldest_epoch" ) ]]; then
-      oldest_epoch="$detected_epoch"
-    fi
-  done < <(find "$requests_dir" -maxdepth 1 -type f -name '*.md' | sort)
-
-  [[ "$pending_count" -gt 0 ]] || return 1
-  if [[ -n "$now_epoch" && -n "$oldest_epoch" && "$now_epoch" -ge "$oldest_epoch" ]]; then
-    oldest_days="$(( (now_epoch - oldest_epoch) / 86400 ))d"
-  fi
-
-  cat <<EOF_CONTEXT
-# Architecture Queue
-
-${pending_count} capabilities have pending architecture drift (oldest ${oldest_days}). Run:
-
-\`\`\`bash
-bash ${queue_script} status
-\`\`\`
-EOF_CONTEXT
-}
-
 pending_plan_capture_context() {
   local active_plan summary draft_path prompt_slug kind source_ref capture_source source_arg capture_script
 
@@ -575,15 +533,6 @@ if [[ -n "$pending_context" ]]; then
     context="${context}"$'\n'"${pending_context}"
   else
     context="$pending_context"
-  fi
-fi
-
-architecture_context="$(architecture_queue_pending || true)"
-if [[ -n "$architecture_context" ]]; then
-  if [[ -n "$context" ]]; then
-    context="${context}"$'\n'"${architecture_context}"
-  else
-    context="$architecture_context"
   fi
 fi
 

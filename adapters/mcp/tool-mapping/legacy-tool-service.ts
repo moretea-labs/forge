@@ -237,10 +237,8 @@ function workflowFileCandidates(repoRoot: string): string[] {
     'AGENTS.md',
     'CLAUDE.md',
     'SKILL.md',
-    'docs/spec.md',
     'docs/domain-rules.md',
     'docs/project/chatgpt-planning-profile.md',
-    'docs/reference-configs',
     'docs/mvp2',
     '.spec-workflow/specs',
     'ios/AGENTS.md',
@@ -625,7 +623,6 @@ export async function callMcpTool(
     switch (name) {
       case 'harness_status': {
         const roots = [
-          'docs/spec.md',
           'plans',
           'tasks/current.md',
           '.ai/harness/session',
@@ -679,7 +676,6 @@ export async function callMcpTool(
           chatgpt: {
             localEndpoint: 'http://127.0.0.1:8765/mcp',
             manualStepsRequired: true,
-            guide: 'docs/forge-chatgpt-mcp-setup.md',
           },
         });
       }
@@ -811,13 +807,6 @@ export async function callMcpTool(
             reconnectRecommended: connectorFreshness.reconnectRecommended,
             suggestedActions: connectorFreshness.suggestedActions,
           },
-          docs: [
-            'docs/architecture/current/README.md',
-            'docs/architecture/history.md',
-            'docs/operations/controller-reliability-runbook.md',
-            'docs/forge-github-issue-launcher.md',
-            'docs/forge-chatgpt-mcp-setup.md',
-          ],
           staleConnectorHint: staleConnector
             ? `Stale ChatGPT connector tool snapshot is missing facade tools: ${missingFacadeTools.join(', ')}. Refresh/reconnect MCP so tools/list reloads rh_status, rh_inbox, rh_context, and rh_work.`
             : connectorFreshness.status === 'unable_to_verify_chatgpt_snapshot'

@@ -232,7 +232,6 @@ prompt_guard_decision_command() {
 }
 
 prompt_guard_refresh_state() {
-  prompt_guard_spec_state="missing"
   prompt_guard_plan_state="none"
   prompt_guard_pending_state="none"
   prompt_guard_worktree_state="current"
@@ -247,9 +246,6 @@ prompt_guard_refresh_state() {
   contract_file=""
   evidence_error=""
 
-  if [ -f "docs/spec.md" ]; then
-    prompt_guard_spec_state="present"
-  fi
 
   active_plan="$(get_active_plan || true)"
   if [ -n "$active_plan" ] && [ -f "$active_plan" ]; then
@@ -297,7 +293,6 @@ prompt_guard_refresh_state() {
     prompt_guard_contract_state="present"
   fi
 
-  export PROMPT_GUARD_SPEC_STATE="$prompt_guard_spec_state"
   export PROMPT_GUARD_PLAN_STATE="$prompt_guard_plan_state"
   export PROMPT_GUARD_PENDING_STATE="$prompt_guard_pending_state"
   export PROMPT_GUARD_WORKTREE_STATE="$prompt_guard_worktree_state"
@@ -629,7 +624,7 @@ emit_cross_review_hint() {
 }
 
 # --- Action rendering ---
-# Plan/spec/contract prompt gates are advisory (exit 0): pre-edit-guard.sh
+# Plan/contract prompt gates are advisory (exit 0): pre-edit-guard.sh
 # enforces the same state deterministically at the edit boundary. Done-claim
 # gates keep blocking because they verify file-backed completion evidence.
 
@@ -639,11 +634,6 @@ render_prompt_guard_action() {
   case "$action" in
     allow|done_gate)
       return 0
-      ;;
-    spec_block)
-      echo "[SpecGuard] Advisory: docs/spec.md is missing. Create stable product truth before implementation."
-      echo "[SpecGuard] Run bash scripts/new-spec.sh and capture stable product intent; implementation edits without a spec are blocked at the edit layer."
-      exit 0
       ;;
     stale_active_plan_advice)
       clear_active_plan
@@ -758,11 +748,6 @@ emit_workflow_file_guards() {
     echo "[LessonGuard] tasks/lessons.md has updates. Review prevention rules before coding."
   fi
 
-  local changed_research
-  changed_research="$(has_changes_glob '^docs/researches/.*\.md$' || true)"
-  if [ -n "$changed_research" ]; then
-    echo "[ResearchGuard] ${changed_research} updated. Review research deeply before planning or implementation."
-  fi
 
   local changed_plan
   changed_plan="$(has_changes_glob '^plans/plan-.*\.md$' || true)"
@@ -817,9 +802,6 @@ if modern_controller_home_runtime; then
   if [ "$plan_start_intent" -eq 1 ]; then
     echo "[PlanStartGate] Planning intent detected. Durable decomposition belongs to Forge Controller Plan/Work; no repo-local Draft plan or pending marker will be created."
   fi
-  if [ "$implement_intent" -eq 1 ] && [ "$PG_ACTION" = "spec_block" ]; then
-    echo "[SpecGuard] Advisory: docs/spec.md is missing. Create or update authored product truth before implementation when the change needs a durable specification."
-  fi
   if [ "$done_intent" -eq 1 ]; then
     echo "[PlanStatusGuard] Controller Home owns completion authority; legacy active-plan/task-contract files are ignored for modern repositories."
   fi
@@ -829,27 +811,8 @@ if modern_controller_home_runtime; then
   exit 0
 fi
 
-plan_research_ready=1
-if [ "$plan_start_intent" -eq 1 ]; then
-  if ! has_research_for_new_plan; then
-    latest_plan="$(get_latest_plan || true)"
-    if [[ -n "$latest_plan" ]]; then
-      plan_research_ready=0
-      echo "[ResearchGate] Advisory: docs/researches/*.md is missing or older than $latest_plan; skipping automatic Draft plan creation."
-      echo "[ResearchGate] Add or update a docs/researches/ report with fresh findings before creating the next plan."
-    else
-      echo "[ResearchGate] WARNING: no docs/researches/*.md report exists yet. Consider creating one with current findings before drafting the plan."
-      echo "  首次创建计划：建议先写 docs/researches/<date-topic>.md，但不阻塞。"
-    fi
-  fi
-fi
-
 if [ "$implement_intent" -eq 0 ] && [ "$done_intent" -eq 0 ]; then
-  if [ "$plan_start_intent" -eq 1 ] && [ "$plan_research_ready" -eq 0 ]; then
-    echo "[PlanStartGate] Skipping automatic Draft plan workflow until research is refreshed."
-  else
-    maybe_start_plan_workflow
-  fi
+  maybe_start_plan_workflow
 fi
 
 if [ "$implement_intent" -eq 0 ]; then
@@ -857,10 +820,6 @@ if [ "$implement_intent" -eq 0 ]; then
 fi
 
 if [ "$implement_intent" -eq 1 ]; then
-  if [ "$PG_ACTION" = "spec_block" ]; then
-    render_prompt_guard_action "$PG_ACTION"
-  fi
-
   maybe_capture_embedded_approved_plan
 
   prompt_guard_refresh_state
@@ -963,11 +922,7 @@ if [ "$done_intent" -eq 1 ]; then
 fi
 
 if pg_fact SPA_DAY; then
-  if [ -f "docs/reference-configs/handoff-protocol.md" ]; then
-    echo "[HarnessMaintenance] Follow docs/reference-configs/handoff-protocol.md and sprint-contracts.md when consolidating workflow rules."
-  else
-    echo "[HarnessMaintenance] harness protocol docs missing. Add docs/reference-configs/handoff-protocol.md."
-  fi
+  echo "[HarnessMaintenance] Consolidate reusable workflow rules in source/tests and record durable product decisions in the tracked GitHub Issue/Project."
 fi
 
 # --- TDD/BDD Context Injection ---

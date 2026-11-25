@@ -41,9 +41,7 @@ const CLAUDE_TEMPLATE_FILES = [
   'implementation-notes.template.md',
   'plan.template.md',
   'prd.template.md',
-  'research.template.md',
   'review.template.md',
-  'spec.template.md',
   'sprint.template.md',
 ];
 
@@ -139,7 +137,7 @@ function shellCompatibilityWrapper(name) {
   return `#!/bin/bash\nset -euo pipefail\nSCRIPT_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"\nexec "$SCRIPT_DIR/lib/run-forge-helper.sh" "${name}" "$@"\n`;
 }
 
-const MODULE_HELPERS = new Set(['workflow-contract.ts', 'inspect-project-state.ts', 'migrate-workflow-docs.ts']);
+const MODULE_HELPERS = new Set(['workflow-contract.ts', 'inspect-project-state.ts']);
 
 function typescriptCompatibilityWrapper(name) {
   const reexport = MODULE_HELPERS.has(name)

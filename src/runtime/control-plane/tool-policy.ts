@@ -44,8 +44,6 @@ export const PLANNER_READ_GLOBS = [
   'AGENTS.md',
   'CLAUDE.md',
   'SKILL.md',
-  'docs/spec.md',
-  'docs/reference-configs/**',
   'plans/**',
   'tasks/current.md',
   'tasks/contracts/**',
@@ -177,7 +175,7 @@ export function getToolPolicy(profile: ToolProfileName, opts: ToolPolicyOptions 
   if (profile === 'executor') {
     return applyPolicyOverrides({
       profile,
-      readGlobs: ['plans/**', 'tasks/**', 'docs/spec.md', '.ai/context/**', '.ai/harness/**'],
+      readGlobs: ['plans/**', 'tasks/**', '.ai/context/**', '.ai/harness/**'],
       writeGlobs: ['tasks/reviews/**', '.ai/harness/checks/**', '.ai/harness/session/**', '.ai/harness/controller/packets/**'],
       denyGlobs: COMMON_DENY_GLOBS,
       maxFileBytes: 512 * 1024,

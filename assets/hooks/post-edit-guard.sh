@@ -29,55 +29,6 @@ run_continuous_contract_verification() {
   fi
 }
 
-run_architecture_queue_sync() {
-  local queue_output status
-
-  [[ -x "scripts/architecture-queue.sh" ]] || return 0
-
-  if queue_output="$(bash "scripts/architecture-queue.sh" record --file "$FILE_PATH" 2>&1)"; then
-    :
-  else
-    status=$?
-    [[ -n "$queue_output" ]] && printf '%s\n' "$queue_output"
-    echo "[SyncChain] WARN: architecture-queue failed for $FILE_PATH (exit $status)"
-    return 0
-  fi
-  [[ -n "$queue_output" ]] && printf '%s\n' "$queue_output"
-
-  if printf '%s\n' "$queue_output" | grep -q '^\[ArchitectureDrift\] Request:'; then
-    if [[ -x "scripts/context-contract-sync.sh" ]]; then
-      if bash "scripts/context-contract-sync.sh" sync-latest; then
-        :
-      else
-        status=$?
-        echo "[SyncChain] WARN: context-contract-sync failed after $FILE_PATH (exit $status)"
-      fi
-    fi
-    if [[ -n "${FORGE_CLI:-}" && -f "$FORGE_CLI" ]] && command -v bun >/dev/null 2>&1; then
-      if bun "$FORGE_CLI" capability-context request --from-latest-architecture-event; then
-        :
-      else
-        status=$?
-        echo "[SyncChain] WARN: capability-context request failed after $FILE_PATH (exit $status)"
-      fi
-    elif command -v forge >/dev/null 2>&1; then
-      if forge capability-context request --from-latest-architecture-event; then
-        :
-      else
-        status=$?
-        echo "[SyncChain] WARN: capability-context request failed after $FILE_PATH (exit $status)"
-      fi
-    elif command -v bun >/dev/null 2>&1 && [[ -f "src/cli/index.ts" ]]; then
-      if bun src/cli/index.ts capability-context request --from-latest-architecture-event; then
-        :
-      else
-        status=$?
-        echo "[SyncChain] WARN: capability-context request failed after $FILE_PATH (exit $status)"
-      fi
-    fi
-  fi
-}
-
 run_brain_doc_sync() {
   [[ -x "scripts/sync-brain-docs.sh" ]] || return 0
   [[ -f ".ai/harness/brain-manifest.json" ]] || return 0
@@ -124,7 +75,7 @@ if [[ "$BASENAME" == "package.json" && "$DIRNAME" =~ (^|/)packages/([^/]+) ]]; t
   PKG_NAME="packages/${BASH_REMATCH[2]}"
   if [[ -n "$PKG_NAME" ]]; then
     echo "[DocDrift] $PKG_NAME/package.json changed"
-    echo "  Check: docs/packages.md exports table may need updating"
+    echo "  Check: update affected source/tests and the tracked GitHub Issue/Project when durable acceptance changes"
   fi
 fi
 
@@ -132,32 +83,32 @@ if [[ "$FILE_PATH" =~ (^|/)packages/([^/]+)/src/([^/]+)/index\.ts$ ]]; then
   PKG="${BASH_REMATCH[2]}"
   MODULE="${BASH_REMATCH[3]}"
   echo "[DocDrift] New module '$MODULE' in $PKG"
-  echo "  Check: docs/packages.md and docs/architecture.md may need updating"
+  echo "  Check: update affected source/tests and the tracked GitHub Issue/Project when architecture/acceptance changes"
 fi
 
 if [[ "$FILE_PATH" =~ (^|/)apps/[^/]+/src/.+ ]]; then
   echo "[DocDrift] App source changed: $FILE_PATH"
-  echo "  Check: docs/architecture.md source tree may need updating"
+  echo "  Check: update affected source/tests and the tracked GitHub Issue/Project when architecture/acceptance changes"
 fi
 
 if [[ "$BASENAME" == "metro.config.js" ]] || [[ "$BASENAME" == "metro.config.ts" ]]; then
   echo "[DocDrift] Metro config changed"
-  echo "  Check: docs/guides/metro-esm-gotchas.md may need updating"
+  echo "  Check: update README/Pages only when public operator guidance changed"
 fi
 
 if [[ "$BASENAME" == "tsconfig.json" && "$DIRNAME" =~ (^|/)(packages|apps)/ ]]; then
   echo "[DocDrift] TypeScript config changed in $(basename "$DIRNAME")"
-  echo "  Check: docs/packages.md may need updating"
+  echo "  Check: update affected source/tests; update README/Pages only for public guidance"
 fi
 
 if [[ "$BASENAME" == "turbo.json" ]]; then
   echo "[DocDrift] Turborepo config changed"
-  echo "  Check: docs/architecture.md pipeline section may need updating"
+  echo "  Check: update affected source/tests and the tracked GitHub Issue/Project when architecture/acceptance changes"
 fi
 
 if [[ "$BASENAME" =~ ^wrangler.*\.toml$ ]]; then
   echo "[DocDrift] Wrangler config changed: $BASENAME"
-  echo "  Check: docs/guides/cf-deployment.md bindings/routes may need updating"
+  echo "  Check: update README/Pages only when public deployment guidance changed"
 fi
 
 # Aggregated advisories (route-registry keeps one PostToolUse edit entry; the
@@ -167,8 +118,6 @@ if [[ -f "$SCRIPT_DIR/first-principles-guard.sh" ]]; then
 elif [[ -f "$SCRIPT_DIR/anti-simplification.sh" ]]; then
   bash "$SCRIPT_DIR/anti-simplification.sh" "$FILE_PATH" </dev/null || true
 fi
-
-run_architecture_queue_sync
 
 run_brain_doc_sync
 

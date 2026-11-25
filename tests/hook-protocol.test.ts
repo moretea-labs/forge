@@ -120,10 +120,10 @@ esac
 
   test("semantic Plan state never authorizes ordinary implementation", () => {
     const states: PromptGuardState[] = [
-      { spec: "missing", plan: "none", pending: "none", worktree: "current", contract: "missing", contractPath: "missing", evidence: "unchecked" },
-      { spec: "present", plan: "draft", pending: "none", worktree: "current", contract: "missing", contractPath: "missing", evidence: "unchecked" },
-      { spec: "present", plan: "approved", pending: "none", worktree: "current", contract: "missing", contractPath: "missing", evidence: "incomplete" },
-      { spec: "present", plan: "executing", pending: "none", worktree: "current", contract: "present", contractPath: "present", evidence: "incomplete" },
+      { plan: "none", pending: "none", worktree: "current", contract: "missing", contractPath: "missing", evidence: "unchecked" },
+      { plan: "draft", pending: "none", worktree: "current", contract: "missing", contractPath: "missing", evidence: "unchecked" },
+      { plan: "approved", pending: "none", worktree: "current", contract: "missing", contractPath: "missing", evidence: "incomplete" },
+      { plan: "executing", pending: "none", worktree: "current", contract: "present", contractPath: "present", evidence: "incomplete" },
     ];
     for (const state of states) {
       expect(decidePromptGuardAction("general_execution", state)).toBe("allow");

@@ -13,7 +13,6 @@ import { tmpdir } from "os";
 import { join, relative } from "path";
 import { spawnSync } from "child_process";
 import { inspectRepo } from "../scripts/inspect-project-state";
-import { migrate } from "../scripts/migrate-workflow-docs";
 import { getHelperRuntimeDir, loadWorkflowContract, type WorkflowContract } from "../scripts/workflow-contract";
 
 const ROOT = join(import.meta.dir, "..");
@@ -64,22 +63,15 @@ describe("workflow contract manifest", () => {
     expect(contract.helpers.runtimeDirectory).toBe("package:assets/templates/helpers");
     expect(contract.helpers.runtimeSource).toBe("package");
     expect(contract.artifacts.runtimeManifest).toBe("forge.config.json");
-    expect(contract.artifacts.requiredDirectories).toEqual([
-      "docs",
-      "docs/reference-configs",
-      "docs/researches",
-      "tasks",
-    ]);
+    expect(contract.artifacts.requiredDirectories).toEqual(["tasks"]);
     expect(contract.artifacts.requiredFiles).toEqual([
       "forge.config.json",
-      "docs/spec.md",
       "tasks/todos.md",
       "tasks/lessons.md",
     ]);
     expect(contract.documents.currentStatus).toBeUndefined();
     expect(contract.adoptionTemplates?.files?.currentStatus).toBeUndefined();
-    expect(contract.adoptionTemplates?.files?.spec.document).toBe("spec");
-    expect(contract.adoptionTemplates?.files?.spec.lines.join("\n")).toContain("{{repoName}}");
+    expect(contract.adoptionTemplates?.files?.spec).toBeUndefined();
     for (const retired of [
       "tasks/current.md",
       ".ai/harness/workflow-contract.json",
@@ -99,7 +91,7 @@ describe("workflow contract manifest", () => {
     expect(contract.migrations.upgrade?.actionClasses).toEqual(["preserve", "reconfigure", "remove"]);
     expect(contract.migrations.upgrade?.safety.unknownFiles).toBe("preserve");
     expect(contract.migrations.upgrade?.safety.removeOnlyOwnership).toBe("known_generated");
-    expect(contract.documentation?.referenceConfigs?.resolverCommand).toBe("forge docs path <doc-id>");
+    expect(contract.documentation).toBeUndefined();
     expect(contract.agenticDevelopment?.dueDiligence.levels).toContain("P2_DATA_FLOW_TRACE");
   });
 
@@ -264,67 +256,6 @@ describe("state inspection and legacy doc migration", () => {
 
       const result = inspectRepo(repo);
       expect(result.mode).toBe("audit");
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  test("legacy doc migrator preserves uncertain user-authored documents in place", () => {
-    const repo = mkdtempSync(join(tmpdir(), "migrate-workflow-docs-"));
-
-    try {
-      mkdirSync(join(repo, "docs"), { recursive: true });
-      writeFileSync(join(repo, "docs/TODO.md"), "- [ ] port old checklist\n");
-      writeFileSync(join(repo, "docs/plan.md"), "# Old Plan\n\nKeep the useful parts.\n");
-      writeFileSync(join(repo, "docs/PROGRESS.md"), "# Session Notes\n\n- [ ] investigate drift\n");
-
-      const summary = migrate(repo, "apply");
-      expect(summary.migrated.filter((item) => item.action === "preserve").length).toBeGreaterThanOrEqual(3);
-      expect(summary.manual_followups.length).toBeGreaterThanOrEqual(3);
-      expect(existsSync(join(repo, "docs/researches/README.md"))).toBe(true);
-      expect(existsSync(join(repo, "tasks/todos.md"))).toBe(false);
-      expect(existsSync(join(repo, "plans/archive"))).toBe(false);
-      expect(existsSync(join(repo, "tasks/archive"))).toBe(false);
-      expect(readFileSync(join(repo, "docs/TODO.md"), "utf-8")).toContain("port old checklist");
-      expect(readFileSync(join(repo, "docs/plan.md"), "utf-8")).toContain("Keep the useful parts");
-      expect(readFileSync(join(repo, "docs/PROGRESS.md"), "utf-8")).toContain("investigate drift");
-      expect(existsSync(join(repo, "docs/TODO.md.migrated.bak"))).toBe(false);
-      expect(existsSync(join(repo, "docs/plan.md.migrated.bak"))).toBe(false);
-      expect(existsSync(join(repo, "docs/PROGRESS.md.migrated.bak"))).toBe(false);
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  test("legacy doc migrator preserves a non-canonical tasks/todos.md without manufacturing history", () => {
-    const repo = mkdtempSync(join(tmpdir(), "migrate-workflow-docs-partial-"));
-
-    try {
-      mkdirSync(join(repo, "tasks"), { recursive: true });
-      writeFileSync(join(repo, "tasks/todos.md"), "# Old Todo\n\n- [ ] existing task\n");
-
-      const summary = migrate(repo, "apply");
-      expect(summary.migrated.some((item) => item.source === "tasks/todos.md" && item.action === "preserve")).toBe(true);
-      expect(existsSync(join(repo, "tasks/archive"))).toBe(false);
-      expect(readFileSync(join(repo, "tasks/todos.md"), "utf-8")).toContain("existing task");
-    } finally {
-      rmSync(repo, { recursive: true, force: true });
-    }
-  });
-
-  test("legacy doc migrator preserves singular tasks/todo.md until explicit triage", () => {
-    const repo = mkdtempSync(join(tmpdir(), "migrate-workflow-docs-singular-todo-"));
-
-    try {
-      mkdirSync(join(repo, "tasks"), { recursive: true });
-      writeFileSync(join(repo, "tasks/todo.md"), "# Old Todo\n\n- [ ] existing task\n");
-
-      const summary = migrate(repo, "apply");
-      expect(summary.migrated.some((item) => item.source === "tasks/todo.md" && item.action === "preserve")).toBe(true);
-      expect(existsSync(join(repo, "tasks/todos.md"))).toBe(false);
-      expect(existsSync(join(repo, "tasks/archive"))).toBe(false);
-      expect(existsSync(join(repo, "tasks/todo.md.migrated.bak"))).toBe(false);
-      expect(readFileSync(join(repo, "tasks/todo.md"), "utf-8")).toContain("existing task");
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

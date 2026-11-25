@@ -30,7 +30,6 @@ export type PromptGuardPlanState = (typeof PROMPT_GUARD_PLAN_STATES)[number];
 
 export const PROMPT_GUARD_ACTIONS = Object.freeze([
   'allow',
-  'spec_block',
   'stale_active_plan_advice',
   'plan_capture_pending_advice',
   'worktree_execution_advice',
@@ -76,7 +75,6 @@ export interface PromptGuardIntentFacts {
 }
 
 export interface PromptGuardState {
-  readonly spec: 'present' | 'missing';
   readonly plan: PromptGuardPlanState;
   readonly pending: 'none' | 'fresh' | 'stale';
   readonly worktree: 'current' | 'linked_target' | 'foreign_marker';

@@ -153,8 +153,6 @@ const FALLBACK_TEMPLATE_VARIABLES: Record<string, string> = {
     "- Always push back on requests that violate project rules",
   PROJECT_STRUCTURE:
     "{{PROJECT_NAME}}/\n" +
-    "├── docs/spec.md\n" +
-    "├── docs/researches/\n" +
     "├── tasks/todos.md\n" +
     "├── tasks/lessons.md\n" +
     "├── forge.config.json\n" +

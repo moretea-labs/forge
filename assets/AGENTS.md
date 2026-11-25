@@ -9,7 +9,6 @@ Keep this file focused on the local contract for this primary functional block.
 - Domain: `workflow-engine`
 - Name: `contract-assets`
 - Primary prefix: `assets/workflow-contract.v1.json`
-- Architecture module: `docs/architecture/modules/workflow-engine/contract-assets.md`
 
 ## Positioning
 
@@ -18,7 +17,6 @@ Owns packaged workflow/compatibility contract assets. Mutable execution lifecycl
 ## Source Map
 
 - Primary prefix: `assets/workflow-contract.v1.json` (entrypoint)
-- Architecture module: `docs/architecture/modules/workflow-engine/contract-assets.md` (design-source)
 
 ## Refresh Hints
 
@@ -26,29 +24,13 @@ Owns packaged workflow/compatibility contract assets. Mutable execution lifecycl
 - `bun scripts/capability-resolver.ts validate --format text`
 <!-- END CAPABILITY CONTEXT -->
 
-<!-- BEGIN ARCHITECTURE CONTRACT -->
-## Architecture Contract
+<!-- BEGIN LOCAL SOURCE CONTRACT -->
+## Local Source Contract
 
-- Functional block: `.ai/harness/policy.json`
+- Functional block: `assets/workflow-contract.v1.json`
 - Capability ID: `workflow-engine-contract-assets`
-- Matched prefix: `.ai/harness/policy.json`
-- Architecture domain: `workflow-engine`
-- Architecture capability: `contract-assets`
-- Architecture module: `docs/architecture/modules/workflow-engine/contract-assets.md`
-- Last architecture event: 2026-05-29T02:15:07+0800
-- Last changed path: `tasks/workstreams/workflow-engine/contract-assets/cleanup-script-policy.md`
-- Severity: medium
-- Change type: workstream-sync
-- Module responsibility: Keep this block aligned with the local boundary described by surrounding human-owned context.
-- Entrypoints: `.ai/harness/policy.json`
-- Allowed dependencies: Follow root `AGENTS.md` / `CLAUDE.md` and this local contract.
-- Forbidden dependencies: Do not cross sibling app/service/package boundaries without an architecture snapshot or explicit plan.
-- Runtime path: `.ai/harness/policy.json`
-- LSP/tooling profile: `typescript-lsp`
-- Verification: Use root required checks plus local commands recorded in this capability contract.
-- Latest snapshot: `(none yet)`
-- Semantic diagram source: `docs/architecture/modules/workflow-engine/contract-assets.md`
-- Latest human diagram: `(none yet)`
-- Pending architecture request: `(none)`
-- Development progress authority: GitHub Issue/Project; Requirement/Plan are optional semantic context; Work lifecycle is retired. This repository block contains authored architecture context only.
-<!-- END ARCHITECTURE CONTRACT -->
+- Entrypoint: `assets/workflow-contract.v1.json`
+- Authority: current source/public APIs/static checks/tests plus the project Requirement/Issue; no repo-local architecture document or event ledger is required.
+- Allowed dependencies: follow root `AGENTS.md` / `CLAUDE.md` and preserve real path, permission, resource, process, Git/CAS, and effect-safety boundaries.
+- Verification: `bun test tests/workflow-contract.test.ts tests/scaffold-parity.test.ts`
+<!-- END LOCAL SOURCE CONTRACT -->

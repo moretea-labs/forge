@@ -50,8 +50,7 @@ function isNonRuntimePackageHelper(path: string): boolean {
   if (path.startsWith('scripts/benchmark-')) return true;
   if (path.startsWith('scripts/check-release-')) return true;
   if (path.startsWith('scripts/public-release')) return true;
-  return path === 'scripts/route-nl-vs-ts-eval.ts'
-    || path === 'scripts/check-npm-release.sh'
+  return path === 'scripts/check-npm-release.sh'
     || path === 'scripts/check-public-release-surface.sh'
     || path === 'scripts/check-tarball-install-smoke.sh'
     || path === 'scripts/publish-release-tarball.sh'

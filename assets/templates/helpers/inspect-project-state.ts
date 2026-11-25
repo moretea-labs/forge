@@ -118,7 +118,7 @@ export function inspectRepo(repo: string): InspectionResult {
     "Preserve repo-local tasks-first workflow",
     "Preserve uncertain legacy content in place until explicit currentness triage",
     "Delete only manifest-owned known_generated legacy files",
-    "Distill repeated corrections into tasks/lessons.md and hidden contracts into docs/researches/",
+    "Distill repeated corrections into tasks/lessons.md and task-local research into tasks/notes/; promote durable conclusions to the tracked GitHub Issue/Project",
   ];
 
   const runtimeManifest = join(repo, contract.artifacts.runtimeManifest);

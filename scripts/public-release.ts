@@ -44,7 +44,6 @@ function forbidden(path: string): boolean {
     "coverage",
     "artifacts",
     "autoresearch",
-    "docs/researches",
   ];
   return (
     roots.some((entry) => value === entry || value.startsWith(`${entry}/`)) ||

@@ -288,13 +288,6 @@
       "ifMissing": true
     },
     {
-      "id": "writeFile:scripts/check-architecture-sync.sh:helper-wrapper",
-      "kind": "writeFile",
-      "status": "planned",
-      "path": "scripts/check-architecture-sync.sh",
-      "ifMissing": true
-    },
-    {
       "id": "writeFile:scripts/check-agent-tooling.sh:helper-wrapper",
       "kind": "writeFile",
       "status": "planned",
@@ -365,13 +358,6 @@
       "ifMissing": true
     },
     {
-      "id": "writeFile:scripts/migrate-workflow-docs.ts:helper-wrapper",
-      "kind": "writeFile",
-      "status": "planned",
-      "path": "scripts/migrate-workflow-docs.ts",
-      "ifMissing": true
-    },
-    {
       "id": "writeFile:scripts/migrate-project-template.sh:helper-wrapper",
       "kind": "writeFile",
       "status": "planned",
@@ -386,38 +372,10 @@
       "ifMissing": true
     },
     {
-      "id": "writeFile:scripts/architecture-event.ts:helper-wrapper",
-      "kind": "writeFile",
-      "status": "planned",
-      "path": "scripts/architecture-event.ts",
-      "ifMissing": true
-    },
-    {
       "id": "writeFile:scripts/capability-config.ts:helper-wrapper",
       "kind": "writeFile",
       "status": "planned",
       "path": "scripts/capability-config.ts",
-      "ifMissing": true
-    },
-    {
-      "id": "writeFile:scripts/architecture-queue.sh:helper-wrapper",
-      "kind": "writeFile",
-      "status": "planned",
-      "path": "scripts/architecture-queue.sh",
-      "ifMissing": true
-    },
-    {
-      "id": "writeFile:scripts/context-contract-sync.sh:helper-wrapper",
-      "kind": "writeFile",
-      "status": "planned",
-      "path": "scripts/context-contract-sync.sh",
-      "ifMissing": true
-    },
-    {
-      "id": "writeFile:scripts/workstream-sync.sh:helper-wrapper",
-      "kind": "writeFile",
-      "status": "planned",
-      "path": "scripts/workstream-sync.sh",
       "ifMissing": true
     },
     {

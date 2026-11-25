@@ -19,14 +19,15 @@
     {
       "id": "ios-engineering",
       "path": "assets/knowledge-packs/v1/ios-engineering.md",
-      "sha256": "1a70b1fd85677a87b34fe4f1eb917c706551f0a6ca8dca94b628fc58f7964b1c",
+      "sha256": "462283ba6b4c27679731d2b7e5362c9ff19cc6ce5209a8c6541cf9bf5169eab1",
       "scope": "ios_engineering_guidance",
       "authority": "advisory",
       "pluginRequired": false,
       "sourceProvenance": [
-        "moretea-labs/forge:docs/architecture/CURRENT.md",
-        "moretea-labs/forge:docs/forge-ios-development-assistant.md",
-        "moretea-labs/forge:docs/architecture/decisions/20260904-ios-device-migration-baseline.md",
+        "moretea-labs/forge:tests/runtime/ios-development.test.ts",
+        "moretea-labs/forge:tests/runtime/ios-physical-device.test.ts",
+        "moretea-labs/forge:src/runtime/resources/claims/conflicts.ts",
+        "moretea-labs/forge:adapters/mcp/runtime-gateway/plugin-adapter.ts",
         "moretea-labs/forge:assets/knowledge-packs/v1/design-ui-ux.md"
       ]
     }

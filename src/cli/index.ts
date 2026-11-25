@@ -19,7 +19,6 @@ import { buildPluginCommand } from './commands/plugin';
 import { buildComputerCommand } from './commands/computer';
 import { buildBrainCommand } from './commands/brain';
 import { buildCapabilityContextCommand } from './commands/capability-context';
-import { buildDocsCommand } from './commands/docs';
 import { buildMcpCommand } from './commands/mcp';
 import { buildChatgptCommand } from './commands/chatgpt';
 import { buildRunCommand } from './commands/run';
@@ -56,7 +55,6 @@ export const SUBCOMMANDS = [
   'computer',
   'brain',
   'capability-context',
-  'docs',
   'mcp',
   'chatgpt',
   'controller',
@@ -472,7 +470,6 @@ export function buildProgram(): Command {
   program.addCommand(buildComputerCommand());
   program.addCommand(buildBrainCommand(), { hidden: true });
   program.addCommand(buildCapabilityContextCommand(), { hidden: true });
-  program.addCommand(buildDocsCommand());
   program.addCommand(buildMcpCommand());
   program.addCommand(buildChatgptCommand());
   program.addCommand(buildRunCommand(), { hidden: true });

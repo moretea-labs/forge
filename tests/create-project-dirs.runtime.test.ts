@@ -5,15 +5,8 @@ import { join } from "path";
 import { spawnSync } from "child_process";
 
 const ROOT = join(import.meta.dir, "..");
-const REFERENCE_STUB_MARKER = "<!-- forge: reference-config-stub v1 -->";
 const RUNTIME_SMOKE_TIMEOUT_MS = 15000;
 
-function expectReferenceConfigStub(cwd: string, docId: string): void {
-  const content = readFileSync(join(cwd, "docs/reference-configs", `${docId}.md`), "utf-8");
-  expect(content).toContain(REFERENCE_STUB_MARKER);
-  expect(content).toContain(`> **Doc ID**: ${docId}`);
-  expect(content).toContain(`forge docs path ${docId}`);
-}
 
 describe("create-project-dirs v1.5 runtime boundary", () => {
   test("scaffolds authored/declarative project state without repository Runtime state", () => {
@@ -28,8 +21,6 @@ describe("create-project-dirs v1.5 runtime boundary", () => {
 
       for (const path of [
         "forge.config.json",
-        "docs/spec.md",
-        "docs/researches/README.md",
         "tasks/todos.md",
         "tasks/lessons.md",
         "deploy/README.md",
@@ -41,7 +32,8 @@ describe("create-project-dirs v1.5 runtime boundary", () => {
       expect(config).toEqual({ schemaVersion: 1, forge: { enabled: true }, runtimeState: "controller-home" });
       expect(readFileSync(join(cwd, "AGENTS.md"), "utf-8")).toBe(readFileSync(join(cwd, "CLAUDE.md"), "utf-8"));
       expect(readFileSync(join(cwd, "AGENTS.md"), "utf-8")).toContain("Controller Home");
-      expectReferenceConfigStub(cwd, "agentic-development-flow");
+      expect(existsSync(join(cwd, "docs"))).toBe(false);
+      expect(existsSync(join(cwd, "docs/reference-configs"))).toBe(false);
 
       for (const retired of [
         "tasks/current.md",
@@ -108,7 +100,7 @@ describe("create-project-dirs v1.5 runtime boundary", () => {
       ].join("\n")], { cwd, encoding: "utf-8" });
       expect(res.status).toBe(0);
       expect(existsSync(join(cwd, "tasks"))).toBe(true);
-      expect(existsSync(join(cwd, "docs/researches/README.md"))).toBe(true);
+      expect(existsSync(join(cwd, "docs"))).toBe(false);
       expect(existsSync(join(cwd, ".ai/harness"))).toBe(false);
       expect(existsSync(join(cwd, "tasks/current.md"))).toBe(false);
       expect(existsSync(join(cwd, "tasks/contracts"))).toBe(false);
@@ -133,7 +125,7 @@ describe("create-project-dirs v1.5 runtime boundary", () => {
     }
   }, RUNTIME_SMOKE_TIMEOUT_MS);
 
-  test("full documentation profile remains authored source without a runtime policy file", () => {
+  test("documentation profile cannot recreate retired repo-local internal docs", () => {
     const cwd = mkdtempSync(join(tmpdir(), "full-doc-profile-v15-"));
     try {
       const res = spawnSync("bash", [join(ROOT, "scripts/create-project-dirs.sh")], {
@@ -142,10 +134,9 @@ describe("create-project-dirs v1.5 runtime boundary", () => {
         env: { ...process.env, FORGE_DOCUMENTATION_PROFILE: "full" },
       });
       expect(res.status).toBe(0);
-      for (const path of ["docs/brief.md", "docs/tech-stack.md", "docs/decisions.md", "docs/api"]) {
-        expect(existsSync(join(cwd, path))).toBe(true);
-      }
-      expectReferenceConfigStub(cwd, "spa-day-protocol");
+      expect(existsSync(join(cwd, "docs"))).toBe(false);
+      expect(existsSync(join(cwd, "tasks/todos.md"))).toBe(true);
+      expect(existsSync(join(cwd, "tasks/lessons.md"))).toBe(true);
       expect(existsSync(join(cwd, ".ai/harness/policy.json"))).toBe(false);
     } finally {
       rmSync(cwd, { recursive: true, force: true });

@@ -232,7 +232,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     cleanupAuthority: 'MCP transport registry lifecycle.',
     recoverySemantics: 'Closing transport state never cancels or completes a durably accepted Job.',
     closureStatus: 'existing_bounded',
-    evidencePaths: ['docs/architecture/modules/controller-runtime/transport-lifecycle.md', 'adapters/mcp/transports'],
+    evidencePaths: ['adapters/mcp/transports'],
   }),
   lifecycle({
     id: 'browser_session_profile',
@@ -370,7 +370,6 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     evidencePaths: [
       'src/runtime/control-plane/release-retention.ts',
       'src/runtime/standalone-recovery',
-      'docs/operations/standalone-disaster-recovery.md',
       'tests/runtime/release-retention.test.ts',
     ],
   }),

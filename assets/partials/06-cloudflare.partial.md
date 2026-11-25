@@ -16,5 +16,4 @@ TanStack Start on Cloudflare uses `@cloudflare/vite-plugin`, `wrangler.jsonc`,
 Worker assets, and `wrangler deploy`; do not use `wrangler pages deploy` for the
 Start SSR app.
 
-Deep docs:
-- `docs/reference-configs/harness-overview.md`
+Use current source/configuration and public Pages for Cloudflare guidance; no repo-local reference-doc mirror is generated.

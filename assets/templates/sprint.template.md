@@ -5,7 +5,7 @@
 > **Created**: {{TIMESTAMP}}
 > **Updated**: {{TIMESTAMP}}
 > **Source PRD**: (optional) `plans/prds/<prd>.prd.md`
-> **Source Spec**: `docs/spec.md`
+> **Product Authority**: project Requirement/Issue
 > **Goal Mode**: incremental
 
 Program-level sprint container. The Source PRD summary and ordered backlog

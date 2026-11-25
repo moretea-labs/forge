@@ -26,10 +26,11 @@ For real-device operation use the existing Forge `ios-development` and `computer
 
 ## Provenance and authority
 
-This is a semantic extraction from:
-- `moretea-labs/forge:docs/architecture/CURRENT.md` (Swift architecture, state and concurrency rules)
-- `moretea-labs/forge:docs/forge-ios-development-assistant.md` (development, simulator/physical-device evidence, safe input, explicit permissions)
-- `moretea-labs/forge:docs/architecture/decisions/20260904-ios-device-migration-baseline.md` (one physical-device owner, Xcode vs device responsibilities, observe/confirm/act boundaries)
+This guidance is grounded in current executable sources and regression coverage:
+- `moretea-labs/forge:tests/runtime/ios-development.test.ts` (development, Simulator and device lease behavior)
+- `moretea-labs/forge:tests/runtime/ios-physical-device.test.ts` (physical-device execution and evidence behavior)
+- `moretea-labs/forge:src/runtime/resources/claims/conflicts.ts` (shared resource ownership/conflict rules)
+- `moretea-labs/forge:adapters/mcp/runtime-gateway/plugin-adapter.ts` (physical-device action routing/authorization boundary)
 - `moretea-labs/forge:assets/knowledge-packs/v1/design-ui-ux.md` (visual methodology and optical centering)
 
 The project repository remains authoritative for its actual technical configuration and approved design. Update this single Forge-owned iOS method instead of reintroducing another cross-project iOS Skill/Plugin rule. The sibling manifest pins its SHA-256 content digest.

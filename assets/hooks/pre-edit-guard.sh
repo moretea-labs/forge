@@ -105,7 +105,7 @@ edit_plan_gate_mode() {
   [[ "$mode" == "off" ]] && printf 'off' || printf 'advice'
 }
 
-# Plan/spec lifecycle is Controller context, never write authorization. This
+# Plan lifecycle is optional Controller context, never write authorization. This
 # compatibility hook may advise; real enforcement remains path/private-surface,
 # authorization, lease and fencing boundaries.
 run_edit_plan_gate() {
@@ -115,10 +115,6 @@ run_edit_plan_gate() {
   is_repo_scoped_path "$FILE_PATH" || return 0
   is_workflow_surface_path "$FILE_PATH" && return 0
 
-  if [[ ! -f "docs/spec.md" ]]; then
-    echo "[SpecGuard] Implementation edit without docs/spec.md: $FILE_PATH"
-    echo "[SpecGuard] Advisory: capture stable product intent when it materially helps this change."
-  fi
 
   gate_plan="$(get_active_plan || true)"
   if [[ -z "$gate_plan" || ! -f "$gate_plan" ]]; then

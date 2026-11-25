@@ -72,20 +72,10 @@
       ]
     }
   },
-  "documentation": {
-    "referenceConfigs": {
-      "source": "user-level-runtime-docs",
-      "repoStubDirectory": "docs/reference-configs",
-      "packageDirectory": "assets/reference-configs",
-      "resolverCommand": "forge docs path <doc-id>",
-      "stubMarker": "<!-- forge: reference-config-stub v1 -->"
-    }
-  },
   "helpers": {
     "runtimeDirectory": "package:assets/templates/helpers",
     "compatibilityDirectory": "scripts",
     "scripts": [
-      "new-spec.sh",
       "new-sprint.sh",
       "new-plan.sh",
       "capture-plan.sh",
@@ -102,7 +92,6 @@
       "sprint-backlog.sh",
       "check-task-sync.sh",
       "check-deploy-sql-order.sh",
-      "check-architecture-sync.sh",
       "check-agent-tooling.sh",
       "check-context-files.sh",
       "check-brain-manifest.sh",
@@ -113,14 +102,9 @@
       "switch-plan.sh",
       "workflow-contract.ts",
       "inspect-project-state.ts",
-      "migrate-workflow-docs.ts",
       "migrate-project-template.sh",
       "capability-resolver.ts",
-      "architecture-event.ts",
       "capability-config.ts",
-      "architecture-queue.sh",
-      "context-contract-sync.sh",
-      "workstream-sync.sh",
       "prepare-codex-handoff.sh",
       "codex-handoff-resume.sh"
     ],
@@ -130,14 +114,10 @@
   "artifacts": {
     "runtimeManifest": "forge.config.json",
     "requiredDirectories": [
-      "docs",
-      "docs/reference-configs",
-      "docs/researches",
       "tasks"
     ],
     "requiredFiles": [
       "forge.config.json",
-      "docs/spec.md",
       "tasks/todos.md",
       "tasks/lessons.md"
     ],
@@ -197,26 +177,12 @@
     ]
   },
   "documents": {
-    "spec": "docs/spec.md",
     "planDirectory": "plans",
     "deferredGoalLedger": "tasks/todos.md",
-    "lessonsLog": "tasks/lessons.md",
-    "researchReportsDirectory": "docs/researches"
+    "lessonsLog": "tasks/lessons.md"
   },
   "adoptionTemplates": {
     "files": {
-      "spec": {
-        "document": "spec",
-        "reason": "Create deterministic product spec placeholder when missing",
-        "lines": [
-          "# Product Spec: {{repoName}}",
-          "",
-          "> **Status**: Draft",
-          "",
-          "Describe the product intent, users, workflows, acceptance scenarios, and constraints before implementation.",
-          ""
-        ]
-      },
       "deferredGoalLedger": {
         "document": "deferredGoalLedger",
         "reason": "Create deferred-goal ledger when missing",
@@ -391,14 +357,11 @@
           "cleanupMode": "generated_helper",
           "paths": [
             "scripts/architecture-drift.sh",
-            "scripts/architecture-event.ts",
-            "scripts/architecture-queue.sh",
             "scripts/archive-workflow.sh",
             "scripts/capability-config.ts",
             "scripts/capability-resolver.ts",
             "scripts/capture-plan.sh",
             "scripts/check-agent-tooling.sh",
-            "scripts/check-architecture-sync.sh",
             "scripts/check-brain-manifest.sh",
             "scripts/check-context-files.sh",
             "scripts/check-deploy-sql-order.sh",
@@ -406,7 +369,6 @@
             "scripts/check-task-workflow.sh",
             "scripts/harness-trace-grade.sh",
             "scripts/codex-handoff-resume.sh",
-            "scripts/context-contract-sync.sh",
             "scripts/contract-run.ts",
             "scripts/contract-worktree.sh",
             "scripts/ensure-task-workflow.sh",
@@ -414,9 +376,7 @@
             "scripts/inspect-project-state.ts",
             "scripts/maintenance-triage.sh",
             "scripts/migrate-project-template.sh",
-            "scripts/migrate-workflow-docs.ts",
             "scripts/new-plan.sh",
-            "scripts/new-spec.sh",
             "scripts/new-sprint.sh",
             "scripts/plan-to-todo.sh",
             "scripts/prepare-codex-handoff.sh",
@@ -432,8 +392,7 @@
             "scripts/sync-brain-docs.sh",
             "scripts/verify-contract.sh",
             "scripts/verify-sprint.sh",
-            "scripts/workflow-contract.ts",
-            "scripts/workstream-sync.sh"
+            "scripts/workflow-contract.ts"
           ],
           "summary": "Remove legacy forge helper scripts from root scripts/ only when file content is identifiable as generated forge runtime; preserve ambiguous app-owned scripts."
         },
@@ -512,7 +471,7 @@
           "paths": [
             "assets/templates/helpers/architecture-drift.sh"
           ],
-          "summary": "Remove the retired architecture-drift helper after architecture-queue.sh absorbs request, card, index, and gate ownership."
+          "summary": "Remove the retired architecture-drift helper; architecture decisions belong to the project requirement authority."
         },
         {
           "id": "custom-claude-hooks-preserve",

@@ -33,7 +33,6 @@ Describe the exact outcome this task must deliver.
 
 ```yaml
 allowed_paths:
-  - docs/spec.md
   - plans/
   - tasks/todos.md
   - {{CONTRACT_FILE}}
@@ -77,7 +76,6 @@ delegation:
 ```yaml
 exit_criteria:
   files_exist:
-    - docs/spec.md
   artifacts_exist:
     - .ai/harness/checks/latest.json
     - {{NOTES_FILE}}

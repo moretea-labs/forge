@@ -120,7 +120,6 @@ describe('check execution scheduling', () => {
           scripts: {
             'check:type': 'bun x tsc --noEmit',
             'check:runtime-architecture': 'node scripts/check-runtime-architecture.mjs',
-            'check:architecture-sync': 'bun src/cli/index.ts run check-architecture-sync',
             'check:check-scheduling': 'bun test tests/runtime/check-scheduling.test.ts',
           },
         }),
@@ -137,10 +136,6 @@ describe('check execution scheduling', () => {
               command: ['node', 'scripts/check-runtime-architecture.mjs'],
               effects: { reads: ['.'] },
             },
-            'package:check:architecture-sync': {
-              command: ['bun', 'src/cli/index.ts', 'run', 'check-architecture-sync'],
-              effects: { reads: ['.'], temp: 'isolated', git: 'read' },
-            },
             'package:check:check-scheduling': {
               command: ['bun', 'test', 'tests/runtime/check-scheduling.test.ts'],
               effects: { reads: ['.'], temp: 'isolated', git: 'read' },
@@ -152,7 +147,6 @@ describe('check execution scheduling', () => {
       const requestedCheckIds = [
         'package:check:type',
         'package:check:runtime-architecture',
-        'package:check:architecture-sync',
         'package:check:check-scheduling',
       ];
       const schedule = buildCheckExecutionSchedule({
@@ -164,7 +158,7 @@ describe('check execution scheduling', () => {
 
       expect(schedule.waves).toEqual([{ wave: 1, checkIds: requestedCheckIds, parallelSafe: true }]);
       expect(schedule.conflicts).toEqual([]);
-      expect(schedule.maxParallel).toBe(4);
+      expect(schedule.maxParallel).toBe(3);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

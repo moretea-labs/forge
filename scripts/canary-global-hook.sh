@@ -203,7 +203,7 @@ After install:
   4. Run '$0 status' to confirm canary installed + Codex trust registration
   5. Run '$0 tail' or 'tail ${CANARY_LOG}' to see fires
   6. Repeat across 2-3 repos (opt-in + non-opt-in) for coverage
-  7. Record findings in docs/architecture/global-hook-runtime.md Host Operational Matrix
+  7. Record findings in the active GitHub Issue/Project with exact source/test evidence
   8. Run '$0 uninstall' to clean up
 
 EOF

@@ -31,7 +31,7 @@ Illustrative source/documentation layout only. Controller Home is authoritative 
 ## Workflow Rules
 - Prefer modifying existing files over adding new ones.
 - Respect the selected {{RUNTIME_MODE}} runtime mode and user authorization.
-- Keep product intent in docs/spec.md; tasks/todos.md and tasks/lessons.md are human notes.
+- Keep product intent, architecture decisions, progress, and acceptance in the project Requirement/Issue authority; do not mirror them into repo-local internal docs.
 - Keep live Requirement, Plan, Work, review decisions and verification receipts in Controller Home, not tasks/contracts/ or .ai/harness/.
 - Use an isolated worktree when there is a real writer conflict; preserve unrelated dirty bytes.
 - Commit deliberately after sufficient existing checks; choose integration separately from completing Work.

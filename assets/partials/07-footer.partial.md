@@ -4,20 +4,16 @@ CLAUDE.md is a routing card. Keep context minimal and load only what the current
 
 ### Read First
 - Controller Home Requirement, Plan, Work and receipts: durable execution and continuation authority.
-- docs/spec.md: human product context.
+- Project Requirement/Issue authority: product intent, architecture decisions, progress, and acceptance.
 - tasks/todos.md: deferred goals; tasks/lessons.md: human-readable lessons.
 
 ### Load On Demand
 | Trigger | Reference |
 |---------|-----------|
-| Deep investigation | docs/researches/ |
-| Active plan and Work | Forge Controller Home Plan / Work |
-| Verification and review | Controller Home receipts, exact Git diff and existing checks |
-| Legacy task material | plans/, tasks/contracts/, tasks/reviews/, .ai/harness/ (migration/history only) |
-| Tool routing | docs/reference-configs/agentic-development-flow.md |
-| Runtime reference | docs/reference-configs/harness-overview.md (not live authority) |
-| Product architecture | docs/decisions.md, docs/tech-stack.md |
-| Human changelog | docs/CHANGELOG.md |
+| Deep investigation | source, tests, Git history, and project Requirement/Issue context |
+| Active plan and Work | optional Forge semantic context when explicitly selected |
+| Verification and review | exact Git diff and existing checks |
+| Product/runtime guidance | public README / GitHub Pages |
 
 ---
 

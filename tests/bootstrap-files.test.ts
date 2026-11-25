@@ -31,7 +31,7 @@ describe("Bootstrap Script Contracts", () => {
 
     expect(claude).toContain("@AGENTS.md");
     expect(agents).toContain("GitHub Issues and GitHub Project are the ONLY development progress ledger");
-    expect(agents).toContain("Work is explicit opt-in, never mandatory");
+    expect(agents).toContain("Work / WorkHandle / WorkContract requires complete physical removal");
     for (const content of [claude, agents]) {
       expect(content).not.toContain("Durable progress lives under");
       expect(content).not.toContain("tracked derived status snapshot");
@@ -65,7 +65,7 @@ describe("Bootstrap Script Contracts", () => {
     expect(pkg.files).toContain("assets/");
     expect(pkg.files).not.toContain("docs/reference-configs/");
     expect(cliEntry).toContain("CLI_VERSION");
-    expect(cliEntry).toContain("buildDocsCommand");
+    expect(cliEntry).not.toContain("buildDocsCommand");
     expect(cliEntry).not.toMatch(/\\.version\\(['\"][0-9]+\\.[0-9]+\\.[0-9]+['\"]\\)/);
     expect(pkg.scripts["check:ci"]).toBe("bun run check:main");
     expect(pkg.scripts["check:task"]).toBe("bun scripts/run-governed-gate.ts task");
@@ -74,7 +74,6 @@ describe("Bootstrap Script Contracts", () => {
       "check:brain-manifest",
       "check:context-files",
       "check:deploy-sql",
-      "check:architecture-sync",
       "check:task-sync",
       "check:task-workflow",
       "sync:brain-docs",
@@ -85,7 +84,6 @@ describe("Bootstrap Script Contracts", () => {
     expect(pkg.scripts["check:brain-manifest"]).toBe("bun src/cli/index.ts run check-brain-manifest");
     expect(pkg.scripts["check:task-sync"]).toBe("bun src/cli/index.ts run check-task-sync");
     expect(pkg.scripts["check:deploy-sql"]).toBe("bun src/cli/index.ts run check-deploy-sql-order");
-    expect(pkg.scripts["check:architecture-sync"]).toBe("bun src/cli/index.ts run check-architecture-sync");
     expect(pkg.scripts["check:task-workflow"]).toBe("bun src/cli/index.ts run check-task-workflow --strict");
     expect(pkg.scripts["check:context-files"]).toBe("bun src/cli/index.ts run check-context-files");
     expect(pkg.scripts["sync:brain-docs"]).toBe("bun src/cli/index.ts run sync-brain-docs --all");
@@ -124,25 +122,19 @@ describe("Bootstrap Script Contracts", () => {
     expect(content).toContain("create_contract_directories");
     expect(content).toContain("cat > tasks/todos.md");
     expect(content).toContain("cat > tasks/lessons.md");
-    expect(content).toContain("cat > docs/researches/README.md");
-    expect(content).toContain("cat > docs/spec.md");
+    expect(content).not.toContain("cat > docs/researches/README.md");
+    expect(content).not.toContain("cat > docs/spec.md");
     expect(content).toContain("install_workflow_contract");
-    expect(content).toContain("pi_install_reference_configs");
+    expect(content).not.toContain("pi_install_reference_configs");
     expect(content).not.toContain("install_workflow_helpers");
     expect(content).not.toContain("pi_install_templates");
     expect(content).not.toContain("docs/TODO.md");
 
     expect(contract.version).toBe("1.5.0");
     expect(contract.artifacts.runtimeManifest).toBe("forge.config.json");
-    expect(contract.artifacts.requiredDirectories).toEqual([
-      "docs",
-      "docs/reference-configs",
-      "docs/researches",
-      "tasks",
-    ]);
+    expect(contract.artifacts.requiredDirectories).toEqual(["tasks"]);
     expect(contract.artifacts.requiredFiles).toEqual([
       "forge.config.json",
-      "docs/spec.md",
       "tasks/todos.md",
       "tasks/lessons.md",
     ]);
@@ -181,9 +173,9 @@ describe("Bootstrap Script Contracts", () => {
     expect(content).toContain("create_contract_directories");
     expect(content).toContain("cat > tasks/todos.md");
     expect(content).toContain("cat > tasks/lessons.md");
-    expect(content).toContain("docs/researches/README.md");
+    expect(content).not.toContain("docs/researches/README.md");
     expect(content).toContain("install_workflow_contract");
-    expect(content).toContain("pi_install_reference_configs");
+    expect(content).not.toContain("pi_install_reference_configs");
     expect(content).toContain("ensure_runtime_gitignore_block");
     expect(content).toContain("install_hook_settings_template");
     expect(content).toContain("Controller Home");
@@ -206,16 +198,10 @@ describe("Bootstrap Script Contracts", () => {
     expect(contract.artifacts.runtimeManifest).toBe("forge.config.json");
     expect(contract.artifacts.requiredFiles).toEqual([
       "forge.config.json",
-      "docs/spec.md",
       "tasks/todos.md",
       "tasks/lessons.md",
     ]);
-    expect(contract.artifacts.requiredDirectories).toEqual([
-      "docs",
-      "docs/reference-configs",
-      "docs/researches",
-      "tasks",
-    ]);
+    expect(contract.artifacts.requiredDirectories).toEqual(["tasks"]);
   });
 
   test("prompt-guard should monitor tasks-first files", () => {
@@ -224,7 +210,7 @@ describe("Bootstrap Script Contracts", () => {
 
     expect(content).toContain("tasks/todos.md");
     expect(content).toContain("tasks/lessons.md");
-    expect(content).toContain("docs/researches/");
+    expect(content).not.toContain("docs/researches/");
     expect(workflowState).toContain("git status --porcelain=v1");
     expect(content).toContain("has_changes_glob");
     expect(content).toContain("PlanStatusGuard");

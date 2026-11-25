@@ -4,9 +4,10 @@
 - Prefer data modeling over branch-heavy conditionals and derivation over duplicated state.
 
 ### Single Source of Truth
-- Controller Home SQLite owns live Requirement, Plan, Work, execution state and evidence in forge.config.json projects.
-- docs/spec.md, docs/researches/, tasks/todos.md, tasks/lessons.md and architecture docs are human-readable context; src/ contains implementation and tests/ contains checks.
-- Legacy tasks/contracts/, tasks/reviews/, tasks/notes/ and .ai/harness/ never own current workflow state.
+- GitHub Issue/Project owns Forge source requirements, architecture decisions, progress, and acceptance.
+- Source/public APIs/Git own implementation facts; tests and static checks own verification facts.
+- Controller Home owns runtime execution facts and receipts, not a parallel source-development ledger.
+- README/GitHub Pages are public documentation; tasks/todos.md and tasks/lessons.md remain narrow project artifacts.
 
 ### Quality Rules
 - Keep functions intention-revealing; use the minimum sufficient existing verification.

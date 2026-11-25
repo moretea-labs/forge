@@ -106,7 +106,7 @@ for file in "${changed_files[@]}"; do
       has_task_sync_change=1
       has_current_status_change=1
       ;;
-    tasks/*|docs/researches/*)
+    tasks/*)
       has_task_sync_change=1
       ;;
     *)

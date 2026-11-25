@@ -352,7 +352,6 @@ export function runMcpSetupChatgpt(opts: {
   const existingChatgpt = { ...(existingConfig?.chatgpt ?? {}) };
   if (opts.clearEndpoint === true) delete existingChatgpt.endpoint;
   const configPath = mcpControllerHomeLocalConfigPath(controllerHome);
-  const guidePath = repoRoot ? join(repoRoot, 'docs', 'forge-chatgpt-mcp-setup.md') : undefined;
   const token = ensureMcpControllerHomeBearerToken(controllerHome);
   const oauth = ensureMcpControllerHomeOAuthPassphrase(controllerHome);
   if (token.changed) changed.push(token.path);
@@ -407,8 +406,7 @@ export function runMcpSetupChatgpt(opts: {
     },
   };
   writeFileIfChanged(configPath, `${JSON.stringify(config, null, 2)}\n`, changed);
-  if (repoRoot && guidePath) {
-    writeFileIfChanged(guidePath, chatgptGuideMarkdown(), changed);
+  if (repoRoot) {
     ensureGitignoreEntries(
       repoRoot,
       [
@@ -447,9 +445,6 @@ export function runMcpSetupChatgpt(opts: {
       `[forge mcp] Auth: OAuth passphrase (${relative(displayRoot, oauth.path)})`,
       `[forge mcp] Bearer fallback token: ${relative(displayRoot, token.path)}`,
       `[forge mcp] Config: ${relative(displayRoot, configPath)}`,
-      ...(guidePath
-        ? [`[forge mcp] Guide: ${relative(displayRoot, guidePath)} (generic; endpoint stays in ignored local config)`]
-        : []),
       `[forge mcp] Runtime state: ${mcpControllerHomeRuntimeStatePath(controllerHome)}`,
       opts.userLevel
         ? 'Next: forge setup next'
@@ -542,22 +537,14 @@ export function runMcpSetupClaude(opts: {
   };
 }
 
-export function runMcpPrintGuide(opts: { repo?: string; endpoint?: string; write?: boolean }): McpSetupResult {
+export function runMcpPrintGuide(opts: { repo?: string; endpoint?: string }): McpSetupResult {
   const repoRoot = resolveMcpRepoRoot(opts.repo ?? '.');
-  const changed: string[] = [];
   const endpoint = normalizePublicMcpEndpoint(opts.endpoint);
-  const content = chatgptGuideMarkdown(opts.write === true ? undefined : endpoint);
-  if (opts.write === true) {
-    writeFileIfChanged(join(repoRoot, 'docs', 'forge-chatgpt-mcp-setup.md'), chatgptGuideMarkdown(), changed);
-  }
   return {
     status: 'ok',
     repoRoot,
-    changed,
-    lines: [
-      content.trimEnd(),
-      ...(opts.write === true && endpoint ? ['', `[forge mcp] ChatGPT endpoint for this session: ${endpoint}`] : []),
-    ],
+    changed: [],
+    lines: [chatgptGuideMarkdown(endpoint).trimEnd()],
   };
 }
 
@@ -632,7 +619,6 @@ export function runMcpDoctor(opts: {
       localConfig:
         existsSync(mcpControllerHomeLocalConfigPath(controllerHome)) ||
         Boolean(repoRoot && existsSync(join(repoRoot, '.forge', 'mcp.local.json'))),
-      ...(repoRoot ? { guide: existsSync(join(repoRoot, 'docs', 'forge-chatgpt-mcp-setup.md')) } : {}),
       authConfigured:
         (authMode === 'oauth' &&
           (existsSync(mcpControllerHomeOAuthPath(controllerHome)) ||
@@ -730,9 +716,7 @@ export function runMcpDoctor(opts: {
               ? [`[forge mcp] Repo: ${repoRoot}`]
               : [`[forge mcp] Scope: user Controller (${controllerHome})`]),
             `[forge mcp] Status: ${report.status}`,
-            ...(repoRoot
-              ? [`[forge mcp] ChatGPT guide: ${report.mcp.guide ? 'present' : 'missing'}`]
-              : [`[forge mcp] User Controller config: ${report.mcp.localConfig ? 'present' : 'missing'}`]),
+            `[forge mcp] Local config: ${report.mcp.localConfig ? 'present' : 'missing'}`,
             `[forge mcp] ChatGPT MCP server name: ${
               configuredServerName
                 ? `${configuredServerName}${serverNameNeedsMigration ? ' (legacy shared name; rerun setup to disambiguate this Forge instance)' : ''}`

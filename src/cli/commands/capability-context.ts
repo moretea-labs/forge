@@ -14,8 +14,6 @@ export type Capability = {
   name: string;
   prefixes: string[];
   contract_files: ContractFiles;
-  architecture_module: string;
-  workstream_dir: string;
   lsp_profile: string;
   verification_hints: string[];
 };
@@ -46,7 +44,7 @@ type RequestEntry = {
   ts: string;
   request_id: string;
   status: 'pending';
-  source: 'cli' | 'architecture-event';
+  source: 'cli';
   path: string;
   capability_id: string;
   matched_prefix: string;
@@ -102,7 +100,6 @@ export type SyncResult = {
 const REGISTRY_PATH = '.ai/context/capabilities.json';
 const DEFAULT_MANIFEST_PATH = '.ai/context/capability-source-map.json';
 const QUEUE_PATH = '.ai/harness/capability-context/requests.jsonl';
-const ARCH_EVENTS_PATH = '.ai/harness/architecture/events.jsonl';
 const BEGIN = '<!-- BEGIN CAPABILITY CONTEXT -->';
 const END = '<!-- END CAPABILITY CONTEXT -->';
 
@@ -277,11 +274,6 @@ function pendingRequests(repo: string): RequestEntry[] {
   );
 }
 
-function latestArchitectureEvent(repo: string): Record<string, unknown> | null {
-  const entries = readJsonl<Record<string, unknown>>(path.join(repo, ARCH_EVENTS_PATH));
-  return entries.at(-1) ?? null;
-}
-
 function requestId(capabilityId: string, filePath: string, requestFile = ''): string {
   return [capabilityId, filePath, requestFile || 'manual'].join(':');
 }
@@ -289,48 +281,29 @@ function requestId(capabilityId: string, filePath: string, requestFile = ''): st
 export function runCapabilityContextRequest(opts: {
   repo?: string;
   path?: string;
-  fromLatestArchitectureEvent?: boolean;
 }): { repo: string; entry: RequestEntry | null; status: 'queued' | 'existing' | 'skipped'; lines: string[] } {
   const repo = repoRoot(opts.repo);
   const registry = readRegistry(repo);
-  const event = opts.fromLatestArchitectureEvent ? latestArchitectureEvent(repo) : null;
-  const eventPath = typeof event?.file_path === 'string' ? event.file_path : '';
-  const inputPath = opts.path || eventPath;
+  const inputPath = opts.path || '';
   const lines: string[] = [];
 
   if (!inputPath) {
     return { repo, entry: null, status: 'skipped', lines: ['[CapabilityContext] No changed path to queue.'] };
   }
 
-  let capability: Capability;
-  let matchedPrefix: string;
-  const eventCapabilityId = typeof event?.capability_id === 'string' ? event.capability_id : '';
-  if (eventCapabilityId) {
-    capability = findCapabilityById(registry, eventCapabilityId);
-    matchedPrefix = typeof event?.matched_prefix === 'string'
-      ? event.matched_prefix
-      : normalizeRepoPath(capability.prefixes[0] || '.', repo, true);
-  } else {
-    const match = findCapabilityByPath(registry, repo, inputPath);
-    capability = match.capability;
-    matchedPrefix = match.matchedPrefix;
-  }
+  const match = findCapabilityByPath(registry, repo, inputPath);
+  const capability = match.capability;
+  const matchedPrefix = match.matchedPrefix;
 
   const relPath = normalizeRepoPath(inputPath, repo);
   const entry: RequestEntry = {
     ts: new Date().toISOString(),
-    request_id: requestId(
-      capability.id,
-      relPath,
-      typeof event?.request_file === 'string' ? event.request_file : '',
-    ),
+    request_id: requestId(capability.id, relPath),
     status: 'pending',
-    source: event ? 'architecture-event' : 'cli',
+    source: 'cli',
     path: relPath,
     capability_id: capability.id,
     matched_prefix: matchedPrefix,
-    request_file: typeof event?.request_file === 'string' ? event.request_file : undefined,
-    spawn_recommended: typeof event?.spawn_recommended === 'boolean' ? event.spawn_recommended : undefined,
   };
 
   const queueFile = path.join(repo, QUEUE_PATH);
@@ -379,8 +352,6 @@ function defaultManifestEntry(capability: Capability): ManifestCapability {
     positioning: `Owns the ${capability.id} capability boundary declared in .ai/context/capabilities.json.`,
     source_map: [
       { label: 'Primary prefix', path: capability.prefixes[0] || '.', role: 'entrypoint' },
-      { label: 'Architecture module', path: capability.architecture_module, role: 'design-source' },
-      { label: 'Workstream', path: capability.workstream_dir, role: 'durable-progress' },
     ],
     refresh_hints: capability.verification_hints?.length
       ? capability.verification_hints
@@ -419,8 +390,6 @@ function renderCapabilityBlock(capability: Capability, entry: ManifestCapability
     `- Domain: \`${capability.domain}\``,
     `- Name: \`${capability.name}\``,
     `- Primary prefix: \`${capability.prefixes[0] || '.'}\``,
-    `- Architecture module: \`${capability.architecture_module}\``,
-    `- Workstream: \`${capability.workstream_dir}\``,
     '',
     '## Positioning',
     '',
@@ -565,14 +534,9 @@ export function buildCapabilityContextCommand(): Command {
     .command('request')
     .option('--repo <path>', 'Target repository path (defaults to cwd)')
     .option('--path <path>', 'Changed file path to resolve')
-    .option('--from-latest-architecture-event', 'Use the latest architecture event as the request source')
     .option('--json', 'Output JSON')
-    .action((opts: { repo?: string; path?: string; fromLatestArchitectureEvent?: boolean; json?: boolean }) => {
-      const result = runCapabilityContextRequest({
-        repo: opts.repo,
-        path: opts.path,
-        fromLatestArchitectureEvent: opts.fromLatestArchitectureEvent === true,
-      });
+    .action((opts: { repo?: string; path?: string; json?: boolean }) => {
+      const result = runCapabilityContextRequest({ repo: opts.repo, path: opts.path });
       printResult(result, result.lines, opts.json);
     });
 

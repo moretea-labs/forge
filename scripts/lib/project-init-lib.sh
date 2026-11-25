@@ -84,72 +84,14 @@ PI_EXTERNAL_TOOLING_HOSTS_DEFAULT=$(cat <<'EOF_EXTERNAL_TOOLING_HOSTS'
 ]
 EOF_EXTERNAL_TOOLING_HOSTS
 )
-PI_TEMPLATE_RESEARCH=$(cat <<'EOF_TEMPLATE_RESEARCH'
-# {{PROJECT_NAME}} — Research Notes
-
-> **Last Updated**: {{DATE}}
-> **Scope**: (what area of the codebase was researched)
-> **Usage**: Store deep codebase findings and hidden contracts here, not in chat-only summaries.
-
-## Codebase Map
-| File | Purpose | Key Exports |
-|------|---------|-------------|
-
-## Architecture Observations
-### Patterns & Conventions
-### Implicit Contracts
-### Edge Cases & Intricacies
-
-## Technical Debt / Risks
-
-## Research Conclusions
-### What to Preserve
-### What to Change
-### Open Questions
-EOF_TEMPLATE_RESEARCH
-)
-PI_TEMPLATE_SPEC=$(cat <<'EOF_TEMPLATE_SPEC'
-# Product Spec: {{PROJECT_NAME}}
-
-> **Status**: Draft
-> **Last Updated**: {{TIMESTAMP}}
-> **Owner**: Planner
-
-## Product Outcome
-
-Describe the stable user or operator outcome this repo should deliver.
-
-## Success Criteria
-
-- Primary workflow:
-- Quality bar:
-- Out of scope:
-
-## Constraints
-
-- Technical:
-- Compliance:
-- Delivery:
-
-## Acceptance Scenarios
-
-- Given
-  When
-  Then
-
-## Open Questions
-
-- ...
-EOF_TEMPLATE_SPEC
-)
 PI_TEMPLATE_PLAN=$(cat <<'EOF_TEMPLATE_PLAN'
 # Plan: {{TITLE}}
 
 > **Status**: Draft
 > **Created**: {{TIMESTAMP}}
 > **Slug**: {{SLUG}}
-> **Spec**: `docs/spec.md`
-> **Research**: See `docs/researches/`
+> **Requirement**: GitHub Issue/Project
+> **Research Notes**: `tasks/notes/`
 > **Task Contract**: `tasks/contracts/{{ARTIFACT_STEM}}.contract.md`
 > **Task Review**: `tasks/reviews/{{ARTIFACT_STEM}}.review.md`
 > **Implementation Notes**: `tasks/notes/{{ARTIFACT_STEM}}.notes.md`
@@ -407,7 +349,7 @@ PI_TEMPLATE_IMPLEMENTATION_NOTES=$(cat <<'EOF_TEMPLATE_IMPLEMENTATION_NOTES'
 ## Promotion Candidates
 
 - Promote to `tasks/lessons.md` only after a repeated correction or failure pattern.
-- Promote to `docs/researches/` only when it is durable repo knowledge with evidence.
+- Promote durable product or architecture conclusions into the tracked GitHub Issue/Project with evidence.
 - Promote to harness asset files only after verification across more than one task or fixture.
 EOF_TEMPLATE_IMPLEMENTATION_NOTES
 )
@@ -419,9 +361,6 @@ PI_EVALUATION_PROFILE_DEFAULT="browser-qa"
 PI_HANDOFF_PROFILE_DEFAULT="artifact-aware"
 PI_DOCUMENTATION_PROFILE_DEFAULT="minimal-agentic"
 PI_DEFAULT_LSP_PROFILE="typescript-lsp"
-PI_MINIMAL_REFERENCE_CONFIGS="harness-overview.md agentic-development-flow.md external-tooling.md sprint-contracts.md handoff-protocol.md document-generation.md global-working-rules.md"
-PI_FULL_REFERENCE_CONFIGS="agentic-development-flow.md ai-workflows.md changelog-versioning.md coding-standards.md development-protocol.md document-generation.md evaluator-rubric.md external-tooling.md git-strategy.md global-working-rules.md handoff-protocol.md harness-overview.md hook-operations.md release-deploy.md spa-day-protocol.md sprint-contracts.md workflow-orchestration.md"
-PI_REFERENCE_CONFIG_STUB_MARKER="<!-- forge: reference-config-stub v1 -->"
 
 pi_write_file_if_apply() {
   local mode="${1:-apply}"
@@ -978,18 +917,6 @@ pi_install_templates() {
 
   mkdir -p "$output_dir"
 
-  if [[ -f "$templates_dir/research.template.md" ]]; then
-    cp "$templates_dir/research.template.md" "$output_dir/research.template.md"
-  else
-    printf '%s\n' "$PI_TEMPLATE_RESEARCH" > "$output_dir/research.template.md"
-  fi
-
-  if [[ -f "$templates_dir/spec.template.md" ]]; then
-    cp "$templates_dir/spec.template.md" "$output_dir/spec.template.md"
-  else
-    printf '%s\n' "$PI_TEMPLATE_SPEC" > "$output_dir/spec.template.md"
-  fi
-
   if [[ -f "$templates_dir/plan.template.md" ]]; then
     cp "$templates_dir/plan.template.md" "$output_dir/plan.template.md"
   else
@@ -1029,7 +956,7 @@ pi_install_helpers() {
   local target_dir="$1"
   local helpers_dir="$2"
   local mode="${3:-apply}"
-  local helper_names="${4:-new-spec.sh new-sprint.sh new-plan.sh capture-plan.sh plan-to-todo.sh contract-run.ts contract-worktree.sh ship-worktrees.sh archive-workflow.sh refresh-current-status.sh prepare-handoff.sh verify-contract.sh summarize-failures.sh verify-sprint.sh sprint-backlog.sh check-task-sync.sh check-deploy-sql-order.sh check-architecture-sync.sh check-agent-tooling.sh check-context-files.sh check-brain-manifest.sh sync-brain-docs.sh select-agent-context-blocks.sh ensure-task-workflow.sh check-task-workflow.sh switch-plan.sh workflow-contract.ts inspect-project-state.ts migrate-workflow-docs.ts migrate-project-template.sh capability-resolver.ts architecture-event.ts capability-config.ts architecture-queue.sh context-contract-sync.sh workstream-sync.sh prepare-codex-handoff.sh codex-handoff-resume.sh}"
+  local helper_names="${4:-new-sprint.sh new-plan.sh capture-plan.sh plan-to-todo.sh contract-run.ts contract-worktree.sh ship-worktrees.sh archive-workflow.sh refresh-current-status.sh prepare-handoff.sh verify-contract.sh summarize-failures.sh verify-sprint.sh sprint-backlog.sh check-task-sync.sh check-deploy-sql-order.sh check-agent-tooling.sh check-context-files.sh check-brain-manifest.sh sync-brain-docs.sh select-agent-context-blocks.sh ensure-task-workflow.sh check-task-workflow.sh switch-plan.sh workflow-contract.ts inspect-project-state.ts migrate-project-template.sh capability-resolver.ts capability-config.ts prepare-codex-handoff.sh codex-handoff-resume.sh}"
   local scripts_dir="$target_dir/scripts"
   local runtime_dir="$target_dir/.ai/harness/scripts"
   local helper_name
@@ -1348,162 +1275,6 @@ pi_print_external_tooling_report() {
   printf '%s\n' "$output" | sed 's/^/  /'
 }
 
-pi_reference_config_names() {
-  local ref_assets_dir="$1"
-  local name
-
-  if pi_should_generate_full_docs; then
-    find "$ref_assets_dir" -maxdepth 1 -type f -name '*.md' \
-      ! -name 'AGENTS.md' \
-      ! -name 'CLAUDE.md' \
-      -print 2>/dev/null | sort | while IFS= read -r ref_file; do
-      basename "$ref_file"
-    done
-    return 0
-  fi
-
-  for name in $PI_MINIMAL_REFERENCE_CONFIGS; do
-    [[ -f "$ref_assets_dir/$name" ]] || continue
-    printf '%s\n' "$name"
-  done
-}
-
-pi_install_reference_configs() {
-  local target_dir="$1"
-  local ref_assets_dir="$2"
-  local mode="${3:-apply}"
-  local ref_dir="$target_dir/docs/reference-configs"
-  local name
-  local source_repo_target=0
-
-  if [[ "$mode" != "apply" ]]; then
-    echo "[dry-run] install $(pi_documentation_profile) reference config stubs into $ref_dir"
-    return 0
-  fi
-
-  mkdir -p "$ref_dir"
-  if [[ ! -d "$ref_assets_dir" ]]; then
-    return 0
-  fi
-
-  if [[ -d "$target_dir/assets/reference-configs" ]]; then
-    local target_refs_abs refs_abs
-    target_refs_abs="$(cd "$target_dir/assets/reference-configs" && pwd)"
-    refs_abs="$(cd "$ref_assets_dir" && pwd)"
-    if [[ "$target_refs_abs" == "$refs_abs" ]]; then
-      source_repo_target=1
-    fi
-  fi
-
-  while IFS= read -r name; do
-    [[ -n "$name" ]] || continue
-    if [[ "$source_repo_target" -eq 1 ]]; then
-      cp "$ref_assets_dir/$name" "$ref_dir/$name"
-      continue
-    fi
-
-    if pi_should_preserve_reference_config "$ref_dir/$name" "$ref_assets_dir/$name"; then
-      echo "[forge] preserved user-authored reference config: docs/reference-configs/$name"
-      continue
-    fi
-
-    pi_write_reference_config_stub "$ref_dir/$name" "$name" "$ref_assets_dir"
-  done < <(pi_reference_config_names "$ref_assets_dir")
-}
-
-pi_reference_config_doc_id() {
-  local name="$1"
-  printf '%s\n' "${name%.md}"
-}
-
-pi_forge_version_for_refs() {
-  local ref_assets_dir="$1"
-  local root_dir
-  root_dir="$(cd "$ref_assets_dir/../.." 2>/dev/null && pwd || true)"
-  if [[ -z "$root_dir" ]]; then
-    printf '%s\n' "unknown"
-    return 0
-  fi
-  local version_file="$root_dir/package.json"
-
-  if [[ -f "$version_file" ]]; then
-    sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$version_file" | head -n 1
-    return 0
-  fi
-
-  printf '%s\n' "unknown"
-}
-
-pi_should_preserve_reference_config() {
-  local target_file="$1"
-  local asset_file="$2"
-
-  [[ -f "$target_file" ]] || return 1
-  if [[ -f "$asset_file" ]] && cmp -s "$target_file" "$asset_file"; then
-    return 1
-  fi
-  if grep -Fq "$PI_REFERENCE_CONFIG_STUB_MARKER" "$target_file"; then
-    return 1
-  fi
-  local target_heading asset_heading
-  target_heading="$(pi_reference_config_first_heading "$target_file")"
-  asset_heading="$(pi_reference_config_first_heading "$asset_file")"
-  if [[ -n "$asset_heading" && "$target_heading" == "$asset_heading" ]]; then
-    return 1
-  fi
-
-  return 0
-}
-
-pi_reference_config_first_heading() {
-  local file="$1"
-  [[ -f "$file" ]] || return 0
-  sed -n 's/^# //p' "$file" | head -n 1
-}
-
-pi_write_reference_config_stub() {
-  local output_file="$1"
-  local name="$2"
-  local ref_assets_dir="$3"
-  local doc_id
-  local version
-
-  doc_id="$(pi_reference_config_doc_id "$name")"
-  version="$(pi_forge_version_for_refs "$ref_assets_dir")"
-
-  cat > "$output_file" <<EOF_REFERENCE_STUB
-$PI_REFERENCE_CONFIG_STUB_MARKER
-# forge Reference: $doc_id
-
-> **Runtime Docs**: user-level forge reference
-> **Doc ID**: $doc_id
-> **Version**: $version
-> **Source Command**: \`forge docs path $doc_id\`
-
-This repo keeps authored project documentation and declarative configuration in Git.
-Mutable Requirement/Plan/Work, verification/evidence, session, plugin, and cache state
-belongs to Forge Controller Home. The full generic runtime guide is supplied by the
-installed forge package/user-level runtime so each repository does not need to refresh
-a full copy of shared documentation.
-
-Use:
-
-\`\`\`bash
-forge docs path $doc_id
-forge docs show $doc_id
-\`\`\`
-EOF_REFERENCE_STUB
-}
-
-pi_policy_reference_config_names() {
-  if pi_should_generate_full_docs; then
-    printf '%s\n' $PI_FULL_REFERENCE_CONFIGS
-    return 0
-  fi
-
-  printf '%s\n' $PI_MINIMAL_REFERENCE_CONFIGS
-}
-
 pi_json_string_array_from_lines() {
   local first=1
   local item
@@ -1700,7 +1471,6 @@ pi_write_capability_registry() {
         "agents": "$rel_dir/AGENTS.md",
         "claude": "$rel_dir/CLAUDE.md"
       },
-      "architecture_module": "docs/architecture/modules/$domain/$name.md",
       "lsp_profile": "$(pi_lsp_profile)",
       "verification_hints": ["record local commands here before implementation"]
     }
@@ -1758,14 +1528,6 @@ JS_EOF
     if [[ -n "$capability_entries" ]]; then
       printf '%s,\n' "$capability_entries"
     fi
-    cat <<'EOF_CONTEXT_ENTRY'
-    {
-      "path": "docs/reference-configs/*.md",
-      "priority": "low",
-      "char_budget": 900,
-      "purpose": "deep-doc"
-    }
-EOF_CONTEXT_ENTRY
     return 0
   fi
 
@@ -1794,18 +1556,6 @@ EOF_CONTEXT_ENTRY
     done
   done < <(pi_context_block_dirs "$target_dir")
 
-  if [[ "$first_entry" -eq 0 ]]; then
-    printf ',\n'
-  fi
-
-  cat <<'EOF_CONTEXT_ENTRY'
-    {
-      "path": "docs/reference-configs/*.md",
-      "priority": "low",
-      "char_budget": 900,
-      "purpose": "deep-doc"
-    }
-EOF_CONTEXT_ENTRY
 }
 
 pi_root_context_content() {
@@ -1817,12 +1567,12 @@ This is the root routing contract for Claude Code and Codex.
 ## Root Workflow Contract
 
 - Keep sibling `CLAUDE.md` and `AGENTS.md` files aligned. Claude Code consumes `CLAUDE.md`; Codex consumes `AGENTS.md`.
-- Treat `docs/spec.md`, `docs/researches/`, `tasks/todos.md`, `tasks/lessons.md`, and intentional architecture/project documents as repository-authored truth.
-- Mutable Requirement/Plan/Work/Controller, verification/evidence, session/lease, plugin state, and generated Runtime projections live in Forge Controller Home, not repo-local lifecycle files.
+- Treat current source, tests, `tasks/todos.md`, and `tasks/lessons.md` as repository-authored facts in their domains; Forge source requirements, decisions, progress, and acceptance live in GitHub Issue/Project.
+- Runtime-owned verification/evidence, session/lease, plugin state, and generated projections live in Forge Controller Home, not repo-local lifecycle files.
 - `.ai/context/context-map.json` and `.ai/context/capabilities.json`, when present, are declarative context metadata only; they are not execution authority.
 - Do not infer local `CLAUDE.md` or `AGENTS.md` files from broad physical layouts such as `apps/*`, `packages/*`, or `services/*`.
 - Put capability-specific ownership, entrypoints, and verification commands in explicitly selected functional-block contracts.
-- Keep root context concise; route durable human-authored detail into product, architecture, research, or intentional project documents.
+- Keep root context concise; route durable product/architecture decisions and acceptance evidence into the tracked GitHub Issue/Project.
 - Treat `_ref/` as ignored external reference material and `_ops/` as ignored local operations residue.
 - Use Controller Home for mutable workflow state instead of recreating repo-local task/workstream/session projections.
 - For architecture migrations, use one bounded Delivery Transaction: batch discovery -> architecture/root-cause decision -> freeze scope -> coherent implementation -> whole-diff review -> focused validation wave -> canonical gates -> one delivery/cleanup.
@@ -1934,15 +1684,7 @@ pi_ensure_harness_state_surface() {
     return 0
   fi
 
-  mkdir -p "$target_dir/tasks" "$target_dir/docs/researches"
-  if [[ ! -f "$target_dir/docs/researches/README.md" ]]; then
-    cat > "$target_dir/docs/researches/README.md" <<'RESEARCH_README_EOF'
-# Research Reports
-
-Durable, human-reviewable research conclusions live here. Machine execution state,
-receipts, sessions, caches, and generated reports belong to Forge Controller Home.
-RESEARCH_README_EOF
-  fi
+  mkdir -p "$target_dir/tasks" "$target_dir/tasks/notes"
 }
 
 pi_resolve_js_runtime() {
@@ -2101,7 +1843,6 @@ pi_ensure_task_sync() {
     "check:brain-manifest": "forge run check-brain-manifest",
     "check:context-files": "forge run check-context-files",
     "check:deploy-sql": "forge run check-deploy-sql-order",
-    "check:architecture-sync": "forge run check-architecture-sync",
     "check:task": "forge run check-task-workflow --strict",
     "check:task-sync": "forge run check-task-sync",
     "check:task-workflow": "forge run check-task-workflow --strict",
@@ -2127,7 +1868,6 @@ pkg.scripts ??= {};
 pkg.scripts["check:brain-manifest"] = "forge run check-brain-manifest";
 pkg.scripts["check:context-files"] = "forge run check-context-files";
 pkg.scripts["check:deploy-sql"] = "forge run check-deploy-sql-order";
-pkg.scripts["check:architecture-sync"] = "forge run check-architecture-sync";
 pkg.scripts["check:task"] = "forge run check-task-workflow --strict";
 pkg.scripts["check:task-sync"] = "forge run check-task-sync";
 pkg.scripts["check:task-workflow"] = "forge run check-task-workflow --strict";

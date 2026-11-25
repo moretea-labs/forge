@@ -259,8 +259,7 @@ export function buildMcpCommand(): Command {
     .description('Print the ChatGPT Connector setup guide')
     .option('--repo <path>', 'Repository root to inspect', '.')
     .option('--endpoint <url>', 'Public HTTPS /mcp endpoint to include in the guide')
-    .option('--write', 'Write docs/forge-chatgpt-mcp-setup.md')
-    .action((rawOpts: { repo?: string; endpoint?: string; write?: boolean }) => {
+    .action((rawOpts: { repo?: string; endpoint?: string }) => {
       void runMcpAction(() => {
         const result = runMcpPrintGuide(rawOpts);
         console.log(result.lines.join('\n'));

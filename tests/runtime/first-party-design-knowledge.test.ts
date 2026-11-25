@@ -73,7 +73,8 @@ describe('first-party Design knowledge package', () => {
       digest: `sha256:${entry.sha256}`,
       truncated: false,
     });
-    expect(ios.sourceProvenance).toContain('moretea-labs/forge:docs/architecture/CURRENT.md');
+    expect(ios.sourceProvenance).toContain('moretea-labs/forge:tests/runtime/ios-development.test.ts');
+    expect(ios.sourceProvenance).toContain('moretea-labs/forge:src/runtime/resources/claims/conflicts.ts');
     expect(ios.content).toContain('Simulator build is not a physical-device build');
     expect(ios.content).toContain('Optical centering is not proof');
   });
