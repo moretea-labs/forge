@@ -357,6 +357,17 @@ describe('runtime command surface', () => {
     const contextHandlerEnd = runtimeObservation.indexOf("case 'controller_ready':", contextHandlerStart);
     const contextHandlerBlock = runtimeObservation.slice(contextHandlerStart, contextHandlerEnd);
     expect(contextHandlerBlock).toContain('requestedSections');
+    expect(contextHandlerBlock).toContain("measureSection('git'");
+    expect(contextHandlerBlock).toContain("measureSection('focusTaskLedger.source'");
+    expect(contextHandlerBlock).toContain("measureSection('focus'");
+    expect(contextHandlerBlock).toContain("measureSection('taskLedger'");
+    expect(contextHandlerBlock).toContain("measureSectionAsync('readiness'");
+    expect(contextHandlerBlock).toContain("measureSection('activeRuns'");
+    expect(contextHandlerBlock).toContain("measureSection('localBridge'");
+    expect(contextHandlerBlock).toContain("measureSection('history'");
+    expect(contextHandlerBlock).toContain("measureSection('checks'");
+    expect(contextHandlerBlock).toContain("measureSection('plugins'");
+    expect(contextHandlerBlock).toContain("markPhase('serialization', serializationStartedAt)");
     expect(contextHandlerBlock.indexOf('if (usesSectionRead)')).toBeLessThan(
       contextHandlerBlock.indexOf('cachedGitIdentity('),
     );

@@ -702,6 +702,22 @@ export async function callRuntimeObservationAdapter(
         const markPhase = (name: string, startedAt: number): void => {
           phaseTimingsMs[name] = Math.round((performance.now() - startedAt) * 100) / 100;
         };
+        const measureSection = <T>(name: string, read: () => T): T => {
+          const startedAt = performance.now();
+          try {
+            return read();
+          } finally {
+            markPhase(`section.${name}`, startedAt);
+          }
+        };
+        const measureSectionAsync = async <T>(name: string, read: () => Promise<T>): Promise<T> => {
+          const startedAt = performance.now();
+          try {
+            return await read();
+          } finally {
+            markPhase(`section.${name}`, startedAt);
+          }
+        };
         const repositoryStartedAt = performance.now();
         const repository = selected(ctx, args);
         markPhase('repositoryRouting', repositoryStartedAt);
@@ -754,118 +770,133 @@ export async function callRuntimeObservationAdapter(
             : undefined;
 
           if (selectedSections.includes('git')) {
-            sectionPayload.git = gitSnapshot(repository.canonicalRoot);
+            sectionPayload.git = measureSection('git', () => gitSnapshot(repository.canonicalRoot));
           }
           if (selectedSections.includes('focus') || selectedSections.includes('taskLedger')) {
-            const legacyIssuesRetired = legacyIssueAuthorityRetired(repository.canonicalRoot);
-            const board = legacyIssuesRetired ? undefined : projectBoard(repository.canonicalRoot);
+            const board = measureSection('focusTaskLedger.source', () => {
+              const legacyIssuesRetired = legacyIssueAuthorityRetired(repository.canonicalRoot);
+              return legacyIssuesRetired ? undefined : projectBoard(repository.canonicalRoot);
+            });
             if (selectedSections.includes('focus')) {
-              const issue = board?.currentIssueId
-                ? board.issues.find((candidate) => candidate.id === board.currentIssueId)
-                : undefined;
-              sectionPayload.focus = {
-                currentIssueId: board?.currentIssueId,
-                currentIssue: issue
-                  ? {
-                      id: issue.id,
-                      title: issue.title,
-                      status: issue.status,
-                      lifecycleStatus: issue.lifecycleStatus,
-                      updatedAt: issue.updatedAt,
-                    }
-                  : undefined,
-              };
+              sectionPayload.focus = measureSection('focus', () => {
+                const issue = board?.currentIssueId
+                  ? board.issues.find((candidate) => candidate.id === board.currentIssueId)
+                  : undefined;
+                return {
+                  currentIssueId: board?.currentIssueId,
+                  currentIssue: issue
+                    ? {
+                        id: issue.id,
+                        title: issue.title,
+                        status: issue.status,
+                        lifecycleStatus: issue.lifecycleStatus,
+                        updatedAt: issue.updatedAt,
+                      }
+                    : undefined,
+                };
+              });
             }
             if (selectedSections.includes('taskLedger')) {
-              sectionPayload.taskLedger = buildControllerTaskLedgerProjection(
-                repository.canonicalRoot,
-                board,
-                undefined,
-                { includeRecentEvents: false },
+              sectionPayload.taskLedger = measureSection('taskLedger', () =>
+                buildControllerTaskLedgerProjection(repository.canonicalRoot, board, undefined, {
+                  includeRecentEvents: false,
+                }),
               );
             }
           }
           if (selectedSections.includes('readiness')) {
-            sectionPayload.readiness = await controllerReadiness(
-              ctx,
-              repository,
-              {},
-              {
-                projectionSnapshot: runtimeSnapshot!,
-                runtimeStorageInspection: storageInspection!,
-              },
+            sectionPayload.readiness = await measureSectionAsync('readiness', () =>
+              controllerReadiness(
+                ctx,
+                repository,
+                {},
+                {
+                  projectionSnapshot: runtimeSnapshot!,
+                  runtimeStorageInspection: storageInspection!,
+                },
+              ),
             );
           }
           if (selectedSections.includes('activeRuns')) {
-            sectionPayload.activeRuns = listActiveAgentJobSnapshots(repository.canonicalRoot, 20).map((run) => ({
-              runId: run.runId,
-              issueId: run.issueId,
-              taskId: run.taskId,
-              status: run.status,
-              agent: run.agent,
-              provider: run.provider,
-              executionMode: run.executionMode,
-              progress: run.progress,
-              lastHeartbeatAt: run.lastHeartbeatAt,
-              error: run.error,
-            }));
-          }
-          if (selectedSections.includes('localBridge')) {
-            const jobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 12);
-            sectionPayload.localBridge = {
-              activeCount: jobs.filter((job) => ['approved', 'running', 'dispatched'].includes(job.status)).length,
-              recentJobs: jobs.map((job) => ({
-                jobId: job.jobId,
-                action: job.action,
-                status: job.status,
-                runId: job.runId,
-                issueId: job.issueId,
-                taskId: job.taskId,
-                createdAt: job.createdAt,
-                updatedAt: job.updatedAt,
-                finishedAt: job.finishedAt,
-                error: job.error?.slice(0, 300),
+            sectionPayload.activeRuns = measureSection('activeRuns', () =>
+              listActiveAgentJobSnapshots(repository.canonicalRoot, 20).map((run) => ({
+                runId: run.runId,
+                issueId: run.issueId,
+                taskId: run.taskId,
+                status: run.status,
+                agent: run.agent,
+                provider: run.provider,
+                executionMode: run.executionMode,
+                progress: run.progress,
+                lastHeartbeatAt: run.lastHeartbeatAt,
+                error: run.error,
               })),
-            };
-          }
-          if (selectedSections.includes('history')) {
-            sectionPayload.history = listExecutionJobs(ctx.controllerHome, repository.repoId, 20).map((job) =>
-              summarizeExecutionJob(job, repository.canonicalRoot),
             );
           }
-          if (selectedSections.includes('checks')) {
-            sectionPayload.checks = listControllerChecks(repository.canonicalRoot).map((check) => {
-              const evidence = readLatestControllerCheckEvidence(repository.canonicalRoot, check.id);
+          if (selectedSections.includes('localBridge')) {
+            sectionPayload.localBridge = measureSection('localBridge', () => {
+              const jobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 12);
               return {
-                id: check.id,
-                description: check.description,
-                timeoutMs: check.timeoutMs,
-                source: check.source,
-                ...(evidence
-                  ? { lastFailureAt: evidence.ok ? undefined : evidence.executedAt, failed: !evidence.ok }
-                  : {}),
+                activeCount: jobs.filter((job) => ['approved', 'running', 'dispatched'].includes(job.status)).length,
+                recentJobs: jobs.map((job) => ({
+                  jobId: job.jobId,
+                  action: job.action,
+                  status: job.status,
+                  runId: job.runId,
+                  issueId: job.issueId,
+                  taskId: job.taskId,
+                  createdAt: job.createdAt,
+                  updatedAt: job.updatedAt,
+                  finishedAt: job.finishedAt,
+                  error: job.error?.slice(0, 300),
+                })),
               };
             });
           }
+          if (selectedSections.includes('history')) {
+            sectionPayload.history = measureSection('history', () =>
+              listExecutionJobs(ctx.controllerHome, repository.repoId, 20).map((job) =>
+                summarizeExecutionJob(job, repository.canonicalRoot),
+              ),
+            );
+          }
+          if (selectedSections.includes('checks')) {
+            sectionPayload.checks = measureSection('checks', () =>
+              listControllerChecks(repository.canonicalRoot).map((check) => {
+                const evidence = readLatestControllerCheckEvidence(repository.canonicalRoot, check.id);
+                return {
+                  id: check.id,
+                  description: check.description,
+                  timeoutMs: check.timeoutMs,
+                  source: check.source,
+                  ...(evidence
+                    ? { lastFailureAt: evidence.ok ? undefined : evidence.executedAt, failed: !evidence.ok }
+                    : {}),
+                };
+              }),
+            );
+          }
           if (selectedSections.includes('plugins')) {
-            sectionPayload.plugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
-              preferStored: true,
-              fallbackToLive: false,
-            }).map((plugin) => ({
-              pluginId: plugin.pluginId,
-              provider: plugin.provider,
-              enabled: plugin.enabled,
-              revision: plugin.revision,
-              lifecycle: plugin.lifecycle,
-              health: plugin.health,
-              actionCount: plugin.actions.length,
-              actions: plugin.actions.map((action) => ({
-                actionId: action.actionId,
-                readOnly: action.readOnly,
-                risk: action.risk,
-                confirmation: action.confirmation,
+            sectionPayload.plugins = measureSection('plugins', () =>
+              listAssistantPluginManifests(ctx.controllerHome, repository, {
+                preferStored: true,
+                fallbackToLive: false,
+              }).map((plugin) => ({
+                pluginId: plugin.pluginId,
+                provider: plugin.provider,
+                enabled: plugin.enabled,
+                revision: plugin.revision,
+                lifecycle: plugin.lifecycle,
+                health: plugin.health,
+                actionCount: plugin.actions.length,
+                actions: plugin.actions.map((action) => ({
+                  actionId: action.actionId,
+                  readOnly: action.readOnly,
+                  risk: action.risk,
+                  confirmation: action.confirmation,
+                })),
               })),
-            }));
+            );
           }
 
           markPhase('build.requested_sections', sectionStartedAt);
@@ -911,8 +942,10 @@ export async function callRuntimeObservationAdapter(
             cacheHit: false,
             stale: false,
           });
+          const serializationStartedAt = performance.now();
           const serialized = serializeResultPayload(response);
           const responseBytes = serialized.byteLength;
+          markPhase('serialization', serializationStartedAt);
           recordControllerContextRead({
             durationMs: performance.now() - responseStartedAt,
             cacheHit: false,
