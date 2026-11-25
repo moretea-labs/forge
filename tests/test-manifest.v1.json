@@ -1032,6 +1032,10 @@
       "module": "workflow",
       "resource": "pure"
     },
+    "tests/runtime/workflow-graph-checkpoint.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/workflow-asset-storage.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"

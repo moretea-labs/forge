@@ -4,6 +4,8 @@ import type {
   WorkflowJsonValue,
   WorkflowStepReceipt,
   WorkflowPublicationReceipt,
+  WorkflowGraphCheckpoint,
+  WorkflowGraphRunStatus,
 } from '../../../../packages/workflow-runtime/api/index';
 import { readControlPlaneRecord, writeControlPlaneRecord, type ControlPlaneRecord } from './sqlite-store';
 import { assertControlPlaneMetadataPayload } from './metadata-payload-policy';
@@ -139,6 +141,96 @@ export function writeWorkflowRunCheckpoint(input: {
     schemaVersion: SCHEMA_VERSION,
     value,
     action: `workflow_run_${value.status}`,
+    expectedRevision: input.expectedRevision,
+  });
+}
+
+export interface WorkflowGraphRunRecord {
+  schemaVersion: 2;
+  scopeId: string;
+  runId: string;
+  workflowId: string;
+  version: string;
+  contentDigest: string;
+  inputDigest: string;
+  evidenceRef: string;
+  status: WorkflowGraphRunStatus;
+  nodes: WorkflowGraphCheckpoint['nodes'];
+  updatedAt: string;
+}
+
+function workflowGraphRunEvidenceRef(
+  value: Omit<WorkflowGraphRunRecord, 'evidenceRef'> | WorkflowGraphRunRecord,
+): string {
+  const { evidenceRef: _ignored, ...content } = value as WorkflowGraphRunRecord;
+  return `workflow-run-${createHash('sha256')
+    .update(evidenceContent(content as Omit<WorkflowRunRecord, 'evidenceRef'>))
+    .digest('hex')}`;
+}
+
+function validGraphRecord(value: WorkflowGraphRunRecord): WorkflowGraphRunRecord {
+  if (value.schemaVersion !== 2) throw new Error('WORKFLOW_GRAPH_RUN_SCHEMA_VERSION_UNSUPPORTED');
+  workflowRunScopeId(value);
+  bounded(value.runId, 'WORKFLOW_RUN_ID_INVALID');
+  bounded(value.workflowId, 'WORKFLOW_RUN_WORKFLOW_ID_INVALID');
+  bounded(value.version, 'WORKFLOW_RUN_VERSION_INVALID');
+  bounded(value.contentDigest, 'WORKFLOW_RUN_CONTENT_DIGEST_INVALID');
+  bounded(value.inputDigest, 'WORKFLOW_RUN_INPUT_DIGEST_INVALID');
+  bounded(value.evidenceRef, 'WORKFLOW_RUN_EVIDENCE_REF_INVALID');
+  if (workflowGraphRunEvidenceRef(value) !== value.evidenceRef) throw new Error('WORKFLOW_RUN_EVIDENCE_REF_MISMATCH');
+  if (!['running', 'waiting', 'reconcile_required', 'failed', 'succeeded', 'cancelled'].includes(value.status))
+    throw new Error('WORKFLOW_GRAPH_RUN_STATUS_INVALID');
+  if (!Array.isArray(value.nodes) || value.nodes.length > 256) throw new Error('WORKFLOW_GRAPH_RUN_NODES_INVALID');
+  if (!Number.isFinite(Date.parse(value.updatedAt))) throw new Error('WORKFLOW_RUN_UPDATED_AT_INVALID');
+  assertControlPlaneMetadataPayload(value, 'workflow_run', 256 * 1024);
+  return value;
+}
+
+/** Graph v2 shares the canonical workflow_run namespace; it is not a second workflow ledger. */
+export function readWorkflowGraphRun(
+  controllerHome: string,
+  scopeId: string,
+  runId: string,
+): ControlPlaneRecord<WorkflowGraphRunRecord> | undefined {
+  const record = readControlPlaneRecord<WorkflowGraphRunRecord>(
+    controllerHome,
+    WORKFLOW_RUN_NAMESPACE,
+    bounded(scopeId, 'WORKFLOW_RUN_SCOPE_ID_INVALID'),
+    bounded(runId, 'WORKFLOW_RUN_ID_INVALID'),
+  );
+  if (!record) return undefined;
+  validGraphRecord(record.value);
+  return record;
+}
+
+export function writeWorkflowGraphRunCheckpoint(input: {
+  controllerHome: string;
+  checkpoint: WorkflowGraphCheckpoint;
+  inputs?: Record<string, WorkflowJsonValue>;
+  expectedRevision?: number | null;
+  now?: Date;
+}): ControlPlaneRecord<WorkflowGraphRunRecord> {
+  const content: Omit<WorkflowGraphRunRecord, 'evidenceRef'> = {
+    schemaVersion: 2,
+    scopeId: input.checkpoint.binding.scopeId,
+    runId: input.checkpoint.binding.runId,
+    workflowId: input.checkpoint.workflowId,
+    version: input.checkpoint.version,
+    contentDigest: input.checkpoint.contentDigest,
+    inputDigest: workflowInputDigest(input.inputs),
+    status: input.checkpoint.status,
+    nodes: structuredClone(input.checkpoint.nodes),
+    updatedAt: (input.now ?? new Date()).toISOString(),
+  };
+  const value: WorkflowGraphRunRecord = { ...content, evidenceRef: workflowGraphRunEvidenceRef(content) };
+  validGraphRecord(value);
+  return writeControlPlaneRecord(input.controllerHome, {
+    namespace: WORKFLOW_RUN_NAMESPACE,
+    scope: workflowRunScopeId(value),
+    key: value.runId,
+    schemaVersion: 2,
+    value,
+    action: `workflow_graph_run_${value.status}`,
     expectedRevision: input.expectedRevision,
   });
 }
