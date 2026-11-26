@@ -162,6 +162,17 @@ for (const path of productionTypeScriptFiles()) {
   }
 }
 
+for (const retiredWorkAsset of [
+  'evaluation/scenarios/shared-restart-durable-work-visible.json',
+  'evaluation/scenarios/shared-work-dependency-durable-admission.json',
+  'evaluation/scenarios/shared-work-direct-no-contract.json',
+  'evaluation/scenarios/shared-work-investigation-stays-direct.json',
+  'evaluation/scenarios/shared-work-recovery-durable-admission.json',
+  '.design-harness/screens/work-focus.json',
+]) {
+  requireMissing(retiredWorkAsset);
+}
+
 let typeScriptCompiler;
 let typeScriptCompilerLoadAttempted = false;
 function loadTypeScriptCompiler() {
