@@ -1032,7 +1032,7 @@ function hasVerifiedIosTestEvidenceOwner(controllerHome: string, repoId: string,
 /**
  * Read-only accounting for Forge's iOS test result namespace. A conventional
  * Xcode result filename is not an ownership receipt, so this deliberately
- * cannot authorize deletion: active Work/review evidence may still reference
+ * cannot authorize deletion: active review/evidence ownership may still reference
  * a bundle long after its last filesystem write.
  */
 export interface IosTestEvidenceInventoryReport {

@@ -3,7 +3,7 @@
  * 
  * Public capabilities (read, search, edit, command, process, git, workspace,
  * browser, computer, plugin, API, agent, schedule, release, recovery)
- * compose without mandatory Requirement/Plan/Work, task-size thresholds,
+ * compose without mandatory semantic lifecycle records, task-size thresholds,
  * or Direct/GoalWorkloop/Scale mode tokens.
  * 
  * Shared invocation conventions:

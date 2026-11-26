@@ -323,7 +323,7 @@ export function repositoryControllerRoot(controllerHome: string, repoId: string)
 export const WORKSPACE_SCOPE_PREFIX = 'workspace_';
 
 /**
- * Reserved scope key for portable semantic facts (Requirement/Plan/Work) that
+ * Reserved scope key for portable semantic facts (Requirement/Plan) that
  * belong to the ForgeInstance rather than to one repository. Repository and
  * project placement stays optional provenance on those records.
  */
