@@ -571,6 +571,56 @@ printf '{"ok":true}\\n'
     }
   });
 
+  test('packaged Runtime module root uses its exact immutable release identity rather than a synthetic checkout', () => {
+    const parent = tempRoot('forge-package-layout-');
+    const releaseRoot = join(parent, 'runtime', 'releases', 'package-v1');
+    const packageRoot = join(releaseRoot, 'package');
+    mkdirSync(packageRoot, { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge' }));
+    writeFileSync(
+      join(releaseRoot, 'manifest.json'),
+      JSON.stringify({
+        releaseRevision: 'package:1.8.2:revision-1',
+        cleanWorkspace: true,
+      }),
+    );
+
+    const active = collectRuntimeSourceIdentity(releaseRoot);
+    const nested = collectRuntimeSourceIdentity(packageRoot);
+    expect(nested.canonicalRoot).toBe(active.canonicalRoot);
+    expect(nested.checkoutId).toBe(active.checkoutId);
+    expect(nested.releaseRevision).toBe(active.releaseRevision);
+    expect(evaluateRuntimeSourceDrift(active, nested)).toMatchObject({
+      code: 'RUNTIME_SOURCE_OK',
+      restartRequired: false,
+    });
+
+    const laterRoot = join(parent, 'runtime', 'releases', 'package-v2');
+    const laterPackageRoot = join(laterRoot, 'package');
+    mkdirSync(laterPackageRoot, { recursive: true });
+    writeFileSync(join(laterPackageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge' }));
+    writeFileSync(
+      join(laterRoot, 'manifest.json'),
+      JSON.stringify({
+        releaseRevision: 'package:1.8.2:revision-2',
+        cleanWorkspace: true,
+      }),
+    );
+    const later = collectRuntimeSourceIdentity(laterPackageRoot);
+    expect(evaluateRuntimeSourceDrift(active, later).code).toBe('RUNTIME_SOURCE_SNAPSHOT_STALE');
+    expect(later.canonicalRoot).toBe(realpathSync(laterRoot));
+  });
+
+  test('packaged Runtime module root refuses malformed immutable parent manifest', () => {
+    const parent = tempRoot('forge-package-invalid-layout-');
+    const releaseRoot = join(parent, 'runtime', 'releases', 'package-invalid');
+    const packageRoot = join(releaseRoot, 'package');
+    mkdirSync(packageRoot, { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge' }));
+    writeFileSync(join(releaseRoot, 'manifest.json'), JSON.stringify({ cleanWorkspace: true }));
+    expect(() => collectRuntimeSourceIdentity(packageRoot)).toThrow('RUNTIME_RELEASE_MANIFEST_INCOMPLETE');
+  });
+
   test('package release without a Git source commit uses its package revision identity', () => {
     const releaseRoot = tempRoot('forge-package-release-identity-');
     mkdirSync(releaseRoot, { recursive: true });

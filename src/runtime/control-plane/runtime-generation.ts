@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome, resolveControllerHome } from '../../effects/controller-home';
@@ -53,12 +53,7 @@ export interface RuntimeSourceDrift {
   code: RuntimeSourceDriftCode;
 }
 
-export type RuntimeSourceResolveReason =
-  | 'explicit'
-  | 'env'
-  | 'package-root'
-  | 'process-cwd'
-  | 'unavailable';
+export type RuntimeSourceResolveReason = 'explicit' | 'env' | 'package-root' | 'process-cwd' | 'unavailable';
 
 export interface ResolvedControllerRuntimeSourceRoot {
   root?: string;
@@ -76,9 +71,7 @@ function gitText(root: string, args: string[]): string | undefined {
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 10_000,
   });
-  return result.status === 0 && result.stdout.trim()
-    ? result.stdout.trim()
-    : undefined;
+  return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : undefined;
 }
 
 function gitOk(root: string, args: string[]): boolean {
@@ -142,13 +135,9 @@ function detectDefaultBranch(root: string): string {
 }
 
 function runtimeSourceStatusPaths(root: string): string[] {
-  const paths = [
-    'src',
-    'package.json',
-    'bun.lock',
-    'bun.lockb',
-    'bunfig.toml',
-  ].filter((entry) => existsSync(join(root, entry)));
+  const paths = ['src', 'package.json', 'bun.lock', 'bun.lockb', 'bunfig.toml'].filter((entry) =>
+    existsSync(join(root, entry)),
+  );
   try {
     for (const entry of readdirSync(root)) {
       if (/^tsconfig(?:\..+)?\.json$/.test(entry) && existsSync(join(root, entry))) paths.push(entry);
@@ -160,7 +149,9 @@ function runtimeSourceStatusPaths(root: string): string[] {
 }
 
 function runtimeSourceDirty(root: string): boolean {
-  return Boolean(gitText(root, ['status', '--porcelain=v1', '--untracked-files=all', '--', ...runtimeSourceStatusPaths(root)]));
+  return Boolean(
+    gitText(root, ['status', '--porcelain=v1', '--untracked-files=all', '--', ...runtimeSourceStatusPaths(root)]),
+  );
 }
 
 /**
@@ -189,8 +180,7 @@ export function looksLikeControllerRuntimePackage(root: string): boolean {
   const name = readPackageName(root);
   if (name === '@moretea-labs/forge') return true;
   // Source checkout / worktree without install: canonical Runtime entry + package markers.
-  return existsSync(join(root, 'src', 'runtime', 'root', 'entry.ts'))
-    && existsSync(join(root, 'package.json'));
+  return existsSync(join(root, 'src', 'runtime', 'root', 'entry.ts')) && existsSync(join(root, 'package.json'));
 }
 
 /**
@@ -204,19 +194,17 @@ export function looksLikeControllerRuntimePackage(root: string): boolean {
  *
  * Execution repository roots must never be passed here for drift evaluation.
  */
-export function resolveControllerRuntimeSourceRoot(options: {
-  explicitRoot?: string;
-  env?: NodeJS.ProcessEnv;
-  cwd?: string;
-} = {}): ResolvedControllerRuntimeSourceRoot {
+export function resolveControllerRuntimeSourceRoot(
+  options: { explicitRoot?: string; env?: NodeJS.ProcessEnv; cwd?: string } = {},
+): ResolvedControllerRuntimeSourceRoot {
   const env = options.env ?? process.env;
   const explicit = options.explicitRoot?.trim();
   if (explicit) {
     return { root: resolve(explicit), reason: 'explicit' };
   }
 
-  const fromEnv = env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV]?.trim()
-    || env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV_ALIAS]?.trim();
+  const fromEnv =
+    env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV]?.trim() || env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV_ALIAS]?.trim();
   if (fromEnv) {
     return { root: resolve(fromEnv), reason: 'env' };
   }
@@ -264,6 +252,21 @@ export function collectRuntimeSourceIdentity(repoRoot: string): RuntimeSourceIde
   if (bound) return bound;
 
   const canonicalRoot = realpathSync(repoRoot);
+  // A packaged Runtime loads its modules from <release>/package, but the
+  // immutable manifest and startup source identity live at <release>.
+  // Canonicalize only this exact layout; never mask a genuinely newer release.
+  const releaseRoot = dirname(canonicalRoot);
+  if (
+    basename(canonicalRoot) === 'package' &&
+    basename(dirname(releaseRoot)) === 'releases' &&
+    basename(dirname(dirname(releaseRoot))) === 'runtime' &&
+    ownGitCheckoutRoot(canonicalRoot) !== canonicalRoot &&
+    existsSync(join(releaseRoot, 'manifest.json'))
+  ) {
+    // A malformed release manifest must still fail closed.
+    readImmutableRuntimeReleaseIdentity(releaseRoot);
+    return collectRuntimeSourceIdentity(releaseRoot);
+  }
   const repoId = `repo_${repositoryIdentity(canonicalRoot)}`;
   const checkoutId = stableCheckoutId(repoId, canonicalRoot);
   const gitRoot = ownGitCheckoutRoot(canonicalRoot);
@@ -349,11 +352,9 @@ export function tryCollectRuntimeSourceIdentity(repoRoot: string | undefined): R
  * Current Controller Runtime Source identity from the unique authority resolver.
  * Never accepts an execution repository root.
  */
-export function collectCurrentControllerRuntimeSourceIdentity(options: {
-  explicitRoot?: string;
-  env?: NodeJS.ProcessEnv;
-  cwd?: string;
-} = {}): RuntimeSourceIdentity | undefined {
+export function collectCurrentControllerRuntimeSourceIdentity(
+  options: { explicitRoot?: string; env?: NodeJS.ProcessEnv; cwd?: string } = {},
+): RuntimeSourceIdentity | undefined {
   const resolved = resolveControllerRuntimeSourceRoot(options);
   if (!resolved.root?.trim()) return undefined;
   try {
@@ -440,7 +441,9 @@ export function evaluateRuntimeSourceDrift(
     reasons.push(`runtime commit changed from ${active.commit} to ${current.commit}`);
   }
   if ((active.releaseRevision ?? '') !== (current.releaseRevision ?? '')) {
-    reasons.push(`runtime release changed from ${active.releaseRevision ?? 'source-checkout'} to ${current.releaseRevision ?? 'source-checkout'}`);
+    reasons.push(
+      `runtime release changed from ${active.releaseRevision ?? 'source-checkout'} to ${current.releaseRevision ?? 'source-checkout'}`,
+    );
   }
   if (active.dirty) {
     reasons.push('runtime was started from a dirty source checkout');
@@ -472,27 +475,27 @@ export function evaluateActiveRuntimeSourceDrift(
 ): RuntimeSourceDrift & { current?: RuntimeSourceIdentity } {
   const current = options.currentRuntimeRoot
     ? (() => {
-      try {
-        if (!options.currentRuntimeRoot || !existsSync(options.currentRuntimeRoot)) return undefined;
-        // Explicit roots are test/diagnostic fixtures and must observe edits
-        // immediately; the authority-root cache is only for status storms.
-        return collectRuntimeSourceIdentity(options.currentRuntimeRoot);
-      } catch {
-        return undefined;
-      }
-    })()
-    : active?.releaseRevision && active.canonicalRoot && existsSync(active.canonicalRoot)
-      ? (() => {
         try {
-          // An immutable release cannot drift to the long-lived MCP Gateway's
-          // source checkout. Re-read the frozen release itself so missing or
-          // corrupted release identity still fails closed, while source-mode
-          // runtimes continue to compare against their live source authority.
-          return collectRuntimeSourceIdentityCached(active.canonicalRoot);
+          if (!options.currentRuntimeRoot || !existsSync(options.currentRuntimeRoot)) return undefined;
+          // Explicit roots are test/diagnostic fixtures and must observe edits
+          // immediately; the authority-root cache is only for status storms.
+          return collectRuntimeSourceIdentity(options.currentRuntimeRoot);
         } catch {
           return undefined;
         }
       })()
+    : active?.releaseRevision && active.canonicalRoot && existsSync(active.canonicalRoot)
+      ? (() => {
+          try {
+            // An immutable release cannot drift to the long-lived MCP Gateway's
+            // source checkout. Re-read the frozen release itself so missing or
+            // corrupted release identity still fails closed, while source-mode
+            // runtimes continue to compare against their live source authority.
+            return collectRuntimeSourceIdentityCached(active.canonicalRoot);
+          } catch {
+            return undefined;
+          }
+        })()
       : collectCurrentControllerRuntimeSourceIdentity(options);
   return {
     current,
@@ -501,11 +504,12 @@ export function evaluateActiveRuntimeSourceDrift(
 }
 
 export function formatRuntimeSourceDriftMessage(drift: RuntimeSourceDrift): string {
-  if (drift.code === 'RUNTIME_SOURCE_SNAPSHOT_MISSING' || (
-    drift.restartRequired
-    && drift.reasons.length === 1
-    && drift.reasons[0] === 'Controller runtime source snapshot is missing'
-  )) {
+  if (
+    drift.code === 'RUNTIME_SOURCE_SNAPSHOT_MISSING' ||
+    (drift.restartRequired &&
+      drift.reasons.length === 1 &&
+      drift.reasons[0] === 'Controller runtime source snapshot is missing')
+  ) {
     return 'Controller runtime source snapshot is missing. Restart the controller from an authoritative runtime source before mutating work.';
   }
   if (drift.code === 'RUNTIME_SOURCE_CURRENT_UNAVAILABLE') {
