@@ -45,9 +45,9 @@ export function isRhProjectScheduleOperation(operation: string): operation is Rh
 }
 
 /**
- * MCP transport normalization for the rh_project schedule family. Scheduler and
- * Work-continuation application services remain the only lifecycle/persistence
- * authority; this adapter only parses tool arguments and shapes facade output.
+ * MCP transport normalization for the rh_project schedule family. Scheduler and schedule
+ * application services remain the only lifecycle/persistence authority; this adapter only
+ * parses tool arguments and shapes facade output.
  */
 export async function callRhProjectScheduleAdapter(
   ctx: MultiRepositoryMcpToolContext,

@@ -99,7 +99,7 @@ export function injectDurableCommandFields(tool: McpToolDefinition): McpToolDefi
         request_id: {
           type: 'string',
           description:
-            'Idempotency key. Process Runtime retries return the original Process; durable operations return the original Work or historical Job.',
+            'Idempotency key. Process Runtime retries return the original Process; durable-operation retries resolve the original durable execution instead of creating a duplicate.',
         },
         apply_mode: {
           type: 'string',

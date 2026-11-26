@@ -457,8 +457,8 @@ export async function callStatusInboxAdapter(
     let maintenanceHealthy: boolean | null = null;
     let maintenanceCandidateCount: number | null = null;
     let maintenanceObservation: 'not_requested' | 'observed' | 'unavailable' = 'not_requested';
-    // A full maintenance pass traverses runtime storage, retained Work and
-    // temp roots. It is a diagnostic with a dedicated typed tool, not a
+    // A full maintenance pass traverses runtime storage and temp roots. It is a
+    // diagnostic with a dedicated typed tool, not a
     // prerequisite for an ordinary detailed status read. Do not hide that
     // cost behind a cross-request cache or represent unobserved debt as
     // healthy; callers can opt in when that diagnostic changes a decision.
