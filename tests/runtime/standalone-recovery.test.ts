@@ -3364,6 +3364,7 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
     'recovery-gateway:stage-request-1',
     config.primaryRuntimeSourceRepositoryId,
     sourceRevision,
+    true,
   );
   expect(stageCalls).toBe(1);
   expect(stagedFrom).not.toBe(resolve(sourceRoot));
@@ -3376,6 +3377,7 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
       phase: 'built',
       stable: { controllerHome: resolve(home) },
       candidate: { controllerHome: candidateHome },
+      retireLegacyWorkReferences: true,
       candidateRelease: {
         releaseId: 'release-new',
         sourceCommit: sourceRevision,
@@ -3430,7 +3432,11 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
     ok: true,
     attempted: false,
     noOp: true,
-    releaseSession: { sessionId: progressed.sessionId, phase: 'cutover_eligible' },
+    releaseSession: {
+      sessionId: progressed.sessionId,
+      phase: 'cutover_eligible',
+      retireLegacyWorkReferences: true,
+    },
   });
   expect(readRuntimeReleaseAuthority(home)).toMatchObject({
     revision: expectedAuthority.revision,

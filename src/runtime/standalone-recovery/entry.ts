@@ -169,7 +169,7 @@ async function prepareRuntimeReleaseSession(
   sourceRepositoryId?: string,
   expectedSourceRevision?: string,
   requestId?: string,
-  retireLegacyWorkReferences = false,
+  retireLegacyWorkReferences?: boolean,
 ) {
   const selectedSourceRepositoryId = sourceRepositoryId?.trim();
   if (!selectedSourceRepositoryId) {

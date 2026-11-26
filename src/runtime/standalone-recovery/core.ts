@@ -5275,7 +5275,7 @@ export async function prepareConfiguredRuntimeReleaseSession(
   requestId?: string,
   sourceRepositoryId?: string,
   expectedSourceRevision?: string,
-  retireLegacyWorkReferences = false,
+  retireLegacyWorkReferences?: boolean,
 ): Promise<ConfiguredRuntimeActivationResult> {
   let selection: RuntimeReleaseSourceSelection;
   try {
@@ -5548,6 +5548,7 @@ export async function prepareConfiguredRuntimeReleaseSession(
       // destructive intent after automatic progression has seen its session.
       if (
         resumableMatchingSession &&
+        retireLegacyWorkReferences !== undefined &&
         (resumableMatchingSession.retireLegacyWorkReferences === true) !== retireLegacyWorkReferences
       ) {
         return {
