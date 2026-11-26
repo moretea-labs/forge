@@ -7416,6 +7416,7 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(beforeUnit).toContain(join(home, 'runtime', 'releases', 'release-a', 'forge-runtime'));
       expect(beforeUnit).not.toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));
       let serviceActive = true;
+      let stopAttempts = 0;
       let connectorBindings = 0;
       const commands: string[][] = [];
       const activationOrder: string[] = [];
@@ -7428,7 +7429,12 @@ describe('standalone recovery on canonical Runtime', () => {
         runCommand: async (name, args) => {
           commands.push([name, ...args]);
           if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
-          if (name === 'systemctl' && args[0] === '--user' && args[1] === 'stop') serviceActive = false;
+          if (name === 'systemctl' && args[0] === '--user' && args[1] === 'stop') {
+            stopAttempts += 1;
+            if (stopAttempts === 1)
+              return { ok: false, status: 1, stdout: '', stderr: `Job for ${unitName} canceled.` };
+            serviceActive = false;
+          }
           if (name === 'systemctl' && args[0] === '--user' && args[1] === 'start') {
             activationOrder.push('runtime-start');
             serviceActive = true;
@@ -7476,6 +7482,7 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: unitName });
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
       expect(commands).toContainEqual(['systemctl', '--user', 'stop', unitName]);
+      expect(stopAttempts).toBe(2);
       expect(commands).toContainEqual(['systemctl', '--user', 'daemon-reload']);
       expect(commands).toContainEqual(['systemctl', '--user', 'enable', unitName]);
       expect(commands).toContainEqual(['systemctl', '--user', 'start', unitName]);

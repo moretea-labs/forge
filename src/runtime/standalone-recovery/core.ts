@@ -2377,7 +2377,21 @@ async function stopPrimaryRuntimeServiceOwner(
       ? { ok: true, detail: owner.target }
       : { ok: false, detail: `primary Runtime bootout failed: ${stopped.stderr || stopped.stdout || stopped.status}` };
   }
-  const stopped = await runCommand('systemctl', ['--user', 'stop', owner.unitName!], 15_000);
+  const stopArgs = ['--user', 'stop', owner.unitName!];
+  let stopped = await runCommand('systemctl', stopArgs, 15_000);
+  // A concurrent systemd transaction may cancel the stop job while the unit
+  // actually reaches inactive. Trust only exact service state; if it is still
+  // active, retry this idempotent stop once under Recovery's mutation lock.
+  // The caller independently verifies service/PID/TCP quiescence afterward.
+  if (!stopped.ok && `${stopped.stderr}\n${stopped.stdout}`.includes(`Job for ${owner.unitName!} canceled`)) {
+    const observed = await runCommand(
+      'systemctl',
+      ['--user', 'show', '--property', 'ActiveState', '--value', owner.unitName!],
+      5_000,
+    );
+    if (observed.ok && /^(inactive|failed)$/.test(observed.stdout.trim())) return { ok: true, detail: owner.target };
+    stopped = await runCommand('systemctl', stopArgs, 15_000);
+  }
   return stopped.ok
     ? { ok: true, detail: owner.target }
     : {
