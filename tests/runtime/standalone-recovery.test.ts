@@ -4764,10 +4764,13 @@ describe('standalone recovery on canonical Runtime', () => {
       pattern: '^[a-fA-F0-9]{40}$',
     });
     const cutoverTool = RECOVERY_TOOLS.find((tool) => tool.name === 'cutover_runtime_release_session');
-    expect(cutoverTool?.inputSchema.properties?.retire_legacy_work_references).toMatchObject({
+    const cutoverSchema = cutoverTool?.inputSchema as
+      | { required?: readonly string[]; properties?: Record<string, unknown> }
+      | undefined;
+    expect(cutoverSchema?.properties?.retire_legacy_work_references).toMatchObject({
       type: 'boolean',
     });
-    expect(cutoverTool?.inputSchema.required).not.toContain('retire_legacy_work_references');
+    expect(cutoverSchema?.required).not.toContain('retire_legacy_work_references');
     const migrateTool = RECOVERY_TOOLS.find((tool) => tool.name === 'migrate_controller_home');
     expect(migrateTool?.inputSchema.required).toEqual(
       expect.arrayContaining(['request_id', 'canonical_source_root', 'expected_source_revision']),
