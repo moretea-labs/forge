@@ -136,6 +136,7 @@ import {
   writeRuntimeStatusSnapshot,
 } from '../../src/runtime/root/status';
 import { materializeCandidateExecutionLane } from '../../src/runtime/root/runtime-lane';
+import { runtimeReleaseTreeSha256 } from '../../src/runtime/root/release-materialize';
 import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { systemdUserUnitName, systemdUserUnitPath } from '../../src/runtime/platform/systemd-user';
 import {
@@ -7459,6 +7460,87 @@ describe('standalone recovery on canonical Runtime', () => {
       const config = createRecoveryConfig(home, {
         primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 },
       });
+      const sessionId = 'release-work-retirement-12345678';
+      const candidateHome = join(home, 'candidate-runtime-lanes', sessionId);
+      mkdirSync(candidateHome, { recursive: true });
+      let session = createReleaseSession({
+        controllerHome: home,
+        sessionId,
+        stable: {
+          schemaVersion: 1,
+          kind: 'stable',
+          controllerHome: home,
+          serviceLabel: 'stable-runtime',
+          port: 8765,
+          authTokenFile: join(home, 'stable-runtime-token'),
+        },
+        stableRelease: {
+          authorityRevision: base.revision,
+          releaseId: base.active.releaseId,
+          artifactIdentity: base.active.artifactIdentity,
+          manifestSha256: base.active.manifestSha256,
+          workerProtocolVersion: base.active.workerProtocolVersion,
+          releaseFencingTokenSha256: createHash('sha256').update(base.fencingToken).digest('hex'),
+        },
+        candidate: {
+          schemaVersion: 1,
+          kind: 'candidate',
+          sessionId,
+          controllerHome: candidateHome,
+          serviceLabel: 'candidate-runtime',
+          port: 8766,
+          authTokenFile: join(candidateHome, 'runtime-token'),
+          databaseSnapshotPath: join(candidateHome, 'control-plane.sqlite'),
+          sourceStableControllerHome: home,
+          createdAt: new Date().toISOString(),
+        },
+        sourceRepositoryId: 'repo_retirement',
+        sourceRevision,
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'built',
+        candidateRelease: {
+          releaseId: 'release-b',
+          manifestPath: candidate.path,
+          artifactIdentity: candidate.artifactIdentity,
+          manifestSha256: createHash('sha256').update(readFileSync(candidate.path)).digest('hex'),
+          treeSha256: runtimeReleaseTreeSha256(dirname(candidate.path)),
+          sourceCommit: sourceRevision,
+          sourceRepositoryId: 'repo_retirement',
+        },
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_booted',
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_verified',
+        receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+          id,
+          kind: 'candidate_canary' as const,
+          summary: id,
+        })),
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_eligible',
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_attempting',
+      });
       const noFence = await activateRuntimeRelease(config, candidate.path, {}, { retireLegacyWorkReferences: true });
       expect(noFence).toMatchObject({
         ok: false,
@@ -7528,9 +7610,14 @@ describe('standalone recovery on canonical Runtime', () => {
           expectedSourceRevision: sourceRevision,
           expectedActiveReleaseId: base.active.releaseId,
           expectedAuthorityRevision: base.revision,
+          releaseSessionId: session.sessionId,
         },
       );
       expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: unitName });
+      expect(readReleaseSession(home, session.sessionId)?.transaction).toMatchObject({
+        candidateReleaseId: 'release-b',
+        rollbackRelease: { releaseId: 'release-a' },
+      });
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
       expect(commands).toContainEqual(['systemctl', '--user', 'stop', unitName]);
       expect(commands).toContainEqual(['systemctl', '--user', 'daemon-reload']);
