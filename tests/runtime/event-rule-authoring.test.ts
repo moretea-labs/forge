@@ -3,7 +3,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EventRuleV1 } from '../../packages/kernel/events';
-import { createEventActionDefinition } from '../../src/runtime/events/event-action-registry-store';
+import {
+  createEventActionDefinition,
+  updateEventActionDefinition,
+} from '../../src/runtime/events/event-action-registry-store';
 import { applyEventRuleProposal, preflightEventRuleProposal } from '../../src/runtime/events/event-rule-authoring';
 import { readEventRule } from '../../src/runtime/events/event-rule-store';
 
@@ -109,6 +112,60 @@ describe('Event Rule Authoring', () => {
     });
     expect(created.value.enabled).toBe(true);
   });
+  test('allows a pure emergency disable when the registered action later becomes unavailable', () => {
+    const h = home();
+    registerNotification(h);
+    const created = applyEventRuleProposal(h, proposal('human'), { canWriteRules: true, canEnableRules: true });
+    updateEventActionDefinition(h, 'notification.owner', 1, (current) => ({
+      ...current,
+      revision: current.revision + 1,
+      enabled: false,
+    }));
+    const disable = {
+      ...proposal('human'),
+      proposalId: 'disable-broken-action',
+      operation: { kind: 'update' as const, ruleId: 'apple-mail', expectedRecordRevision: created.revision },
+      rule: { ...created.value, revision: created.value.revision + 1, enabled: false },
+    };
+    const checked = preflightEventRuleProposal(h, disable);
+    expect(checked.valid).toBe(true);
+    expect(checked.actionRefs).toEqual(['notification.owner']);
+    expect(checked.sensitiveActionRefs).toEqual([]);
+    const changed = applyEventRuleProposal(h, disable, { canWriteRules: true, canEnableRules: false });
+    expect(changed.value.enabled).toBe(false);
+
+    const reenable = {
+      ...disable,
+      proposalId: 'reenable-broken-action',
+      operation: { ...disable.operation, expectedRecordRevision: changed.revision },
+      rule: { ...changed.value, revision: changed.value.revision + 1, enabled: true },
+    };
+    expect(preflightEventRuleProposal(h, reenable).issues.map((entry) => entry.code)).toContain(
+      'EVENT_RULE_ACTION_DISABLED',
+    );
+    const altered = {
+      ...disable,
+      proposalId: 'alter-disabled-rule',
+      operation: { ...disable.operation, expectedRecordRevision: changed.revision },
+      rule: {
+        ...changed.value,
+        revision: changed.value.revision + 1,
+        condition: {
+          kind: 'fact' as const,
+          key: 'mail.sender_domain',
+          operator: 'equals' as const,
+          value: 'other.com',
+        },
+      },
+    };
+    expect(preflightEventRuleProposal(h, altered).issues.map((entry) => entry.code)).toContain(
+      'EVENT_RULE_ACTION_DISABLED',
+    );
+    expect(() => applyEventRuleProposal(h, altered, { canWriteRules: true, canEnableRules: false })).toThrow(
+      'EVENT_RULE_PROPOSAL_PREFLIGHT_FAILED',
+    );
+  });
+
   test('preflights update record revision and logical revision instead of overwriting concurrent edits', () => {
     const h = home();
     registerNotification(h);

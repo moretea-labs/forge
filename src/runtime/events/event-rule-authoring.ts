@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { validateEventRuleV1, type EventActionDefinitionV1, type EventRuleV1 } from '../../../packages/kernel/events';
 import { readWorkflowRegistryEntry } from '../control-plane/persistence/workflow-registry-store';
 import { readModelInstructionTemplate, readModelOutputSchema } from '../models/model-decision-artifact-store';
@@ -233,7 +234,21 @@ export function preflightEventRuleProposal(controllerHome: string, input: unknow
   const issues = validateOperation(controllerHome, proposal);
   const actionRefs = new Set<string>();
   const sensitiveActionRefs = new Set<string>();
+  // Users must always be able to disable an unchanged active rule even when
+  // its old action/provider has become unavailable. Only the enabled bit and
+  // required logical revision may change; re-enabling or editing a disabled
+  // rule still validates every route and authorization.
+  const previous =
+    proposal.operation.kind === 'update' ? readEventRule(controllerHome, proposal.operation.ruleId) : undefined;
+  const pureDisable =
+    previous?.value.enabled === true &&
+    proposal.rule.enabled === false &&
+    isDeepStrictEqual({ ...previous.value, enabled: false, revision: previous.value.revision + 1 }, proposal.rule);
   for (const route of proposal.rule.routes) {
+    if (pureDisable) {
+      actionRefs.add(route.action.actionRef);
+      continue;
+    }
     actionRefs.add(route.action.actionRef);
     const record = readEventActionDefinition(controllerHome, route.action.actionRef);
     if (!record) {
