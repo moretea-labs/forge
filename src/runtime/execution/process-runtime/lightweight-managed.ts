@@ -808,7 +808,7 @@ export async function startLightweightRepositoryCommand(
   ).then((result) => {
     // Enriched execution evidence may replace the compact child-exit result in
     // memory. The already-persisted terminal Process identity remains stable.
-    // Work lifecycle settlement belongs here, after repository evidence has
+    // Execution evidence settlement belongs here, after repository evidence has
     // either been proven or explicitly marked unavailable.
     const observedResult: LightweightExecutionResult = {
       ...result,

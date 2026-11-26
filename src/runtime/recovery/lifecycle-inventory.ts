@@ -136,11 +136,11 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     activeProtection:
       'Receipts referenced by current Process/check evidence or retained Operational Memory are protected; they are evidence only and never completion/review authority.',
     retentionCapacity:
-      'A Process check receipt has no separate mutable authority: it is derived from one terminal Process record and copied into Work VerificationRecord when consumed. Process records are bounded by the 7-day/500 policy; persisted check-result sidecars use 30-day/500 retention, a 5000-entry scan bound and at most 50 removals per selected-repository cleanup pass.',
+      'A Process check receipt has no separate mutable authority: it is derived from one terminal Process record, while VerificationRecord is only an evidence value shape. Process records are bounded by the 7-day/500 policy; persisted check-result sidecars use 30-day/500 retention, a 5000-entry scan bound and at most 50 removals per selected-repository cleanup pass.',
     cleanupAuthority:
-      'Process GC owns terminal Process/log source, Scheduler maintenance owns replaceable check-result sidecars, and Work lifecycle owns accepted VerificationRecord copies; none becomes a second receipt authority.',
+      'Process GC owns terminal Process/log source and Scheduler maintenance owns replaceable check-result sidecars; VerificationRecord values have no independent lifecycle owner or second receipt authority.',
     recoverySemantics:
-      'Active Work cache identities protect required sidecars; truncated/malformed scans fail closed, and missing or changed evidence becomes stale/replay-gap rather than synthetic success.',
+      'Active Process/check evidence references protect required sidecars; truncated/malformed scans fail closed, and missing or changed evidence becomes stale/replay-gap rather than synthetic success.',
     closureStatus: 'existing_bounded',
     evidencePaths: [
       'src/runtime/execution/process-runtime/check-receipt.ts',
