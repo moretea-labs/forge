@@ -526,6 +526,20 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             },
           },
         },
+        preview: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['workflow_id'],
+            properties: {
+              ...scopeProperties,
+              workflow_id: { type: 'string', minLength: 1, maxLength: 128 },
+              inputs: { type: 'object', additionalProperties: true },
+            },
+          },
+        },
         authoring_preflight: {
           readOnly: true,
           risk: 'readonly',

@@ -2,12 +2,15 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { WorkflowAssetDraft } from '../../packages/workflow-runtime/api/index';
+import type { WorkflowAssetDraft, WorkflowGraphAssetDraft } from '../../packages/workflow-runtime/api/index';
 import {
   getCoreCapabilityExecutionSchema,
   listCapabilityDescriptors,
 } from '../../src/runtime/control-plane/facade/capability-registry';
-import { writeWorkflowAssetContent } from '../../src/runtime/control-plane/persistence/workflow-content-store';
+import {
+  writeWorkflowAssetContent,
+  writeWorkflowGraphAssetContent,
+} from '../../src/runtime/control-plane/persistence/workflow-content-store';
 import {
   recordWorkflowBindings,
   registerWorkflowFeatureAsset,
@@ -55,9 +58,65 @@ function install(h: string) {
     bindings: [{ capabilityId: 'notify', pluginId: 'test', actionId: 'send' }],
   });
 }
+function installGraph(h: string) {
+  const graph: WorkflowGraphAssetDraft = {
+    schemaVersion: 2,
+    workflowId: 'graph.preview',
+    version: '1',
+    inputContract: { route: { type: 'string', required: true } },
+    entryNodeId: 'route',
+    nodes: [
+      { kind: 'branch', nodeId: 'route' },
+      { kind: 'approval', nodeId: 'approve', approvalKey: 'send', prompt: 'Send notification?', timeoutMs: 60000 },
+      { kind: 'capability', nodeId: 'notify', capabilityId: 'notify', idempotency: 'idempotent' },
+      {
+        kind: 'wait_event',
+        nodeId: 'wait',
+        sources: ['agentmail.watch'],
+        eventTypes: ['mail.reply'],
+        correlation: { kind: 'input', name: 'route' },
+        timeoutMs: 120000,
+      },
+      { kind: 'workflow', nodeId: 'child', workflowId: 'child.followup' },
+    ],
+    edges: [
+      {
+        edgeId: 'approval-route',
+        from: 'route',
+        to: 'approve',
+        on: 'condition',
+        condition: {
+          kind: 'compare',
+          operator: 'equals',
+          left: { kind: 'input', name: 'route' },
+          right: { kind: 'literal', value: 'approve' },
+        },
+      },
+      { edgeId: 'wait-route', from: 'route', to: 'wait', on: 'default' },
+      { edgeId: 'approved', from: 'approve', to: 'notify', on: 'success' },
+      { edgeId: 'waited', from: 'wait', to: 'child', on: 'success' },
+    ],
+  };
+  const written = writeWorkflowGraphAssetContent({ kind: 'controller', controllerHome: h }, graph);
+  const registered = registerWorkflowFeatureAsset({
+    controllerHome: h,
+    scope: { kind: 'controller' },
+    asset: written.asset,
+    contentLocation: { kind: 'controller', path: written.path },
+    status: 'active',
+  });
+  return recordWorkflowBindings({
+    controllerHome: h,
+    scope: { kind: 'controller' },
+    expectedIdentity: registered.value,
+    bindings: [{ capabilityId: 'notify', pluginId: 'test', actionId: 'send' }],
+    expectedRevision: registered.revision,
+  });
+}
+
 function content(result: Awaited<ReturnType<typeof callCoreCapabilityAdapter>>) {
   const item = result?.content?.[0];
-  if (!item || item.type !== 'text') throw new Error('WORKFLOW_CORE_CAPABILITY_TEXT_RESULT_REQUIRED');
+  if (item?.type !== 'text') throw new Error('WORKFLOW_CORE_CAPABILITY_TEXT_RESULT_REQUIRED');
   return JSON.parse(item.text);
 }
 
@@ -71,6 +130,7 @@ describe('workflow.control core capability', () => {
         list: { readOnly: true },
         get: { readOnly: true },
         prepare: { readOnly: true },
+        preview: { readOnly: true },
         authoring_preflight: { readOnly: true },
         install: { readOnly: false },
         execute: { readOnly: false },
@@ -102,6 +162,52 @@ describe('workflow.control core capability', () => {
     );
     expect(got.workflow.descriptor.engine).toBe('sequence_v1');
   });
+  test('previews Graph v2 structure, branches, approvals, waits and external effects without execution', async () => {
+    const h = home();
+    installGraph(h);
+    const value = content(
+      await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
+        capability_id: 'workflow.control',
+        action: 'preview',
+        request_id: 'preview-1',
+        arguments: { workflow_id: 'graph.preview', inputs: { route: 'approve' } },
+      }),
+    );
+    expect(value.preview).toMatchObject({
+      workflow: { workflowId: 'graph.preview', version: '1', engine: 'graph_v2' },
+      status: 'active',
+      readiness: 'blocked',
+      execution: 'not_executed',
+      permissions: {
+        authorization: 'not_authorized',
+        bindings: [{ capabilityId: 'notify', pluginId: 'test', actionId: 'send' }],
+      },
+      branches: [{ nodeId: 'route' }],
+      waits: [{ nodeId: 'wait', sources: ['agentmail.watch'], eventTypes: ['mail.reply'], timeoutMs: 120000 }],
+      approvals: [{ nodeId: 'approve', approvalKey: 'send', prompt: 'Send notification?', timeoutMs: 60000 }],
+    });
+    expect(value.preview.blockers).toContain('WORKFLOW_CHILD_NOT_ACTIVE:child.followup');
+    expect(value.preview.branches[0].routes).toHaveLength(2);
+    expect(value.preview.potentialExternalEffects).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          nodeId: 'notify',
+          phase: 'forward',
+          kind: 'capability',
+          capabilityId: 'notify',
+          binding: { capabilityId: 'notify', pluginId: 'test', actionId: 'send' },
+        }),
+        expect.objectContaining({
+          nodeId: 'child',
+          phase: 'forward',
+          kind: 'workflow',
+          workflowId: 'child.followup',
+        }),
+      ]),
+    );
+    expect(JSON.stringify(value.preview)).not.toContain('process.stdout');
+  });
+
   test('prepare validates inputs but never authorizes or executes', async () => {
     const h = home();
     install(h);

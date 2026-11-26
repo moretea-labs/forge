@@ -11,11 +11,16 @@ import {
   type WorkflowInvocationIntentV1,
   type WorkflowInvocationOriginKind,
 } from '../../../packages/workflow-runtime/domain/workflow-invocation';
+import type {
+  WorkflowGraphCompensationDefinition,
+  WorkflowGraphNode,
+} from '../../../packages/workflow-runtime/domain/workflow-graph';
 import { readWorkflowExecutableContentFile } from '../control-plane/persistence/workflow-content-store';
 import {
   listWorkflowRegistryEntries,
   readWorkflowRegistryEntry,
   workflowRegistryEngine,
+  type WorkflowCapabilityBinding,
   type WorkflowRegistryEntry,
   type WorkflowRegistryScope,
 } from '../control-plane/persistence/workflow-registry-store';
@@ -130,6 +135,177 @@ export function prepareWorkflowInvocation(input: PrepareWorkflowInvocationInput)
 
 export interface WorkflowInvocationIntentPlanV1 extends WorkflowInvocationPlanV1 {
   binding: WorkflowInvocationIntentV1['binding'];
+}
+
+export interface WorkflowGraphPreviewEffectV1 {
+  nodeId: string;
+  phase: 'forward' | 'compensation';
+  kind: 'capability' | 'workflow';
+  capabilityId?: string;
+  workflowId?: string;
+  idempotency?: 'idempotent' | 'non_idempotent';
+  reconcileWithCapabilityId?: string;
+  binding?: WorkflowCapabilityBinding;
+}
+
+export interface WorkflowGraphPreviewV1 {
+  schemaVersion: 1;
+  workflow: WorkflowFeatureDescriptorV1;
+  scope: WorkflowRegistryScope;
+  status: WorkflowRegistryEntry['status'];
+  readiness: WorkflowInvocationPlanV1['readiness'];
+  blockers: string[];
+  nodes: Array<Record<string, unknown>>;
+  edges: Array<Record<string, unknown>>;
+  branches: Array<{
+    nodeId: string;
+    routes: Array<Record<string, unknown>>;
+  }>;
+  waits: Array<{
+    nodeId: string;
+    sources: string[];
+    eventTypes?: string[];
+    correlation: unknown;
+    timeoutMs?: number;
+  }>;
+  approvals: Array<{
+    nodeId: string;
+    approvalKey: string;
+    prompt: string;
+    timeoutMs?: number;
+  }>;
+  potentialExternalEffects: WorkflowGraphPreviewEffectV1[];
+  permissions: {
+    capabilityDependencies: string[];
+    bindings: WorkflowCapabilityBinding[];
+    authorization: 'not_authorized';
+  };
+  execution: 'not_executed';
+}
+
+function graphPreviewBinding(
+  bindings: WorkflowCapabilityBinding[],
+  capabilityId: string,
+): WorkflowCapabilityBinding | undefined {
+  const binding = bindings.find((candidate) => candidate.capabilityId === capabilityId);
+  return binding ? structuredClone(binding) : undefined;
+}
+
+function compensationPreviewEffect(
+  nodeId: string,
+  compensation: WorkflowGraphCompensationDefinition | undefined,
+  bindings: WorkflowCapabilityBinding[],
+): WorkflowGraphPreviewEffectV1 | undefined {
+  if (!compensation || compensation.kind === 'script') return undefined;
+  if (compensation.kind === 'workflow') {
+    return { nodeId, phase: 'compensation', kind: 'workflow', workflowId: compensation.workflowId };
+  }
+  return {
+    nodeId,
+    phase: 'compensation',
+    kind: 'capability',
+    capabilityId: compensation.capabilityId,
+    idempotency: compensation.idempotency ?? 'idempotent',
+    ...(compensation.reconcileWithCapabilityId
+      ? { reconcileWithCapabilityId: compensation.reconcileWithCapabilityId }
+      : {}),
+    ...(graphPreviewBinding(bindings, compensation.capabilityId)
+      ? { binding: graphPreviewBinding(bindings, compensation.capabilityId) }
+      : {}),
+  };
+}
+
+function graphPreviewEffects(
+  node: WorkflowGraphNode,
+  bindings: WorkflowCapabilityBinding[],
+): WorkflowGraphPreviewEffectV1[] {
+  const effects: WorkflowGraphPreviewEffectV1[] = [];
+  if (node.kind === 'capability') {
+    const binding = graphPreviewBinding(bindings, node.capabilityId);
+    effects.push({
+      nodeId: node.nodeId,
+      phase: 'forward',
+      kind: 'capability',
+      capabilityId: node.capabilityId,
+      idempotency: node.idempotency ?? 'idempotent',
+      ...(node.reconcileWithCapabilityId ? { reconcileWithCapabilityId: node.reconcileWithCapabilityId } : {}),
+      ...(binding ? { binding } : {}),
+    });
+  } else if (node.kind === 'workflow') {
+    effects.push({ nodeId: node.nodeId, phase: 'forward', kind: 'workflow', workflowId: node.workflowId });
+  }
+  if (node.kind === 'capability' || node.kind === 'script' || node.kind === 'workflow') {
+    const compensation = compensationPreviewEffect(node.nodeId, node.compensation, bindings);
+    if (compensation) effects.push(compensation);
+  }
+  return effects;
+}
+
+/**
+ * Deterministic Graph v2 preview. It exposes structure/readiness and local
+ * binding metadata only; it never authorizes, dispatches, or resolves waits.
+ */
+export function previewWorkflowGraph(input: {
+  controllerHome: string;
+  scope: WorkflowRegistryScope;
+  workflowId: string;
+  inputs?: Record<string, WorkflowJsonValue>;
+}): WorkflowGraphPreviewV1 {
+  const plan = prepareWorkflowInvocation({
+    controllerHome: input.controllerHome,
+    scope: input.scope,
+    workflowId: input.workflowId,
+    origin: { kind: 'system', id: 'workflow-preview' },
+    inputs: input.inputs,
+  });
+  if (plan.workflow.engine !== 'graph_v2') throw new Error('WORKFLOW_GRAPH_PREVIEW_GRAPH_REQUIRED');
+  const registry = readWorkflowRegistryEntry(input.controllerHome, input.scope, input.workflowId);
+  if (!registry) throw new Error('WORKFLOW_CATALOG_ENTRY_NOT_FOUND:' + input.workflowId);
+  const asset = readWorkflowExecutableContentFile(registry.value.contentLocation.path);
+  if (asset.schemaVersion !== 2) throw new Error('WORKFLOW_GRAPH_PREVIEW_GRAPH_REQUIRED');
+  const bindings = registry.value.bindings.map((binding) => structuredClone(binding));
+  return {
+    schemaVersion: 1,
+    workflow: structuredClone(plan.workflow),
+    scope: structuredClone(plan.scope),
+    status: registry.value.status,
+    readiness: plan.readiness,
+    blockers: [...plan.blockers],
+    nodes: asset.nodes.map((node) => structuredClone(node) as unknown as Record<string, unknown>),
+    edges: asset.edges.map((edge) => structuredClone(edge) as unknown as Record<string, unknown>),
+    branches: asset.nodes
+      .filter((node) => node.kind === 'branch')
+      .map((node) => ({
+        nodeId: node.nodeId,
+        routes: asset.edges
+          .filter((edge) => edge.from === node.nodeId)
+          .map((edge) => structuredClone(edge) as unknown as Record<string, unknown>),
+      })),
+    waits: asset.nodes
+      .filter((node) => node.kind === 'wait_event')
+      .map((node) => ({
+        nodeId: node.nodeId,
+        sources: [...node.sources],
+        ...(node.eventTypes ? { eventTypes: [...node.eventTypes] } : {}),
+        correlation: structuredClone(node.correlation),
+        ...(node.timeoutMs === undefined ? {} : { timeoutMs: node.timeoutMs }),
+      })),
+    approvals: asset.nodes
+      .filter((node) => node.kind === 'approval')
+      .map((node) => ({
+        nodeId: node.nodeId,
+        approvalKey: node.approvalKey,
+        prompt: node.prompt,
+        ...(node.timeoutMs === undefined ? {} : { timeoutMs: node.timeoutMs }),
+      })),
+    potentialExternalEffects: asset.nodes.flatMap((node) => graphPreviewEffects(node, bindings)),
+    permissions: {
+      capabilityDependencies: [...plan.workflow.capabilityDependencies],
+      bindings,
+      authorization: 'not_authorized',
+    },
+    execution: 'not_executed',
+  };
 }
 
 /** Canonical Intent preflight shared by direct, Event, Schedule, Skill, Plugin, Model and child Workflow callers. */

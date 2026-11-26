@@ -24,6 +24,7 @@ import {
   getWorkflowCatalogEntry,
   listWorkflowCatalog,
   prepareWorkflowInvocation,
+  previewWorkflowGraph,
   type WorkflowInvocationOriginKind,
 } from '../../../src/runtime/workflows/catalog';
 import {
@@ -185,6 +186,16 @@ export async function callCoreCapabilityAdapter(
               kind: originKind as WorkflowInvocationOriginKind,
               ...(typeof input.origin_id === 'string' && input.origin_id.trim() ? { id: input.origin_id.trim() } : {}),
             },
+            inputs: workflowInputs(input),
+          }),
+        });
+      }
+      if (action === 'preview') {
+        return result({
+          preview: previewWorkflowGraph({
+            controllerHome: ctx.controllerHome,
+            scope,
+            workflowId: workflowId(input),
             inputs: workflowInputs(input),
           }),
         });
