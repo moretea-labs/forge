@@ -23,6 +23,7 @@ export interface EventAutomationActionPlanV1 {
         version: string;
         contentDigest: string;
         engine: 'sequence_v1' | 'graph_v2';
+        registryScope: { kind: 'controller' } | { kind: 'project'; projectId: string };
       }
     | { kind: 'capability'; capabilityId: string }
     | {
@@ -96,6 +97,7 @@ function workflowHandler(
     version: invocation.workflow.version,
     contentDigest: invocation.workflow.contentDigest,
     engine: invocation.workflow.engine,
+    registryScope: structuredClone(scope),
   };
 }
 

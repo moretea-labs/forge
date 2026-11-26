@@ -97,6 +97,7 @@ export async function executeRegisteredWorkflowFeature(
       intent,
       ...(input.requirementId ? { requirementId: input.requirementId } : {}),
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+      ...(input.approvalContext ? { approvalContext: input.approvalContext } : {}),
     },
     dependencies,
   );
