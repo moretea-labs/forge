@@ -43,7 +43,7 @@ final class AgentVoiceDictation: ObservableObject {
 
     nonisolated static func awaitAuthorization<Value>(
         timeout: TimeInterval,
-        request: (@escaping (Value) -> Void) -> Void
+        request: (@escaping @Sendable (Value) -> Void) -> Void
     ) async -> Value? {
         await withCheckedContinuation { continuation in
             let waiter = VoiceAuthorizationWaiter<Value>(continuation)
