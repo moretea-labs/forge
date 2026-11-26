@@ -60,6 +60,9 @@ interface ProviderFixture {
     lastConsoleHandle?: string;
     lastConsoleAuthorization?: Record<string, unknown>;
     failNextPressAfterDispatch: boolean;
+    failNextElementActionAfterDispatch: boolean;
+    mutateElementOnAction: boolean;
+    elementSemanticValue?: string;
     nextOpenBundleId?: string;
     rejectMismatchedExactProcessId: boolean;
   };
@@ -127,6 +130,9 @@ async function providerFixture(): Promise<ProviderFixture> {
     lastConsoleHandle: undefined as string | undefined,
     lastConsoleAuthorization: undefined as Record<string, unknown> | undefined,
     failNextPressAfterDispatch: false,
+    failNextElementActionAfterDispatch: false,
+    mutateElementOnAction: true,
+    elementSemanticValue: undefined as string | undefined,
     nextOpenBundleId: undefined as string | undefined,
     rejectMismatchedExactProcessId: false,
   };
@@ -350,9 +356,19 @@ async function providerFixture(): Promise<ProviderFixture> {
             root: {
               ref: `ax_${snapshotRevision}_1`,
               target,
-              role: 'AXTextArea',
-              name: 'One',
-              description: 'Chat with ChatGPT',
+              ...(state.elementSemanticValue !== undefined
+                ? {
+                    role: 'AXButton',
+                    identifier: 'agent.settings',
+                    name: state.elementSemanticValue === 'closed' ? 'Open Inspector' : 'Close Inspector',
+                    description: 'Inspector',
+                    value: state.elementSemanticValue,
+                  }
+                : {
+                    role: 'AXTextArea',
+                    name: 'One',
+                    description: 'Chat with ChatGPT',
+                  }),
               state: { enabled: true, focused: false },
               actions: ['invoke', 'set_value'],
               children: [],
@@ -384,24 +400,36 @@ async function providerFixture(): Promise<ProviderFixture> {
             continue;
           }
           state.elementActionCount += 1;
+          if (
+            state.mutateElementOnAction &&
+            params.action === 'invoke' &&
+            state.elementSemanticValue !== undefined
+          ) {
+            state.elementSemanticValue = state.elementSemanticValue === 'closed' ? 'open' : 'closed';
+          }
           session.snapshotRevision = Number(session.snapshotRevision ?? 0) + 1;
+          if (state.failNextElementActionAfterDispatch) {
+            state.failNextElementActionAfterDispatch = false;
+            socket.destroy();
+            return;
+          }
           result = { acted: true, action: params.action, ref: params.ref, interactionId };
         } else if (actionId === 'prepare_unlock_console') {
           state.consolePrepareCount += 1;
           state.lastConsoleAuthorization =
-            params.authorization && typeof params.authorization === 'object'
+            params.authorization && typeof params.authorization =[REDACTED] 'object'
               ? (params.authorization as Record<string, unknown>)
               : undefined;
           result = {
             prepared: true,
-            credential_handle: '11111111-1111-4111-8111-111111111111',
+            credential_handle: [REDACTED],
             expires_in_ms: 120_000,
           };
         } else if (actionId === 'unlock_console') {
           state.consoleUnlockCount += 1;
-          state.lastConsoleHandle = typeof params.credential_handle === 'string' ? params.credential_handle : undefined;
+          state.lastConsoleHandle = typeof params.credential_handle === 'string' ? params.credential_handle : [REDACTED]
           state.lastConsoleAuthorization =
-            params.authorization && typeof params.authorization === 'object'
+            params.authorization && typeof params.authorization =[REDACTED] 'object'
               ? (params.authorization as Record<string, unknown>)
               : undefined;
           result = { unlocked: true, verified: true, postcondition: 'console_unlocked' };
@@ -1170,7 +1198,7 @@ describe('Computer durable InteractionTarget authority', () => {
           browserProduct: 'chrome',
           windowId: '7',
           tabId: '9',
-          ownerToken: 'forge-browser-owned:legacy-session-a',
+          ownerToken: [REDACTED],
         },
       });
 
@@ -1198,7 +1226,7 @@ describe('Computer durable InteractionTarget authority', () => {
           browserProduct: 'chrome',
           windowId: '99',
           tabId: '9',
-          ownerToken: 'forge-browser-owned:legacy-session-a',
+          ownerToken: [REDACTED],
         });
       });
 
@@ -1243,7 +1271,7 @@ describe('Computer durable InteractionTarget authority', () => {
           browserProduct: 'chrome',
           windowId: '111',
           tabId: '9',
-          ownerToken: 'forge-browser-owned:legacy-session-a',
+          ownerToken: [REDACTED],
         },
       });
       expect(converged.created).toBe(false);
@@ -1396,7 +1424,7 @@ describe('Computer durable InteractionTarget authority', () => {
   test('native plugin-owned browser tabs reject a different session owner token', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-surface-owner-token-'));
     const stableIdentity = { surfaceType: 'browser-tab' as const, ownership: 'plugin_owned' as const };
-    const binding = (ownerToken: string) => ({
+    const binding = (ownerToken: [REDACTED] => ({
       providerId: 'macos-apple-events',
       browserProduct: 'chrome',
       windowId: '17',
@@ -1443,7 +1471,7 @@ describe('Computer durable InteractionTarget authority', () => {
         targetAuthority.upsertSurface(controllerHome, {
           stableIdentity,
           compatibilityAliases: ['session-without-token'],
-          providerBinding: { ...binding(''), ownerToken: undefined },
+          providerBinding: { ...binding(''), ownerToken: [REDACTED] },
         }),
       ).toThrow('COMPUTER_SURFACE_NATIVE_OWNER_TOKEN_REQUIRED');
     } finally {
@@ -1831,6 +1859,59 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.state.elementActionCount).toBe(1);
   });
 
+  test('reconciles an unknown selector mutation by observation without replaying it', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+    fixture.state.failNextElementActionAfterDispatch = true;
+    fixture.state.elementSemanticValue = 'closed';
+
+    const acted = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_element_action',
+        { target_id: targetId, selector: { identifier: 'agent.settings' }, action: 'invoke' },
+        'element-atomic-selector-outcome-unknown-reconciled',
+      ),
+    );
+
+    expect(acted).toMatchObject({
+      acted: true,
+      action: 'invoke',
+      reconciled: true,
+      reconciliation: { status: 'confirmed_by_observation' },
+    });
+    expect(fixture.state.elementActionCount).toBe(1);
+    expect(fixture.state.elementObserveCount).toBe(2);
+    expect(fixture.state.elementSemanticValue).toBe('open');
+  });
+
+  test('keeps an unknown selector mutation fenced when observation cannot prove a postcondition', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+    fixture.state.failNextElementActionAfterDispatch = true;
+    fixture.state.mutateElementOnAction = false;
+    fixture.state.elementSemanticValue = 'closed';
+
+    try {
+      await computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_element_action',
+          { target_id: targetId, selector: { identifier: 'agent.settings' }, action: 'invoke' },
+          'element-atomic-selector-outcome-unknown-unproven',
+        ),
+      );
+      throw new Error('expected unknown provider outcome');
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as { effectOutcome?: string }).effectOutcome).toBe('outcome_unknown');
+    }
+
+    expect(fixture.state.elementActionCount).toBe(1);
+    expect(fixture.state.elementObserveCount).toBe(2);
+    expect(fixture.state.elementSemanticValue).toBe('closed');
+  });
+
   test('rejects mixed selector and explicit-ref element action modes before provider mutation', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture);
@@ -2046,14 +2127,14 @@ describe('protected Computer console unlock composition', () => {
       capability: 'computer.console.unlock.v1',
       action: 'prepare_unlock_console',
       prepared: true,
-      credentialHandle: '11111111-1111-4111-8111-111111111111',
+      credentialHandle: [REDACTED],
     });
     expect(typeof prepared.invocationId).toBe('string');
     expect(fixture.state.consolePrepareCount).toBe(1);
 
     const result = await executeProtectedConsoleUnlockInvocation(
       {
-        credentialHandle: String(prepared.credentialHandle),
+        credentialHandle: [REDACTED],
         confirmAuthorization: true,
         timeoutMs: 5_000,
       },
@@ -2096,14 +2177,14 @@ describe('protected Computer console unlock composition', () => {
 
     await expect(
       computerPluginAdapter.executeAction({
-        ...actionInput(fixture.controllerHome, 'console_unlock', { credential: 'secret' }, 'console-raw-credential'),
+        ...actionInput(fixture.controllerHome, 'console_unlock', { credential: [REDACTED] }, 'console-raw-credential'),
         confirmAuthorization: true,
         timeoutMs: 5_000,
       }),
     ).rejects.toThrow();
 
     const unlocked = await computerPluginAdapter.executeAction({
-      ...actionInput(fixture.controllerHome, 'console_unlock', { credential_handle: handle }, 'console-unlock-plugin'),
+      ...actionInput(fixture.controllerHome, 'console_unlock', { credential_handle: [REDACTED] }, 'console-unlock-plugin'),
       confirmAuthorization: true,
       timeoutMs: 5_000,
     });
@@ -2142,7 +2223,7 @@ describe('protected Computer console unlock composition', () => {
     const request = {
       capability: 'computer.console.unlock.v1' as const,
       action: 'unlock_console' as const,
-      credentialHandle: '11111111-1111-4111-8111-111111111111',
+      credentialHandle: [REDACTED],
     };
     await expect(
       executeRuntimeComputerConsoleUnlock(

@@ -90,7 +90,7 @@ export const COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION = 'console_unlock_recover';
 export const COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION = 'console_unlock_revoke';
 const DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS = 15_000;
 const MAX_CONSOLE_UNLOCK_TIMEOUT_MS = 30_000;
-const CONSOLE_CREDENTIAL_HANDLE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CONSOLE_CREDENTIAL_HANDLE_PATTERN = [REDACTED]}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const COMPUTER_ELEMENT_SEMANTIC_ACTIONS = [
   'invoke',
   'click',
@@ -159,7 +159,7 @@ export interface ProtectedConsoleUnlockPreparationInput {
 }
 
 export interface ProtectedConsoleUnlockInvocationInput {
-  credentialHandle: string;
+  credentialHandle: [REDACTED]
   confirmAuthorization: boolean;
   timeoutMs?: number;
 }
@@ -194,7 +194,7 @@ export async function executeProtectedConsoleUnlockPreparation(
     controllerHome,
   );
   const credentialHandle =
-    typeof providerResult.credential_handle === 'string' ? providerResult.credential_handle : undefined;
+    [REDACTED] providerResult.credential_handle === 'string' ? providerResult.credential_handle : [REDACTED]
   if (!credentialHandle || !CONSOLE_CREDENTIAL_HANDLE_PATTERN.test(credentialHandle)) {
     throw new Error(
       'COMPUTER_CONSOLE_UNLOCK_PREPARATION_INVALID: provider did not return a valid opaque credential handle.',
@@ -217,14 +217,14 @@ export async function executeProtectedConsoleUnlockInvocation(
   requireConsoleUnlockAuthorization(input.confirmAuthorization);
   if (!CONSOLE_CREDENTIAL_HANDLE_PATTERN.test(input.credentialHandle)) {
     throw new Error(
-      'COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_HANDLE_REQUIRED: a provider-local opaque credential handle is required.',
+      'COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_HANDLE_REQUIRED: [REDACTED] provider-local opaque credential handle is required.',
     );
   }
   const invocationId = randomUUID();
   const request: ComputerConsoleUnlockRequest = {
     capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
     action: 'unlock_console',
-    credentialHandle: input.credentialHandle,
+    credentialHandle: [REDACTED],
   };
   const providerResult = await executeRuntimeComputerConsoleUnlock(
     request,
@@ -756,7 +756,7 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: {
         type: 'object',
         properties: {
-          credential_handle: {
+          credential_handle: [REDACTED]
             type: 'string',
             minLength: 36,
             maxLength: 64,
@@ -2174,6 +2174,53 @@ function stableElementSelector(value: unknown): ComputerSemanticSelector | undef
   return Object.keys(selector).length > 0 ? selector : undefined;
 }
 
+function semanticElementObservation(root: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!root) return undefined;
+  const state =
+    root.state && typeof root.state === 'object' && !Array.isArray(root.state)
+      ? Object.fromEntries(
+          Object.entries(root.state as Record<string, unknown>)
+            .filter(([, value]) => value === null || ['string', 'number', 'boolean'].includes(typeof value))
+            .sort(([left], [right]) => left.localeCompare(right)),
+        )
+      : undefined;
+  return {
+    ...(typeof root.role === 'string' ? { role: root.role } : {}),
+    ...(typeof root.identifier === 'string' ? { identifier: root.identifier } : {}),
+    ...(typeof root.name === 'string' ? { name: root.name } : {}),
+    ...(typeof root.title === 'string' ? { title: root.title } : {}),
+    ...(typeof root.description === 'string' ? { description: root.description } : {}),
+    ...(root.value === null || ['string', 'number', 'boolean'].includes(typeof root.value)
+      ? { value: root.value }
+      : {}),
+    ...(state ? { state } : {}),
+  };
+}
+
+function selectorMutationPostconditionConfirmed(
+  action: ComputerElementSemanticAction,
+  requestedValue: unknown,
+  beforeRoot: Record<string, unknown> | undefined,
+  afterRoot: Record<string, unknown> | undefined,
+): boolean {
+  if (!afterRoot) return false;
+  const after = semanticElementObservation(afterRoot);
+  const before = semanticElementObservation(beforeRoot);
+  if (!after) return false;
+
+  const afterState =
+    after.state && typeof after.state === 'object' && !Array.isArray(after.state)
+      ? (after.state as Record<string, unknown>)
+      : undefined;
+  if (action === 'set_value') return after.value === requestedValue;
+  if (action === 'focus') return afterState?.focused === true;
+  if (action === 'expand') return afterState?.expanded === true;
+  if (action === 'collapse') return afterState?.expanded === false;
+  if (action === 'select') return afterState?.selected === true;
+
+  return JSON.stringify(after) !== JSON.stringify(before);
+}
+
 async function executeDesktopSemanticAction(
   input: AssistantPluginActionExecutionInput,
   _provider: AssistantPluginAdapter,
@@ -2260,6 +2307,38 @@ async function executeDesktopSemanticAction(
           );
         } catch (error) {
           if (isMissingProviderSessionFailure(error)) throw staleProviderBinding(targetId, true);
+          if (error instanceof AssistantPluginError && error.effectOutcome === 'outcome_unknown') {
+            // Never replay an ambiguous mutation. Reconcile it once by observing
+            // the same semantic selector while this target lease is still held.
+            try {
+              const reconciled = await executeDesktopProductAction(
+                input,
+                DESKTOP_ELEMENT_OBSERVE_ACTION,
+                { root_selector: selector, max_depth: 1, max_nodes: 8, include_values: true },
+                binding.providerSessionId,
+              );
+              const reconciledRoot =
+                reconciled.root && typeof reconciled.root === 'object'
+                  ? (reconciled.root as Record<string, unknown>)
+                  : undefined;
+              if (selectorMutationPostconditionConfirmed(semanticAction, input.args.value, root, reconciledRoot)) {
+                return {
+                  acted: true,
+                  action: semanticAction,
+                  ref,
+                  reconciled: true,
+                  reconciliation: {
+                    status: 'confirmed_by_observation',
+                    causeCode: error.code,
+                    snapshotRevision: reconciled.snapshotRevision,
+                    ...(typeof reconciledRoot?.ref === 'string' ? { ref: reconciledRoot.ref } : {}),
+                  },
+                };
+              }
+            } catch (reconciliationError) {
+              if (isMissingProviderSessionFailure(reconciliationError)) throw staleProviderBinding(targetId, true);
+            }
+          }
           throw error;
         }
       }
@@ -2449,7 +2528,7 @@ export const computerPluginAdapter: AssistantPluginAdapter = {
     if (input.actionId === COMPUTER_CONSOLE_UNLOCK_ACTION) {
       return executeProtectedConsoleUnlockInvocation(
         {
-          credentialHandle: typeof input.args.credential_handle === 'string' ? input.args.credential_handle : '',
+          credentialHandle: [REDACTED] input.args.credential_handle === 'string' ? input.args.credential_handle : [REDACTED],
           confirmAuthorization: input.confirmAuthorization === true,
           timeoutMs: input.timeoutMs,
         },
