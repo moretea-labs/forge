@@ -6,7 +6,6 @@ import { join } from 'path';
 import { writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { updateTask, inspectTaskReadiness } from '../../src/cli/controller/issue-store';
-import { buildControllerTaskLedgerProjection } from '../../src/cli/controller/task-ledger';
 import { inspectProjectGovernance } from '../../src/cli/controller/governance';
 import { frozenLegacyIssueProjection } from '../../src/cli/controller/legacy-issue-cutover';
 import {
@@ -186,7 +185,7 @@ describe('legacy control-plane cutover', () => {
     });
   });
 
-  test('default governance and task ledger expose Requirement authority only', () => {
+  test('default governance exposes Requirement authority without a legacy task ledger', () => {
     withRepo((repoRoot) => {
       const governance = inspectProjectGovernance(repoRoot);
       expect(governance).toMatchObject({
@@ -196,16 +195,6 @@ describe('legacy control-plane cutover', () => {
         executionQueue: [],
       });
       expect(JSON.stringify(governance.requirements)).toContain(REQUIREMENT_ID);
-
-      const ledger = buildControllerTaskLedgerProjection(repoRoot);
-      expect(ledger).toMatchObject({
-        deprecated: true,
-        frozen: true,
-        readOnly: true,
-        authority: 'controller-home-sqlite',
-        issues: [],
-        readyTasks: [],
-      });
     });
   });
 

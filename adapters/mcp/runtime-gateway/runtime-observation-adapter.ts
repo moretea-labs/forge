@@ -37,7 +37,6 @@ import {
 import { evaluateRuntimeHealth } from '../../../src/runtime/health';
 import { inspectRepositoryRuntimeStorage } from '../../../src/runtime/repositories/runtime-storage';
 import { projectBoard } from '../../../src/cli/controller/issue-store';
-import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
 import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
 import {
   listControllerChecks,
@@ -96,8 +95,6 @@ export function summarizeControllerReadyPayload(fullPayload: Record<string, unkn
     ready: fullPayload.ready,
     state: fullPayload.state,
     reasons: fullPayload.reasons,
-    taskLedgerStatus: fullPayload.taskLedgerStatus,
-    taskLedgerCounts: fullPayload.taskLedgerCounts,
     gateway: fullPayload.gateway,
     health: {
       state: health.state,
@@ -234,7 +231,6 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
   if (payload.detailLevel === 'summary') return payload;
   const git = contextRecord(payload.git);
   const repository = contextRecord(payload.repository);
-  const ledger = contextRecord(payload.taskLedger);
   const ready = contextRecord(payload.controllerReady);
   const runtimeProjection = contextRecord(payload.runtimeProjection);
   const runtimeProjectionState = contextRecord(payload.runtimeProjectionState);
@@ -243,8 +239,7 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
   const plugins = Array.isArray(payload.plugins) ? payload.plugins : [];
   const checks = Array.isArray(payload.checks) ? payload.checks : [];
   const activeRuns = Array.isArray(payload.activeRuns) ? payload.activeRuns : [];
-  const attention = Array.isArray(ledger.attention) ? ledger.attention : [];
-  const readyTasks = Array.isArray(ledger.readyTasks) ? ledger.readyTasks : [];
+  const readyTasks = Array.isArray(payload.readyTasks) ? payload.readyTasks : [];
   const runtimeIdentity = contextRecord(payload.runtimeIdentity);
   const runtime = contextRecord(payload.runtime);
   const repoId = String(payload.repoId ?? repository.repoId ?? '');
@@ -316,7 +311,6 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
       diagnostics: contextRecord(ready.diagnostics),
       observedAt: ready.observedAt,
     },
-    attention: attention.slice(0, 5).map(compactContextTask),
     readyTasks: readyTasks.slice(0, 5).map(compactContextTask),
     execution: {
       requiredChecks: recommendedCheckIds,
@@ -329,7 +323,6 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
     },
     detailPointers: {
       git: { tool: 'repository_git_status', arguments: { repo_id: repoId } },
-      taskLedger: { tool: 'controller_context', arguments: { repo_id: repoId, detail_level: 'detail' } },
       plugin: { tool: 'list_plugins', arguments: { repo_id: repoId } },
       check: { tool: 'controller_context', arguments: { repo_id: repoId, detail_level: 'detail' } },
       history: { tool: 'controller_context', arguments: { repo_id: repoId, detail_level: 'detail' } },
@@ -347,20 +340,6 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
       attentionPluginIds,
     },
     checks: { availableCount: checks.length, recommendedCheckIds, lastFailureCount },
-    taskLedger: {
-      schemaVersion: ledger.schemaVersion,
-      source: ledger.source,
-      generatedAt: ledger.generatedAt,
-      currentIssueId: ledger.currentIssueId,
-      counts: ledger.counts,
-      issueCount: ledger.issueCount,
-      archivedIssueCount: ledger.archivedIssueCount,
-      status: ledger.status,
-      contextContract: {
-        strategy: contextRecord(ledger.contextContract).strategy,
-        rawCodeRequiredForImplementation: true,
-      },
-    },
     // Required keys for cache-completeness and legacy readers (deprecated).
     runtimeStorage: payload.runtimeStorage,
     runtimeProjectionState,
@@ -728,7 +707,6 @@ export async function callRuntimeObservationAdapter(
         const supportedSections = [
           'git',
           'focus',
-          'taskLedger',
           'readiness',
           'activeRuns',
           'localBridge',
@@ -772,35 +750,28 @@ export async function callRuntimeObservationAdapter(
           if (selectedSections.includes('git')) {
             sectionPayload.git = measureSection('git', () => gitSnapshot(repository.canonicalRoot));
           }
-          if (selectedSections.includes('focus') || selectedSections.includes('taskLedger')) {
-            const board = measureSection('focusTaskLedger.source', () => {
+          if (selectedSections.includes('focus')) {
+            const board = measureSection('focus.source', () => {
               const legacyIssuesRetired = legacyIssueAuthorityRetired(repository.canonicalRoot);
               return legacyIssuesRetired ? undefined : projectBoard(repository.canonicalRoot);
             });
-            if (selectedSections.includes('focus')) {
-              sectionPayload.focus = measureSection('focus', () => {
-                const issue = board?.currentIssueId
-                  ? board.issues.find((candidate) => candidate.id === board.currentIssueId)
-                  : undefined;
-                return {
-                  currentIssueId: board?.currentIssueId,
-                  currentIssue: issue
-                    ? {
-                        id: issue.id,
-                        title: issue.title,
-                        status: issue.status,
-                        lifecycleStatus: issue.lifecycleStatus,
-                        updatedAt: issue.updatedAt,
-                      }
-                    : undefined,
-                };
-              });
-            }
-            if (selectedSections.includes('taskLedger')) {
-              sectionPayload.taskLedger = measureSection('taskLedger', () =>
-                buildControllerTaskLedgerProjection(repository.canonicalRoot, board, undefined),
-              );
-            }
+            sectionPayload.focus = measureSection('focus', () => {
+              const issue = board?.currentIssueId
+                ? board.issues.find((candidate) => candidate.id === board.currentIssueId)
+                : undefined;
+              return {
+                currentIssueId: board?.currentIssueId,
+                currentIssue: issue
+                  ? {
+                      id: issue.id,
+                      title: issue.title,
+                      status: issue.status,
+                      lifecycleStatus: issue.lifecycleStatus,
+                      updatedAt: issue.updatedAt,
+                    }
+                  : undefined,
+              };
+            });
           }
           if (selectedSections.includes('readiness')) {
             sectionPayload.readiness = await measureSectionAsync('readiness', () =>
@@ -1124,9 +1095,6 @@ export async function callRuntimeObservationAdapter(
           const legacyIssuesRetired = legacyIssueAuthorityRetired(repository.canonicalRoot);
           const board = legacyIssuesRetired ? undefined : projectBoard(repository.canonicalRoot);
           markPhase('build.task_board', taskBoardStartedAt);
-          const taskLedgerStartedAt = performance.now();
-          const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot, board, undefined);
-          markPhase('build.task_ledger', taskLedgerStartedAt);
           markPhase('build.task_state', taskStateStartedAt);
           const readinessStartedAt = performance.now();
           const runtimeObservation = observeRuntimeStatus(ctx.controllerHome);
@@ -1259,11 +1227,9 @@ export async function callRuntimeObservationAdapter(
                     diffStat: '',
                     dirty: false,
                   },
-            currentIssueId: board?.currentIssueId ?? taskLedger.currentIssueId,
+            currentIssueId: board?.currentIssueId,
             currentIssue,
-            taskLedger,
-            taskLedgerStatus: taskLedger.status,
-            readyTasks: (board?.readyTasks ?? taskLedger.readyTasks).slice(0, 20),
+            readyTasks: (board?.readyTasks ?? []).slice(0, 20),
             activeRuns,
             activeJobCount: activeLocalJobs,
             localBridge: {

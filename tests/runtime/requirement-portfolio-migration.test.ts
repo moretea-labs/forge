@@ -18,7 +18,6 @@ import { exportRequirementPortfolio } from '../../src/cli/controller/requirement
 import { listControlPlaneRecords } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { getPlanContract, listPlanContracts } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../src/runtime/control-plane/facade/requirement-board';
-import { buildControllerTaskLedgerProjection } from '../../src/cli/controller/task-ledger';
 import { inspectProjectGovernance } from '../../src/cli/controller/governance';
 
 const REPO_ID = 'repo_portfolio_test';
@@ -201,10 +200,7 @@ describe('Requirement portfolio migration', () => {
       expect(() => updateIssue(repoRoot, legacyIssue.id, { summary: 'Refused mutation.' })).toThrow('LEGACY_ISSUE_WRITES_RETIRED');
       expect(() => projectBoard(repoRoot)).toThrow('LEGACY_PROJECT_BOARD_RETIRED');
       const requirementBoard = buildRequirementBoard({ controllerHome, repoId: REPO_ID });
-      const reusedLedger = buildControllerTaskLedgerProjection(repoRoot, undefined, requirementBoard);
       const reusedGovernance = inspectProjectGovernance(repoRoot, requirementBoard);
-      expect(reusedLedger).toEqual(buildControllerTaskLedgerProjection(repoRoot));
-      expect(requirementBoard.counts).toEqual(reusedLedger.counts);
       expect(requirementBoard.counts).toEqual(reusedGovernance.counts);
       expect(requirementBoard.requirements).toEqual(reusedGovernance.requirements);
       expect(requirementBoard.activeRequirementCount).toBe(reusedGovernance.activeIssueCount);

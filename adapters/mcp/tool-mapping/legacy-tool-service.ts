@@ -442,7 +442,6 @@ export function buildMcpToolDefinitions(
                 enum: [
                   'git',
                   'focus',
-                  'taskLedger',
                   'readiness',
                   'activeRuns',
                   'localBridge',
@@ -711,7 +710,6 @@ export async function callMcpTool(
             persistedCheckReuse: true,
             directVerification: true,
             controllerContextAggregation: true,
-            taskLedgerProjection: true,
             assistantPluginRuntime: true,
             chatgptFacadeTools: true,
             goalWorkloop: true,

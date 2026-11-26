@@ -287,7 +287,7 @@ describe('runtime command surface', () => {
       snapshotSource.indexOf('type LocalControllerSnapshot ='),
     );
     expect(snapshotBlock.match(/buildRequirementBoard\(/g)?.length).toBe(1);
-    expect(snapshotBlock).toContain('buildControllerTaskLedgerProjection(repoRoot, legacyBoard, requirementBoard)');
+    expect(snapshotBlock).not.toContain('buildControllerTaskLedgerProjection');
     expect(snapshotBlock).toContain('inspectProjectGovernance(repoRoot, requirementBoard)');
     expect(snapshotSource).toContain('listActiveExecutionJobs(controllerHome, repository.repoId)');
     expect(snapshotSource).toContain('listExecutionJobs(controllerHome, repository.repoId, 12)');
@@ -312,10 +312,9 @@ describe('runtime command surface', () => {
     expect(runtimeObservation).toContain(
       "'Working tree has changes; request repository_git_status for bounded detail.'",
     );
-    const taskLedgerSource = readFileSync(join(ROOT, 'src/cli/controller/task-ledger.ts'), 'utf8');
-    expect(taskLedgerSource).not.toContain('controller-worklog');
-    expect(taskLedgerSource).not.toContain('listControllerWorklogEvents');
-    expect(taskLedgerSource).toContain('recentEvents: []');
+    expect(runtimeObservation).not.toContain('buildControllerTaskLedgerProjection');
+    expect(runtimeObservation).not.toContain("'taskLedger'");
+    expect(snapshotSource).not.toContain('buildControllerTaskLedgerProjection');
     const readinessStart = runtimeObservation.indexOf("case 'controller_ready':");
     const readinessEnd = runtimeObservation.indexOf("case 'repository_runtime_snapshot':", readinessStart);
     const readinessBlock = runtimeObservation.slice(readinessStart, readinessEnd);
@@ -359,9 +358,9 @@ describe('runtime command surface', () => {
     const contextHandlerBlock = runtimeObservation.slice(contextHandlerStart, contextHandlerEnd);
     expect(contextHandlerBlock).toContain('requestedSections');
     expect(contextHandlerBlock).toContain("measureSection('git'");
-    expect(contextHandlerBlock).toContain("measureSection('focusTaskLedger.source'");
+    expect(contextHandlerBlock).toContain("measureSection('focus.source'");
     expect(contextHandlerBlock).toContain("measureSection('focus'");
-    expect(contextHandlerBlock).toContain("measureSection('taskLedger'");
+    expect(contextHandlerBlock).not.toContain("measureSection('taskLedger'");
     expect(contextHandlerBlock).toContain("measureSectionAsync('readiness'");
     expect(contextHandlerBlock).toContain("measureSection('activeRuns'");
     expect(contextHandlerBlock).toContain("measureSection('localBridge'");
@@ -377,13 +376,13 @@ describe('runtime command surface', () => {
       "status: selectedSections.includes('readiness') ? 'observed' : 'not_requested'",
     );
     expect(contextHandlerBlock).toMatch(/await controllerReadiness\(\s*ctx,\s*repository,\s*\{\},\s*\{/s);
-    expect(contextHandlerBlock).toContain('taskLedger,');
+    expect(contextHandlerBlock).not.toContain('taskLedger,');
     expect(contextHandlerBlock).toContain('projectionSnapshot: runtimeSnapshot');
     expect(contextHandlerBlock).toContain('runtimeStorageInspection: storageInspection');
     expect(contextHandlerBlock).not.toContain('buildControllerOperationalPlan');
     expect(contextHandlerBlock).not.toContain('build.operational_plan');
     expect(contextHandlerBlock).toContain("markPhase('build.task_board', taskBoardStartedAt)");
-    expect(contextHandlerBlock).toContain("markPhase('build.task_ledger', taskLedgerStartedAt)");
+    expect(contextHandlerBlock).not.toContain('build.task_ledger');
     expect(contextHandlerBlock).not.toContain('await controllerReadinessEvidence(ctx, repository)');
     expect(runtimeReadinessObservation).not.toContain('buildRuntimeOperationalView');
     expect(runtimeReadinessObservation).not.toContain('listExecutionJobs');

@@ -14,7 +14,6 @@ import {
 import { cleanupIntegratedWorktree, integrateAgentJob, taskRunDiff } from '../agent-jobs/integration';
 import { listControllerChecks, runControllerCheck } from '../../runtime/execution/process-runtime/check-runner';
 import { projectBoard } from '../controller/issue-store';
-import { buildControllerTaskLedgerProjection } from '../controller/task-ledger';
 import { inspectProjectGovernance } from '../controller/governance';
 import { loadControllerProjectState } from '../controller/project-state';
 import { legacyIssueCutoverState } from '../controller/legacy-issue-cutover';
@@ -320,7 +319,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     archivedIssueCount: 0,
     notice: 'Requirement Board is authoritative. Legacy Issue/Task board data is intentionally omitted.',
   };
-  const taskLedger = buildControllerTaskLedgerProjection(repoRoot, legacyBoard, requirementBoard);
   const runtime = runtimeControllerSnapshot(repoRoot);
   const activeExecutionJobs = 'activeExecutionJobs' in runtime ? (runtime.activeExecutionJobs ?? []) : [];
   const recentExecutionJobs = 'recentExecutionJobs' in runtime ? (runtime.recentExecutionJobs ?? []) : [];
@@ -575,7 +573,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
         }
       : undefined,
     board,
-    taskLedger,
     projectState: loadControllerProjectState(repoRoot),
     governance: inspectProjectGovernance(repoRoot, requirementBoard),
     recovery,
