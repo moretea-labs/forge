@@ -171,7 +171,7 @@ components:
 ## Overview
 Forge is operated primarily through ChatGPT. The web UI is the durable **configuration and inspection surface behind ChatGPT**: not a second chat interface, not Jira, and not an agent execution wall. It answers what is configured, what Forge can do, which automations exist, which repositories are registered, and what genuinely needs human attention.
 
-The visual direction is **Carbon × Linear Utility Workstation**. Carbon contributes structural rigor, explicit status semantics and dense information grammar. Linear contributes restrained surfaces, hairline hierarchy, sparse accent usage and quiet technical polish. The Investment Decision System is a proven local reference for dark-rail/light-canvas separation, semantic tokens and page grammar, but Forge keeps its own identity.
+The visual direction is **Carbon × Linear Utility Workstation**. Carbon contributes structural rigor, explicit status semantics and dense information grammar. Linear contributes restrained surfaces, spatial and typographic hierarchy, sparse accent usage and quiet technical polish. The Investment Decision System is a proven local reference for dark-rail/light-canvas separation, semantic tokens and page grammar, but Forge keeps its own identity.
 
 ## Product principles
 ### Configuration before telemetry
@@ -179,6 +179,13 @@ The console primarily shows what Forge **is configured to do**. Execution detail
 
 ### Density without card spam
 Use aligned rows, tables, split panes and whitespace. A card must answer one coherent question; never create one rounded rectangle per fact. Avoid panel-inside-panel nesting.
+
+### Hierarchy before chrome
+Build page hierarchy primarily through, in order: **space and grouping**, **font size**, **font weight**, **subtle background-surface differences**, **hover feedback**, and **selected-state background fill**. These are the default tools for separating levels and communicating state.
+
+Borders, outlines, dividers and card shells are fallback structure, not the default hierarchy mechanism. Add a line or enclosure only when a real semantic boundary remains ambiguous without it, when dense scanning materially benefits, or when accessibility requires it. Never add a border merely to make a region feel designed.
+
+Hover may strengthen an affordance but must not be the only signal. Selected, active and current states must remain legible without hover, preferably through background fill plus typography/contrast. Keyboard focus rings remain mandatory and are not considered decorative chrome.
 
 ### Truthful state only
 Never render guessed percentage progress. States are categorical and backed by controller facts: enabled, paused, ready, attention, active, waiting, completed, unavailable.
@@ -201,12 +208,12 @@ Status color is local and compact. Critical state is always paired with text. La
 Use `{typography.page-title}` for page titles, `{typography.section-title}` for section headings, `{typography.body}` for dense product text and `{typography.meta}` for timestamps and identifiers. Long objectives truncate in scan lists and expand in the detail pane.
 
 ## Layout
-Desktop uses a persistent `{spacing.rail}` dark rail and an open workspace capped near `{spacing.content-max}`. The main canvas is not wrapped in one giant card. Top-level sections are separated by rhythm and hairline dividers.
+Desktop uses a persistent `{spacing.rail}` dark rail and an open workspace capped near `{spacing.content-max}`. The main canvas is not wrapped in one giant card. Top-level sections are separated first by rhythm, whitespace, typography and subtle surface changes; use a hairline divider only when those cues do not communicate the structural boundary clearly enough.
 
 Below 980px, split panes collapse into list then detail blocks. Below 760px the rail becomes compact horizontal navigation while preserving hierarchy.
 
 ## Elevation
-Ordinary content uses flat surfaces and 1px hairlines. Shadows are reserved for floating overlays. Use surface ladder and spacing to communicate depth.
+Ordinary content uses flat surfaces. Use the surface ladder, whitespace and typography to communicate depth; 1px hairlines are secondary and should be omitted when hierarchy is already clear. Shadows are reserved for floating overlays.
 
 ## Shapes
 Normal controls use `{rounded.sm}`; panels use `{rounded.md}` only when an enclosure is semantically useful. Pills are reserved for segmented filters and compact categories. Avoid oversized 16–24px rounding.
