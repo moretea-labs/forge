@@ -2926,7 +2926,30 @@ fn local_verification_command(arguments: &Value) -> bool {
         "--help" | "--version" | "--collect-only" | "--list" | "-h" | "-V")) {
         return false;
     }
+    let repository_verification_script = || {
+        if !parts[0].starts_with("./") { return false; }
+        let path = std::path::Path::new(parts[0]);
+        if path.components().any(|component| matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )) {
+            return false;
+        }
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            return false;
+        };
+        let Some(stem) = file_name.strip_suffix(".sh") else { return false; };
+        ["test", "check", "verify"].iter().any(|prefix| {
+            stem == *prefix
+                || stem.strip_prefix(prefix).is_some_and(|rest| {
+                    rest.starts_with('-') || rest.starts_with('_')
+                })
+        })
+    };
     match executable {
+        _ if repository_verification_script() => true,
         "cargo" => matches!(suffix.first().copied(), Some("test" | "check" | "clippy")),
         "swift" => matches!(suffix.first().copied(), Some("test" | "build")),
         "pytest" | "py.test" => !suffix.iter().any(|arg| matches!(*arg,
@@ -7172,6 +7195,14 @@ mod tests {
         assert!(local_verification_command(&json!({"command":["cargo","test","--manifest-path","x"]})));
         assert!(local_verification_command(&json!({"command":["swift","test"]})));
         assert!(local_verification_command(&json!({"command":["bash","-lc","cd app && npm run check"]})));
+        assert!(local_verification_command(&json!({"command":["./verify.sh"]})));
+        assert!(local_verification_command(&json!({"command":["./scripts/check-release.sh","--focused"]})));
+        assert!(local_verification_command(&json!({"command":["./tests/test_unit.sh"]})));
+        assert!(!local_verification_command(&json!({"command":["verify.sh"]})));
+        assert!(!local_verification_command(&json!({"command":["./scripts/build.sh"]})));
+        assert!(!local_verification_command(&json!({"command":["./scripts/../verify.sh"]})));
+        assert!(!local_verification_command(&json!({"command":["./verify.py"]})));
+        assert!(!local_verification_command(&json!({"command":["./verify.sh","--help"]})));
         assert!(!local_verification_command(&json!({"command":["git","diff","--check"]})));
         assert!(!local_verification_command(&json!({"command":["bash","-lc","git diff --check"]})));
         assert!(local_verification_command(&json!({"command":["npm","run","check","--prefix","apps/desktop"]})));
