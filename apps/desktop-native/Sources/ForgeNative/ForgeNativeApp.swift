@@ -18,6 +18,7 @@ struct ForgeNativeApp: App {
                 .tint(ForgePalette.accent)
                 .navigationTitle("")
                 .background(ForgeWindowConfigurator().frame(width:0,height:0))
+                .forgeTransparentWindowContainer()
                 .task { await workspace.refresh() }
         }
         .defaultSize(width:1260,height:790)
