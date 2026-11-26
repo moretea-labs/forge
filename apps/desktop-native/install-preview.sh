@@ -42,6 +42,20 @@ cp apps/desktop-native/bridge/target/release/forge-desktop "$TMP/Contents/MacOS/
 cp apps/desktop-native/bridge/icons/icon.icns "$TMP/Contents/Resources/icon.icns"
 cp apps/desktop-native/bridge/resources/forge-local-tool.mjs "$TMP/Contents/Resources/forge-local-tool.mjs"
 
+# SwiftPM emits an executable resource bundle for Bundle.module (Tabler icons).
+# The standalone .app is assembled manually, so SwiftPM does not copy it for us.
+# Missing this bundle triggers an NSBundle.module fatal assertion on first UI draw.
+SWIFT_RESOURCE_BUNDLE="$ROOT/apps/desktop-native/.build/out/Products/Release/ForgeNative_ForgeNative.bundle"
+if [[ ! -f "$SWIFT_RESOURCE_BUNDLE/Contents/Resources/Tabler/search.svg" ]]; then
+  echo "Forge preview missing SwiftPM Tabler resource bundle" >&2
+  exit 1
+fi
+/usr/bin/ditto "$SWIFT_RESOURCE_BUNDLE" "$TMP/Contents/Resources/ForgeNative_ForgeNative.bundle"
+if [[ ! -f "$TMP/Contents/Resources/ForgeNative_ForgeNative.bundle/Contents/Resources/Tabler/search.svg" ]]; then
+  echo "Forge preview SwiftPM resources were not packaged" >&2
+  exit 1
+fi
+
 cat > "$TMP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
