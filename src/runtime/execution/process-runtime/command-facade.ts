@@ -19,12 +19,14 @@ import {
   type RepositoryCommandExecution,
 } from '../../repositories/command-executor';
 import { normalizeRepositoryCommand } from '../../../core/repository-command/normalization';
+import { assertHostWorkCapacity } from '../../resources/leases/host-build-admission';
 import {
   assertRepositoryCommandNoPluginExecutionBypass,
   assertRepositoryCommandStableHostIdentity,
 } from '../../repositories/command-scope';
 import {
   claimsForRepositoryCommand,
+  claimsRequireHostCapacity,
   claimsRequireLiveDeviceAdmission,
   LIVE_DEVICE_ADMISSION_WAIT_MS,
   looksLikeBuildOrTest,
@@ -344,6 +346,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
     executionIdentity.checkoutId,
   );
   const usesLiveDevice = claimsRequireLiveDeviceAdmission(claims);
+  if (!usesLiveDevice && claimsRequireHostCapacity(claims, input.command)) assertHostWorkCapacity();
 
   // Ordinary local commands own no durable Process/Lease state. Validate the
   // immutable repository identity first, then execute through the authorized

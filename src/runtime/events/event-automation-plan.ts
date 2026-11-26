@@ -1,6 +1,6 @@
 import type { EventRuleJson } from '../../../packages/kernel/events';
 import { validateEventActionInputs, type EventActionDefinitionV1 } from '../../../packages/kernel/events';
-import { readWorkflowRegistryEntry } from '../control-plane/persistence/workflow-registry-store';
+import { prepareWorkflowInvocation } from '../workflows/catalog';
 import { readModelProfile } from '../models/model-profile-store';
 import { readModelInstructionTemplate, readModelOutputSchema } from '../models/model-decision-artifact-store';
 import { readEventActionDefinition } from './event-action-registry-store';
@@ -17,7 +17,13 @@ export interface EventAutomationActionPlanV1 {
   readiness: 'ready' | 'blocked';
   blocker?: string;
   handler?:
-    | { kind: 'workflow'; workflowId: string; version: string; contentDigest: string }
+    | {
+        kind: 'workflow';
+        workflowId: string;
+        version: string;
+        contentDigest: string;
+        engine: 'sequence_v1' | 'graph_v2';
+      }
     | { kind: 'capability'; capabilityId: string }
     | {
         kind: 'model';
@@ -59,21 +65,37 @@ function blocked(
 function workflowHandler(
   controllerHome: string,
   definition: EventActionDefinitionV1,
+  inputs: Record<string, EventRuleJson>,
 ): EventAutomationActionPlanV1['handler'] {
   if (definition.handler.kind !== 'workflow') throw new Error('EVENT_AUTOMATION_HANDLER_KIND_MISMATCH');
   const scope =
     definition.handler.registryScope.kind === 'controller'
       ? ({ kind: 'controller' } as const)
       : ({ kind: 'project', projectId: definition.handler.registryScope.projectId } as const);
-  const workflow = readWorkflowRegistryEntry(controllerHome, scope, definition.handler.workflowId);
-  if (!workflow) throw new Error('EVENT_AUTOMATION_WORKFLOW_NOT_FOUND:' + definition.handler.workflowId);
-  if (workflow.value.status !== 'active')
-    throw new Error('EVENT_AUTOMATION_WORKFLOW_NOT_ACTIVE:' + definition.handler.workflowId);
+  let invocation: ReturnType<typeof prepareWorkflowInvocation>;
+  try {
+    invocation = prepareWorkflowInvocation({
+      controllerHome,
+      scope,
+      workflowId: definition.handler.workflowId,
+      origin: { kind: 'event', id: definition.actionRef },
+      inputs,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'WORKFLOW_CATALOG_FAILED';
+    if (message.startsWith('WORKFLOW_CATALOG_ENTRY_NOT_FOUND:'))
+      throw new Error('EVENT_AUTOMATION_WORKFLOW_NOT_FOUND:' + definition.handler.workflowId);
+    throw error;
+  }
+  if (invocation.readiness !== 'ready') {
+    throw new Error(`EVENT_AUTOMATION_WORKFLOW_BLOCKED:${invocation.blockers.join('|')}`);
+  }
   return {
     kind: 'workflow',
-    workflowId: workflow.value.workflowId,
-    version: workflow.value.version,
-    contentDigest: workflow.value.contentDigest,
+    workflowId: invocation.workflow.workflowId,
+    version: invocation.workflow.version,
+    contentDigest: invocation.workflow.contentDigest,
+    engine: invocation.workflow.engine,
   };
 }
 
@@ -104,10 +126,11 @@ function modelHandler(
 function resolveHandler(
   controllerHome: string,
   definition: EventActionDefinitionV1,
+  inputs: Record<string, EventRuleJson>,
 ): EventAutomationActionPlanV1['handler'] {
   switch (definition.handler.kind) {
     case 'workflow':
-      return workflowHandler(controllerHome, definition);
+      return workflowHandler(controllerHome, definition, inputs);
     case 'model':
       return modelHandler(controllerHome, definition);
     case 'capability':
@@ -153,7 +176,7 @@ export function buildEventAutomationPlans(
       }
       try {
         const inputs = validateEventActionInputs(definition, action.inputs);
-        const handler = resolveHandler(controllerHome, definition);
+        const handler = resolveHandler(controllerHome, definition, inputs);
         plans.push({
           schemaVersion: 1,
           ruleId: match.ruleId,

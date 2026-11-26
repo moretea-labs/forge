@@ -479,6 +479,14 @@
       "module": "browser",
       "resource": "pure"
     },
+    "tests/runtime/computer-chatgpt-macos-target.test.ts": {
+      "module": "browser",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/computer-chatgpt-native-architecture.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
     "tests/runtime/computer-cross-platform-manifest.test.ts": {
       "module": "browser",
       "resource": "temp-isolated"
@@ -1033,6 +1041,122 @@
       "resource": "pure"
     },
     "tests/runtime/workflow-graph-checkpoint.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-graph-reducer.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
+    "tests/runtime/workflow-graph-dispatch.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
+    "tests/runtime/workflow-graph-interpreter.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
+    "tests/runtime/workflow-graph-compensation.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
+    "tests/runtime/workflow-graph-runtime.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-graph-reconciliation.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-event-wake.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-timeout-resume.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-feature-catalog.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-feature-runtime.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-core-capability.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-authoring.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-packaged-authoring.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-package.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
+    "tests/runtime/workflow-package-bundle.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
+    "tests/runtime/workflow-package-import.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-package-export.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-package-install.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-package-installation.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-package-uninstall.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-package-catalog.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-package-control.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-package-lifecycle.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-package-update.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-package-dependencies.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-lifecycle.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/workflow-schedule-invocation.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
+    "tests/runtime/workflow-schedule-runtime.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
+    "tests/runtime/workflow-schedule-engine.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
     },

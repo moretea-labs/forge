@@ -21,6 +21,24 @@ import {
 } from './controller-connection';
 import { installControllerOfficialPlugin, readControllerPluginManagement } from './controller-plugins';
 import {
+  getWorkflowCatalogEntry,
+  listWorkflowCatalog,
+  prepareWorkflowInvocation,
+  type WorkflowInvocationOriginKind,
+} from '../../../src/runtime/workflows/catalog';
+import {
+  setWorkflowRegistryStatus,
+  type WorkflowRegistryScope,
+} from '../../../src/runtime/control-plane/persistence/workflow-registry-store';
+import type { WorkflowJsonValue } from '../../../packages/workflow-runtime/api/index';
+import { applyWorkflowProposal, preflightWorkflowProposal } from '../../../src/runtime/workflows/authoring';
+import { executeRegisteredWorkflowFeature } from '../../../src/runtime/workflows/feature-runtime';
+import { resumeDueWorkflowGraphWaits } from '../../../src/runtime/workflows/timeout-resume';
+import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
+import { currentPermissionSnapshotVersion } from '../../../src/runtime/control-plane/execution/session-repository-binding';
+import { principalFor } from '../../../src/runtime/control-plane/execution/session-execution-support';
+import { startOrResumeSession } from './execution-tools';
+import {
   cancelLocalConversation,
   readLocalConversationActivity,
   readLocalConversationModelCatalog,
@@ -31,6 +49,25 @@ import {
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
+}
+
+function workflowScope(input: Record<string, unknown>): WorkflowRegistryScope {
+  const projectId = typeof input.project_id === 'string' ? input.project_id.trim() : '';
+  return projectId ? { kind: 'project', projectId } : { kind: 'controller' };
+}
+
+function workflowId(input: Record<string, unknown>): string {
+  const value = typeof input.workflow_id === 'string' ? input.workflow_id.trim() : '';
+  if (!value) throw new Error('WORKFLOW_CAPABILITY_ID_REQUIRED');
+  return value;
+}
+
+function workflowInputs(input: Record<string, unknown>): Record<string, WorkflowJsonValue> {
+  const value = input.inputs;
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('WORKFLOW_CAPABILITY_INPUTS_INVALID');
+  return value as Record<string, WorkflowJsonValue>;
 }
 
 export async function callCoreCapabilityAdapter(
@@ -123,6 +160,113 @@ export async function callCoreCapabilityAdapter(
           error: {
             code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED',
             message: `Unsupported controller.local_conversation action: ${action || '<empty>'}`,
+          },
+        },
+        true,
+      );
+    }
+    if (capabilityId === 'workflow.control') {
+      const scope = workflowScope(input);
+      if (action === 'list') return result({ workflows: listWorkflowCatalog(ctx.controllerHome, scope) });
+      if (action === 'get') {
+        const entry = getWorkflowCatalogEntry(ctx.controllerHome, scope, workflowId(input));
+        return result(entry ? { workflow: entry } : { workflow: null });
+      }
+      if (action === 'prepare') {
+        const originKind = typeof input.origin_kind === 'string' ? input.origin_kind.trim() : '';
+        if (!['user', 'event', 'model', 'plugin', 'workflow', 'system'].includes(originKind))
+          throw new Error('WORKFLOW_CAPABILITY_ORIGIN_KIND_INVALID');
+        return result({
+          plan: prepareWorkflowInvocation({
+            controllerHome: ctx.controllerHome,
+            scope,
+            workflowId: workflowId(input),
+            origin: {
+              kind: originKind as WorkflowInvocationOriginKind,
+              ...(typeof input.origin_id === 'string' && input.origin_id.trim() ? { id: input.origin_id.trim() } : {}),
+            },
+            inputs: workflowInputs(input),
+          }),
+        });
+      }
+      if (action === 'authoring_preflight') {
+        return result({ preflight: preflightWorkflowProposal(ctx.controllerHome, input.proposal) });
+      }
+      if (action === 'install') {
+        const preflight = preflightWorkflowProposal(ctx.controllerHome, input.proposal);
+        if (preflight.scope.kind !== 'controller')
+          throw new Error('WORKFLOW_CAPABILITY_PROJECT_INSTALL_REQUIRES_PROJECT_CONTENT_AUTHORITY');
+        return result({
+          workflow: applyWorkflowProposal(
+            ctx.controllerHome,
+            input.proposal,
+            { kind: 'controller', controllerHome: ctx.controllerHome },
+            { canInstallWorkflows: true },
+          ),
+        });
+      }
+      if (action === 'resume_due') {
+        const now = typeof input.now === 'string' && input.now.trim() ? new Date(input.now.trim()) : new Date();
+        if (!Number.isFinite(now.getTime())) throw new Error('WORKFLOW_CAPABILITY_RESUME_DUE_TIME_INVALID');
+        const limit = typeof input.limit === 'number' ? Math.trunc(input.limit) : undefined;
+        return result({
+          results: await resumeDueWorkflowGraphWaits(ctx.controllerHome, now, {}, limit),
+        });
+      }
+      if (action === 'execute') {
+        const repository = selected(ctx, args);
+        const executionIdentity = executionIdentityForRepository(repository);
+        const session = startOrResumeSession(ctx);
+        const id = workflowId(input);
+        const runId = typeof input.run_id === 'string' ? input.run_id.trim() : '';
+        if (!runId) throw new Error('WORKFLOW_CAPABILITY_RUN_ID_REQUIRED');
+        const originKind = typeof input.origin_kind === 'string' ? input.origin_kind.trim() : '';
+        if (!['user', 'event', 'model', 'plugin', 'workflow', 'system'].includes(originKind))
+          throw new Error('WORKFLOW_CAPABILITY_ORIGIN_KIND_INVALID');
+        return result({
+          workflow: await executeRegisteredWorkflowFeature({
+            controllerHome: ctx.controllerHome,
+            repository,
+            executionIdentity,
+            scopeId: `repository:${repository.repoId}:checkout:${repository.activeCheckoutId}:workflow:${id}`,
+            ...(typeof input.requirement_id === 'string' && input.requirement_id.trim()
+              ? { requirementId: input.requirement_id.trim() }
+              : {}),
+            runId,
+            registryScope: scope,
+            workflowId: id,
+            inputs: workflowInputs(input),
+            ...(typeof input.timeout_ms === 'number' ? { timeoutMs: input.timeout_ms } : {}),
+            origin: {
+              kind: originKind as WorkflowInvocationOriginKind,
+              ...(typeof input.origin_id === 'string' && input.origin_id.trim() ? { id: input.origin_id.trim() } : {}),
+            },
+            approvalContext: {
+              sessionId: session.sessionId,
+              principalId: principalFor(ctx),
+              permissionSnapshotVersion: currentPermissionSnapshotVersion(ctx.controllerHome, repository.repoId),
+            },
+          }),
+        });
+      }
+      if (action === 'activate' || action === 'deactivate') {
+        const expectedRevision =
+          typeof input.expected_revision === 'number' ? Math.trunc(input.expected_revision) : undefined;
+        return result({
+          workflow: setWorkflowRegistryStatus({
+            controllerHome: ctx.controllerHome,
+            scope,
+            workflowId: workflowId(input),
+            status: action === 'activate' ? 'active' : 'inactive',
+            ...(expectedRevision === undefined ? {} : { expectedRevision }),
+          }),
+        });
+      }
+      return result(
+        {
+          error: {
+            code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED',
+            message: `Unsupported workflow.control action: ${action || '<empty>'}`,
           },
         },
         true,

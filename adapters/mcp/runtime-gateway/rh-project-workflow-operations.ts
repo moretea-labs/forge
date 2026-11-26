@@ -21,10 +21,10 @@ import {
   ensureAgentMailEventWorkflowInstalled,
 } from '../../../src/runtime/workflows/first-party/agentmail-event';
 import {
-  executeRegisteredWorkflow,
   observeAndReconcileRegisteredWorkflow,
   reconcileRegisteredWorkflow,
 } from '../../../src/runtime/workflows/runtime';
+import { executeRegisteredWorkflowFeature } from '../../../src/runtime/workflows/feature-runtime';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { result } from './result-adapter';
@@ -120,12 +120,12 @@ export async function callRhProjectWorkflowOperation(
       inputs: workflowInputs,
       timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
     };
-    const learningMetadata = (workflow: Awaited<ReturnType<typeof executeRegisteredWorkflow>>) => {
+    const learningMetadata = (workflow: Awaited<ReturnType<typeof executeRegisteredWorkflowFeature>>) => {
       const persisted = readWorkflowRun(ctx.controllerHome, scopeId, runId)?.value;
       let outcomeCollectionSchedule;
       let outcomeFollowupDueAt: string | undefined;
       let outcomeCollectionError: string | undefined;
-      if (workflow.status === 'succeeded' && workflow.publicationReceipt) {
+      if (workflow.status === 'succeeded' && 'publicationReceipt' in workflow && workflow.publicationReceipt) {
         try {
           outcomeFollowupDueAt = publicationOutcomeFollowupDueAt(workflow.publicationReceipt);
           if (!outcomeFollowupDueAt) {
@@ -154,7 +154,10 @@ export async function callRhProjectWorkflowOperation(
       if (!reconciliationRequestId) throw new Error('WORKFLOW_RECONCILIATION_REQUEST_ID_REQUIRED');
       const reconciled = await reconcileWorkflowWithProcessFallback({ ...base, reconciliationRequestId });
       if (reconciled.status === 'running') {
-        const resumed = await executeRegisteredWorkflow(base);
+        const resumed = await executeRegisteredWorkflowFeature({
+          ...base,
+          origin: { kind: 'system', id: 'rh_project' },
+        });
         return result(
           buildFacadeResult({
             summary: `Workflow ${workflowId}/${runId} reconciled from canonical observation and resumed without replaying the uncertain effect.`,
@@ -172,7 +175,7 @@ export async function callRhProjectWorkflowOperation(
       );
     }
 
-    const executed = await executeRegisteredWorkflow(base);
+    const executed = await executeRegisteredWorkflowFeature({ ...base, origin: { kind: 'system', id: 'rh_project' } });
     return result(
       buildFacadeResult({
         status: executed.status === 'failed' || executed.status === 'reconcile_required' ? 'blocked' : 'ok',

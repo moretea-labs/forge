@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { join, relative, resolve } from 'path';
 import { isWorkspaceScopeKey, repositoryControllerRoot, scopedOperationRoot } from '../../../effects/controller-home';
@@ -171,6 +171,69 @@ function requestDecision(context: AuthorizationContext, reason: string): Authori
   };
 }
 
+export function requestExplicitAuthorization(input: {
+  controllerHome: string;
+  repositoryId: string;
+  requestKey: string;
+  sessionId?: string;
+  principalId?: string;
+  permissionSnapshotVersion: number;
+  risk?: AuthorizationRiskClass;
+  humanSummary: string;
+  consequences?: string[];
+  continuation?: string;
+  command?: string | string[];
+}): AuthorizationRequestRecord {
+  const requestKey = input.requestKey.trim();
+  const humanSummary = input.humanSummary.trim();
+  if (!requestKey || requestKey.length > 2048) throw new Error('APPROVAL_REQUEST_KEY_INVALID');
+  if (!humanSummary || humanSummary.length > 4000) throw new Error('APPROVAL_REQUEST_SUMMARY_INVALID');
+  if (!Number.isSafeInteger(input.permissionSnapshotVersion) || input.permissionSnapshotVersion < 0)
+    throw new Error('APPROVAL_REQUEST_PERMISSION_SNAPSHOT_INVALID');
+  const approvalRequestId = `apr_exp_${createHash('sha256').update(requestKey).digest('hex').slice(0, 32)}`;
+  const existingPath = readableRequestPath(input.controllerHome, input.repositoryId, approvalRequestId);
+  const risk = input.risk ?? 'workspace_write';
+  const consequences = input.consequences?.length
+    ? input.consequences.map((entry) => entry.trim()).filter(Boolean)
+    : [`Operation risk class: ${risk}`, `Repository: ${input.repositoryId}`];
+  const continuation =
+    input.continuation?.trim() ||
+    `After confirming approvalRequestId=${approvalRequestId}, resume the exact pending Workflow operation.`;
+  if (existsSync(existingPath)) {
+    const existing = readAuthorizationRequest(input.controllerHome, input.repositoryId, approvalRequestId);
+    if (
+      existing.sessionId !== input.sessionId ||
+      existing.principalId !== input.principalId ||
+      existing.permissionSnapshotVersion !== input.permissionSnapshotVersion ||
+      existing.risk !== risk ||
+      existing.humanSummary !== humanSummary ||
+      JSON.stringify(existing.command) !== JSON.stringify(input.command)
+    ) {
+      throw new Error('APPROVAL_REQUEST_IDEMPOTENCY_CONFLICT');
+    }
+    if (existing.status === 'invalidated')
+      throw new Error(`APPROVAL_REQUEST_INVALIDATED: ${existing.invalidatedReason ?? 'approval request is stale'}`);
+    return existing;
+  }
+  const record: AuthorizationRequestRecord = {
+    schemaVersion: 1,
+    approvalRequestId,
+    repositoryId: input.repositoryId,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    ...(input.principalId ? { principalId: input.principalId } : {}),
+    ...(input.command ? { command: structuredClone(input.command) } : {}),
+    risk,
+    permissionSnapshotVersion: input.permissionSnapshotVersion,
+    humanSummary,
+    consequences,
+    continuation,
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+  };
+  writeJsonAtomic(requestPath(input.controllerHome, input.repositoryId, approvalRequestId), record);
+  return record;
+}
+
 export function decideAuthorization(context: AuthorizationContext): AuthorizationDecision {
   if (context.risk === 'secret_access')
     return { decision: 'deny', reason: 'Credential, keychain, token, and raw secret access is always denied.' };
@@ -219,6 +282,26 @@ export function readAuthorizationRequest(
   if (request.repositoryId !== repositoryId || request.approvalRequestId !== approvalRequestId)
     throw new Error('APPROVAL_REQUEST_IDENTITY_MISMATCH');
   return request;
+}
+
+export function invalidateAuthorizationRequest(input: {
+  controllerHome: string;
+  repositoryId: string;
+  approvalRequestId: string;
+  reason: string;
+}): AuthorizationRequestRecord {
+  const reason = input.reason.trim();
+  if (!reason || reason.length > 2000) throw new Error('APPROVAL_INVALIDATION_REASON_INVALID');
+  const request = readAuthorizationRequest(input.controllerHome, input.repositoryId, input.approvalRequestId);
+  if (request.status === 'resolved') throw new Error('APPROVAL_ALREADY_RESOLVED');
+  if (request.status === 'invalidated') return request;
+  const invalidated: AuthorizationRequestRecord = {
+    ...request,
+    status: 'invalidated',
+    invalidatedReason: reason,
+  };
+  writeJsonAtomic(requestPath(input.controllerHome, input.repositoryId, input.approvalRequestId), invalidated);
+  return invalidated;
 }
 
 export function resolveAuthorizationRequest(input: {

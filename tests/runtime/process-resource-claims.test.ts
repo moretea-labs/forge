@@ -1,8 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { setHostBuildCpuProbeForTest } from '../../src/runtime/resources/leases/host-build-admission';
 import {
   claimsForCheck,
   claimsForRepositoryCommand,
+  claimsRequireHostCapacity,
   scopeResourceClaims,
 } from '../../src/runtime/execution/process-runtime/resource-claims';
 import {
@@ -45,8 +47,33 @@ import {
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {
   return { resourceKey, mode } as ExecutionLease;
 }
+beforeEach(() => setHostBuildCpuProbeForTest(() => ({ cpus: 10, load: 2.5, memoryFreePercent: 53 })));
+afterEach(() => setHostBuildCpuProbeForTest(undefined));
 
 describe('Process Runtime fine-grained resource claims', () => {
+  test('heavy non-Apple work uses pressure admission while focused tests remain independent', () => {
+    for (const command of [['bun', 'test'], ['bun', 'run', 'check:main'], ['cargo', 'build'], ['pytest']]) {
+      expect(claimsRequireHostCapacity([], command)).toBe(true);
+    }
+    expect(claimsRequireHostCapacity([], ['bun', 'test', 'tests/unit.test.ts'])).toBe(false);
+    expect(claimsRequireHostCapacity([], ['echo', 'bun test'])).toBe(false);
+    expect(claimsRequireHostCapacity([{ resourceKey: 'heavy-check:repo' }])).toBe(true);
+  });
+  test('raw simulator cold boots share native host admission without matching quoted payloads', () => {
+    const claim = { resourceKey: 'host-service:ios-build', mode: 'write' as const };
+    for (const command of [
+      ['xcrun', 'simctl', 'boot', 'D'],
+      ['/bin/bash', '-lc', 'xcrun simctl boot D'],
+      'xcrun simctl boot D',
+    ])
+      expect(claimsForRepositoryCommand(command, 'repo', 'checkout')).toContainEqual(claim);
+    for (const command of [
+      ['xcrun', 'simctl', 'list', '--json'],
+      ['echo', 'xcrun simctl boot D'],
+    ]) {
+      expect(claimsForRepositoryCommand(command, 'repo', 'checkout')).not.toContainEqual(claim);
+    }
+  });
   test('MutationGate exact-path edits do not take checkout ownership (#713)', () => {
     const a = buildMutationClaims('co1', { writePaths: ['src/alpha.ts'], mutatesGitIndex: false });
     const b = buildMutationClaims('co1', { writePaths: ['./src/beta.ts'], mutatesGitIndex: false });

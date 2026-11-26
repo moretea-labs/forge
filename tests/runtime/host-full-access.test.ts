@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ensureForgeInstanceIdentity, listCanonicalGrants } from '../../packages/kernel/identity/api/index';
 import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { requireHostFullAccess, executeAuthorizedHostCommand } from '../../adapters/mcp/runtime-gateway/process-tools';
 import { requireHostProcessIdentity } from '../../src/runtime/execution/process-runtime/host-command-lane';
+import { setHostBuildCpuProbeForTest } from '../../src/runtime/resources/leases/host-build-admission';
 
 const dirs: string[] = [];
 function fixture(): string {
@@ -15,10 +16,42 @@ function fixture(): string {
   return home;
 }
 afterEach(() => {
+  setHostBuildCpuProbeForTest(undefined);
   for (const path of dirs.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
 describe('single host command authority', () => {
+  test('host argv and shell builds cannot bypass pressure admission or spawn a child', async () => {
+    const home = fixture();
+    persistControllerAccessMode(home, 'full_access');
+    setHostBuildCpuProbeForTest(() => ({ cpus: 10, load: 31 }));
+    const marker = join(home, 'spawned');
+    const bin = join(home, 'bin');
+    mkdirSync(bin);
+    const build = join(bin, 'xcodebuild');
+    writeFileSync(build, `#!/bin/sh\nprintf spawned > '${marker}'\n`, { mode: 0o700 });
+    const bun = join(bin, 'bun');
+    writeFileSync(bun, `#!/bin/sh\nprintf spawned > '${marker}'\n`, { mode: 0o700 });
+    for (const args of [
+      { command: [build, 'build'] },
+      { shell_command: `'${build}' build` },
+      { command: [bun, 'test'] },
+      { command: [bun, 'run', 'check:main'] },
+    ]) {
+      const result = await executeAuthorizedHostCommand(
+        { controllerHome: home, principalId: 'controller-http-client' } as any,
+        { ...args, cwd: home },
+      );
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).toContain('HOST_RESOURCE_PRESSURE');
+      expect(existsSync(marker)).toBe(false);
+    }
+    const ordinary = await executeAuthorizedHostCommand(
+      { controllerHome: home, principalId: 'controller-http-client' } as any,
+      { command: ['/bin/echo', 'ordinary work continues'], cwd: home },
+    );
+    expect(ordinary.isError).not.toBe(true);
+  });
   test('explicit existing Full Access permits host execution without a second Grant', () => {
     const home = fixture();
     persistControllerAccessMode(home, 'full_access');
@@ -74,6 +107,8 @@ describe('single host command authority', () => {
     dirs.push(missing);
     persistControllerAccessMode(missing, 'full_access');
     expect(() => requireHostFullAccess(missing, 'controller-http-client')).not.toThrow();
-    expect(() => requireHostProcessIdentity(missing, 'controller-http-client')).toThrow('HOST_PROCESS_TARGET_UNAVAILABLE');
+    expect(() => requireHostProcessIdentity(missing, 'controller-http-client')).toThrow(
+      'HOST_PROCESS_TARGET_UNAVAILABLE',
+    );
   });
 });

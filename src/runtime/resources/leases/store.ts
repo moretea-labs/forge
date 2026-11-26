@@ -527,6 +527,10 @@ export function acquireExecutionLeases(
   const effects = resolveSideEffects(options);
   const ownerIdentity = normalizedOwnerIdentity(repoId, ownerJobId, claims, options.ownerIdentity);
   const identityDigest = ownerIdentityDigest(ownerIdentity);
+  // Slow/unavailable host probes must not hold the shared lease-store lock.
+  const buildPressure = claims.some((c) => c.resourceKey === 'host-service:ios-build' && c.mode !== 'read')
+    ? checkHostBuildCpu()
+    : undefined;
 
   try {
     return withControllerLock(
@@ -537,7 +541,15 @@ export function acquireExecutionLeases(
         // Once an editor owns the physical repository lock, a new Process writer
         // must not publish a conflicting resource lease. The editor performs the
         // inverse check before touching bytes (under that same repository lock).
-        if (claims.some((claim) => claim.mode !== 'read' && repositorySourceResourceKey(claim.resourceKey))) {
+        if (
+          claims.some((claim) => {
+            if (claim.mode === 'read' || !repositorySourceResourceKey(claim.resourceKey)) return false;
+            const exact = /^path:([^:]+):(.+)$/.exec(claim.resourceKey);
+            // Exact validated paths arbitrate through the existing Lease store below.
+            // A legacy checkout lock must not serialize independent source work.
+            return !exact || exact[1] !== claim.checkoutId || normalizeClaimPath(exact[2]!) !== exact[2];
+          })
+        ) {
           const held = readControllerLock(controllerHome, { scope: 'repository', repoId });
           if (held) {
             return {
@@ -556,8 +568,8 @@ export function acquireExecutionLeases(
         }
         // A single atomic CPU pressure gate protects both direct Process and
         // iOS Plugin native builds; previous lease owners continue unchanged.
-        if (claims.some((c) => c.resourceKey === 'host-service:ios-build' && c.mode !== 'read')) {
-          const pressure = checkHostBuildCpu();
+        if (buildPressure) {
+          const pressure = buildPressure;
           if (!pressure.allowed)
             return {
               acquired: false,

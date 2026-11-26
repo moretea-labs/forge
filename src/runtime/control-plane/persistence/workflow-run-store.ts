@@ -7,8 +7,14 @@ import type {
   WorkflowGraphCheckpoint,
   WorkflowGraphRunStatus,
 } from '../../../../packages/workflow-runtime/api/index';
-import { readControlPlaneRecord, writeControlPlaneRecord, type ControlPlaneRecord } from './sqlite-store';
+import {
+  listControlPlaneRecords,
+  readControlPlaneRecord,
+  writeControlPlaneRecord,
+  type ControlPlaneRecord,
+} from './sqlite-store';
 import { assertControlPlaneMetadataPayload } from './metadata-payload-policy';
+import type { WorkflowRegistryScope } from './workflow-registry-store';
 
 export const WORKFLOW_RUN_NAMESPACE = 'workflow_run';
 const SCHEMA_VERSION = 1 as const;
@@ -60,7 +66,7 @@ export function workflowInputDigest(inputs: Record<string, WorkflowJsonValue> = 
     .digest('hex')}`;
 }
 
-function evidenceContent(value: Omit<WorkflowRunRecord, 'evidenceRef'>): string {
+function evidenceContent(value: unknown): string {
   return JSON.stringify(canonical(value));
 }
 
@@ -153,19 +159,30 @@ export interface WorkflowGraphRunRecord {
   version: string;
   contentDigest: string;
   inputDigest: string;
+  inputs: Record<string, WorkflowJsonValue>;
+  execution: {
+    repositoryId: string;
+    checkoutId: string;
+    registryScope: WorkflowRegistryScope;
+    approvalContext?: {
+      sessionId: string;
+      principalId: string;
+      permissionSnapshotVersion: number;
+    };
+  };
   evidenceRef: string;
   status: WorkflowGraphRunStatus;
   nodes: WorkflowGraphCheckpoint['nodes'];
+  edges: WorkflowGraphCheckpoint['edges'];
   updatedAt: string;
 }
 
 function workflowGraphRunEvidenceRef(
   value: Omit<WorkflowGraphRunRecord, 'evidenceRef'> | WorkflowGraphRunRecord,
 ): string {
-  const { evidenceRef: _ignored, ...content } = value as WorkflowGraphRunRecord;
-  return `workflow-run-${createHash('sha256')
-    .update(evidenceContent(content as Omit<WorkflowRunRecord, 'evidenceRef'>))
-    .digest('hex')}`;
+  const content = { ...value } as Record<string, unknown>;
+  delete content.evidenceRef;
+  return `workflow-run-${createHash('sha256').update(evidenceContent(content)).digest('hex')}`;
 }
 
 function validGraphRecord(value: WorkflowGraphRunRecord): WorkflowGraphRunRecord {
@@ -176,11 +193,40 @@ function validGraphRecord(value: WorkflowGraphRunRecord): WorkflowGraphRunRecord
   bounded(value.version, 'WORKFLOW_RUN_VERSION_INVALID');
   bounded(value.contentDigest, 'WORKFLOW_RUN_CONTENT_DIGEST_INVALID');
   bounded(value.inputDigest, 'WORKFLOW_RUN_INPUT_DIGEST_INVALID');
+  if (!value.inputs || typeof value.inputs !== 'object' || Array.isArray(value.inputs))
+    throw new Error('WORKFLOW_GRAPH_RUN_INPUTS_INVALID');
+  bounded(value.execution.repositoryId, 'WORKFLOW_GRAPH_RUN_REPOSITORY_ID_INVALID');
+  bounded(value.execution.checkoutId, 'WORKFLOW_GRAPH_RUN_CHECKOUT_ID_INVALID');
+  if (value.execution.registryScope.kind === 'project')
+    bounded(value.execution.registryScope.projectId, 'WORKFLOW_GRAPH_RUN_PROJECT_ID_INVALID');
+  else if (value.execution.registryScope.kind !== 'controller')
+    throw new Error('WORKFLOW_GRAPH_RUN_REGISTRY_SCOPE_INVALID');
+  if (value.execution.approvalContext) {
+    bounded(value.execution.approvalContext.sessionId, 'WORKFLOW_GRAPH_RUN_APPROVAL_SESSION_INVALID');
+    bounded(value.execution.approvalContext.principalId, 'WORKFLOW_GRAPH_RUN_APPROVAL_PRINCIPAL_INVALID');
+    if (
+      !Number.isSafeInteger(value.execution.approvalContext.permissionSnapshotVersion) ||
+      value.execution.approvalContext.permissionSnapshotVersion < 0
+    )
+      throw new Error('WORKFLOW_GRAPH_RUN_APPROVAL_PERMISSION_SNAPSHOT_INVALID');
+  }
   bounded(value.evidenceRef, 'WORKFLOW_RUN_EVIDENCE_REF_INVALID');
   if (workflowGraphRunEvidenceRef(value) !== value.evidenceRef) throw new Error('WORKFLOW_RUN_EVIDENCE_REF_MISMATCH');
-  if (!['running', 'waiting', 'reconcile_required', 'failed', 'succeeded', 'cancelled'].includes(value.status))
+  if (
+    ![
+      'running',
+      'waiting',
+      'reconcile_required',
+      'failed',
+      'compensating',
+      'compensated',
+      'succeeded',
+      'cancelled',
+    ].includes(value.status)
+  )
     throw new Error('WORKFLOW_GRAPH_RUN_STATUS_INVALID');
   if (!Array.isArray(value.nodes) || value.nodes.length > 256) throw new Error('WORKFLOW_GRAPH_RUN_NODES_INVALID');
+  if (!Array.isArray(value.edges) || value.edges.length > 1024) throw new Error('WORKFLOW_GRAPH_RUN_EDGES_INVALID');
   if (!Number.isFinite(Date.parse(value.updatedAt))) throw new Error('WORKFLOW_RUN_UPDATED_AT_INVALID');
   assertControlPlaneMetadataPayload(value, 'workflow_run', 256 * 1024);
   return value;
@@ -207,6 +253,7 @@ export function writeWorkflowGraphRunCheckpoint(input: {
   controllerHome: string;
   checkpoint: WorkflowGraphCheckpoint;
   inputs?: Record<string, WorkflowJsonValue>;
+  execution: WorkflowGraphRunRecord['execution'];
   expectedRevision?: number | null;
   now?: Date;
 }): ControlPlaneRecord<WorkflowGraphRunRecord> {
@@ -218,8 +265,11 @@ export function writeWorkflowGraphRunCheckpoint(input: {
     version: input.checkpoint.version,
     contentDigest: input.checkpoint.contentDigest,
     inputDigest: workflowInputDigest(input.inputs),
+    inputs: structuredClone(input.inputs ?? {}),
+    execution: structuredClone(input.execution),
     status: input.checkpoint.status,
     nodes: structuredClone(input.checkpoint.nodes),
+    edges: structuredClone(input.checkpoint.edges),
     updatedAt: (input.now ?? new Date()).toISOString(),
   };
   const value: WorkflowGraphRunRecord = { ...content, evidenceRef: workflowGraphRunEvidenceRef(content) };
@@ -233,4 +283,22 @@ export function writeWorkflowGraphRunCheckpoint(input: {
     action: `workflow_graph_run_${value.status}`,
     expectedRevision: input.expectedRevision,
   });
+}
+
+export function listWorkflowGraphRuns(
+  controllerHome: string,
+  input: { status?: WorkflowGraphRunStatus; limit?: number } = {},
+): ControlPlaneRecord<WorkflowGraphRunRecord>[] {
+  const records = listControlPlaneRecords<WorkflowGraphRunRecord>(controllerHome, {
+    namespace: WORKFLOW_RUN_NAMESPACE,
+    limit: Math.max(1, Math.min(Math.trunc(input.limit ?? 1000), 5000)),
+  });
+  const graphRuns: ControlPlaneRecord<WorkflowGraphRunRecord>[] = [];
+  for (const record of records) {
+    if (record.schemaVersion !== 2 || record.value?.schemaVersion !== 2) continue;
+    validGraphRecord(record.value);
+    if (input.status && record.value.status !== input.status) continue;
+    graphRuns.push(record);
+  }
+  return graphRuns;
 }

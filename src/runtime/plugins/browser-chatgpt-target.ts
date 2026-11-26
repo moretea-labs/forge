@@ -229,6 +229,16 @@ export async function observeMacOsChatgptPage(
   const includePageText = options.includePageText ?? true;
   return await page.evaluate<ComputerChatgptConversationObservation>(`(() => {
     const text = (node) => String(node?.innerText ?? node?.textContent ?? '').trim();
+    const composerValue = (element) => {
+      if (!element) return '';
+      if ('value' in element && typeof element.value === 'string') return String(element.value);
+      if (element.hasAttribute?.('data-composer-markdown') && element.children?.length) {
+        return Array.from(element.children)
+          .map((child) => String(child.textContent ?? ''))
+          .join(String.fromCharCode(10));
+      }
+      return String((element.innerText ?? element.textContent ?? '') || '');
+    };
     const root = Array.from(document.querySelectorAll('main')).filter(node => node.getClientRects().length).pop() || document;
     const nodes = (selector) => root.querySelectorAll(selector);
     const semanticRole = (node) => {
@@ -265,7 +275,7 @@ export async function observeMacOsChatgptPage(
     const userTexts = ${JSON.stringify(includeUserHistory)} ? userEntries.map(messageText).filter(Boolean) : undefined;
     const assistantTexts = ${JSON.stringify(includeUserHistory)} ? assistantEntries.map(messageText).filter(Boolean) : undefined;
     const latest = (entries) => messageText(entries.length ? entries[entries.length - 1] : undefined);
-    const composer = ['[data-testid="composer-text-input"]','div#prompt-textarea[contenteditable="true"]','#prompt-textarea[contenteditable="true"]','textarea[name="prompt"]','div[role="textbox"][contenteditable="true"]']
+    const composer = ['[data-composer-markdown][role="textbox"][contenteditable="true"]','[data-testid="composer-text-input"]','div#prompt-textarea[contenteditable="true"]','#prompt-textarea[contenteditable="true"]','textarea[name="prompt"]','div[role="textbox"][contenteditable="true"]']
       .flatMap((selector) => Array.from(nodes(selector))).find((element) => Boolean(element && element.getClientRects && element.getClientRects().length));
     const roleNodes = Array.from(nodes('[data-message-author-role="user"], [data-message-author-role="assistant"], [data-chatgpt-search-unit-key$=":user"], [data-chatgpt-search-unit-key$=":assistant"], [data-content-search-unit-key$=":user"], [data-content-search-unit-key$=":assistant"]'));
     const latestRoleNode = roleNodes.length ? roleNodes[roleNodes.length - 1] : undefined;
@@ -288,7 +298,7 @@ export async function observeMacOsChatgptPage(
       latestUserText: userTexts ? userTexts.join('\\n') : latest(userEntries),
       latestAssistantResponse: latest(assistantEntries),
       ...(userTexts ? { userMessages: userTexts } : {}), ...(assistantTexts ? { assistantMessages: assistantTexts } : {}),
-      ...(composer ? { composerText: String(('value' in composer ? composer.value : composer.innerText ?? composer.textContent ?? '') || '') } : {}),
+      ...(composer ? { composerText: composerValue(composer) } : {}),
       providerActivityText, providerFailureText: liveProviderStatus.slice(-${MAX_PROVIDER_FAILURE_SCAN_CHARS}),
       latestTurnRole: semanticRole(latestRoleNode),
       isGenerating: Array.from(nodes('[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label="Stop"], button[aria-label="Stop generating"], button[aria-label="停止"], button[aria-label="停止生成"], [data-is-streaming="true"]')).some(node => Boolean(node.getClientRects().length)),
@@ -389,16 +399,25 @@ export async function dispatchMacOsChatgptPrompt(
         const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
         const root = Array.from(document.querySelectorAll('main')).filter(visible).pop() || document;
         if (!(${targetLocationProof})) return { prepared: false, reason: 'COMPUTER_CHATGPT_EXACT_TARGET_UNPROVEN' };
-        const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
+        const composerValue = (element) => {
+          if (!element) return '';
+          if ('value' in element && typeof element.value === 'string') return String(element.value);
+          if (element.hasAttribute?.('data-composer-markdown') && element.children?.length) {
+            return Array.from(element.children)
+              .map((child) => String(child.textContent ?? ''))
+              .join(String.fromCharCode(10));
+          }
+          return String((element.innerText ?? element.textContent ?? '') || '');
+        };
         const exact = (input) => String(input ?? '').replaceAll(String.fromCharCode(13,10), String.fromCharCode(10)).replaceAll(String.fromCharCode(13), String.fromCharCode(10));
         const expected = ${JSON.stringify(submittedPrompt)}; const expectedNorm = exact(expected); const resume = ${JSON.stringify(resume)};
         const draft = expected;
         const draftNorm = expectedNorm;
-        const composer = ['div#prompt-textarea[contenteditable="true"]','#prompt-textarea[contenteditable="true"]','[data-testid="composer-text-input"][contenteditable="true"]','div[role="textbox"][contenteditable="true"]']
+        const composer = ['[data-composer-markdown][role="textbox"][contenteditable="true"]','div#prompt-textarea[contenteditable="true"]','#prompt-textarea[contenteditable="true"]','[data-testid="composer-text-input"][contenteditable="true"]','div[role="textbox"][contenteditable="true"]']
           .flatMap((selector) => Array.from(root.querySelectorAll(selector))).find(visible);
         if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
         if (composer.querySelector('[plugin-mention-name], [app-mention-name]')) return { prepared: false, reason: 'composer_has_app_mention' };
-        const current = exact(value(composer));
+        const current = exact(composerValue(composer));
         // An empty ProseMirror <p><br></p> may expose a layout newline in
         // innerText. It is not a user draft; actual text, including whitespace
         // outside this exact empty placeholder, remains protected.
@@ -421,7 +440,7 @@ export async function dispatchMacOsChatgptPrompt(
           const range = document.createRange(); range.selectNodeContents(composer); range.deleteContents(); range.collapse(true); selection.removeAllRanges(); selection.addRange(range);
           if (!document.execCommand('insertText', false, draft)) return { prepared: false, reason: 'composer_text_insertion_rejected' };
         }
-        return exact(value(composer)) === draftNorm ? { prepared: true } : { prepared: false, reason: 'composer_text_unconfirmed' };
+        return exact(composerValue(composer)) === draftNorm ? { prepared: true } : { prepared: false, reason: 'composer_text_unconfirmed' };
       })()`);
     } catch (error) {
       const code = error instanceof AssistantPluginError ? error.code : String(error);
@@ -458,12 +477,21 @@ export async function dispatchMacOsChatgptPrompt(
       const visible = (element) => Boolean(element && element.getClientRects && element.getClientRects().length);
       const root = Array.from(document.querySelectorAll('main')).filter(visible).pop() || document;
       if (!(${targetLocationProof})) return { dispatched: false, reason: 'COMPUTER_CHATGPT_EXACT_TARGET_UNPROVEN' };
-      const value = (element) => String((element?.innerText ?? element?.textContent ?? '') || '');
+      const composerValue = (element) => {
+        if (!element) return '';
+        if ('value' in element && typeof element.value === 'string') return String(element.value);
+        if (element.hasAttribute?.('data-composer-markdown') && element.children?.length) {
+          return Array.from(element.children)
+            .map((child) => String(child.textContent ?? ''))
+            .join(String.fromCharCode(10));
+        }
+        return String((element.innerText ?? element.textContent ?? '') || '');
+      };
       const exact = (input) => String(input ?? '').replaceAll(String.fromCharCode(13,10), String.fromCharCode(10)).replaceAll(String.fromCharCode(13), String.fromCharCode(10)); const expected = ${JSON.stringify(submittedPrompt)}; const supervisor = ${JSON.stringify(supervisor)};
-      const composer = Array.from(root.querySelectorAll('div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"], [data-testid="composer-text-input"][contenteditable="true"], div[role="textbox"][contenteditable="true"]')).find(visible);
+      const composer = Array.from(root.querySelectorAll('[data-composer-markdown][role="textbox"][contenteditable="true"], div#prompt-textarea[contenteditable="true"], #prompt-textarea[contenteditable="true"], [data-testid="composer-text-input"][contenteditable="true"], div[role="textbox"][contenteditable="true"]')).find(visible);
       if (!(composer instanceof HTMLElement)) return { dispatched: false, reason: 'composer_submit_mismatch' };
        if (composer.querySelector('[plugin-mention-name], [app-mention-name]')
-         || exact(value(composer)) !== exact(expected)) return { dispatched: false, reason: 'composer_submit_mismatch' };
+         || exact(composerValue(composer)) !== exact(expected)) return { dispatched: false, reason: 'composer_submit_mismatch' };
       const sendButton = Array.from(root.querySelectorAll('[data-testid="send-button"], button[aria-label="Send"], button[aria-label="发送"], button[data-testid*="send"], button[type="submit"]')).find(visible);
       if (!(sendButton instanceof HTMLElement) || sendButton.hasAttribute('disabled') || sendButton.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_missing' };
       sendButton.click(); return { dispatched: true };
@@ -733,7 +761,18 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
           || (current.pathname !== '/' && current.pathname !== '') || current.search || current.hash)
         return { status: 'not_root' };
       const root = Array.from(document.querySelectorAll('main')).filter(visible).pop() || document;
+      const composerValue = (element) => {
+        if (!element) return '';
+        if ('value' in element && typeof element.value === 'string') return String(element.value);
+        if (element.hasAttribute?.('data-composer-markdown') && element.children?.length) {
+          return Array.from(element.children)
+            .map((child) => String(child.textContent ?? ''))
+            .join(String.fromCharCode(10));
+        }
+        return String((element.innerText ?? element.textContent ?? '') || '');
+      };
       const composer = [
+        '[data-composer-markdown][role="textbox"][contenteditable="true"]',
         'div#prompt-textarea[contenteditable="true"]',
         '#prompt-textarea[contenteditable="true"]',
         '[data-testid="composer-text-input"][contenteditable="true"]',
@@ -748,12 +787,14 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
         '[data-testid^="conversation-turn-"], [data-message-author-role], [data-chatgpt-search-unit-key], [data-content-search-unit-key], .rich-text-user-turn'
       );
       if (transcript.length) return { status: 'has_transcript' };
-      const text = String((composer.innerText ?? composer.textContent ?? '') || '').trim();
+      const text = composerValue(composer).trim();
       if (!text) return { status: 'empty' };
       const marker = /^\\[forge-supervisor project=([A-Za-z0-9._-]+) run=([a-f0-9]{16,64})\\]/.exec(text);
       if (!marker) return { status: 'unrecognized_draft' };
       const expectedLane = ${JSON.stringify(lane)};
-      if (marker[1] === expectedLane) return { status: 'same_lane_draft' };
+      const markerProject = marker[1];
+      if (markerProject === expectedLane || markerProject === expectedLane + '-wsl')
+        return { status: 'same_lane_draft' };
 
       composer.focus({ preventScroll: true });
       const selection = window.getSelection();
@@ -764,7 +805,7 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
       selection.addRange(range);
       const deleted = document.execCommand('delete', false, null);
       composer.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
-      const after = String((composer.innerText ?? composer.textContent ?? '') || '').trim();
+      const after = composerValue(composer).trim();
       return {
         status: deleted && after === '' ? 'foreign_supervisor_draft_cleared' : 'clear_unconfirmed',
         foreignProject: marker[1],

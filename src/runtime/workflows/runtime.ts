@@ -45,11 +45,18 @@ import {
 import { getLightweightProcessHandle } from '../execution/process-runtime/lightweight-managed';
 import { getProcessRecord } from '../execution/process-runtime/store';
 import { releaseExecutionLeases } from '../resources/leases/store';
+import { executeWorkflowCapabilityEffect, executeWorkflowScriptEffect } from './effect-runtime';
 
 export interface WorkflowRuntimeExecutionDependencies {
   submitPluginAction?: typeof submitAssistantPluginAction;
   executeCommand?: typeof executeRepositoryCommandViaProcessRuntime;
   waitCommand?: typeof waitRepositoryCommandProcess;
+}
+
+export interface WorkflowApprovalContext {
+  sessionId: string;
+  principalId: string;
+  permissionSnapshotVersion: number;
 }
 
 export interface ExecuteRegisteredWorkflowInput {
@@ -65,13 +72,16 @@ export interface ExecuteRegisteredWorkflowInput {
   workflowId: string;
   inputs?: Record<string, WorkflowJsonValue>;
   timeoutMs?: number;
+  approvalContext?: WorkflowApprovalContext;
 }
 
-function assertWorkflowExecutionScope(input: ExecuteRegisteredWorkflowInput, reconciliation = false): void {
+export function assertWorkflowExecutionScope(input: ExecuteRegisteredWorkflowInput, reconciliation = false): void {
   const scopeId = input.scopeId.trim();
   if (!scopeId) throw new Error('WORKFLOW_RUNTIME_SCOPE_ID_REQUIRED');
-  if (input.repository.repoId !== input.executionIdentity.repositoryId
-    || input.repository.activeCheckoutId !== input.executionIdentity.checkoutId) {
+  if (
+    input.repository.repoId !== input.executionIdentity.repositoryId ||
+    input.repository.activeCheckoutId !== input.executionIdentity.checkoutId
+  ) {
     throw new Error('WORKFLOW_EXECUTION_IDENTITY_MISMATCH');
   }
   const expectedScopeId = `repository:${input.repository.repoId}:checkout:${input.repository.activeCheckoutId}:workflow:${input.workflowId}`;
@@ -86,11 +96,13 @@ function assertWorkflowExecutionScope(input: ExecuteRegisteredWorkflowInput, rec
       checkoutId: input.repository.activeCheckoutId,
       projectId: input.registryScope.projectId,
     });
-    if (!project || project.projectId !== input.registryScope.projectId) throw new Error('WORKFLOW_PROJECT_SCOPE_MISMATCH');
+    if (!project || project.projectId !== input.registryScope.projectId)
+      throw new Error('WORKFLOW_PROJECT_SCOPE_MISMATCH');
   }
   if (!reconciliation && input.requirementId?.trim()) {
     const requirement = readRequirement({ controllerHome: input.controllerHome }, input.requirementId.trim())?.value;
-    if (!requirement || !['planned', 'active'].includes(requirement.state)) throw new Error('WORKFLOW_REQUIREMENT_NOT_ACTIVE');
+    if (!requirement || !['planned', 'active'].includes(requirement.state))
+      throw new Error('WORKFLOW_REQUIREMENT_NOT_ACTIVE');
   }
 }
 
@@ -103,7 +115,8 @@ function capabilityBinding(bindings: WorkflowCapabilityBinding[], capabilityId: 
   if (matches.length === 0) throw new Error(`WORKFLOW_CAPABILITY_BINDING_REQUIRED: ${capabilityId}`);
   if (matches.length > 1) throw new Error(`WORKFLOW_CAPABILITY_BINDING_AMBIGUOUS: ${capabilityId}`);
   const binding = matches[0]!;
-  if (!binding.pluginId || !binding.actionId) throw new Error(`WORKFLOW_CAPABILITY_BINDING_EXECUTION_TARGET_REQUIRED: ${capabilityId}`);
+  if (!binding.pluginId || !binding.actionId)
+    throw new Error(`WORKFLOW_CAPABILITY_BINDING_EXECUTION_TARGET_REQUIRED: ${capabilityId}`);
   return binding;
 }
 
@@ -116,13 +129,21 @@ function pluginActionOutput(
   const plugin = result?.plugin;
   const action = result?.action;
   const output = result?.result;
-  if (result?.schemaVersion !== 1
-    || !plugin || typeof plugin !== 'object' || Array.isArray(plugin)
-    || (plugin as Record<string, unknown>).pluginId !== binding.pluginId
-    || !action || typeof action !== 'object' || Array.isArray(action)
-    || (action as Record<string, unknown>).actionId !== binding.actionId
-    || (action as Record<string, unknown>).requestId !== expectedRequestId
-    || !output || typeof output !== 'object' || Array.isArray(output)) {
+  if (
+    result?.schemaVersion !== 1 ||
+    !plugin ||
+    typeof plugin !== 'object' ||
+    Array.isArray(plugin) ||
+    (plugin as Record<string, unknown>).pluginId !== binding.pluginId ||
+    !action ||
+    typeof action !== 'object' ||
+    Array.isArray(action) ||
+    (action as Record<string, unknown>).actionId !== binding.actionId ||
+    (action as Record<string, unknown>).requestId !== expectedRequestId ||
+    !output ||
+    typeof output !== 'object' ||
+    Array.isArray(output)
+  ) {
     throw new Error('WORKFLOW_PLUGIN_RESULT_ENVELOPE_MISMATCH');
   }
   return output as Record<string, unknown>;
@@ -133,8 +154,24 @@ function pluginOutcome(receipt: PluginActionReceipt, result?: Record<string, unk
   if (receipt.effectOutcome === 'outcome_unknown' || outcome === 'outcome_unknown') {
     return { outcome: 'outcome_unknown' as const, receiptRef: receipt.receiptId, output: result };
   }
-  if (receipt.status === 'failed' || result?.matched === false || result?.verified === false
-    || ['failed', 'login_required', 'authentication_required', 'page_changed', 'not_verified', 'generation_required', 'auth_required', 'page_schema_changed', 'publish_unverified', 'verification_pending', 'incompatible'].includes(String(outcome))) {
+  if (
+    receipt.status === 'failed' ||
+    result?.matched === false ||
+    result?.verified === false ||
+    [
+      'failed',
+      'login_required',
+      'authentication_required',
+      'page_changed',
+      'not_verified',
+      'generation_required',
+      'auth_required',
+      'page_schema_changed',
+      'publish_unverified',
+      'verification_pending',
+      'incompatible',
+    ].includes(String(outcome))
+  ) {
     return { outcome: 'failed' as const, receiptRef: receipt.receiptId, error: receipt.error };
   }
   return { outcome: 'succeeded' as const, receiptRef: receipt.receiptId, output: result };
@@ -143,12 +180,21 @@ function pluginOutcome(receipt: PluginActionReceipt, result?: Record<string, unk
 function scriptOutput(script: { outputFormat?: 'text' | 'json' }, stdout: string): Record<string, unknown> {
   if (script.outputFormat !== 'json') return { stdout };
   let parsed: unknown;
-  try { parsed = JSON.parse(stdout); } catch { throw new Error('WORKFLOW_SCRIPT_JSON_OUTPUT_INVALID'); }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('WORKFLOW_SCRIPT_JSON_OUTPUT_INVALID');
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error('WORKFLOW_SCRIPT_JSON_OUTPUT_INVALID');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    throw new Error('WORKFLOW_SCRIPT_JSON_OUTPUT_INVALID');
   return parsed as Record<string, unknown>;
 }
 
-function scriptCommand(runtime: 'shell' | 'node' | 'python', body: string, args: Record<string, WorkflowJsonValue>): string[] {
+function scriptCommand(
+  runtime: 'shell' | 'node' | 'python',
+  body: string,
+  args: Record<string, WorkflowJsonValue>,
+): string[] {
   const serialized = JSON.stringify(args);
   if (runtime === 'node') return ['node', '-e', body, serialized];
   if (runtime === 'python') return ['python3', '-c', body, serialized];
@@ -159,7 +205,14 @@ async function completedCommandResult(
   input: ExecuteRegisteredWorkflowInput,
   result: RepositoryCommandProcessResult,
   waitCommand: typeof waitRepositoryCommandProcess,
-): Promise<{ ok?: boolean; processId?: string; stdout?: string; stderr?: string; timedOut?: boolean; cancelled?: boolean }> {
+): Promise<{
+  ok?: boolean;
+  processId?: string;
+  stdout?: string;
+  stderr?: string;
+  timedOut?: boolean;
+  cancelled?: boolean;
+}> {
   if (!result.process || result.process.completed) {
     return {
       ok: result.process?.ok ?? result.ok,
@@ -170,7 +223,9 @@ async function completedCommandResult(
       cancelled: result.process?.cancelled,
     };
   }
-  const terminal = await waitCommand(input.controllerHome, input.repository.repoId, result.process.processId, { timeoutMs: input.timeoutMs ?? 30_000 });
+  const terminal = await waitCommand(input.controllerHome, input.repository.repoId, result.process.processId, {
+    timeoutMs: input.timeoutMs ?? 30_000,
+  });
   return {
     ok: terminal.ok,
     processId: terminal.processId,
@@ -182,10 +237,19 @@ async function completedCommandResult(
 }
 
 /** Hold the workflow-scope lock across read, dispatch and checkpoint, including distinct run IDs. */
-export async function executeRegisteredWorkflow(input: ExecuteRegisteredWorkflowInput, dependencies: WorkflowRuntimeExecutionDependencies = {}): Promise<WorkflowRunResult> {
+export async function executeRegisteredWorkflow(
+  input: ExecuteRegisteredWorkflowInput,
+  dependencies: WorkflowRuntimeExecutionDependencies = {},
+): Promise<WorkflowRunResult> {
   assertWorkflowExecutionScope(input);
-  return withControllerLockAsync(input.controllerHome, { scope: 'task', repoId: input.repository.repoId, taskId: `workflow:${input.scopeId}` },
-    `workflow:${input.runId}`, () => executeRegisteredWorkflowLocked(input, dependencies), undefined, 0);
+  return withControllerLockAsync(
+    input.controllerHome,
+    { scope: 'task', repoId: input.repository.repoId, taskId: `workflow:${input.scopeId}` },
+    `workflow:${input.runId}`,
+    () => executeRegisteredWorkflowLocked(input, dependencies),
+    undefined,
+    0,
+  );
 }
 
 async function executeRegisteredWorkflowLocked(
@@ -200,28 +264,43 @@ async function executeRegisteredWorkflowLocked(
   if (registry.value.status !== 'active') throw new Error(`WORKFLOW_REGISTRY_ENTRY_NOT_ACTIVE: ${input.workflowId}`);
   const asset = readWorkflowAssetContentFile(registry.value.contentLocation.path);
   const identity = workflowContentIdentity(asset);
-  if (identity.workflowId !== registry.value.workflowId
-    || identity.version !== registry.value.version
-    || identity.contentDigest !== registry.value.contentDigest) {
+  if (
+    identity.workflowId !== registry.value.workflowId ||
+    identity.version !== registry.value.version ||
+    identity.contentDigest !== registry.value.contentDigest
+  ) {
     throw new Error(`WORKFLOW_REGISTRY_CONTENT_IDENTITY_MISMATCH: ${input.workflowId}`);
   }
 
   const existing = readWorkflowRun(input.controllerHome, input.scopeId, input.runId);
   validateWorkflowRunInputs(asset, input.inputs);
   // Run ids are not a way to evade an unresolved effect in the same workflow scope.
-  const relatedRuns = listControlPlaneRecords<WorkflowRunRecord>(input.controllerHome, { namespace: 'workflow_run', scope: input.scopeId, limit: 1000 });
+  const relatedRuns = listControlPlaneRecords<WorkflowRunRecord>(input.controllerHome, {
+    namespace: 'workflow_run',
+    scope: input.scopeId,
+    limit: 1000,
+  });
   if (relatedRuns.length >= 1000) throw new Error('WORKFLOW_RUN_HISTORY_LIMIT');
-  if (relatedRuns.some(run => run.key !== input.runId && (run.value.status === 'reconcile_required' || run.value.inFlightStepId))) throw new Error('WORKFLOW_SCOPE_RECONCILIATION_REQUIRED');
+  if (
+    relatedRuns.some(
+      (run) => run.key !== input.runId && (run.value.status === 'reconcile_required' || run.value.inFlightStepId),
+    )
+  )
+    throw new Error('WORKFLOW_SCOPE_RECONCILIATION_REQUIRED');
   const inputDigest = workflowInputDigest(input.inputs);
   if (existing) {
-    if (existing.value.workflowId !== identity.workflowId
-      || existing.value.version !== identity.version
-      || existing.value.contentDigest !== identity.contentDigest
-      || existing.value.inputDigest !== inputDigest) {
+    if (
+      existing.value.workflowId !== identity.workflowId ||
+      existing.value.version !== identity.version ||
+      existing.value.contentDigest !== identity.contentDigest ||
+      existing.value.inputDigest !== inputDigest
+    ) {
       throw new Error('WORKFLOW_RUN_IDENTITY_CONFLICT');
     }
-    if (existing.value.status === 'reconcile_required') throw new Error(`WORKFLOW_RUN_RECONCILIATION_REQUIRED: ${existing.value.reconcileStepId ?? 'unknown'}`);
-    if (existing.value.inFlightStepId) throw new Error(`WORKFLOW_RUN_RECONCILIATION_REQUIRED: ${existing.value.inFlightStepId}`);
+    if (existing.value.status === 'reconcile_required')
+      throw new Error(`WORKFLOW_RUN_RECONCILIATION_REQUIRED: ${existing.value.reconcileStepId ?? 'unknown'}`);
+    if (existing.value.inFlightStepId)
+      throw new Error(`WORKFLOW_RUN_RECONCILIATION_REQUIRED: ${existing.value.inFlightStepId}`);
     if (existing.value.status === 'succeeded') throw new Error('WORKFLOW_RUN_ALREADY_SUCCEEDED');
     if (existing.value.status === 'failed') throw new Error('WORKFLOW_RUN_FAILED_RESTART_REQUIRES_NEW_RUN_ID');
   }
@@ -241,32 +320,61 @@ async function executeRegisteredWorkflowLocked(
         if (!script) throw new Error(`WORKFLOW_RETAINED_SCRIPT_MISSING: ${step.stepId}`);
         const lightweight = getLightweightProcessHandle(input.controllerHome, input.repository.repoId, receiptRef);
         if (lightweight) {
-          if (lightweight.processId !== receiptRef || lightweight.commandId !== expectedRequestId
-            || lightweight.status !== 'succeeded' || lightweight.ok !== true || lightweight.timedOut || lightweight.cancelled) {
+          if (
+            lightweight.processId !== receiptRef ||
+            lightweight.commandId !== expectedRequestId ||
+            lightweight.status !== 'succeeded' ||
+            lightweight.ok !== true ||
+            lightweight.timedOut ||
+            lightweight.cancelled
+          ) {
             throw new Error(`WORKFLOW_RETAINED_PROCESS_RECEIPT_MISMATCH: ${step.stepId}`);
           }
           const canonicalOutput = retainWorkflowOutput(step, scriptOutput(script, lightweight.stdout ?? ''));
-          if (JSON.stringify(canonicalOutput) !== JSON.stringify(output)) throw new Error(`WORKFLOW_RETAINED_OUTPUT_MISMATCH: ${step.stepId}`);
+          if (JSON.stringify(canonicalOutput) !== JSON.stringify(output))
+            throw new Error(`WORKFLOW_RETAINED_OUTPUT_MISMATCH: ${step.stepId}`);
           return;
         }
         const process = getProcessRecord(input.controllerHome, input.repository.repoId, receiptRef);
-        if (!process || process.processId !== receiptRef || process.checkoutId !== input.executionIdentity.checkoutId
-          || process.origin?.requestId !== expectedRequestId || process.status !== 'succeeded' || process.exitCode !== 0 || process.timedOut || process.cancelled) {
+        if (
+          !process ||
+          process.processId !== receiptRef ||
+          process.checkoutId !== input.executionIdentity.checkoutId ||
+          process.origin?.requestId !== expectedRequestId ||
+          process.status !== 'succeeded' ||
+          process.exitCode !== 0 ||
+          process.timedOut ||
+          process.cancelled
+        ) {
           throw new Error(`WORKFLOW_RETAINED_PROCESS_RECEIPT_MISMATCH: ${step.stepId}`);
         }
         const handle = getRepositoryCommandProcess(input.controllerHome, input.repository.repoId, receiptRef);
-        if (!handle || handle.processId !== receiptRef || handle.status !== 'succeeded' || handle.ok !== true || !handle.completed) throw new Error(`WORKFLOW_RETAINED_OUTPUT_UNPROVEN: ${step.stepId}`);
+        if (
+          !handle ||
+          handle.processId !== receiptRef ||
+          handle.status !== 'succeeded' ||
+          handle.ok !== true ||
+          !handle.completed
+        )
+          throw new Error(`WORKFLOW_RETAINED_OUTPUT_UNPROVEN: ${step.stepId}`);
         const canonicalOutput = retainWorkflowOutput(step, scriptOutput(script, handle.stdout ?? ''));
-        if (JSON.stringify(canonicalOutput) !== JSON.stringify(output)) throw new Error(`WORKFLOW_RETAINED_OUTPUT_MISMATCH: ${step.stepId}`);
+        if (JSON.stringify(canonicalOutput) !== JSON.stringify(output))
+          throw new Error(`WORKFLOW_RETAINED_OUTPUT_MISMATCH: ${step.stepId}`);
         return;
       }
       const binding = capabilityBinding(registry.value.bindings, step.capabilityId);
       const canonical = findPluginActionReceipt(input.controllerHome, receiptRef);
-      if (!canonical || canonical.receiptId !== receiptRef || canonical.requestId !== expectedRequestId
-        || (canonical.repoId !== undefined && canonical.repoId !== input.repository.repoId)
-        || canonical.origin?.correlationId !== input.runId
-        || canonical.pluginId !== binding.pluginId || canonical.actionId !== binding.actionId
-        || canonical.status !== 'succeeded' || canonical.effectOutcome === 'outcome_unknown') {
+      if (
+        !canonical ||
+        canonical.receiptId !== receiptRef ||
+        canonical.requestId !== expectedRequestId ||
+        (canonical.repoId !== undefined && canonical.repoId !== input.repository.repoId) ||
+        canonical.origin?.correlationId !== input.runId ||
+        canonical.pluginId !== binding.pluginId ||
+        canonical.actionId !== binding.actionId ||
+        canonical.status !== 'succeeded' ||
+        canonical.effectOutcome === 'outcome_unknown'
+      ) {
         throw new Error(`WORKFLOW_RETAINED_PLUGIN_RECEIPT_MISMATCH: ${step.stepId}`);
       }
       let canonicalResult: Record<string, unknown>;
@@ -279,63 +387,43 @@ async function executeRegisteredWorkflowLocked(
         throw new Error(`WORKFLOW_RETAINED_PLUGIN_RECEIPT_MISMATCH: ${step.stepId}`);
       }
       const canonicalOutput = retainWorkflowOutput(step, canonicalResult);
-      if (JSON.stringify(canonicalOutput) !== JSON.stringify(output)) throw new Error(`WORKFLOW_RETAINED_OUTPUT_MISMATCH: ${step.stepId}`);
+      if (JSON.stringify(canonicalOutput) !== JSON.stringify(output))
+        throw new Error(`WORKFLOW_RETAINED_OUTPUT_MISMATCH: ${step.stepId}`);
     },
     executeCapability: async ({ step, arguments: args }) => {
       assertWorkflowExecutionScope(input);
-      const binding = capabilityBinding(registry.value.bindings, step.capabilityId);
-      const expectedRequestId = requestId(input, step.stepId, asset.contentDigest);
-      let submitted: Awaited<ReturnType<typeof submitPluginAction>>;
-      try {
-        submitted = await submitPluginAction(input.controllerHome, input.repository, {
-          pluginId: binding.pluginId!,
-          actionId: binding.actionId!,
-          requestId: expectedRequestId,
-          args,
-          timeoutMs: input.timeoutMs,
-          authorizationGrantRefs: registry.value.capabilityGrantRefs,
-          origin: { surface: 'system', actor: 'workflow-runtime', correlationId: input.runId },
-        });
-      } catch (error) {
-        const effectOutcome = isAssistantPluginError(error) ? error.effectOutcome : undefined;
-        return {
-          outcome: step.idempotency === 'non_idempotent' && effectOutcome !== 'failed' ? 'outcome_unknown' : 'failed',
-          error: { code: isAssistantPluginError(error) ? error.code : 'WORKFLOW_CAPABILITY_EXECUTION_FAILED', message: error instanceof Error ? error.message : String(error) },
-        };
-      }
-      const output = submitted.receipt.status === 'succeeded'
-        ? pluginActionOutput(submitted.result, binding, expectedRequestId)
-        : undefined;
-      return pluginOutcome(submitted.receipt, output);
-    },
-    executeScript: async ({ step, script, arguments: args }) => {
-      assertWorkflowExecutionScope(input);
-      try {
-        const process = await executeCommand({
+      return executeWorkflowCapabilityEffect({
+        context: {
           controllerHome: input.controllerHome,
           repository: input.repository,
           executionIdentity: input.executionIdentity,
-          requestId: requestId(input, step.stepId, asset.contentDigest),
-          persistReceipt: true,
-          command: scriptCommand(script.runtime, script.body, args),
+          runId: input.runId,
           timeoutMs: input.timeoutMs,
-        });
-        if (process.externalEffect?.outcome === 'not_started') {
-          return { outcome: 'failed', error: { code: 'WORKFLOW_SCRIPT_DURABLE_CONTROLLER_REQUIRED', message: process.externalEffect.reconciliation } };
-        }
-        if (process.externalEffect?.outcome === 'outcome_unknown') {
-          return { outcome: 'outcome_unknown', receiptRef: process.process?.processId };
-        }
-        const terminal = await completedCommandResult(input, process, waitCommand);
-        if (terminal.timedOut || terminal.cancelled) {
-          return { outcome: 'outcome_unknown', receiptRef: terminal.processId, error: { code: 'WORKFLOW_SCRIPT_PROCESS_INCOMPLETE', message: terminal.stderr ?? 'Script Process did not complete safely.' } };
-        }
-        return terminal.ok
-          ? { outcome: 'succeeded', receiptRef: terminal.processId, output: scriptOutput(script, terminal.stdout ?? '') }
-          : { outcome: 'failed', receiptRef: terminal.processId, error: { code: 'WORKFLOW_SCRIPT_FAILED', message: terminal.stderr ?? 'Script Process failed.' } };
-      } catch (error) {
-        return { outcome: 'outcome_unknown', error: { code: 'WORKFLOW_SCRIPT_EXECUTION_FAILED', message: error instanceof Error ? error.message : String(error) } };
-      }
+          registry: registry.value,
+        },
+        capabilityId: step.capabilityId,
+        arguments: args,
+        requestId: requestId(input, step.stepId, asset.contentDigest),
+        idempotency: step.idempotency ?? 'idempotent',
+        dependencies,
+      });
+    },
+    executeScript: async ({ step, script, arguments: args }) => {
+      assertWorkflowExecutionScope(input);
+      return executeWorkflowScriptEffect({
+        context: {
+          controllerHome: input.controllerHome,
+          repository: input.repository,
+          executionIdentity: input.executionIdentity,
+          runId: input.runId,
+          timeoutMs: input.timeoutMs,
+          registry: registry.value,
+        },
+        script,
+        arguments: args,
+        requestId: requestId(input, step.stepId, asset.contentDigest),
+        dependencies,
+      });
     },
     checkpoint: (checkpoint) => {
       const stored = writeWorkflowRunCheckpoint({
@@ -348,14 +436,17 @@ async function executeRegisteredWorkflowLocked(
     },
   };
 
-  return executeWorkflow({
-    asset,
-    binding: { scopeId: input.scopeId, runId: input.runId },
-    inputs: input.inputs,
-    startStepIndex: existing?.value.nextStepIndex,
-    retainedReceipts: existing?.value.receipts,
-    retainedOutputs: existing?.value.outputs,
-  }, ports);
+  return executeWorkflow(
+    {
+      asset,
+      binding: { scopeId: input.scopeId, runId: input.runId },
+      inputs: input.inputs,
+      startStepIndex: existing?.value.nextStepIndex,
+      retainedReceipts: existing?.value.receipts,
+      retainedOutputs: existing?.value.outputs,
+    },
+    ports,
+  );
 }
 
 /** Reconcile from canonical provider/Process evidence. Observation never re-dispatches the uncertain effect. */
@@ -380,15 +471,25 @@ async function reconcileRegisteredWorkflowLocked(
 ): Promise<WorkflowRunRecord> {
   assertWorkflowExecutionScope(input, true);
   const stored = readWorkflowRun(input.controllerHome, input.scopeId, input.runId);
-  if (!stored || !(stored.value.inFlightStepId || stored.value.status === 'reconcile_required')) throw new Error('WORKFLOW_RECONCILIATION_NOT_REQUIRED');
+  if (!stored || !(stored.value.inFlightStepId || stored.value.status === 'reconcile_required'))
+    throw new Error('WORKFLOW_RECONCILIATION_NOT_REQUIRED');
   const registry = readWorkflowRegistryEntry(input.controllerHome, input.registryScope, input.workflowId);
   if (!registry || registry.value.status !== 'active') throw new Error('WORKFLOW_REGISTRY_ENTRY_REQUIRED');
   const asset = readWorkflowAssetContentFile(registry.value.contentLocation.path);
-  if (asset.workflowId !== stored.value.workflowId || asset.version !== stored.value.version || asset.contentDigest !== stored.value.contentDigest
-    || workflowInputDigest(input.inputs) !== stored.value.inputDigest) throw new Error('WORKFLOW_RUN_IDENTITY_CONFLICT');
+  if (
+    asset.workflowId !== stored.value.workflowId ||
+    asset.version !== stored.value.version ||
+    asset.contentDigest !== stored.value.contentDigest ||
+    workflowInputDigest(input.inputs) !== stored.value.inputDigest
+  )
+    throw new Error('WORKFLOW_RUN_IDENTITY_CONFLICT');
   const registeredIdentity = workflowContentIdentity(asset);
-  if (registeredIdentity.contentDigest !== registry.value.contentDigest || registeredIdentity.version !== registry.value.version
-    || registeredIdentity.workflowId !== registry.value.workflowId) throw new Error('WORKFLOW_REGISTRY_CONTENT_IDENTITY_MISMATCH');
+  if (
+    registeredIdentity.contentDigest !== registry.value.contentDigest ||
+    registeredIdentity.version !== registry.value.version ||
+    registeredIdentity.workflowId !== registry.value.workflowId
+  )
+    throw new Error('WORKFLOW_REGISTRY_CONTENT_IDENTITY_MISMATCH');
   const step = asset.steps[stored.value.nextStepIndex];
   if (!step) throw new Error('WORKFLOW_RECONCILIATION_STEP_REQUIRED');
   const originalRequestId = requestId(input, step.stepId, asset.contentDigest);
@@ -406,30 +507,61 @@ async function reconcileRegisteredWorkflowLocked(
     const lightweight = getLightweightProcessHandle(input.controllerHome, input.repository.repoId, processId);
     let stdout: string;
     if (lightweight) {
-      if (lightweight.processId !== processId || lightweight.commandId !== originalRequestId
-        || lightweight.status !== 'succeeded' || lightweight.ok !== true || lightweight.timedOut || lightweight.cancelled) {
+      if (
+        lightweight.processId !== processId ||
+        lightweight.commandId !== originalRequestId ||
+        lightweight.status !== 'succeeded' ||
+        lightweight.ok !== true ||
+        lightweight.timedOut ||
+        lightweight.cancelled
+      ) {
         throw new Error('WORKFLOW_RECONCILIATION_EVIDENCE_REQUIRED');
       }
       stdout = lightweight.stdout ?? '';
     } else {
       const process = getProcessRecord(input.controllerHome, input.repository.repoId, processId);
-      if (!process || process.processId !== processId || process.checkoutId !== input.executionIdentity.checkoutId
-        || process.origin?.requestId !== originalRequestId) {
+      if (
+        !process ||
+        process.processId !== processId ||
+        process.checkoutId !== input.executionIdentity.checkoutId ||
+        process.origin?.requestId !== originalRequestId
+      ) {
         throw new Error('WORKFLOW_RECONCILIATION_PROCESS_IDENTITY_MISMATCH');
       }
       // Existing Process maintenance is the only authority allowed to prove that spawn never happened.
       if (process.status === 'failed' && process.error?.message.includes('PROCESS_PRESPAWN_ABANDONED:')) {
-        return writeWorkflowRunCheckpoint({ controllerHome: input.controllerHome, inputs: input.inputs, expectedRevision: stored.revision,
-          checkpoint: { schemaVersion: 1, binding: { scopeId: input.scopeId, runId: input.runId }, workflowId: asset.workflowId, version: asset.version, contentDigest: asset.contentDigest,
-            status: 'failed', nextStepIndex: stored.value.nextStepIndex, outputs: stored.value.outputs,
-            receipts: [...stored.value.receipts.filter(receipt => receipt.stepId !== step.stepId), { stepId: step.stepId, outcome: 'failed', receiptRef: process.processId, recordedAt }] } }).value;
+        return writeWorkflowRunCheckpoint({
+          controllerHome: input.controllerHome,
+          inputs: input.inputs,
+          expectedRevision: stored.revision,
+          checkpoint: {
+            schemaVersion: 1,
+            binding: { scopeId: input.scopeId, runId: input.runId },
+            workflowId: asset.workflowId,
+            version: asset.version,
+            contentDigest: asset.contentDigest,
+            status: 'failed',
+            nextStepIndex: stored.value.nextStepIndex,
+            outputs: stored.value.outputs,
+            receipts: [
+              ...stored.value.receipts.filter((receipt) => receipt.stepId !== step.stepId),
+              { stepId: step.stepId, outcome: 'failed', receiptRef: process.processId, recordedAt },
+            ],
+          },
+        }).value;
       }
       if (process.status !== 'succeeded' || process.exitCode !== 0 || process.timedOut || process.cancelled) {
         // Failed/timeout/stale Process does not prove absence of side effects. Keep reconciliation pending.
         throw new Error('WORKFLOW_RECONCILIATION_EVIDENCE_REQUIRED');
       }
       const handle = getRepositoryCommandProcess(input.controllerHome, input.repository.repoId, process.processId);
-      if (!handle || handle.processId !== process.processId || handle.status !== 'succeeded' || handle.ok !== true || !handle.completed) {
+      if (
+        !handle ||
+        handle.processId !== process.processId ||
+        handle.status !== 'succeeded' ||
+        handle.ok !== true ||
+        !handle.completed
+      ) {
         throw new Error('WORKFLOW_RECONCILIATION_EVIDENCE_REQUIRED');
       }
       stdout = handle.stdout ?? '';
@@ -439,46 +571,105 @@ async function reconcileRegisteredWorkflowLocked(
     if (!script) throw new Error('WORKFLOW_RECONCILIATION_SCRIPT_REQUIRED');
     const output = scriptOutput(script, stdout);
     const outputs = { ...stored.value.outputs, [step.stepId]: retainWorkflowOutput(step, output) };
-    return writeWorkflowRunCheckpoint({ controllerHome: input.controllerHome, inputs: input.inputs, expectedRevision: stored.revision,
-      checkpoint: { schemaVersion: 1, binding: { scopeId: input.scopeId, runId: input.runId }, workflowId: asset.workflowId, version: asset.version, contentDigest: asset.contentDigest,
-        status: 'running', nextStepIndex: stored.value.nextStepIndex + 1, outputs,
-        receipts: [...stored.value.receipts.filter(receipt => receipt.stepId !== step.stepId), { stepId: step.stepId, outcome: 'succeeded', receiptRef: processId, recordedAt }] } }).value;
+    return writeWorkflowRunCheckpoint({
+      controllerHome: input.controllerHome,
+      inputs: input.inputs,
+      expectedRevision: stored.revision,
+      checkpoint: {
+        schemaVersion: 1,
+        binding: { scopeId: input.scopeId, runId: input.runId },
+        workflowId: asset.workflowId,
+        version: asset.version,
+        contentDigest: asset.contentDigest,
+        status: 'running',
+        nextStepIndex: stored.value.nextStepIndex + 1,
+        outputs,
+        receipts: [
+          ...stored.value.receipts.filter((receipt) => receipt.stepId !== step.stepId),
+          { stepId: step.stepId, outcome: 'succeeded', receiptRef: processId, recordedAt },
+        ],
+      },
+    }).value;
   }
 
   const requestedReceiptId = input.reconciliationRequestId ?? originalRequestId;
   const receipt = readPluginActionReceiptForRequest(input.controllerHome, requestedReceiptId);
-  if (!receipt || receipt.requestId !== requestedReceiptId
-    || (receipt.repoId !== undefined && receipt.repoId !== input.repository.repoId)
-    || receipt.origin?.correlationId !== input.runId
-    || receipt.status !== 'succeeded' || receipt.effectOutcome === 'outcome_unknown') {
+  if (
+    !receipt ||
+    receipt.requestId !== requestedReceiptId ||
+    (receipt.repoId !== undefined && receipt.repoId !== input.repository.repoId) ||
+    receipt.origin?.correlationId !== input.runId ||
+    receipt.status !== 'succeeded' ||
+    receipt.effectOutcome === 'outcome_unknown'
+  ) {
     throw new Error('WORKFLOW_RECONCILIATION_EVIDENCE_REQUIRED');
   }
-  const binding = capabilityBinding(registry.value.bindings, input.reconciliationRequestId ? step.reconcileWithCapabilityId ?? '' : step.capabilityId);
-  if (receipt.pluginId !== binding.pluginId || receipt.actionId !== binding.actionId) throw new Error('WORKFLOW_RECONCILIATION_TARGET_MISMATCH');
+  const binding = capabilityBinding(
+    registry.value.bindings,
+    input.reconciliationRequestId ? (step.reconcileWithCapabilityId ?? '') : step.capabilityId,
+  );
+  if (receipt.pluginId !== binding.pluginId || receipt.actionId !== binding.actionId)
+    throw new Error('WORKFLOW_RECONCILIATION_TARGET_MISMATCH');
   const pluginResult = pluginActionOutput(receipt.result, binding, requestedReceiptId);
-  if (pluginOutcome(receipt, pluginResult).outcome !== 'succeeded') throw new Error('WORKFLOW_RECONCILIATION_BUSINESS_VERIFICATION_REQUIRED');
+  if (pluginOutcome(receipt, pluginResult).outcome !== 'succeeded')
+    throw new Error('WORKFLOW_RECONCILIATION_BUSINESS_VERIFICATION_REQUIRED');
   let output = pluginResult;
   if (input.reconciliationRequestId) {
     if (output.effectRequestId !== originalRequestId) throw new Error('WORKFLOW_RECONCILIATION_NOT_PROVEN');
     if (output.outcome === 'not_applied') {
       // Exact negative observation clears the unresolved effect but never retries it. Controller chooses whether a new run is justified.
       releaseExecutionLeases(input.controllerHome, input.repository.repoId, `plugin:${originalRequestId}`);
-      return writeWorkflowRunCheckpoint({ controllerHome: input.controllerHome, inputs: input.inputs, expectedRevision: stored.revision,
-        checkpoint: { schemaVersion: 1, binding: { scopeId: input.scopeId, runId: input.runId }, workflowId: asset.workflowId, version: asset.version, contentDigest: asset.contentDigest,
-          status: 'failed', nextStepIndex: stored.value.nextStepIndex, outputs: stored.value.outputs,
-          receipts: [...stored.value.receipts.filter(candidate => candidate.stepId !== step.stepId), { stepId: step.stepId, outcome: 'failed', receiptRef: receipt.receiptId, recordedAt }] } }).value;
+      return writeWorkflowRunCheckpoint({
+        controllerHome: input.controllerHome,
+        inputs: input.inputs,
+        expectedRevision: stored.revision,
+        checkpoint: {
+          schemaVersion: 1,
+          binding: { scopeId: input.scopeId, runId: input.runId },
+          workflowId: asset.workflowId,
+          version: asset.version,
+          contentDigest: asset.contentDigest,
+          status: 'failed',
+          nextStepIndex: stored.value.nextStepIndex,
+          outputs: stored.value.outputs,
+          receipts: [
+            ...stored.value.receipts.filter((candidate) => candidate.stepId !== step.stepId),
+            { stepId: step.stepId, outcome: 'failed', receiptRef: receipt.receiptId, recordedAt },
+          ],
+        },
+      }).value;
     }
-    if (output.outcome !== 'applied' || !output.output || typeof output.output !== 'object' || Array.isArray(output.output)) throw new Error('WORKFLOW_RECONCILIATION_NOT_PROVEN');
+    if (
+      output.outcome !== 'applied' ||
+      !output.output ||
+      typeof output.output !== 'object' ||
+      Array.isArray(output.output)
+    )
+      throw new Error('WORKFLOW_RECONCILIATION_NOT_PROVEN');
     output = output.output as Record<string, unknown>;
   }
   releaseExecutionLeases(input.controllerHome, input.repository.repoId, `plugin:${originalRequestId}`);
   const outputs = { ...stored.value.outputs, [step.stepId]: retainWorkflowOutput(step, output) };
-  return writeWorkflowRunCheckpoint({ controllerHome: input.controllerHome, inputs: input.inputs, expectedRevision: stored.revision,
-    checkpoint: { schemaVersion: 1, binding: { scopeId: input.scopeId, runId: input.runId }, workflowId: asset.workflowId, version: asset.version, contentDigest: asset.contentDigest,
-      status: 'running', nextStepIndex: stored.value.nextStepIndex + 1, outputs,
-      receipts: [...stored.value.receipts.filter(candidate => candidate.stepId !== step.stepId), { stepId: step.stepId, outcome: 'succeeded', receiptRef: receipt.receiptId, recordedAt }] } }).value;
+  return writeWorkflowRunCheckpoint({
+    controllerHome: input.controllerHome,
+    inputs: input.inputs,
+    expectedRevision: stored.revision,
+    checkpoint: {
+      schemaVersion: 1,
+      binding: { scopeId: input.scopeId, runId: input.runId },
+      workflowId: asset.workflowId,
+      version: asset.version,
+      contentDigest: asset.contentDigest,
+      status: 'running',
+      nextStepIndex: stored.value.nextStepIndex + 1,
+      outputs,
+      receipts: [
+        ...stored.value.receipts.filter((candidate) => candidate.stepId !== step.stepId),
+        { stepId: step.stepId, outcome: 'succeeded', receiptRef: receipt.receiptId, recordedAt },
+      ],
+    },
+  }).value;
 }
-
 
 function reconciliationArguments(
   asset: ReturnType<typeof readWorkflowAssetContentFile>,
@@ -491,13 +682,16 @@ function reconciliationArguments(
   const injectRuntime = (value: WorkflowJsonValue): WorkflowJsonValue => {
     if (value === '{{runtime.effect_request_id}}') return effectRequestId;
     if (Array.isArray(value)) return value.map(injectRuntime);
-    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, injectRuntime(entry)]));
+    if (value && typeof value === 'object')
+      return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, injectRuntime(entry)]));
     return value;
   };
-  return Object.fromEntries(Object.entries(step.reconciliationInput ?? {}).map(([key, value]) => [
-    key,
-    resolveWorkflowValue(asset, resolvedInputs, injectRuntime(value), outputs),
-  ]));
+  return Object.fromEntries(
+    Object.entries(step.reconciliationInput ?? {}).map(([key, value]) => [
+      key,
+      resolveWorkflowValue(asset, resolvedInputs, injectRuntime(value), outputs),
+    ]),
+  );
 }
 
 /**
@@ -519,14 +713,21 @@ export async function observeAndReconcileRegisteredWorkflow(
     async () => {
       assertWorkflowExecutionScope(input, true);
       const stored = readWorkflowRun(input.controllerHome, input.scopeId, input.runId);
-      if (!stored || !(stored.value.inFlightStepId || stored.value.status === 'reconcile_required')) throw new Error('WORKFLOW_RECONCILIATION_NOT_REQUIRED');
+      if (!stored || !(stored.value.inFlightStepId || stored.value.status === 'reconcile_required'))
+        throw new Error('WORKFLOW_RECONCILIATION_NOT_REQUIRED');
       const registry = readWorkflowRegistryEntry(input.controllerHome, input.registryScope, input.workflowId);
       if (!registry || registry.value.status !== 'active') throw new Error('WORKFLOW_REGISTRY_ENTRY_REQUIRED');
       const asset = readWorkflowAssetContentFile(registry.value.contentLocation.path);
-      if (asset.workflowId !== stored.value.workflowId || asset.version !== stored.value.version || asset.contentDigest !== stored.value.contentDigest
-        || workflowInputDigest(input.inputs) !== stored.value.inputDigest) throw new Error('WORKFLOW_RUN_IDENTITY_CONFLICT');
+      if (
+        asset.workflowId !== stored.value.workflowId ||
+        asset.version !== stored.value.version ||
+        asset.contentDigest !== stored.value.contentDigest ||
+        workflowInputDigest(input.inputs) !== stored.value.inputDigest
+      )
+        throw new Error('WORKFLOW_RUN_IDENTITY_CONFLICT');
       const step = asset.steps[stored.value.nextStepIndex];
-      if (!step || step.kind === 'script' || !step.reconcileWithCapabilityId) throw new Error('WORKFLOW_RECONCILIATION_CAPABILITY_REQUIRED');
+      if (!step || step.kind === 'script' || !step.reconcileWithCapabilityId)
+        throw new Error('WORKFLOW_RECONCILIATION_CAPABILITY_REQUIRED');
       const originalRequestId = requestId(input, step.stepId, asset.contentDigest);
       const binding = capabilityBinding(registry.value.bindings, step.reconcileWithCapabilityId);
       const submitPluginAction = dependencies.submitPluginAction ?? submitAssistantPluginAction;

@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { setHostBuildCpuProbeForTest } from '../../src/runtime/resources/leases/host-build-admission';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { execFileSync, spawn } from 'child_process';
 import { tmpdir } from 'os';
@@ -28,8 +29,10 @@ import {
 } from '../../src/runtime/safe-tooling';
 
 const roots: string[] = [];
+beforeEach(() => setHostBuildCpuProbeForTest(() => ({ cpus: 10, load: 2.5, memoryFreePercent: 53 })));
 
 afterEach(() => {
+  setHostBuildCpuProbeForTest(undefined);
   resetIosDevelopmentHooksForTest();
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
@@ -649,9 +652,9 @@ describe('iOS development simulator reliability', () => {
     if (!('command' in first) || !first.command) throw new Error('missing build command');
     expect(first.command.slice(first.command.indexOf('-jobs'), first.command.indexOf('-jobs') + 2)).toEqual([
       '-jobs',
-      '2',
+      '5',
     ]);
-    expect(first.command).toContain('OTHER_SWIFT_FLAGS=$(inherited) -j 2');
+    expect(first.command).toContain('OTHER_SWIFT_FLAGS=$(inherited) -j 1');
     if (
       !(
         'derivedDataPath' in first &&
@@ -778,7 +781,7 @@ describe('iOS development simulator reliability', () => {
       ),
     ).toEqual(['2']);
     for (const command of testCommands)
-      expect(command.slice(command.indexOf('-jobs'), command.indexOf('-jobs') + 2)).toEqual(['-jobs', '2']);
+      expect(command.slice(command.indexOf('-jobs'), command.indexOf('-jobs') + 2)).toEqual(['-jobs', '5']);
   });
 
   test('uses collision-resistant screenshot artifact names even with a fixed clock', () => {

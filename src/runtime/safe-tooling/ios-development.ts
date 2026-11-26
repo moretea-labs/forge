@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, utimesS
 import { basename, dirname, join, relative, resolve, sep } from 'path';
 import { spawnSync } from 'child_process';
 import { runBoundedChild } from '../shared/bounded-child-supervisor';
+import { hostBuildParallelism } from '../resources/leases/host-build-admission';
 import type { RepositoryRecord } from '../../core/repository/types';
 
 export interface IosCommandResult {
@@ -23,7 +24,10 @@ export interface IosDevelopmentHooks {
 
 let hooks: IosDevelopmentHooks = {};
 let artifactSequence = 0;
-const XCODE_RESOURCE_ARGS = ['-jobs', '2', 'OTHER_SWIFT_FLAGS=$(inherited) -j 2'];
+function xcodeResourceArgs(): string[] {
+  // Xcode owns the outer worker pool; nested Swift worker pools must not multiply it.
+  return ['-jobs', String(hostBuildParallelism()), 'OTHER_SWIFT_FLAGS=$(inherited) -j 1'];
+}
 
 /** Host Xcode/simctl probes are expensive (spawnSync). Cache them for hot MCP reads. */
 const XCODE_STATUS_TTL_MS = 60_000;
@@ -691,7 +695,7 @@ export async function iosAppBuild(
   const derivedDataReused = existsSync(derivedDataPath);
   mkdirSync(derivedDataPath, { recursive: true });
   const priorBuiltApps = derivedDataReused ? findBuiltApps(repository, derivedDataPath) : [];
-  const args = ['build', ...XCODE_RESOURCE_ARGS];
+  const args = ['build', ...xcodeResourceArgs()];
   if (workspace) args.push('-workspace', workspace);
   else if (project) args.push('-project', project);
   args.push('-scheme', scheme, '-configuration', configuration, '-destination', destination);
@@ -799,7 +803,7 @@ export async function iosXcodeTest(
     `${artifactStamp()}-${sanitize(scheme)}.xcresult`,
   );
   mkdirSync(derivedDataPath, { recursive: true });
-  const args = ['test', ...XCODE_RESOURCE_ARGS];
+  const args = ['test', ...xcodeResourceArgs()];
   if (workspace) args.push('-workspace', workspace);
   else if (project) args.push('-project', project);
   args.push('-scheme', scheme, '-configuration', input.configuration ?? 'Debug');

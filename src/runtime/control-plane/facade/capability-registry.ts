@@ -83,6 +83,17 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
       'Run one Work-independent local controller conversation through the existing Codex provider and current Forge Runtime MCP capabilities; conversation transport never creates semantic Work implicitly.',
   },
   {
+    capabilityId: 'workflow.control',
+    domain: 'workflow',
+    group: 'workflow',
+    operationClass: 'execute',
+    risk: 'workspace_write',
+    exposedVia: 'capability_execute',
+    schemaExposure: 'stable_static',
+    summary:
+      'Discover, inspect and preflight first-class Workflow assets, and manage their independent installed/active/inactive lifecycle without routing through Event or Project semantics.',
+  },
+  {
     capabilityId: 'repository.context',
     domain: 'repository',
     group: 'repository-core',
@@ -467,6 +478,130 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
                 items: { type: 'string', minLength: 1, maxLength: 4096 },
               },
               timeout_ms: { type: 'number', minimum: 5_000, maximum: 600_000 },
+            },
+          },
+        },
+      },
+    };
+  }
+  if (capabilityId === 'workflow.control') {
+    const scopeProperties = {
+      project_id: { type: 'string', minLength: 1, maxLength: 128 },
+    };
+    return {
+      capabilityId,
+      executeWith: 'capability_execute',
+      actions: {
+        list: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: { type: 'object', additionalProperties: false, properties: scopeProperties },
+        },
+        get: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['workflow_id'],
+            properties: {
+              ...scopeProperties,
+              workflow_id: { type: 'string', minLength: 1, maxLength: 128 },
+            },
+          },
+        },
+        prepare: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['workflow_id', 'origin_kind'],
+            properties: {
+              ...scopeProperties,
+              workflow_id: { type: 'string', minLength: 1, maxLength: 128 },
+              origin_kind: { type: 'string', enum: ['user', 'event', 'model', 'plugin', 'workflow', 'system'] },
+              origin_id: { type: 'string', minLength: 1, maxLength: 256 },
+              inputs: { type: 'object', additionalProperties: true },
+            },
+          },
+        },
+        authoring_preflight: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['proposal'],
+            properties: { proposal: { type: 'object', additionalProperties: true } },
+          },
+        },
+        install: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['proposal'],
+            properties: { proposal: { type: 'object', additionalProperties: true } },
+          },
+        },
+        resume_due: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              now: { type: 'string', minLength: 1, maxLength: 64 },
+              limit: { type: 'number', minimum: 1, maximum: 1000 },
+            },
+          },
+        },
+        execute: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['workflow_id', 'run_id', 'origin_kind'],
+            properties: {
+              ...scopeProperties,
+              workflow_id: { type: 'string', minLength: 1, maxLength: 128 },
+              run_id: { type: 'string', minLength: 1, maxLength: 256 },
+              requirement_id: { type: 'string', minLength: 1, maxLength: 256 },
+              origin_kind: { type: 'string', enum: ['user', 'event', 'model', 'plugin', 'workflow', 'system'] },
+              origin_id: { type: 'string', minLength: 1, maxLength: 256 },
+              inputs: { type: 'object', additionalProperties: true },
+              timeout_ms: { type: 'number', minimum: 100, maximum: 86400000 },
+            },
+          },
+        },
+        activate: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['workflow_id'],
+            properties: {
+              ...scopeProperties,
+              workflow_id: { type: 'string', minLength: 1, maxLength: 128 },
+              expected_revision: { type: 'number', minimum: 1 },
+            },
+          },
+        },
+        deactivate: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['workflow_id'],
+            properties: {
+              ...scopeProperties,
+              workflow_id: { type: 'string', minLength: 1, maxLength: 128 },
+              expected_revision: { type: 'number', minimum: 1 },
             },
           },
         },

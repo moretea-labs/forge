@@ -23,6 +23,12 @@ function home() {
   roots.push(value);
   return value;
 }
+const graphExecution = {
+  repositoryId: 'repo-1',
+  checkoutId: 'checkout-1',
+  registryScope: { kind: 'controller' as const },
+};
+
 function asset() {
   const draft: WorkflowGraphAssetDraft = {
     schemaVersion: 2,
@@ -67,6 +73,7 @@ describe('Workflow Graph v2 checkpoints', () => {
       controllerHome: h,
       checkpoint,
       inputs: { message_id: 'm1' },
+      execution: graphExecution,
       now: new Date('2026-11-25T10:00:00.000Z'),
     });
     expect(stored.namespace).toBe(WORKFLOW_RUN_NAMESPACE);
@@ -77,7 +84,12 @@ describe('Workflow Graph v2 checkpoints', () => {
     const h = home();
     const graph = asset();
     const checkpoint = createInitialWorkflowGraphCheckpoint(graph, { scopeId: 'workflow:mail.graph', runId: 'run-1' });
-    const first = writeWorkflowGraphRunCheckpoint({ controllerHome: h, checkpoint, expectedRevision: null });
+    const first = writeWorkflowGraphRunCheckpoint({
+      controllerHome: h,
+      checkpoint,
+      execution: graphExecution,
+      expectedRevision: null,
+    });
     const second = {
       ...checkpoint,
       nodes: checkpoint.nodes.map((node) =>
@@ -87,11 +99,17 @@ describe('Workflow Graph v2 checkpoints', () => {
     const updated = writeWorkflowGraphRunCheckpoint({
       controllerHome: h,
       checkpoint: second,
+      execution: graphExecution,
       expectedRevision: first.revision,
     });
     expect(updated.revision).toBe(first.revision + 1);
     expect(() =>
-      writeWorkflowGraphRunCheckpoint({ controllerHome: h, checkpoint: second, expectedRevision: first.revision }),
+      writeWorkflowGraphRunCheckpoint({
+        controllerHome: h,
+        checkpoint: second,
+        execution: graphExecution,
+        expectedRevision: first.revision,
+      }),
     ).toThrow();
   });
   test('requires explicit wait state and reconciliation evidence', () => {

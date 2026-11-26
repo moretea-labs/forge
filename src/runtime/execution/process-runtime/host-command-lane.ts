@@ -14,11 +14,10 @@
 import { existsSync, realpathSync, statSync } from 'fs';
 import { isAbsolute } from 'path';
 import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
-import {
-  startLightweightHostCommand,
-  type StartLightweightHostCommandInput,
-} from './lightweight-managed';
+import { startLightweightHostCommand, type StartLightweightHostCommandInput } from './lightweight-managed';
 import { DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_PROCESS_TIMEOUT_MS, type ProcessHandle } from './types';
+import { claimsForRepositoryCommand, claimsRequireHostCapacity } from './resource-claims';
+import { assertHostWorkCapacity } from '../../resources/leases/host-build-admission';
 
 const HOST_INTERACTIVE_WAIT_DEFAULT_MS = 8_000;
 const HOST_INTERACTIVE_WAIT_MAX_MS = 120_000;
@@ -48,7 +47,10 @@ export interface HostCommandIdentity {
  * The authenticated MCP entrypoint validates the existing Full Access setting.
  * This lane still verifies the exact local instance and caller identity.
  */
-export function requireHostProcessIdentity(controllerHome: string, principalId: string | undefined): HostCommandIdentity {
+export function requireHostProcessIdentity(
+  controllerHome: string,
+  principalId: string | undefined,
+): HostCommandIdentity {
   const identity = readForgeInstanceIdentity(controllerHome);
   if (!identity?.instanceId) {
     throw new Error('HOST_PROCESS_TARGET_UNAVAILABLE: the serving ForgeInstance identity is not initialized');
@@ -94,6 +96,16 @@ export interface HostCommandResult {
 export async function executeHostCommand(request: HostCommandRequest): Promise<HostCommandResult> {
   const target = requireHostProcessIdentity(request.controllerHome, request.principalId);
   const cwd = resolveHostCommandCwd(request.cwd);
+  const command = request.shellCommand ?? request.command;
+  if (
+    command &&
+    claimsRequireHostCapacity(
+      claimsForRepositoryCommand(command, target.forgeInstanceId, undefined, undefined, cwd, cwd),
+      command,
+    )
+  ) {
+    assertHostWorkCapacity();
+  }
   const interactiveWaitMs = boundedNumber(
     request.interactiveWaitMs,
     HOST_INTERACTIVE_WAIT_DEFAULT_MS,

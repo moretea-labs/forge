@@ -30,6 +30,8 @@ import { listUserRequests } from '../../../../packages/kernel/identity/api/index
 import { classifyScheduledBrowserObservation, executeScheduledBrowserProbe } from './browser-probe';
 import { executeSupervisorHealthcheck } from './supervisor-health';
 import { executeScheduledGithubIssueWatch } from './github-issue-watch';
+import { executeScheduledWorkflowOccurrence } from '../../workflows/schedule-runtime';
+import { isWorkflowSchedule } from '../../workflows/schedule-invocation';
 import {
   githubIssueWatchEventPayload,
   normalizeGithubIssueWatchObservation,
@@ -50,10 +52,13 @@ const SUPERVISOR_HEALTH_OPERATION = 'supervisor_healthcheck';
 
 function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
   // Kernel executes only typed, bounded dispatch operations.
-  return schedule.action.operation === LIVE_MAINTENANCE_OPERATION
-    || schedule.action.operation === BROWSER_PROBE_OPERATION
-    || schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION
-    || schedule.action.operation === SUPERVISOR_HEALTH_OPERATION;
+  return (
+    schedule.action.operation === LIVE_MAINTENANCE_OPERATION ||
+    schedule.action.operation === BROWSER_PROBE_OPERATION ||
+    schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION ||
+    schedule.action.operation === SUPERVISOR_HEALTH_OPERATION ||
+    isWorkflowSchedule(schedule)
+  );
 }
 
 export function retiredScheduleReason(schedule: RepositorySchedule): string | undefined {
@@ -72,7 +77,9 @@ async function workspaceDirty(controllerHome: string, repoId: string): Promise<b
   try {
     const repository = getRepository(repoId, controllerHome, { includeRemoved: true });
     const result = await execFileAsync('git', ['-C', repository.canonicalRoot, 'status', '--porcelain=v1'], {
-      encoding: 'utf8', timeout: 1_500, maxBuffer: 256 * 1024,
+      encoding: 'utf8',
+      timeout: 1_500,
+      maxBuffer: 256 * 1024,
     });
     return Boolean(result.stdout.trim());
   } catch {
@@ -87,7 +94,8 @@ async function stopReason(controllerHome: string, schedule: RepositorySchedule):
     const request = pendingUserRequests.find((item) => item.targetScope?.repoId === schedule.repoId);
     if (request) return `Repository ${schedule.repoId} has pending UserRequest ${request.requestId}.`;
   }
-  if (schedule.stopConditions.includes('release_ready') && projection.releaseFrozen) return 'Repository is in release freeze.';
+  if (schedule.stopConditions.includes('release_ready') && projection.releaseFrozen)
+    return 'Repository is in release freeze.';
   if (schedule.stopConditions.includes('external_blocker')) {
     try {
       const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
@@ -98,14 +106,20 @@ async function stopReason(controllerHome: string, schedule: RepositorySchedule):
     const recentInfrastructureFailure = listExecutionJobs(controllerHome, schedule.repoId, 20).find((job) => {
       if (!['failed', 'timed_out', 'orphaned'].includes(job.status) || !job.error) return false;
       if (job.error.retryable) return true;
-      return /(?:network|connection|upstream|external|remote|github|tunnel|502|503|timeout)/i.test(`${job.error.code} ${job.error.message}`);
+      return /(?:network|connection|upstream|external|remote|github|tunnel|502|503|timeout)/i.test(
+        `${job.error.code} ${job.error.message}`,
+      );
     });
-    if (recentInfrastructureFailure) return `External or infrastructure blocker detected from Job ${recentInfrastructureFailure.jobId}.`;
+    if (recentInfrastructureFailure)
+      return `External or infrastructure blocker detected from Job ${recentInfrastructureFailure.jobId}.`;
   }
-  if (projection.activeJobs.some((job) => job.status === 'waiting_for_release_barrier')) return 'Repository is waiting on a release barrier.';
-  if (schedule.action.operation !== LIVE_MAINTENANCE_OPERATION
-    && schedule.action.resourceClaims?.some((claim) => claim.mode !== 'read')
-    && await workspaceDirty(controllerHome, schedule.repoId)) {
+  if (projection.activeJobs.some((job) => job.status === 'waiting_for_release_barrier'))
+    return 'Repository is waiting on a release barrier.';
+  if (
+    schedule.action.operation !== LIVE_MAINTENANCE_OPERATION &&
+    schedule.action.resourceClaims?.some((claim) => claim.mode !== 'read') &&
+    (await workspaceDirty(controllerHome, schedule.repoId))
+  ) {
     return 'Workspace is dirty; automatic write occurrence was suppressed.';
   }
   return undefined;
@@ -114,7 +128,10 @@ async function stopReason(controllerHome: string, schedule: RepositorySchedule):
 function dailyRuntimeMinutes(controllerHome: string, occurrences: ScheduleOccurrence[]): number {
   const today = new Date().toISOString().slice(0, 10);
   return occurrences
-    .filter((entry) => entry.createdAt.startsWith(today) && ['succeeded', 'failed', 'queued', 'running'].includes(entry.status))
+    .filter(
+      (entry) =>
+        entry.createdAt.startsWith(today) && ['succeeded', 'failed', 'queued', 'running'].includes(entry.status),
+    )
     .reduce((total, entry) => {
       if (entry.jobId) {
         const job = findExecutionJob(controllerHome, entry.jobId);
@@ -165,11 +182,16 @@ function decideOccurrence(
   return saveOccurrence(controllerHome, { ...occurrence, decision, decisionId, status, reason });
 }
 
+export interface ScheduleEngineDependencies {
+  executeScheduledWorkflow?: typeof executeScheduledWorkflowOccurrence;
+}
+
 export async function evaluateSchedule(
   controllerHome: string,
   schedule: RepositorySchedule,
   force = false,
   triggerContext?: ScheduleTriggerContext,
+  dependencies: ScheduleEngineDependencies = {},
 ): Promise<ScheduleOccurrence | undefined> {
   // The persisted Schedule record is the authority. Callers may legitimately
   // retain the object returned by create/list/get across multiple trigger
@@ -191,10 +213,13 @@ export async function evaluateSchedule(
   const eligibilityNowMs = Date.now();
   const triggerJobIds = new Set<string>(schedule.trigger.dependencyJobIds ?? []);
   if (schedule.trigger.condition?.jobId) triggerJobIds.add(schedule.trigger.condition.jobId);
-  const jobStatuses = Object.fromEntries([...triggerJobIds].map((jobId) => [jobId, findExecutionJob(controllerHome, jobId)?.status]));
-  const repositoryClean = schedule.trigger.condition?.kind === 'repository_clean'
-    ? !(await workspaceDirty(controllerHome, schedule.repoId))
-    : undefined;
+  const jobStatuses = Object.fromEntries(
+    [...triggerJobIds].map((jobId) => [jobId, findExecutionJob(controllerHome, jobId)?.status]),
+  );
+  const repositoryClean =
+    schedule.trigger.condition?.kind === 'repository_clean'
+      ? !(await workspaceDirty(controllerHome, schedule.repoId))
+      : undefined;
   const due = evaluateScheduleTriggerEligibility(schedule, {
     nowMs: eligibilityNowMs,
     force,
@@ -235,14 +260,18 @@ export async function evaluateSchedule(
       `Unsupported schedule operation ${schedule.action.operation}; no execution or Handoff was created.`,
       occurrenceDecisionEvidence({ operation: schedule.action.operation, trigger: occurrence.triggerContext?.source }),
     );
-    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+      lastTriggeredAt: timestamp,
+      lastOccurrenceId: occurrenceId,
+    }));
     return recorded;
   }
 
   const recent = listOccurrences(controllerHome, schedule.repoId, schedule.scheduleId, 1000);
   reclaimStaleCreatedOccurrences(controllerHome, schedule.repoId, schedule.scheduleId);
-  const active = listActiveOccurrences(controllerHome, schedule.repoId, schedule.scheduleId)
-    .filter((entry) => entry.occurrenceId !== occurrence.occurrenceId);
+  const active = listActiveOccurrences(controllerHome, schedule.repoId, schedule.scheduleId).filter(
+    (entry) => entry.occurrenceId !== occurrence.occurrenceId,
+  );
   const admission = evaluateScheduleOccurrenceAdmission(schedule, {
     nowMs: Date.now(),
     force,
@@ -260,7 +289,6 @@ export async function evaluateSchedule(
       reason: stop,
       countFailure: false,
       pauseReason: stop,
-
     });
     return failed.occurrence ?? stopped;
   }
@@ -286,49 +314,98 @@ export async function evaluateSchedule(
       const preview = previewAutomaticRuntimeMaintenance(repository, controllerHome, schedule.action.arguments);
       if (!preview.allowed) {
         const decision = preview.blockedPermanently ? 'operation_blocked' : 'maintenance_not_ready';
-        const blocked = decideOccurrence(controllerHome, schedule, occurrence, decision, 'skipped', preview.blockedReason, occurrenceDecisionEvidence({
-          actionId: preview.actionId,
-          safeCandidates: preview.selectedCandidateIds.length,
-          typedSafeCandidates: preview.selectedTypedCandidateIds.length,
-        }));
-        const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
-          outcome: 'skipped',
+        const blocked = decideOccurrence(
+          controllerHome,
+          schedule,
+          occurrence,
           decision,
-          reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
-          countFailure: !preview.blockedPermanently,
-          pauseReason: preview.blockedPermanently ? preview.blockedReason : undefined,
-          ...(preview.blockedPermanently ? {
-            handoff: {
-              title: `Scheduled maintenance occurrence ${occurrence.occurrenceId} needs a user decision`,
-              summary: 'Automatic maintenance is permanently blocked and requires an explicit user decision before the schedule can resume.',
-              reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
-              creationReason: 'ambiguous_outcome' as const,
-              blockingDecision: 'Correct the configuration/authorization or intentionally keep this schedule paused.',
-              recommendedDecision: 'Review the permanent blocker and explicitly decide whether to repair configuration and resume.',
-              recommendedPrompt: `Review permanently blocked maintenance occurrence ${occurrence.occurrenceId} for schedule ${schedule.scheduleId} and decide whether to repair and resume it.`,
-              statusSummary: 'Scheduled maintenance is permanently blocked pending a user decision.',
-              blockedBy: [decision],
-              attemptedActions: [`schedule:${schedule.scheduleId}`, `operation:${schedule.action.operation}`],
-            },
-          } : {}),
-        });
+          'skipped',
+          preview.blockedReason,
+          occurrenceDecisionEvidence({
+            actionId: preview.actionId,
+            safeCandidates: preview.selectedCandidateIds.length,
+            typedSafeCandidates: preview.selectedTypedCandidateIds.length,
+          }),
+        );
+        const failed = applyScheduleFailure(
+          controllerHome,
+          schedule.scheduleId,
+          schedule.repoId,
+          occurrence.occurrenceId,
+          {
+            outcome: 'skipped',
+            decision,
+            reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
+            countFailure: !preview.blockedPermanently,
+            pauseReason: preview.blockedPermanently ? preview.blockedReason : undefined,
+            ...(preview.blockedPermanently
+              ? {
+                  handoff: {
+                    title: `Scheduled maintenance occurrence ${occurrence.occurrenceId} needs a user decision`,
+                    summary:
+                      'Automatic maintenance is permanently blocked and requires an explicit user decision before the schedule can resume.',
+                    reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
+                    creationReason: 'ambiguous_outcome' as const,
+                    blockingDecision:
+                      'Correct the configuration/authorization or intentionally keep this schedule paused.',
+                    recommendedDecision:
+                      'Review the permanent blocker and explicitly decide whether to repair configuration and resume.',
+                    recommendedPrompt: `Review permanently blocked maintenance occurrence ${occurrence.occurrenceId} for schedule ${schedule.scheduleId} and decide whether to repair and resume it.`,
+                    statusSummary: 'Scheduled maintenance is permanently blocked pending a user decision.',
+                    blockedBy: [decision],
+                    attemptedActions: [`schedule:${schedule.scheduleId}`, `operation:${schedule.action.operation}`],
+                  },
+                }
+              : {}),
+          },
+        );
         return failed.occurrence ?? blocked;
       }
       if (preview.noOp) {
-        return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', 'Automatic maintenance preview found nothing safe to repair.', occurrenceDecisionEvidence({
-          actionId: preview.actionId,
-          readyForExecution: preview.status.readyForExecution,
-        }));
+        return decideOccurrence(
+          controllerHome,
+          schedule,
+          occurrence,
+          'nothing_to_do',
+          'skipped',
+          'Automatic maintenance preview found nothing safe to repair.',
+          occurrenceDecisionEvidence({
+            actionId: preview.actionId,
+            readyForExecution: preview.status.readyForExecution,
+          }),
+        );
       }
-      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
-      return decideOccurrence(controllerHome, schedule, occurrence, 'would_execute', 'shadowed', 'Shadow mode records the live maintenance decision without applying it.', occurrenceDecisionEvidence({
-        actionId: preview.actionId,
-        safeCandidates: preview.selectedCandidateIds.length,
-        typedSafeCandidates: preview.selectedTypedCandidateIds.length,
+      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+        lastTriggeredAt: timestamp,
+        lastOccurrenceId: occurrenceId,
       }));
+      return decideOccurrence(
+        controllerHome,
+        schedule,
+        occurrence,
+        'would_execute',
+        'shadowed',
+        'Shadow mode records the live maintenance decision without applying it.',
+        occurrenceDecisionEvidence({
+          actionId: preview.actionId,
+          safeCandidates: preview.selectedCandidateIds.length,
+          typedSafeCandidates: preview.selectedTypedCandidateIds.length,
+        }),
+      );
     }
-    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
-    return decideOccurrence(controllerHome, schedule, occurrence, 'would_execute', 'shadowed', 'Shadow mode records the decision without modifying the repository.', due.evidence);
+    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+      lastTriggeredAt: timestamp,
+      lastOccurrenceId: occurrenceId,
+    }));
+    return decideOccurrence(
+      controllerHome,
+      schedule,
+      occurrence,
+      'would_execute',
+      'shadowed',
+      'Shadow mode records the decision without modifying the repository.',
+      due.evidence,
+    );
   }
 
   if (isLiveMaintenanceSchedule(schedule)) {
@@ -336,60 +413,156 @@ export async function evaluateSchedule(
     const preview = previewAutomaticRuntimeMaintenance(repository, controllerHome, schedule.action.arguments);
     if (!preview.allowed) {
       const decision = preview.blockedPermanently ? 'operation_blocked' : 'maintenance_not_ready';
-      const blocked = decideOccurrence(controllerHome, schedule, occurrence, decision, 'skipped', preview.blockedReason, occurrenceDecisionEvidence({
-        actionId: preview.actionId,
-        safeCandidates: preview.selectedCandidateIds.length,
-        typedSafeCandidates: preview.selectedTypedCandidateIds.length,
-      }));
-      const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
-        outcome: 'skipped',
+      const blocked = decideOccurrence(
+        controllerHome,
+        schedule,
+        occurrence,
         decision,
-        reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
-        countFailure: !preview.blockedPermanently,
-        pauseReason: preview.blockedPermanently ? preview.blockedReason : undefined,
-        ...(preview.blockedPermanently ? {
-          handoff: {
-            title: `Scheduled maintenance occurrence ${occurrence.occurrenceId} needs a user decision`,
-            summary: 'Automatic maintenance is permanently blocked and requires an explicit user decision before the schedule can resume.',
-            reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
-            creationReason: 'ambiguous_outcome' as const,
-            blockingDecision: 'Correct the configuration/authorization or intentionally keep this schedule paused.',
-            recommendedDecision: 'Review the permanent blocker and explicitly decide whether to repair configuration and resume.',
-            recommendedPrompt: `Review permanently blocked maintenance occurrence ${occurrence.occurrenceId} for schedule ${schedule.scheduleId} and decide whether to repair and resume it.`,
-            statusSummary: 'Scheduled maintenance is permanently blocked pending a user decision.',
-            blockedBy: [decision],
-            attemptedActions: [`schedule:${schedule.scheduleId}`, `operation:${schedule.action.operation}`],
-          },
-        } : {}),
-      });
+        'skipped',
+        preview.blockedReason,
+        occurrenceDecisionEvidence({
+          actionId: preview.actionId,
+          safeCandidates: preview.selectedCandidateIds.length,
+          typedSafeCandidates: preview.selectedTypedCandidateIds.length,
+        }),
+      );
+      const failed = applyScheduleFailure(
+        controllerHome,
+        schedule.scheduleId,
+        schedule.repoId,
+        occurrence.occurrenceId,
+        {
+          outcome: 'skipped',
+          decision,
+          reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
+          countFailure: !preview.blockedPermanently,
+          pauseReason: preview.blockedPermanently ? preview.blockedReason : undefined,
+          ...(preview.blockedPermanently
+            ? {
+                handoff: {
+                  title: `Scheduled maintenance occurrence ${occurrence.occurrenceId} needs a user decision`,
+                  summary:
+                    'Automatic maintenance is permanently blocked and requires an explicit user decision before the schedule can resume.',
+                  reason: preview.blockedReason ?? 'Automatic maintenance preview blocked the occurrence.',
+                  creationReason: 'ambiguous_outcome' as const,
+                  blockingDecision:
+                    'Correct the configuration/authorization or intentionally keep this schedule paused.',
+                  recommendedDecision:
+                    'Review the permanent blocker and explicitly decide whether to repair configuration and resume.',
+                  recommendedPrompt: `Review permanently blocked maintenance occurrence ${occurrence.occurrenceId} for schedule ${schedule.scheduleId} and decide whether to repair and resume it.`,
+                  statusSummary: 'Scheduled maintenance is permanently blocked pending a user decision.',
+                  blockedBy: [decision],
+                  attemptedActions: [`schedule:${schedule.scheduleId}`, `operation:${schedule.action.operation}`],
+                },
+              }
+            : {}),
+        },
+      );
       return failed.occurrence ?? blocked;
     }
     if (preview.noOp) {
-      return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', 'Automatic maintenance preview found nothing safe to repair.', occurrenceDecisionEvidence({
-        actionId: preview.actionId,
-        readyForExecution: preview.status.readyForExecution,
-      }));
+      return decideOccurrence(
+        controllerHome,
+        schedule,
+        occurrence,
+        'nothing_to_do',
+        'skipped',
+        'Automatic maintenance preview found nothing safe to repair.',
+        occurrenceDecisionEvidence({
+          actionId: preview.actionId,
+          readyForExecution: preview.status.readyForExecution,
+        }),
+      );
     }
   }
 
   const args = schedule.action.arguments ?? {};
+  if (isWorkflowSchedule(schedule)) {
+    try {
+      const executeWorkflow = dependencies.executeScheduledWorkflow ?? executeScheduledWorkflowOccurrence;
+      const workflow = await executeWorkflow({
+        controllerHome,
+        schedule,
+        occurrence,
+      });
+      const dispatchedSchedule = updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+        lastTriggeredAt: timestamp,
+        lastOccurrenceId: occurrenceId,
+        consecutiveFailures: 0,
+        nextEligibleAt: undefined,
+      }));
+      return decideOccurrence(
+        controllerHome,
+        dispatchedSchedule,
+        occurrence,
+        'execute',
+        'dispatched',
+        `Workflow ${workflow.workflowId} accepted schedule occurrence; execution is owned by Workflow Runtime.`,
+        occurrenceDecisionEvidence({
+          workflowId: workflow.workflowId,
+          workflowRunId: workflow.runId,
+          workflowScopeId: workflow.scopeId,
+          workflowStatus: workflow.status,
+        }),
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const failed = applyScheduleFailure(
+        controllerHome,
+        schedule.scheduleId,
+        schedule.repoId,
+        occurrence.occurrenceId,
+        { outcome: 'failed', decision: 'execute', reason },
+      );
+      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+        lastTriggeredAt: timestamp,
+        lastOccurrenceId: occurrenceId,
+      }));
+      return (
+        failed.occurrence ??
+        saveOccurrence(controllerHome, {
+          ...occurrence,
+          status: 'failed',
+          decision: 'execute',
+          reason,
+        })
+      );
+    }
+  }
+
   if (schedule.action.operation === SUPERVISOR_HEALTH_OPERATION) {
     try {
       const report = await executeSupervisorHealthcheck();
       updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
-        lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId,
-        consecutiveFailures: 0, nextEligibleAt: undefined,
+        lastTriggeredAt: timestamp,
+        lastOccurrenceId: occurrenceId,
+        consecutiveFailures: 0,
+        nextEligibleAt: undefined,
       }));
-      return decideOccurrence(controllerHome, schedule, occurrence, 'execute', 'succeeded',
+      return decideOccurrence(
+        controllerHome,
+        schedule,
+        occurrence,
+        'execute',
+        'succeeded',
         report.unhealthy > 0
           ? 'Supervisor patrol completed; unresolved failures remain with their original owners.'
           : 'Supervisor patrol completed without unresolved script failures.',
-        occurrenceDecisionEvidence(report));
+        occurrenceDecisionEvidence(report),
+      );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
-        outcome: 'failed', decision: 'execute', reason,
-      });
+      const failed = applyScheduleFailure(
+        controllerHome,
+        schedule.scheduleId,
+        schedule.repoId,
+        occurrence.occurrenceId,
+        {
+          outcome: 'failed',
+          decision: 'execute',
+          reason,
+        },
+      );
       return failed.occurrence ?? occurrence;
     }
   }
@@ -397,7 +570,11 @@ export async function evaluateSchedule(
   if (schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION) {
     try {
       const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
-      const observation = await executeScheduledGithubIssueWatch({ repoRoot: repository.canonicalRoot, args, observedAt: timestamp });
+      const observation = await executeScheduledGithubIssueWatch({
+        repoRoot: repository.canonicalRoot,
+        args,
+        observedAt: timestamp,
+      });
       const githubRepository = typeof args.github_repository === 'string' ? args.github_repository : '';
       const eventObservation = {
         repository: githubRepository,
@@ -420,42 +597,69 @@ export async function evaluateSchedule(
         eventEnvelopes,
         githubIssuePayloads,
       });
-      const persistObservation = () => updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => {
-        if (current.action.operation !== GITHUB_ISSUE_WATCH_OPERATION) throw new Error('SCHEDULE_ACTION_CHANGED_DURING_GITHUB_OBSERVATION');
-        return {
-          action: {
-            ...current.action,
-            arguments: { ...(current.action.arguments ?? {}), issue_watch_state: observation.nextState, issue_watch_since: undefined },
-          },
-          lastTriggeredAt: timestamp,
-          lastOccurrenceId: occurrenceId,
-          lastObservationAt: timestamp,
-          lastObservationStatus: observation.status,
-          lastObservationChangedAt: observation.shouldWake ? timestamp : current.lastObservationChangedAt,
-          consecutiveFailures: 0,
-          consecutiveNoops: observation.shouldWake ? 0 : (current.consecutiveNoops ?? 0) + 1,
-          nextEligibleAt: undefined,
-          ...(current.enabled ? { pausedReason: undefined } : {}),
-        };
-      });
+      const persistObservation = () =>
+        updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => {
+          if (current.action.operation !== GITHUB_ISSUE_WATCH_OPERATION)
+            throw new Error('SCHEDULE_ACTION_CHANGED_DURING_GITHUB_OBSERVATION');
+          return {
+            action: {
+              ...current.action,
+              arguments: {
+                ...(current.action.arguments ?? {}),
+                issue_watch_state: observation.nextState,
+                issue_watch_since: undefined,
+              },
+            },
+            lastTriggeredAt: timestamp,
+            lastOccurrenceId: occurrenceId,
+            lastObservationAt: timestamp,
+            lastObservationStatus: observation.status,
+            lastObservationChangedAt: observation.shouldWake ? timestamp : current.lastObservationChangedAt,
+            consecutiveFailures: 0,
+            consecutiveNoops: observation.shouldWake ? 0 : (current.consecutiveNoops ?? 0) + 1,
+            nextEligibleAt: undefined,
+            ...(current.enabled ? { pausedReason: undefined } : {}),
+          };
+        });
       if (!observation.shouldWake) {
         const observedSchedule = persistObservation();
-        const reason = observation.status === 'baseline'
-          ? 'GitHub issue watcher baseline recorded; no Controller wake was emitted.'
-          : 'GitHub issue watcher found no new, reopened, or updated open issue.';
-        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'nothing_to_do', 'skipped', reason, evidence);
+        const reason =
+          observation.status === 'baseline'
+            ? 'GitHub issue watcher baseline recorded; no Controller wake was emitted.'
+            : 'GitHub issue watcher found no new, reopened, or updated open issue.';
+        return decideOccurrence(
+          controllerHome,
+          observedSchedule,
+          occurrence,
+          'nothing_to_do',
+          'skipped',
+          reason,
+          evidence,
+        );
       }
       const observedSchedule = persistObservation();
-      return decideOccurrence(controllerHome, observedSchedule, occurrence, 'execute', 'succeeded',
-        'GitHub issue change recorded; Schedule never dispatches a model continuation.', evidence);
+      return decideOccurrence(
+        controllerHome,
+        observedSchedule,
+        occurrence,
+        'execute',
+        'succeeded',
+        'GitHub issue change recorded; Schedule never dispatches a model continuation.',
+        evidence,
+      );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
-        outcome: 'failed',
-        decision: 'execute',
-        reason,
-
-      });
+      const failed = applyScheduleFailure(
+        controllerHome,
+        schedule.scheduleId,
+        schedule.repoId,
+        occurrence.occurrenceId,
+        {
+          outcome: 'failed',
+          decision: 'execute',
+          reason,
+        },
+      );
       return failed.occurrence ?? occurrence;
     }
   }
@@ -483,9 +687,15 @@ export async function evaluateSchedule(
           nextEligibleAt: undefined,
           ...(current.enabled ? { pausedReason: undefined } : {}),
         }));
-        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'operation_blocked', 'skipped',
+        return decideOccurrence(
+          controllerHome,
+          observedSchedule,
+          occurrence,
+          'operation_blocked',
+          'skipped',
           'Browser observation requires authentication: ' + (probe.authReason ?? 'login marker matched'),
-          { ...observationEvidence, authReason: probe.authReason });
+          { ...observationEvidence, authReason: probe.authReason },
+        );
       }
 
       if (probe.status === 'keepalive') {
@@ -499,7 +709,15 @@ export async function evaluateSchedule(
           nextEligibleAt: undefined,
           ...(current.enabled ? { pausedReason: undefined } : {}),
         }));
-        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'execute', 'succeeded', 'Browser session keepalive refreshed successfully.', observationEvidence);
+        return decideOccurrence(
+          controllerHome,
+          observedSchedule,
+          occurrence,
+          'execute',
+          'succeeded',
+          'Browser session keepalive refreshed successfully.',
+          observationEvidence,
+        );
       }
 
       const observation = classifyScheduledBrowserObservation(
@@ -524,33 +742,51 @@ export async function evaluateSchedule(
       }));
 
       if (!shouldWake) {
-        const reason = observation.status === 'baseline'
-          ? 'Browser watcher baseline recorded; no Controller wake was emitted.'
-          : 'Browser watcher observation is unchanged; no Controller wake was emitted.';
-        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'nothing_to_do', 'skipped', reason, { ...observationEvidence, observationStatus });
+        const reason =
+          observation.status === 'baseline'
+            ? 'Browser watcher baseline recorded; no Controller wake was emitted.'
+            : 'Browser watcher observation is unchanged; no Controller wake was emitted.';
+        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'nothing_to_do', 'skipped', reason, {
+          ...observationEvidence,
+          observationStatus,
+        });
       }
 
-      return decideOccurrence(controllerHome, observedSchedule, occurrence, 'execute', 'succeeded',
+      return decideOccurrence(
+        controllerHome,
+        observedSchedule,
+        occurrence,
+        'execute',
+        'succeeded',
         'Browser observation changed; Schedule recorded the result without sending a model message.',
-        { ...observationEvidence, observationStatus });
+        { ...observationEvidence, observationStatus },
+      );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
-        outcome: 'failed',
-        decision: 'execute',
-        reason,
-
-      });
-      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
-      return failed.occurrence ?? saveOccurrence(controllerHome, { ...occurrence, status: 'failed', decision: 'execute', reason });
+      const failed = applyScheduleFailure(
+        controllerHome,
+        schedule.scheduleId,
+        schedule.repoId,
+        occurrence.occurrenceId,
+        {
+          outcome: 'failed',
+          decision: 'execute',
+          reason,
+        },
+      );
+      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+        lastTriggeredAt: timestamp,
+        lastOccurrenceId: occurrenceId,
+      }));
+      return (
+        failed.occurrence ??
+        saveOccurrence(controllerHome, { ...occurrence, status: 'failed', decision: 'execute', reason })
+      );
     }
   }
 
-  const actionIdRaw = typeof args.action_id === 'string'
-    ? args.action_id
-    : typeof args.actionId === 'string'
-      ? args.actionId
-      : undefined;
+  const actionIdRaw =
+    typeof args.action_id === 'string' ? args.action_id : typeof args.actionId === 'string' ? args.actionId : undefined;
   const decision = decideOccurrence(
     controllerHome,
     schedule,
@@ -573,16 +809,18 @@ export async function evaluateSchedule(
     const result = applyRuntimeMaintenance(repository, controllerHome, {
       confirmMaintenance: true,
       actionId: actionIdRaw as RuntimeMaintenanceActionId,
-      minAgeMinutes: typeof args.min_age_minutes === 'number'
-        ? args.min_age_minutes
-        : typeof args.minAgeMinutes === 'number'
-          ? args.minAgeMinutes
-          : undefined,
-      maxCandidates: typeof args.max_candidates === 'number'
-        ? args.max_candidates
-        : typeof args.maxCandidates === 'number'
-          ? args.maxCandidates
-          : undefined,
+      minAgeMinutes:
+        typeof args.min_age_minutes === 'number'
+          ? args.min_age_minutes
+          : typeof args.minAgeMinutes === 'number'
+            ? args.minAgeMinutes
+            : undefined,
+      maxCandidates:
+        typeof args.max_candidates === 'number'
+          ? args.max_candidates
+          : typeof args.maxCandidates === 'number'
+            ? args.maxCandidates
+            : undefined,
       cancelPendingApprovals: false,
     });
     const appliedCount = result.applied.filter((candidate) => candidate.applied).length;
@@ -604,17 +842,19 @@ export async function evaluateSchedule(
       outcome: 'failed',
       decision: 'execute',
       reason,
-
     });
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
       lastTriggeredAt: timestamp,
       lastOccurrenceId: occurrenceId,
     }));
-    return failed.occurrence ?? saveOccurrence(controllerHome, {
-      ...decision,
-      status: 'failed',
-      reason,
-    });
+    return (
+      failed.occurrence ??
+      saveOccurrence(controllerHome, {
+        ...decision,
+        status: 'failed',
+        reason,
+      })
+    );
   }
 }
 
@@ -630,5 +870,7 @@ export async function tickSchedules(controllerHome: string, repoIds: string[]): 
 }
 
 export function hasScheduledWriter(controllerHome: string, repoId: string): boolean {
-  return listActiveExecutionJobs(controllerHome, repoId).some((job) => job.origin.surface === 'schedule' && job.resourceClaims.some((claim) => claim.mode !== 'read'));
+  return listActiveExecutionJobs(controllerHome, repoId).some(
+    (job) => job.origin.surface === 'schedule' && job.resourceClaims.some((claim) => claim.mode !== 'read'),
+  );
 }

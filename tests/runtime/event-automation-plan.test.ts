@@ -4,13 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createEventEnvelope, type EventRuleV1 } from '../../packages/kernel/events';
 import type { ModelProfileV1 } from '../../packages/kernel/models';
+import type { WorkflowAssetDraft } from '../../packages/workflow-runtime/api/index';
 import { createEventActionDefinition } from '../../src/runtime/events/event-action-registry-store';
 import { buildEventAutomationPlans } from '../../src/runtime/events/event-automation-plan';
 import { createEventRule, evaluatePersistedEventRules } from '../../src/runtime/events/event-rule-store';
-import {
-  ensureAgentMailEventWorkflowInstalled,
-  AGENTMAIL_EVENT_WORKFLOW_ID,
-} from '../../src/runtime/workflows/first-party/agentmail-event';
+import { writeWorkflowAssetContent } from '../../src/runtime/control-plane/persistence/workflow-content-store';
+import { registerWorkflowFeatureAsset } from '../../src/runtime/control-plane/persistence/workflow-registry-store';
 import { createModelProfile } from '../../src/runtime/models/model-profile-store';
 import {
   createModelInstructionTemplate,
@@ -26,6 +25,36 @@ function home() {
   roots.push(v);
   return v;
 }
+
+const TEST_WORKFLOW_ID = 'event.test.workflow';
+function installTestWorkflow(h: string) {
+  const draft: WorkflowAssetDraft = {
+    schemaVersion: 1,
+    workflowId: TEST_WORKFLOW_ID,
+    version: '1',
+    inputContract: { message_id: { type: 'string', required: true } },
+    steps: [
+      {
+        kind: 'script',
+        stepId: 'accept',
+        scriptRef: 'accept',
+        input: { message_id: '{{input.message_id}}' },
+      },
+    ],
+    scripts: {
+      accept: { runtime: 'node', deterministic: true, body: 'process.stdout.write(process.argv[1] || "")' },
+    },
+  };
+  const written = writeWorkflowAssetContent({ kind: 'controller', controllerHome: h }, draft);
+  return registerWorkflowFeatureAsset({
+    controllerHome: h,
+    scope: { kind: 'controller' },
+    asset: written.asset,
+    contentLocation: { kind: 'controller', path: written.path },
+    status: 'active',
+  });
+}
+
 const event = createEventEnvelope({
   eventId: 'mail:1',
   source: 'agentmail.watch',
@@ -77,13 +106,13 @@ function profile(): ModelProfileV1 {
 describe('Event Automation Plan', () => {
   test('resolves one rule to an active existing Workflow without executing it', () => {
     const h = home();
-    ensureAgentMailEventWorkflowInstalled(h);
+    installTestWorkflow(h);
     createEventActionDefinition(h, {
       schemaVersion: 1,
       actionRef: 'workflow.agentmail',
       revision: 1,
       enabled: true,
-      handler: { kind: 'workflow', workflowId: AGENTMAIL_EVENT_WORKFLOW_ID, registryScope: { kind: 'controller' } },
+      handler: { kind: 'workflow', workflowId: TEST_WORKFLOW_ID, registryScope: { kind: 'controller' } },
       inputContract: { message_id: { type: 'string', required: true } },
       authorization: { risk: 'workspace_write', requiresApproval: false },
     });
@@ -100,7 +129,7 @@ describe('Event Automation Plan', () => {
     const plans = buildEventAutomationPlans(h, matches);
     expect(plans[0]).toMatchObject({
       readiness: 'ready',
-      handler: { kind: 'workflow', workflowId: AGENTMAIL_EVENT_WORKFLOW_ID },
+      handler: { kind: 'workflow', workflowId: TEST_WORKFLOW_ID },
       inputs: { message_id: 'm1' },
       authorization: { state: 'not_authorized', risk: 'workspace_write', requiresApproval: false },
       execution: 'not_executed',

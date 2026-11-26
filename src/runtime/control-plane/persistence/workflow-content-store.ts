@@ -2,9 +2,15 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join, relative, resolve, sep } from 'path';
 import {
   materializeWorkflowAsset,
+  materializeWorkflowGraphAsset,
   validateWorkflowAsset,
+  validateWorkflowExecutableAsset,
+  validateWorkflowGraphAsset,
   type WorkflowAssetDefinition,
   type WorkflowAssetDraft,
+  type WorkflowExecutableAssetDefinition,
+  type WorkflowGraphAssetDefinition,
+  type WorkflowGraphAssetDraft,
 } from '../../../../packages/workflow-runtime/api/index';
 import { ensureControllerWorkflowContentRoot } from '../../../effects/controller-home';
 
@@ -39,9 +45,14 @@ function projectContentRoot(contract: ProjectWorkflowAssetContract): string {
     throw new Error('WORKFLOW_PROJECT_ASSET_DIRECTORY_OUTSIDE_PROJECT');
   }
   const normalized = rel.split(sep).join('/');
-  if (normalized === '.forge' || normalized.startsWith('.forge/')
-    || normalized === '_ops' || normalized.startsWith('_ops/')
-    || normalized === '.ai/harness' || normalized.startsWith('.ai/harness/')) {
+  if (
+    normalized === '.forge' ||
+    normalized.startsWith('.forge/') ||
+    normalized === '_ops' ||
+    normalized.startsWith('_ops/') ||
+    normalized === '.ai/harness' ||
+    normalized.startsWith('.ai/harness/')
+  ) {
     throw new Error('WORKFLOW_PROJECT_ASSET_DIRECTORY_HIDDEN_RUNTIME_STATE_FORBIDDEN');
   }
   return contentRoot;
@@ -58,7 +69,12 @@ export function workflowAssetContentPath(
   workflowId: string,
   version: string,
 ): string {
-  return join(workflowAssetContentRoot(location), safeSegment(workflowId, 'workflow_id'), safeSegment(version, 'version'), 'workflow.json');
+  return join(
+    workflowAssetContentRoot(location),
+    safeSegment(workflowId, 'workflow_id'),
+    safeSegment(version, 'version'),
+    'workflow.json',
+  );
 }
 
 function writeAtomically(path: string, content: string): void {
@@ -68,7 +84,11 @@ function writeAtomically(path: string, content: string): void {
     writeFileSync(temporary, content, { encoding: 'utf8', mode: 0o600 });
     renameSync(temporary, path);
   } finally {
-    try { rmSync(temporary, { force: true }); } catch { /* best effort */ }
+    try {
+      rmSync(temporary, { force: true });
+    } catch {
+      /* best effort */
+    }
   }
 }
 
@@ -95,4 +115,29 @@ export function readWorkflowAssetContent(
 export function readWorkflowAssetContentFile(path: string): WorkflowAssetDefinition {
   const parsed = JSON.parse(readFileSync(resolve(path), 'utf8')) as WorkflowAssetDefinition;
   return validateWorkflowAsset(parsed);
+}
+
+export function writeWorkflowGraphAssetContent(
+  location: WorkflowAssetContentLocation,
+  draft: WorkflowGraphAssetDraft,
+): { asset: WorkflowGraphAssetDefinition; path: string } {
+  const asset = materializeWorkflowGraphAsset(draft);
+  const path = workflowAssetContentPath(location, asset.workflowId, asset.version);
+  writeAtomically(path, `${JSON.stringify(asset, null, 2)}\n`);
+  return { asset, path };
+}
+
+export function readWorkflowGraphAssetContent(
+  location: WorkflowAssetContentLocation,
+  workflowId: string,
+  version: string,
+): { asset: WorkflowGraphAssetDefinition; path: string } {
+  const path = workflowAssetContentPath(location, workflowId, version);
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as WorkflowGraphAssetDefinition;
+  return { asset: validateWorkflowGraphAsset(parsed), path };
+}
+
+export function readWorkflowExecutableContentFile(path: string): WorkflowExecutableAssetDefinition {
+  const parsed = JSON.parse(readFileSync(resolve(path), 'utf8')) as unknown;
+  return validateWorkflowExecutableAsset(parsed);
 }

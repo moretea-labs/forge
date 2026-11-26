@@ -885,6 +885,7 @@ describe('handoff and facade contracts', () => {
       'ios',
       'repository-core',
       'runtime-maintenance',
+      'workflow',
     ]);
     expect(capabilities.every((entry) => entry.schemaExposure === 'stable_static')).toBe(true);
     const groups = summarizeCapabilityGroups([]);
@@ -896,6 +897,12 @@ describe('handoff and facade contracts', () => {
       capabilityCount: 1,
       executionSurfaces: ['plugin_action_execute'],
       facadeTools: [],
+    });
+    expect(groups.find((entry) => entry.group === 'workflow')).toMatchObject({
+      capabilityCount: 1,
+      domains: ['workflow'],
+      executionSurfaces: ['capability_execute'],
+      facadeTools: ['capability_execute'],
     });
   });
 

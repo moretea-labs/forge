@@ -15,7 +15,13 @@ import {
   type ControllerCheck,
   type ControllerCheckSnapshot,
 } from './check-runner';
-import { claimsForCheck, claimsRequireLiveDeviceAdmission, LIVE_DEVICE_ADMISSION_WAIT_MS, scopeResourceClaims, toProcessClaims } from './resource-claims';
+import {
+  claimsForCheck,
+  claimsRequireLiveDeviceAdmission,
+  LIVE_DEVICE_ADMISSION_WAIT_MS,
+  scopeResourceClaims,
+  toProcessClaims,
+} from './resource-claims';
 import { resolveCheckCompletionGraceWaitMs } from '../../control-plane/persistence/operational-prior-store';
 import { spawnWithQueuedAdmission, waitForProcess, getProcessHandle } from './runtime';
 import {
@@ -29,6 +35,8 @@ import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
 import type { ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
 import { registeredCheckRequiresDurableWorkflow } from './check-classification';
+import { claimsRequireHostCapacity } from './resource-claims';
+import { assertHostWorkCapacity } from '../../resources/leases/host-build-admission';
 
 export type CheckExecutionMode = 'direct' | 'managed' | 'durable';
 
@@ -118,9 +126,7 @@ function resolveCheck(repoRoot: string, checkId: string): ControllerCheck | unde
  * Run a configured check through Unified Process Runtime when eligible.
  * Does not create ExecutionJob / LocalBridgeJob / Worker.
  */
-export async function runCheckViaProcessRuntime(
-  input: RunCheckFacadeInput,
-): Promise<RunCheckFacadeResult> {
+export async function runCheckViaProcessRuntime(input: RunCheckFacadeInput): Promise<RunCheckFacadeResult> {
   const emptyEffects = {
     executionJobCount: 0,
     localJobCount: 0,
@@ -157,14 +163,15 @@ export async function runCheckViaProcessRuntime(
   // The wait budget is an interaction preference, not a persistence reason.
   // Ordinary checks stay in memory; only a real durable evidence consumer may
   // allocate Process/Lease state.
-  const learnedCompletionGraceMs = input.interactiveWaitMs === undefined
-    ? resolveCheckCompletionGraceWaitMs({
-        controllerHome: input.controllerHome,
-        repoId: input.repoId,
-        checkId: input.checkId,
-        environmentFingerprint: controllerCheckEnvironmentFingerprint(check),
-      })
-    : undefined;
+  const learnedCompletionGraceMs =
+    input.interactiveWaitMs === undefined
+      ? resolveCheckCompletionGraceWaitMs({
+          controllerHome: input.controllerHome,
+          repoId: input.repoId,
+          checkId: input.checkId,
+          environmentFingerprint: controllerCheckEnvironmentFingerprint(check),
+        })
+      : undefined;
   const interactiveWaitMs = durationAwareInteractiveWaitMs(
     check.command,
     input.interactiveWaitMs ?? learnedCompletionGraceMs,
@@ -177,9 +184,9 @@ export async function runCheckViaProcessRuntime(
       : check.timeoutMs,
   );
   const durableVerificationBinding = Boolean(
-    input.verificationBinding?.executionSessionId
-    || input.verificationBinding?.issueId
-    || input.verificationBinding?.taskId,
+    input.verificationBinding?.executionSessionId ||
+      input.verificationBinding?.issueId ||
+      input.verificationBinding?.taskId,
   );
   if (!input.executionIdentity) {
     throw new Error('EXECUTION_IDENTITY_REQUIRED: run_check requires an immutable executionIdentity');
@@ -210,6 +217,7 @@ export async function runCheckViaProcessRuntime(
   // Live device validation must retain a Process lease across independent
   // sessions. The lightweight lane has no resource admission authority.
   const usesLiveDevice = claimsRequireLiveDeviceAdmission(claims);
+  if (!usesLiveDevice && claimsRequireHostCapacity(claims, check.command)) assertHostWorkCapacity();
   if (!durableVerificationBinding && !usesLiveDevice) {
     const lightweight = await startLightweightControllerCheck({
       controllerHome: input.controllerHome,
@@ -230,9 +238,10 @@ export async function runCheckViaProcessRuntime(
       durableSideEffects: emptyEffects,
     };
   }
-  const cwd = check.cwd === '.'
-    ? executionIdentity.canonicalRoot
-    : `${executionIdentity.canonicalRoot}/${check.cwd}`.replace(/\/+/g, '/');
+  const cwd =
+    check.cwd === '.'
+      ? executionIdentity.canonicalRoot
+      : `${executionIdentity.canonicalRoot}/${check.cwd}`.replace(/\/+/g, '/');
   const semanticCheck = controllerCheckExecutionIdentity(input.repoRoot, input.checkId, timeoutMs);
   const processCheckExecution = {
     schemaVersion: 1 as const,
@@ -243,41 +252,47 @@ export async function runCheckViaProcessRuntime(
     environmentFingerprint: semanticCheck.environmentFingerprint,
     timeoutMs: semanticCheck.timeoutMs,
     reuseScope: semanticCheck.reuseScope,
-    scopeKey: processCheckSemanticScopeKey({
-      checkoutId: executionIdentity.checkoutId,
-      verificationBinding: input.verificationBinding,
-    }, semanticCheck.reuseScope),
+    scopeKey: processCheckSemanticScopeKey(
+      {
+        checkoutId: executionIdentity.checkoutId,
+        verificationBinding: input.verificationBinding,
+      },
+      semanticCheck.reuseScope,
+    ),
   };
 
-  const handle = await spawnWithQueuedAdmission({
-    controllerHome: input.controllerHome,
-    repoId: executionIdentity.repositoryId,
-    checkoutId: executionIdentity.checkoutId,
-    executionIdentity,
-    commandId: input.commandId,
-    command: {
-      kind: 'argv',
-      executable: check.command[0],
-      args: check.command.slice(1),
-      cwd,
+  const handle = await spawnWithQueuedAdmission(
+    {
+      controllerHome: input.controllerHome,
+      repoId: executionIdentity.repositoryId,
+      checkoutId: executionIdentity.checkoutId,
+      executionIdentity,
+      commandId: input.commandId,
+      command: {
+        kind: 'argv',
+        executable: check.command[0],
+        args: check.command.slice(1),
+        cwd,
+      },
+      interactiveWaitMs,
+      leaseWaitMs: input.leaseWaitMs ?? (usesLiveDevice ? LIVE_DEVICE_ADMISSION_WAIT_MS : undefined),
+      timeoutMs,
+      resourceClaims: toProcessClaims(claims),
+      checkExecution: processCheckExecution,
+      origin: {
+        surface: 'check',
+        toolName: 'run_check',
+        checkId: input.checkId,
+        requestId: input.requestId,
+        requestSemanticFingerprint: input.requestSemanticFingerprint,
+        executionSessionId: input.verificationBinding?.executionSessionId,
+        issueId: input.verificationBinding?.issueId,
+        taskId: input.verificationBinding?.taskId,
+      },
+      signal: input.signal,
     },
-    interactiveWaitMs,
-    leaseWaitMs: input.leaseWaitMs ?? (usesLiveDevice ? LIVE_DEVICE_ADMISSION_WAIT_MS : undefined),
-    timeoutMs,
-    resourceClaims: toProcessClaims(claims),
-    checkExecution: processCheckExecution,
-    origin: {
-      surface: 'check',
-      toolName: 'run_check',
-      checkId: input.checkId,
-      requestId: input.requestId,
-      requestSemanticFingerprint: input.requestSemanticFingerprint,
-      executionSessionId: input.verificationBinding?.executionSessionId,
-      issueId: input.verificationBinding?.issueId,
-      taskId: input.verificationBinding?.taskId,
-    },
-    signal: input.signal,
-  }, usesLiveDevice);
+    usesLiveDevice,
+  );
 
   const mode: CheckExecutionMode = handle.completed ? 'direct' : 'managed';
   return {

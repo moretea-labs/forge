@@ -7,9 +7,26 @@ import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtim
 import {
   checkHostBuildCpu,
   setHostBuildCpuProbeForTest,
+  hostBuildParallelism,
 } from '../../src/runtime/resources/leases/host-build-admission';
 afterEach(() => setHostBuildCpuProbeForTest(undefined));
 describe('shared global iOS build CPU admission', () => {
+  test('reserves interactive CPU headroom before full saturation', () => {
+    setHostBuildCpuProbeForTest(() => ({ cpus: 10, load: 8 }));
+    expect(checkHostBuildCpu()).toEqual({ allowed: false, reason: 'cpu_overloaded', ratio: 0.8 });
+  });
+  test('memory pressure blocks a build even when CPU has headroom', () => {
+    setHostBuildCpuProbeForTest(() => ({ cpus: 10, load: 2.5, memoryFreePercent: 8 }));
+    expect(checkHostBuildCpu()).toEqual({ allowed: false, reason: 'memory_pressure', ratio: 0.25 });
+  });
+  test('Xcode workers shrink and expand with host load', () => {
+    setHostBuildCpuProbeForTest(() => ({ cpus: 10, load: 2.5 }));
+    expect(hostBuildParallelism()).toBe(5);
+    setHostBuildCpuProbeForTest(() => ({ cpus: 10, load: 6 }));
+    expect(hostBuildParallelism()).toBe(2);
+    setHostBuildCpuProbeForTest(() => ({ cpus: 10, load: 31 }));
+    expect(hostBuildParallelism()).toBe(1);
+  });
   test('10-core Mac admits new build below overload', () => {
     setHostBuildCpuProbeForTest(() => ({ cpus: 10, load: 2.5 }));
     expect(checkHostBuildCpu()).toEqual({ allowed: true, reason: 'headroom', ratio: 0.25 });

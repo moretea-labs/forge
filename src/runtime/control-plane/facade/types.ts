@@ -37,7 +37,14 @@ export type CapabilityExecutionSurface = FacadeTool | 'plugin_action_execute';
 export const FACADE_STATUSES = ['ok', 'blocked', 'failed', 'approval_required', 'not_found'] as const;
 export type FacadeStatus = (typeof FACADE_STATUSES)[number];
 
-export const CAPABILITY_DOMAINS = ['repository', 'plugin', 'controller', 'evidence', 'maintenance'] as const;
+export const CAPABILITY_DOMAINS = [
+  'repository',
+  'plugin',
+  'controller',
+  'workflow',
+  'evidence',
+  'maintenance',
+] as const;
 export type CapabilityDomain = (typeof CAPABILITY_DOMAINS)[number];
 
 export const CAPABILITY_GROUPS = [
@@ -48,6 +55,7 @@ export const CAPABILITY_GROUPS = [
   'browser',
   'ios',
   'plugin',
+  'workflow',
   'evidence',
   'runtime-maintenance',
 ] as const;

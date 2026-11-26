@@ -26,6 +26,18 @@ import {
 
 export const LIVE_DEVICE_ADMISSION_WAIT_MS = 2 * 60 * 60_000;
 
+/** Capacity is separate from permission and exact device ownership. */
+export function claimsRequireHostCapacity(
+  claims: readonly { resourceKey: string }[],
+  command?: string | readonly string[],
+): boolean {
+  return (
+    claims.some(
+      (claim) => claim.resourceKey === 'host-service:ios-build' || claim.resourceKey.startsWith('heavy-check:'),
+    ) || Boolean(command && looksLikeBuildOrTest(command) && !isFocusedCheckCommand(command))
+  );
+}
+
 export function claimsRequireLiveDeviceAdmission(claims: readonly { resourceKey: string }[]): boolean {
   return claims.some(
     (claim) =>
@@ -572,8 +584,7 @@ function claimsForDeclaredCheckEffects(
   if (effects.git === 'read') claims.push(claimGitIndexRead(checkoutId, repoId), claimGitRefsRead(repoId));
   if (effects.git === 'index') claims.push(claimGitIndex(checkoutId, repoId));
   if (effects.git === 'refs') claims.push(claimGitRefs(repoId));
-  if (effects.git === 'write')
-    claims.push(claimGitIndex(checkoutId, repoId), claimGitRefs(repoId));
+  if (effects.git === 'write') claims.push(claimGitIndex(checkoutId, repoId), claimGitRefs(repoId));
   // A generic network bit has no concrete endpoint/provider identity. Checks
   // that need serialization must name the real shared target in hostServices.
   for (const service of effects.hostServices ?? []) claims.push(claimHostService(service, 'write'));
@@ -1147,10 +1158,7 @@ function repositoryCommandClaims(
     const gitPaths = sub === 'apply' ? undefined : literalGitMutationPaths(canonical.args ?? []);
     if (sub === 'add' || sub === 'rm' || sub === 'mv' || sub === 'restore' || sub === 'apply') {
       if (gitPaths) {
-        return normalizeClaims([
-          claimGitIndex(checkoutId, repoId),
-          ...claimPathWrites(gitPaths, checkoutId, repoId),
-        ]);
+        return normalizeClaims([claimGitIndex(checkoutId, repoId), ...claimPathWrites(gitPaths, checkoutId, repoId)]);
       }
       return [claimGitIndex(checkoutId, repoId)];
     }
@@ -1186,10 +1194,21 @@ export function claimsForRepositoryCommand(
 ): ResourceClaimSpec[] {
   const canonical = normalizeRepositoryCommand(command);
   let nativeBuild = false;
+  const simulatorBoot = (words: readonly string[]): boolean => {
+    let index = 0;
+    if (basename(words[index] ?? '') === 'env') index += 1;
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index] ?? '')) index += 1;
+    if (basename(words[index] ?? '') === 'xcrun') index += 1;
+    return basename(words[index] ?? '') === 'simctl' && words[index + 1] === 'boot';
+  };
+  const shellBootsSimulator = (shell: string): boolean =>
+    shellSegments(shell)
+      .flatMap((segment) => segment.split(/\r?\n/))
+      .some((segment) => simulatorBoot(shellWordsPreservingQuotes(segment.trim())));
   if (canonical.kind === 'argv') {
     const words = [canonical.executable!, ...(canonical.args ?? [])];
     const wrapped = fixedShellWrapperCommand(words);
-    if (wrapped) nativeBuild = shellXcodebuildCommands(wrapped).length > 0;
+    if (wrapped) nativeBuild = shellXcodebuildCommands(wrapped).length > 0 || shellBootsSimulator(wrapped);
     else {
       const program = basename(words[0]!);
       const args = program === 'xcrun' && words[1] === 'xcodebuild' ? words.slice(2) : words.slice(1);
@@ -1198,8 +1217,12 @@ export function claimsForRepositoryCommand(
         !args.some((arg) =>
           ['-list', '-version', '-showsdks', '-showdestinations', '-showBuildSettings', '-help'].includes(arg),
         );
+      nativeBuild ||= simulatorBoot(words);
     }
-  } else nativeBuild = shellXcodebuildCommands(canonical.shellCommand ?? '').length > 0;
+  } else
+    nativeBuild =
+      shellXcodebuildCommands(canonical.shellCommand ?? '').length > 0 ||
+      shellBootsSimulator(canonical.shellCommand ?? '');
   const inferredClaims = repositoryCommandClaims(command, repoId, checkoutId, defaultBranch, repoRoot, executionCwd);
   nativeBuild ||= inferredClaims.some((claim) => claim.resourceKey === 'host-service:ios-simulator-test');
   const nativeBuildClaims = nativeBuild ? [claimHostService('ios-build')] : [];
