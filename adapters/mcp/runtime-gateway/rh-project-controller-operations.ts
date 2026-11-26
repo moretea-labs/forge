@@ -285,7 +285,7 @@ export async function callRhProjectControllerOperation(
   if (operation !== 'launcher_start') return undefined;
   try {
     const controllerType = String(args.controller_type ?? 'chatgpt');
-    if (controllerType !== 'chatgpt') throw new Error('WORK_BOUND_CONTROLLER_LAUNCH_RETIRED');
+    if (controllerType !== 'chatgpt') throw new Error('CONTROLLER_TYPE_INVALID');
 
     const launch = chatgptLaunchSessionRequest(args, repository.repoId);
     const taskId = typeof args.task_id === 'string' ? args.task_id.trim() : '';
