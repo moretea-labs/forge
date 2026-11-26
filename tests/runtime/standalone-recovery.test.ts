@@ -4772,6 +4772,7 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('runtime_status');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('restart_primary_runtime');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('recover_primary_runtime');
+    expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('stage_and_activate_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('stage_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('activate_runtime_release');
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).toContain('pin_runtime_release');
@@ -4842,6 +4843,16 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(activateSchema?.properties?.release_path).toMatchObject({
       description: 'Absolute path to the staged immutable Runtime release directory.',
     });
+    const compatibilityTool = RECOVERY_TOOLS.find((tool) => tool.name === 'stage_and_activate_runtime_release');
+    const compatibilitySchema = compatibilityTool?.inputSchema as
+      | { required?: readonly string[]; properties?: Record<string, unknown> }
+      | undefined;
+    expect(compatibilitySchema?.required).toEqual(
+      expect.arrayContaining(['request_id', ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS)]),
+    );
+    expect(compatibilitySchema?.properties).not.toHaveProperty('expected_source_revision');
+    expect(compatibilitySchema?.properties).not.toHaveProperty('source_repository_id');
+    expect(compatibilitySchema?.properties).not.toHaveProperty('release_path');
     const stageTool = RECOVERY_TOOLS.find((tool) => tool.name === 'stage_runtime_release');
     const stageSchema = stageTool?.inputSchema as
       | { required?: readonly string[]; properties?: Record<string, unknown> }
@@ -4859,6 +4870,7 @@ describe('standalone recovery on canonical Runtime', () => {
       'restart_primary_runtime',
       'restart_primary_connector',
       'recover_primary_runtime',
+      'stage_and_activate_runtime_release',
       'stage_runtime_release',
       'activate_runtime_release',
       'pin_runtime_release',

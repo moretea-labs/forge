@@ -1,6 +1,6 @@
 import { spawnSync } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { basename, join, resolve } from 'path';
 import { pathToFileURL } from 'url';
@@ -31,6 +31,7 @@ import {
   loadWatchdogState,
   saveWatchdogState,
   stageConfiguredRuntimeRelease,
+  resolveRuntimeReleaseSourceSelection,
   reconnectMain,
   recoverPrimaryRuntime,
   recoveryMachineIdentity,
@@ -815,6 +816,12 @@ export const RECOVERY_TOOLS = [
     inputSchema: mutationInputSchema(),
   },
   {
+    name: 'stage_and_activate_runtime_release',
+    description:
+      "Compatibility entry for connectors that predate split stage/activate tools. It derives and freezes the exact clean HEAD from Recovery's configured durable source authority, stages that exact repository/commit, and activates only against the caller-observed Runtime authority captured before staging.",
+    inputSchema: mutationInputSchema(),
+  },
+  {
     name: 'stage_runtime_release',
     description:
       'Materialize one exact source repository/commit pair selected by the caller into canonical immutable Runtime release storage without changing Runtime authority, SQLite, or services.',
@@ -1410,6 +1417,67 @@ export async function dispatchRecoveryTool(
       assertRecoveryGatewayMutationIdentity(config, args);
       const recover = dependencies.recoverPrimaryRuntime ?? recoverPrimaryRuntime;
       return mutationResponse(config, await recover(config, `recovery-gateway:${args.request_id}`));
+    }
+    case 'stage_and_activate_runtime_release': {
+      if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      assertRecoveryGatewayMutationIdentity(config, args);
+      const sourceRepositoryId = config.primaryRuntimeSourceRepositoryId?.trim();
+      const configuredRoot = config.primaryRuntimeSourceRoot?.trim();
+      if (!sourceRepositoryId || !/^repo_[A-Za-z0-9_-]+$/.test(sourceRepositoryId)) {
+        throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_ID_REQUIRED');
+      }
+      if (!configuredRoot || !existsSync(configuredRoot)) {
+        throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_REQUIRED');
+      }
+      const gitEnv = runtimeAuthorityFreeEnvironment(process.env);
+      const headResult = spawnSync('git', ['-C', configuredRoot, 'rev-parse', '--verify', 'HEAD'], {
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: gitEnv,
+      });
+      const sourceRevision = (headResult.stdout ?? '').trim().toLowerCase();
+      if (headResult.status !== 0 || !/^[a-f0-9]{40}$/.test(sourceRevision)) {
+        throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_REVISION_UNAVAILABLE');
+      }
+      const dirtyResult = spawnSync(
+        'git',
+        ['-C', configuredRoot, 'status', '--porcelain=v1', '--untracked-files=all'],
+        { encoding: 'utf8', timeout: 10_000, env: gitEnv },
+      );
+      if (dirtyResult.status !== 0) throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_STATUS_UNAVAILABLE');
+      if ((dirtyResult.stdout ?? '').trim()) throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_DIRTY');
+
+      const selection = resolveRuntimeReleaseSourceSelection(config.controllerHome, sourceRepositoryId, sourceRevision);
+      if (realpathSync(configuredRoot) !== realpathSync(selection.sourceRoot)) {
+        throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_REGISTRY_MISMATCH');
+      }
+      const authority = readRuntimeReleaseAuthority(config.controllerHome);
+      if (!authority) throw new Error('RECOVERY_RUNTIME_RELEASE_AUTHORITY_REQUIRED');
+
+      const staged = stageConfiguredRuntimeRelease(
+        config,
+        sourceRepositoryId,
+        sourceRevision,
+        {},
+        'recovery-gateway:' + args.request_id,
+      );
+      if (!staged.ok || !staged.release) return mutationResponse(config, staged);
+
+      return mutationResponse(
+        config,
+        await activateRuntimeRelease(
+          config,
+          staged.release.manifestPath,
+          {},
+          {
+            requestId: 'recovery-gateway:' + args.request_id,
+            expectedSourceRepositoryId: sourceRepositoryId,
+            expectedSourceRevision: sourceRevision,
+            expectedActiveReleaseId: authority.active.releaseId,
+            expectedAuthorityRevision: authority.revision,
+          },
+        ),
+      );
     }
     case 'stage_runtime_release': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
