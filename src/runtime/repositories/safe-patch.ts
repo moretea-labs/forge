@@ -213,4 +213,1367 @@ function applyTextPreview(
   if (operation.type === 'append') return before + operation.content;
   const anchored = operation as Extract<EditOperation, { type: 'insert_before' | 'insert_after' }>;
   if (!anchored.anchor) throw new Error('anchor is empty');
-  const occurrence = Math.max(1, Math.trunc(anchored.occurrence ?...
+  const occurrence = Math.max(1, Math.trunc(anchored.occurrence ?? 1));
+  const index = findOccurrence(before, anchored.anchor, occurrence);
+  if (index < 0) throw new Error('anchor occurrence ' + occurrence + ' not found');
+  if (requireUnique && (occurrence !== 1 || before.indexOf(anchored.anchor, index + 1) >= 0))
+    throw new Error('anchor is ambiguous; provide unique context or an exact file version for ordinal insertion');
+  const insertion = anchored.type === 'insert_before' ? index : index + anchored.anchor.length;
+  return before.slice(0, insertion) + anchored.content + before.slice(insertion);
+}
+
+function operationRepositoryPaths(repository: RepositoryRecord, operation: EditOperation): string[] {
+  const path = repoRelativePath(repository, operation.path);
+  return operation.type === 'move' ? [path, repoRelativePath(repository, operation.toPath)] : [path];
+}
+
+export function buildSafePatchPlan(
+  repository: RepositoryRecord,
+  input: { operations: unknown; chunkSize?: unknown },
+): SafePatchPlan {
+  const operations = normalizedSafePatchOperations(input.operations);
+  const size = chunkSize(input.chunkSize);
+  const grouped = buildChunks(operations, size);
+  const warnings: string[] = [];
+  if (operations.length === 0) warnings.push('No operations were provided.');
+  if (grouped.length > 1)
+    warnings.push(
+      `Operations will be applied in ${grouped.length} deterministic chunk(s) of at most ${size}, with repeated paths isolated into separate revisions.`,
+    );
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+  for (const operation of operations) {
+    for (const path of operationRepositoryPaths(repository, operation)) {
+      if (seen.has(path)) repeated.add(path);
+      seen.add(path);
+    }
+  }
+  for (const path of repeated) warnings.push(`Path appears multiple times and will be split across revisions: ${path}`);
+  return {
+    operationCount: operations.length,
+    chunkSize: size,
+    chunks: grouped.map((group, index) => {
+      const paths = [...new Set(group.flatMap((operation) => operationRepositoryPaths(repository, operation)))].sort();
+      return {
+        index: index + 1,
+        operationCount: group.length,
+        paths,
+        fingerprints: paths.map((path) => fingerprint(repository, path)),
+      };
+    }),
+    warnings,
+  };
+}
+
+/**
+ * Sessionless Safe Patch migration path. The planner keeps independent
+ * operations independent by default and only forms a larger atomic group when
+ * the caller supplies the same semantic_group key.
+ */
+/** Whether every operation can be routed through the sessionless mutation planner. */
+export function isSessionlessTextEditBatch(operations: unknown): boolean {
+  return (
+    Array.isArray(operations) &&
+    operations.length > 0 &&
+    operations.every(
+      (operation) =>
+        typeof operation === 'object' &&
+        operation !== null &&
+        ['create', 'replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after', 'delete', 'move'].includes(
+          String((operation as Record<string, unknown>).type ?? ''),
+        ),
+    )
+  );
+}
+
+type SessionlessReceipt = { path: string; toPath?: string; beforeSha256?: string; afterSha256?: string };
+
+type SessionlessGroupResult = {
+  groupId: string;
+  status: 'applied' | 'failed';
+  operationIndexes: number[];
+  paths: string[];
+  changedFiles: string[];
+  failures: SafePatchPreflightFailure[];
+  receipts: SessionlessReceipt[];
+};
+
+type SessionlessSafePatchResult = {
+  status: 'applied' | 'partial' | 'failed';
+  sessionless: true;
+  createdSession: false;
+  changedFiles: string[];
+  appliedChunks: Array<{ index: number; operationCount: number; paths: string[] }>;
+  failures: SafePatchPreflightFailure[];
+  receipt?: SessionlessReceipt;
+  receipts?: SessionlessReceipt[];
+  groups?: SessionlessGroupResult[];
+  plan: SafePatchPlan;
+};
+
+function sessionlessFailure(plan: SafePatchPlan, failures: SafePatchPreflightFailure[]): SessionlessSafePatchResult {
+  return {
+    status: 'failed',
+    sessionless: true,
+    createdSession: false,
+    changedFiles: [],
+    appliedChunks: [],
+    failures,
+    plan,
+  };
+}
+
+function sessionlessSuccess(
+  plan: SafePatchPlan,
+  path: string,
+  receipt: { toPath?: string; beforeSha256?: string; afterSha256?: string },
+): SessionlessSafePatchResult {
+  return {
+    status: 'applied',
+    sessionless: true,
+    createdSession: false,
+    changedFiles: [path],
+    appliedChunks: [{ index: 1, operationCount: 1, paths: [path] }],
+    failures: [],
+    receipt: { path, ...receipt },
+    plan,
+  };
+}
+
+function applySessionlessCreate(
+  repository: RepositoryRecord,
+  path: string,
+  operation: Extract<EditOperation, { type: 'create' }>,
+  plan: SafePatchPlan,
+): SessionlessSafePatchResult {
+  const base = { chunkIndex: 1, operationIndex: 1, type: operation.type, path };
+  const current = currentFile(repository, path);
+  if (current.exists)
+    return sessionlessFailure(plan, [
+      {
+        ...base,
+        code: 'CREATE_TARGET_EXISTS',
+        message: `create target already exists: ${path}`,
+        currentSha256: current.sha256,
+      },
+    ]);
+  try {
+    return sessionlessSuccess(plan, path, atomicCreateText(repository.canonicalRoot, path, operation.content));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code: SafePatchPreflightFailure['code'] = message.startsWith('CREATE_TARGET_EXISTS:')
+      ? 'CREATE_TARGET_EXISTS'
+      : 'APPLY_FAILED';
+    return sessionlessFailure(plan, [{ ...base, code, message, currentSha256: currentFile(repository, path).sha256 }]);
+  }
+}
+
+function sessionlessMoveErrorCode(message: string): SafePatchPreflightFailure['code'] {
+  if (message.startsWith('STALE_FILE_SHA:')) return 'STALE_FILE_SHA';
+  if (message.startsWith('TARGET_MISSING:')) return 'TARGET_MISSING';
+  if (message.startsWith('MOVE_TARGET_EXISTS:')) return 'MOVE_TARGET_EXISTS';
+  if (message.startsWith('NO_CHANGE:')) return 'NO_CHANGE';
+  return 'APPLY_FAILED';
+}
+
+function applySessionlessMove(
+  repository: RepositoryRecord,
+  path: string,
+  operation: Extract<EditOperation, { type: 'move' }>,
+  plan: SafePatchPlan,
+  allowedPaths?: unknown,
+): SessionlessSafePatchResult {
+  const base = { chunkIndex: 1, operationIndex: 1, type: operation.type, path };
+  let toPath: string;
+  try {
+    toPath = resolveSessionlessPath(repository, operation.toPath, allowedPaths);
+  } catch (error) {
+    return sessionlessFailure(plan, [
+      {
+        ...base,
+        path: operation.toPath,
+        code: 'PATH_DENIED',
+        message: error instanceof Error ? error.message : String(error),
+      },
+    ]);
+  }
+  if (toPath === path) {
+    return sessionlessFailure(plan, [
+      { ...base, code: 'NO_CHANGE', message: 'move source and destination are identical' },
+    ]);
+  }
+  const current = currentFile(repository, path);
+  if (!current.exists || !current.sha256)
+    return sessionlessFailure(plan, [{ ...base, code: 'TARGET_MISSING', message: 'move source is no longer present' }]);
+  if (operation.expectedSha256 !== current.sha256)
+    return sessionlessFailure(plan, [
+      {
+        ...base,
+        code: 'STALE_FILE_SHA',
+        message: `stale file version for ${path}`,
+        currentSha256: current.sha256,
+        expectedSha256: operation.expectedSha256,
+        context: snippetAround(current.content, ''),
+      },
+    ]);
+  try {
+    const receipt = atomicCompareAndMoveText(repository.canonicalRoot, path, toPath, operation.expectedSha256);
+    return {
+      status: 'applied',
+      sessionless: true,
+      createdSession: false,
+      changedFiles: [path, toPath],
+      appliedChunks: [{ index: 1, operationCount: 1, paths: [path, toPath] }],
+      failures: [],
+      receipt: { path, toPath, ...receipt },
+      receipts: [{ path, toPath, ...receipt }],
+      plan,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = sessionlessMoveErrorCode(message);
+    const latest = currentFile(repository, path);
+    return sessionlessFailure(plan, [
+      {
+        ...base,
+        code,
+        message,
+        currentSha256: latest.sha256,
+        expectedSha256: operation.expectedSha256,
+        context: snippetAround(latest.content, ''),
+      },
+    ]);
+  }
+}
+
+function applySessionlessDelete(
+  repository: RepositoryRecord,
+  path: string,
+  operation: Extract<EditOperation, { type: 'delete' }>,
+  plan: SafePatchPlan,
+): SessionlessSafePatchResult {
+  const base = { chunkIndex: 1, operationIndex: 1, type: operation.type, path };
+  const current = currentFile(repository, path);
+  if (!current.exists || !current.sha256)
+    return sessionlessFailure(plan, [{ ...base, code: 'TARGET_MISSING', message: 'target is no longer present' }]);
+  if (operation.expectedSha256 !== current.sha256)
+    return sessionlessFailure(plan, [
+      {
+        ...base,
+        code: 'STALE_FILE_SHA',
+        message: `stale file version for ${path}`,
+        currentSha256: current.sha256,
+        expectedSha256: operation.expectedSha256,
+        context: snippetAround(current.content, ''),
+      },
+    ]);
+  try {
+    return sessionlessSuccess(
+      plan,
+      path,
+      atomicCompareAndDeleteText(repository.canonicalRoot, path, operation.expectedSha256),
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code: SafePatchPreflightFailure['code'] = message.startsWith('STALE_FILE_SHA:')
+      ? 'STALE_FILE_SHA'
+      : message.startsWith('TARGET_MISSING:')
+        ? 'TARGET_MISSING'
+        : 'APPLY_FAILED';
+    const latest = currentFile(repository, path);
+    return sessionlessFailure(plan, [
+      {
+        ...base,
+        code,
+        message,
+        currentSha256: latest.sha256,
+        expectedSha256: operation.expectedSha256,
+        context: snippetAround(latest.content, ''),
+      },
+    ]);
+  }
+}
+
+type SessionlessTextOperation = Exclude<EditOperation, { type: 'create' | 'delete' | 'move' }>;
+
+function sessionlessNeedle(operation: SessionlessTextOperation): string {
+  if (operation.type === 'replace') return operation.replacements[0]?.oldText ?? '';
+  if (operation.type === 'insert_before' || operation.type === 'insert_after') return operation.anchor;
+  return '';
+}
+
+function isRetryableLocalEdit(operation: SessionlessTextOperation): boolean {
+  return operation.type !== 'write' && !operation.expectedSha256;
+}
+
+function shouldRetrySessionlessCas(retryLocal: boolean, code: string, attempt: number): boolean {
+  return retryLocal && code === 'STALE_FILE_SHA' && attempt < 2;
+}
+
+function previewSessionlessText(
+  operation: SessionlessTextOperation,
+  currentContent: string,
+  currentSha256: string,
+  retryLocal: boolean,
+  base: Pick<SafePatchPreflightFailure, 'chunkIndex' | 'operationIndex' | 'type' | 'path'>,
+  needle: string,
+): { content: string } | { failure: SafePatchPreflightFailure } {
+  try {
+    const content =
+      operation.type === 'write' ? operation.content : applyTextPreview(operation, currentContent, retryLocal);
+    if (content === currentContent)
+      return {
+        failure: {
+          ...base,
+          code: 'NO_CHANGE',
+          message: 'edit operation produced no change',
+          currentSha256,
+        },
+      };
+    return { content };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const target =
+      operation.type === 'replace'
+        ? (operation.replacements.find((replacement) => !currentContent.includes(replacement.oldText))?.oldText ??
+          needle)
+        : needle;
+    const ambiguous = message.includes('ambiguous');
+    const semanticConflict = retryLocal && !ambiguous;
+    return {
+      failure: {
+        ...base,
+        code: semanticConflict
+          ? 'SEMANTIC_CONFLICT'
+          : operation.type === 'replace'
+            ? 'REPLACEMENT_TEXT_NOT_FOUND'
+            : 'ANCHOR_NOT_FOUND',
+        message: semanticConflict ? `semantic precondition no longer matches current content: ${message}` : message,
+        currentSha256,
+        context: snippetAround(currentContent, target),
+      },
+    };
+  }
+}
+
+function applySessionlessTextOperation(
+  repository: RepositoryRecord,
+  path: string,
+  operation: SessionlessTextOperation,
+  plan: SafePatchPlan,
+): SessionlessSafePatchResult {
+  const failureResult = (failures: SafePatchPreflightFailure[]) => sessionlessFailure(plan, failures);
+  const base = { chunkIndex: 1, operationIndex: 1, type: operation.type, path };
+  const retryLocal = isRetryableLocalEdit(operation);
+  const needle = sessionlessNeedle(operation);
+
+  for (let attempt = 0; ; attempt++) {
+    const current = currentFile(repository, path);
+    if (!current.exists || !current.sha256)
+      return failureResult([{ ...base, code: 'TARGET_MISSING', message: 'target is no longer present' }]);
+    if (operation.expectedSha256 && operation.expectedSha256 !== current.sha256)
+      return failureResult([
+        {
+          ...base,
+          code: 'STALE_FILE_SHA',
+          message: `stale file version for ${path}`,
+          currentSha256: current.sha256,
+          expectedSha256: operation.expectedSha256,
+          context: snippetAround(current.content, needle),
+        },
+      ]);
+
+    const preview = previewSessionlessText(operation, current.content, current.sha256, retryLocal, base, needle);
+    if ('failure' in preview) return failureResult([preview.failure]);
+
+    try {
+      return sessionlessSuccess(
+        plan,
+        path,
+        atomicCompareAndSwapText(repository.canonicalRoot, path, current.sha256, preview.content),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = message.startsWith('STALE_FILE_SHA:') ? 'STALE_FILE_SHA' : 'APPLY_FAILED';
+      if (shouldRetrySessionlessCas(retryLocal, code, attempt)) continue;
+      const latest = currentFile(repository, path);
+      return failureResult([
+        {
+          ...base,
+          code,
+          message,
+          currentSha256: latest.sha256,
+          expectedSha256: current.sha256,
+          context: snippetAround(latest.content, needle),
+        },
+      ]);
+    }
+  }
+}
+
+type SessionlessMutationGroup = {
+  groupId: string;
+  operations: NormalizedOperation[];
+};
+
+function buildSessionlessMutationGroups(operations: NormalizedOperation[]): SessionlessMutationGroup[] {
+  const groups = new Map<string, SessionlessMutationGroup>();
+  for (const operation of operations) {
+    const groupId = operation.__semanticGroup ?? `operation:${operation.__originalIndex + 1}`;
+    const existing = groups.get(groupId);
+    if (existing) existing.operations.push(operation);
+    else groups.set(groupId, { groupId, operations: [operation] });
+  }
+  return [...groups.values()];
+}
+
+function groupOperationIndexes(group: SessionlessMutationGroup): number[] {
+  return group.operations.map((operation) => operation.__originalIndex + 1);
+}
+
+function groupPaths(repository: RepositoryRecord, group: SessionlessMutationGroup): string[] {
+  return [...new Set(group.operations.flatMap((operation) => operationRepositoryPaths(repository, operation)))];
+}
+
+function semanticGroupFailure(
+  plan: SafePatchPlan,
+  group: SessionlessMutationGroup,
+  groupIndex: number,
+  code: SafePatchPreflightFailure['code'],
+  message: string,
+): SessionlessSafePatchResult {
+  const first = group.operations[0]!;
+  return sessionlessFailure(plan, [
+    {
+      chunkIndex: groupIndex,
+      operationIndex: first.__originalIndex + 1,
+      type: first.type,
+      path: first.path,
+      code,
+      message,
+    },
+  ]);
+}
+
+function remapSingleOperationGroup(
+  result: SessionlessSafePatchResult,
+  group: SessionlessMutationGroup,
+  groupIndex: number,
+  plan: SafePatchPlan,
+): SessionlessSafePatchResult {
+  const operation = group.operations[0]!;
+  return {
+    ...result,
+    plan,
+    appliedChunks: result.appliedChunks.map((chunk) => ({
+      ...chunk,
+      index: groupIndex,
+      operationCount: 1,
+    })),
+    failures: result.failures.map((failure) => ({
+      ...failure,
+      chunkIndex: groupIndex,
+      operationIndex: operation.__originalIndex + 1,
+    })),
+  };
+}
+
+function explicitGroupExpectedSha256(operations: Array<NormalizedOperation & SessionlessTextOperation>): {
+  expectedSha256?: string;
+  conflict?: string;
+} {
+  const hashes = [
+    ...new Set(operations.flatMap((operation) => (operation.expectedSha256 ? [operation.expectedSha256] : []))),
+  ];
+  if (hashes.length <= 1) return { expectedSha256: hashes[0] };
+  return {
+    conflict: `semantic group has conflicting strict whole-file CAS preconditions: ${hashes.join(', ')}`,
+  };
+}
+
+function sessionlessTextGroupPreconditionFailure(
+  path: string,
+  operations: Array<NormalizedOperation & SessionlessTextOperation>,
+  groupIndex: number,
+  current: ReturnType<typeof currentFile>,
+  expectedSha256?: string,
+): SafePatchPreflightFailure | undefined {
+  const first = operations[0]!;
+  if (!current.exists || !current.sha256) {
+    return {
+      chunkIndex: groupIndex,
+      operationIndex: first.__originalIndex + 1,
+      type: first.type,
+      path,
+      code: 'TARGET_MISSING',
+      message: 'target is no longer present',
+    };
+  }
+  if (!expectedSha256 || expectedSha256 === current.sha256) return undefined;
+  const firstStrict = operations.find((operation) => operation.expectedSha256) ?? first;
+  return {
+    chunkIndex: groupIndex,
+    operationIndex: firstStrict.__originalIndex + 1,
+    type: firstStrict.type,
+    path,
+    code: 'STALE_FILE_SHA',
+    message: `stale file version for ${path}`,
+    currentSha256: current.sha256,
+    expectedSha256,
+    context: snippetAround(current.content, sessionlessNeedle(firstStrict)),
+  };
+}
+
+function previewSessionlessTextGroup(
+  path: string,
+  operations: Array<NormalizedOperation & SessionlessTextOperation>,
+  groupIndex: number,
+  currentContent: string,
+  currentSha256: string,
+  retryLocal: boolean,
+): { content: string } | { failure: SafePatchPreflightFailure } {
+  let content = currentContent;
+  for (const operation of operations) {
+    const preview = previewSessionlessText(
+      operation,
+      content,
+      currentSha256,
+      retryLocal,
+      {
+        chunkIndex: groupIndex,
+        operationIndex: operation.__originalIndex + 1,
+        type: operation.type,
+        path,
+      },
+      sessionlessNeedle(operation),
+    );
+    if ('failure' in preview) return preview;
+    content = preview.content;
+  }
+  if (content !== currentContent) return { content };
+  const first = operations[0]!;
+  return {
+    failure: {
+      chunkIndex: groupIndex,
+      operationIndex: first.__originalIndex + 1,
+      type: first.type,
+      path,
+      code: 'NO_CHANGE',
+      message: 'semantic group produced no net change',
+      currentSha256,
+    },
+  };
+}
+
+function applySessionlessTextGroup(
+  repository: RepositoryRecord,
+  path: string,
+  operations: Array<NormalizedOperation & SessionlessTextOperation>,
+  plan: SafePatchPlan,
+  groupIndex: number,
+): SessionlessSafePatchResult {
+  const expected = explicitGroupExpectedSha256(operations);
+  if (expected.conflict) {
+    const first = operations[0]!;
+    return sessionlessFailure(plan, [
+      {
+        chunkIndex: groupIndex,
+        operationIndex: first.__originalIndex + 1,
+        type: first.type,
+        path,
+        code: 'SEMANTIC_GROUP_UNSUPPORTED',
+        message: expected.conflict,
+      },
+    ]);
+  }
+
+  const retryLocal = !expected.expectedSha256 && operations.every((operation) => isRetryableLocalEdit(operation));
+  const firstNeedle = sessionlessNeedle(operations[0]!);
+  for (let attempt = 0; ; attempt++) {
+    const current = currentFile(repository, path);
+    const preconditionFailure = sessionlessTextGroupPreconditionFailure(
+      path,
+      operations,
+      groupIndex,
+      current,
+      expected.expectedSha256,
+    );
+    if (preconditionFailure) return sessionlessFailure(plan, [preconditionFailure]);
+    const currentSha256 = current.sha256!;
+    const preview = previewSessionlessTextGroup(
+      path,
+      operations,
+      groupIndex,
+      current.content,
+      currentSha256,
+      retryLocal,
+    );
+    if ('failure' in preview) return sessionlessFailure(plan, [preview.failure]);
+
+    try {
+      const receipt = atomicCompareAndSwapText(repository.canonicalRoot, path, currentSha256, preview.content);
+      return {
+        status: 'applied',
+        sessionless: true,
+        createdSession: false,
+        changedFiles: [path],
+        appliedChunks: [{ index: groupIndex, operationCount: operations.length, paths: [path] }],
+        failures: [],
+        receipt: { path, ...receipt },
+        receipts: [{ path, ...receipt }],
+        plan,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = message.startsWith('STALE_FILE_SHA:') ? 'STALE_FILE_SHA' : 'APPLY_FAILED';
+      if (shouldRetrySessionlessCas(retryLocal, code, attempt)) continue;
+      const latest = currentFile(repository, path);
+      const first = operations[0]!;
+      return sessionlessFailure(plan, [
+        {
+          chunkIndex: groupIndex,
+          operationIndex: first.__originalIndex + 1,
+          type: first.type,
+          path,
+          code,
+          message,
+          currentSha256: latest.sha256,
+          expectedSha256: currentSha256,
+          context: snippetAround(latest.content, firstNeedle),
+        },
+      ]);
+    }
+  }
+}
+
+function applySessionlessMultiPathTextGroup(
+  repository: RepositoryRecord,
+  group: SessionlessMutationGroup,
+  plan: SafePatchPlan,
+  groupIndex: number,
+  allowedPaths?: unknown,
+): SessionlessSafePatchResult {
+  const byPath = new Map<string, Array<NormalizedOperation & SessionlessTextOperation>>();
+  try {
+    for (const rawOperation of group.operations) {
+      const operation = rawOperation as NormalizedOperation & SessionlessTextOperation;
+      const path = resolveSessionlessPath(repository, operation.path, allowedPaths);
+      const current = byPath.get(path);
+      if (current) current.push(operation);
+      else byPath.set(path, [operation]);
+    }
+  } catch (error) {
+    return semanticGroupFailure(
+      plan,
+      group,
+      groupIndex,
+      'PATH_DENIED',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+
+  if (byPath.size < 2) {
+    return semanticGroupFailure(
+      plan,
+      group,
+      groupIndex,
+      'SEMANTIC_GROUP_UNSUPPORTED',
+      'multi-path semantic group unexpectedly resolved to fewer than two paths',
+    );
+  }
+
+  const retryLocal = group.operations.every((operation) => isRetryableLocalEdit(operation as SessionlessTextOperation));
+
+  for (let attempt = 0; ; attempt++) {
+    const entries: Array<{ path: string; expectedSha256: string; after: string }> = [];
+    for (const [path, operations] of byPath) {
+      const expected = explicitGroupExpectedSha256(operations);
+      if (expected.conflict) {
+        return semanticGroupFailure(plan, group, groupIndex, 'SEMANTIC_GROUP_UNSUPPORTED', expected.conflict);
+      }
+      const current = currentFile(repository, path);
+      const preconditionFailure = sessionlessTextGroupPreconditionFailure(
+        path,
+        operations,
+        groupIndex,
+        current,
+        expected.expectedSha256,
+      );
+      if (preconditionFailure) return sessionlessFailure(plan, [preconditionFailure]);
+      const preview = previewSessionlessTextGroup(
+        path,
+        operations,
+        groupIndex,
+        current.content,
+        current.sha256!,
+        retryLocal,
+      );
+      if ('failure' in preview) return sessionlessFailure(plan, [preview.failure]);
+      entries.push({ path, expectedSha256: current.sha256!, after: preview.content });
+    }
+
+    try {
+      const applied = atomicCompareAndSwapTextGroup(repository.canonicalRoot, entries);
+      return {
+        status: 'applied',
+        sessionless: true,
+        createdSession: false,
+        changedFiles: entries.map((entry) => entry.path),
+        appliedChunks: [
+          {
+            index: groupIndex,
+            operationCount: group.operations.length,
+            paths: entries.map((entry) => entry.path),
+          },
+        ],
+        failures: [],
+        receipts: applied.receipts,
+        plan,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const stale = message.match(/^STALE_FILE_SHA: ([^:]+):/);
+      const missing = message.match(/^TARGET_MISSING: (.+)$/);
+      const failedPath = stale?.[1] ?? missing?.[1] ?? entries[0]!.path;
+      const code: SafePatchPreflightFailure['code'] = stale
+        ? 'STALE_FILE_SHA'
+        : missing
+          ? 'TARGET_MISSING'
+          : 'APPLY_FAILED';
+      if (shouldRetrySessionlessCas(retryLocal, code, attempt)) continue;
+      const latest = currentFile(repository, failedPath);
+      const failedOperation = byPath.get(failedPath)?.[0] ?? group.operations[0]!;
+      return sessionlessFailure(plan, [
+        {
+          chunkIndex: groupIndex,
+          operationIndex: failedOperation.__originalIndex + 1,
+          type: failedOperation.type,
+          path: failedPath,
+          code,
+          message,
+          currentSha256: latest.sha256,
+          expectedSha256: entries.find((entry) => entry.path === failedPath)?.expectedSha256,
+          context: snippetAround(latest.content, sessionlessNeedle(failedOperation as SessionlessTextOperation)),
+        },
+      ]);
+    }
+  }
+}
+
+type MixedResolvedPaths = Map<NormalizedOperation, string[]>;
+
+type MixedEntryPreparation =
+  | { entries: AtomicPathMutationEntry[]; failure?: undefined }
+  | { entries?: undefined; failure: SessionlessSafePatchResult };
+
+function resolveMixedMutationPaths(
+  repository: RepositoryRecord,
+  group: SessionlessMutationGroup,
+  allowedPaths?: unknown,
+): MixedResolvedPaths {
+  const resolved = new Map<NormalizedOperation, string[]>();
+  for (const operation of group.operations) {
+    const paths = [resolveSessionlessPath(repository, operation.path, allowedPaths)];
+    if (operation.type === 'move') paths.push(resolveSessionlessPath(repository, operation.toPath, allowedPaths));
+    resolved.set(operation, paths);
+  }
+  return resolved;
+}
+
+function structuralOverlapPath(group: SessionlessMutationGroup, resolvedPaths: MixedResolvedPaths): string | undefined {
+  const usage = new Map<string, NormalizedOperation[]>();
+  for (const operation of group.operations) {
+    for (const path of resolvedPaths.get(operation) ?? []) {
+      const current = usage.get(path);
+      if (current) current.push(operation);
+      else usage.set(path, [operation]);
+    }
+  }
+  for (const operation of group.operations) {
+    if (operation.type !== 'create' && operation.type !== 'delete' && operation.type !== 'move') continue;
+    for (const path of resolvedPaths.get(operation) ?? []) {
+      if ((usage.get(path)?.length ?? 0) > 1) return path;
+    }
+  }
+  return undefined;
+}
+
+function textOperationsByPath(
+  group: SessionlessMutationGroup,
+  resolvedPaths: MixedResolvedPaths,
+): Map<string, Array<NormalizedOperation & SessionlessTextOperation>> {
+  const grouped = new Map<string, Array<NormalizedOperation & SessionlessTextOperation>>();
+  for (const operation of group.operations) {
+    if (operation.type === 'create' || operation.type === 'delete' || operation.type === 'move') continue;
+    const path = resolvedPaths.get(operation)![0]!;
+    const current = grouped.get(path);
+    if (current) current.push(operation);
+    else grouped.set(path, [operation]);
+  }
+  return grouped;
+}
+
+function prepareMixedTextEntries(
+  repository: RepositoryRecord,
+  grouped: Map<string, Array<NormalizedOperation & SessionlessTextOperation>>,
+  plan: SafePatchPlan,
+  groupIndex: number,
+): MixedEntryPreparation {
+  const entries: AtomicPathMutationEntry[] = [];
+  for (const [path, operations] of grouped) {
+    const expected = explicitGroupExpectedSha256(operations);
+    if (expected.conflict) {
+      const first = operations[0]!;
+      return {
+        failure: sessionlessFailure(plan, [
+          {
+            chunkIndex: groupIndex,
+            operationIndex: first.__originalIndex + 1,
+            type: first.type,
+            path,
+            code: 'SEMANTIC_GROUP_UNSUPPORTED',
+            message: expected.conflict,
+          },
+        ]),
+      };
+    }
+
+    const current = currentFile(repository, path);
+    const preconditionFailure = sessionlessTextGroupPreconditionFailure(
+      path,
+      operations,
+      groupIndex,
+      current,
+      expected.expectedSha256,
+    );
+    if (preconditionFailure) return { failure: sessionlessFailure(plan, [preconditionFailure]) };
+
+    const retryLocal = !expected.expectedSha256 && operations.every(isRetryableLocalEdit);
+    const preview = previewSessionlessTextGroup(
+      path,
+      operations,
+      groupIndex,
+      current.content,
+      current.sha256!,
+      retryLocal,
+    );
+    if ('failure' in preview) return { failure: sessionlessFailure(plan, [preview.failure]) };
+
+    entries.push({
+      path,
+      before: { exists: true, expectedSha256: current.sha256! },
+      after: {
+        exists: true,
+        content: preview.content,
+        ...(current.mode !== undefined ? { mode: current.mode } : {}),
+      },
+    });
+  }
+  return { entries };
+}
+
+function structuralPreflightFailure(
+  plan: SafePatchPlan,
+  groupIndex: number,
+  operation: NormalizedOperation,
+  path: string,
+  code: SafePatchPreflightFailure['code'],
+  message: string,
+  current?: ReturnType<typeof currentFile>,
+): MixedEntryPreparation {
+  return {
+    failure: sessionlessFailure(plan, [
+      {
+        chunkIndex: groupIndex,
+        operationIndex: operation.__originalIndex + 1,
+        type: operation.type,
+        path,
+        code,
+        message,
+        currentSha256: current?.sha256,
+        ...(operation.type === 'delete' || operation.type === 'move'
+          ? { expectedSha256: operation.expectedSha256 }
+          : {}),
+        ...(current?.content ? { context: snippetAround(current.content, '') } : {}),
+      },
+    ]),
+  };
+}
+
+function prepareStructuralOperationEntries(
+  repository: RepositoryRecord,
+  operation: NormalizedOperation,
+  paths: readonly string[],
+  plan: SafePatchPlan,
+  groupIndex: number,
+): MixedEntryPreparation {
+  const path = paths[0]!;
+  if (operation.type === 'create') {
+    const current = currentFile(repository, path);
+    if (current.exists) {
+      return structuralPreflightFailure(
+        plan,
+        groupIndex,
+        operation,
+        path,
+        'CREATE_TARGET_EXISTS',
+        'create target already exists: ' + path,
+        current,
+      );
+    }
+    return {
+      entries: [{ path, before: { exists: false }, after: { exists: true, content: operation.content } }],
+    };
+  }
+
+  if (operation.type !== 'delete' && operation.type !== 'move') return { entries: [] };
+  const current = currentFile(repository, path);
+  if (!current.exists || !current.sha256) {
+    return structuralPreflightFailure(
+      plan,
+      groupIndex,
+      operation,
+      path,
+      'TARGET_MISSING',
+      'target is no longer present',
+    );
+  }
+  if (operation.expectedSha256 !== current.sha256) {
+    return structuralPreflightFailure(
+      plan,
+      groupIndex,
+      operation,
+      path,
+      'STALE_FILE_SHA',
+      'stale file version for ' + path,
+      current,
+    );
+  }
+
+  const sourceEntry: AtomicPathMutationEntry = {
+    path,
+    before: { exists: true, expectedSha256: current.sha256 },
+    after: { exists: false },
+  };
+  if (operation.type === 'delete') return { entries: [sourceEntry] };
+
+  const toPath = paths[1]!;
+  const destination = currentFile(repository, toPath);
+  if (destination.exists) {
+    return structuralPreflightFailure(
+      plan,
+      groupIndex,
+      operation,
+      toPath,
+      'MOVE_TARGET_EXISTS',
+      'move target already exists: ' + toPath,
+      destination,
+    );
+  }
+  return {
+    entries: [
+      sourceEntry,
+      {
+        path: toPath,
+        before: { exists: false },
+        after: {
+          exists: true,
+          content: current.content,
+          ...(current.mode !== undefined ? { mode: current.mode } : {}),
+        },
+      },
+    ],
+  };
+}
+
+function prepareMixedStructuralEntries(
+  repository: RepositoryRecord,
+  group: SessionlessMutationGroup,
+  resolvedPaths: MixedResolvedPaths,
+  plan: SafePatchPlan,
+  groupIndex: number,
+): MixedEntryPreparation {
+  const entries: AtomicPathMutationEntry[] = [];
+  for (const operation of group.operations) {
+    if (operation.type !== 'create' && operation.type !== 'delete' && operation.type !== 'move') continue;
+    const prepared = prepareStructuralOperationEntries(
+      repository,
+      operation,
+      resolvedPaths.get(operation)!,
+      plan,
+      groupIndex,
+    );
+    if (prepared.failure) return prepared;
+    entries.push(...prepared.entries);
+  }
+  return { entries };
+}
+
+function mixedMutationFailureCode(
+  message: string,
+  touching: NormalizedOperation | undefined,
+): SafePatchPreflightFailure['code'] {
+  if (message.startsWith('STALE_FILE_SHA:')) return 'STALE_FILE_SHA';
+  if (message.startsWith('TARGET_MISSING:')) return 'TARGET_MISSING';
+  if (message.startsWith('CREATE_TARGET_EXISTS:')) {
+    return touching?.type === 'move' ? 'MOVE_TARGET_EXISTS' : 'CREATE_TARGET_EXISTS';
+  }
+  if (message.startsWith('NO_CHANGE:')) return 'NO_CHANGE';
+  return 'APPLY_FAILED';
+}
+
+function mixedMutationFailedPath(message: string, fallback: string): string {
+  return (
+    message.match(/^STALE_FILE_SHA: ([^:]+):/)?.[1] ??
+    message.match(/^TARGET_MISSING: (.+)$/)?.[1] ??
+    message.match(/^CREATE_TARGET_EXISTS: (.+)$/)?.[1] ??
+    fallback
+  );
+}
+
+function shouldRetryMixedMutation(
+  code: SafePatchPreflightFailure['code'],
+  touching: NormalizedOperation | undefined,
+  attempt: number,
+): boolean {
+  return (
+    code === 'STALE_FILE_SHA' &&
+    touching !== undefined &&
+    touching.type !== 'create' &&
+    touching.type !== 'delete' &&
+    touching.type !== 'move' &&
+    isRetryableLocalEdit(touching) &&
+    attempt < 2
+  );
+}
+
+function mixedMutationFailureResult(
+  repository: RepositoryRecord,
+  group: SessionlessMutationGroup,
+  resolvedPaths: MixedResolvedPaths,
+  entries: readonly AtomicPathMutationEntry[],
+  plan: SafePatchPlan,
+  groupIndex: number,
+  message: string,
+): { result: SessionlessSafePatchResult; retryable: boolean } {
+  const failedPath = mixedMutationFailedPath(message, entries[0]!.path);
+  const touching = group.operations.find((operation) => resolvedPaths.get(operation)?.includes(failedPath));
+  const code = mixedMutationFailureCode(message, touching);
+  const latest = currentFile(repository, failedPath);
+  const failedEntry = entries.find((entry) => entry.path === failedPath);
+  const expectedSha256 = failedEntry?.before.exists ? failedEntry.before.expectedSha256 : undefined;
+  const operation = touching ?? group.operations[0]!;
+  return {
+    retryable: shouldRetryMixedMutation(code, touching, 0),
+    result: sessionlessFailure(plan, [
+      {
+        chunkIndex: groupIndex,
+        operationIndex: operation.__originalIndex + 1,
+        type: operation.type,
+        path: failedPath,
+        code,
+        message,
+        currentSha256: latest.sha256,
+        expectedSha256,
+        context: snippetAround(
+          latest.content,
+          touching && touching.type !== 'create' && touching.type !== 'delete' && touching.type !== 'move'
+            ? sessionlessNeedle(touching)
+            : '',
+        ),
+      },
+    ]),
+  };
+}
+
+function applySessionlessMixedMutationGroup(
+  repository: RepositoryRecord,
+  group: SessionlessMutationGroup,
+  plan: SafePatchPlan,
+  groupIndex: number,
+  allowedPaths?: unknown,
+): SessionlessSafePatchResult {
+  let resolvedPaths: MixedResolvedPaths;
+  try {
+    resolvedPaths = resolveMixedMutationPaths(repository, group, allowedPaths);
+  } catch (error) {
+    return semanticGroupFailure(
+      plan,
+      group,
+      groupIndex,
+      'PATH_DENIED',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+
+  const overlap = structuralOverlapPath(group, resolvedPaths);
+  if (overlap) {
+    return semanticGroupFailure(
+      plan,
+      group,
+      groupIndex,
+      'SEMANTIC_GROUP_UNSUPPORTED',
+      'semantic group ' +
+        group.groupId +
+        ' overlaps structural mutation path ' +
+        overlap +
+        '; split same-path structural sequencing into one explicit final-state operation',
+    );
+  }
+
+  for (let attempt = 0; ; attempt++) {
+    const text = prepareMixedTextEntries(repository, textOperationsByPath(group, resolvedPaths), plan, groupIndex);
+    if (text.failure) return text.failure;
+    const structural = prepareMixedStructuralEntries(repository, group, resolvedPaths, plan, groupIndex);
+    if (structural.failure) return structural.failure;
+    const entries = [...text.entries, ...structural.entries];
+    if (entries.length < 2) {
+      return semanticGroupFailure(
+        plan,
+        group,
+        groupIndex,
+        'SEMANTIC_GROUP_UNSUPPORTED',
+        'mixed semantic group did not produce a multi-path transaction',
+      );
+    }
+
+    try {
+      const applied = atomicApplyPathMutationGroup(repository.canonicalRoot, entries);
+      const changedFiles = entries.map((entry) => entry.path);
+      return {
+        status: 'applied',
+        sessionless: true,
+        createdSession: false,
+        changedFiles,
+        appliedChunks: [{ index: groupIndex, operationCount: group.operations.length, paths: changedFiles }],
+        failures: [],
+        receipts: applied.receipts,
+        plan,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failure = mixedMutationFailureResult(repository, group, resolvedPaths, entries, plan, groupIndex, message);
+      if (failure.retryable && attempt < 2) continue;
+      return failure.result;
+    }
+  }
+}
+
+function executeSessionlessMutationGroup(
+  repository: RepositoryRecord,
+  group: SessionlessMutationGroup,
+  groupIndex: number,
+  plan: SafePatchPlan,
+  allowedPaths?: unknown,
+): SessionlessSafePatchResult {
+  if (group.operations.length > 1) {
+    try {
+      recoverPendingTextTransactionsForOperations(repository, group.operations, allowedPaths);
+    } catch (error) {
+      return semanticGroupFailure(
+        plan,
+        group,
+        groupIndex,
+        'APPLY_FAILED',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+  if (group.operations.length === 1) {
+    try {
+      return remapSingleOperationGroup(
+        applySessionlessSafePatch(repository, {
+          operations: [stripInternalIndex(group.operations[0]!)],
+          allowedPaths,
+        }),
+        group,
+        groupIndex,
+        plan,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return semanticGroupFailure(
+        plan,
+        group,
+        groupIndex,
+        message.startsWith('SAFE_PATCH_PATH_') ? 'PATH_DENIED' : 'APPLY_FAILED',
+        message,
+      );
+    }
+  }
+
+  let paths: string[];
+  try {
+    paths = groupPaths(repository, group);
+  } catch (error) {
+    return semanticGroupFailure(
+      plan,
+      group,
+      groupIndex,
+      'PATH_DENIED',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  if (
+    group.operations.some(
+      (operation) => operation.type === 'create' || operation.type === 'delete' || operation.type === 'move',
+    )
+  ) {
+    return applySessionlessMixedMutationGroup(repository, group, plan, groupIndex, allowedPaths);
+  }
+
+  if (paths.length > 1) {
+    return applySessionlessMultiPathTextGroup(repository, group, plan, groupIndex, allowedPaths);
+  }
+
+  let path: string;
+  try {
+    path = resolveSessionlessPath(repository, group.operations[0]!.path, allowedPaths);
+  } catch (error) {
+    return semanticGroupFailure(
+      plan,
+      group,
+      groupIndex,
+      'PATH_DENIED',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  return applySessionlessTextGroup(
+    repository,
+    path,
+    group.operations as Array<NormalizedOperation & SessionlessTextOperation>,
+    plan,
+    groupIndex,
+  );
+}
+
+function recoverPendingTextTransactionsForOperations(
+  repository: RepositoryRecord,
+  operations: readonly NormalizedOperation[],
+  allowedPaths?: unknown,
+): number {
+  const paths = new Set<string>();
+  for (const operation of operations) {
+    const rawPaths = operation.type === 'move' ? [operation.path, operation.toPath] : [operation.path];
+    for (const rawPath of rawPaths) {
+      if (!rawPath) continue;
+      try {
+        paths.add(resolveSessionlessPath(repository, rawPath, allowedPaths));
+      } catch {
+        // Invalid or out-of-scope operations are rejected by their normal
+        // semantic-group preflight; they must not prevent independent groups.
+      }
+    }
+  }
+  if (paths.size === 0) return 0;
+  const scopedPaths = [...paths];
+  return (
+    recoverPendingAtomicTextGroups(repository.canonicalRoot, scopedPaths) +
+    recoverPendingAtomicPathMutationGroups(repository.canonicalRoot, scopedPaths)
+  );
+}
+
+export function applySessionlessMutationBatch(
+  repository: RepositoryRecord,
+  input: {
+    operations: unknown;
+    allowedPaths?: unknown;
+    refreshFingerprints?: unknown;
+  },
+): SessionlessSafePatchResult {
+  const operations = normalizedSafePatchOperations(input.operations);
+  if (operations.length === 0) throw new Error('SAFE_PATCH_OPERATIONS_REQUIRED: provide at least one operation');
+  if (operations.length === 1) return applySessionlessSafePatch(repository, input);
+
+  const plan = buildSafePatchPlan(repository, {
+    operations: operations.map(stripInternalIndex),
+    chunkSize: 1,
+  });
+  const groups = buildSessionlessMutationGroups(operations);
+  const changedFiles = new Set<string>();
+  const failures: SafePatchPreflightFailure[] = [];
+  const appliedChunks: Array<{ index: number; operationCount: number; paths: string[] }> = [];
+  const receipts: SessionlessReceipt[] = [];
+  const groupResults: SessionlessGroupResult[] = [];
+
+  groups.forEach((group, offset) => {
+    const groupIndex = offset + 1;
+    const result = executeSessionlessMutationGroup(repository, group, groupIndex, plan, input.allowedPaths);
+    for (const path of result.changedFiles) changedFiles.add(path);
+    failures.push(...result.failures);
+    appliedChunks.push(...result.appliedChunks);
+    const groupReceipts = result.receipts ?? (result.receipt ? [result.receipt] : []);
+    receipts.push(...groupReceipts);
+    let paths: string[];
+    try {
+      paths = groupPaths(repository, group);
+    } catch {
+      paths = [...new Set(group.operations.map((operation) => operation.path))];
+    }
+    groupResults.push({
+      groupId: group.groupId,
+      status: result.status === 'applied' ? 'applied' : 'failed',
+      operationIndexes: groupOperationIndexes(group),
+      paths,
+      changedFiles: result.changedFiles,
+      failures: result.failures,
+      receipts: groupReceipts,
+    });
+  });
+
+  const changed = [...changedFiles];
+  const status: SessionlessSafePatchResult['status'] =
+    failures.length === 0 ? 'applied' : changed.length > 0 ? 'partial' : 'failed';
+  return {
+    status,
+    sessionless: true,
+    createdSession: false,
+    changedFiles: changed,
+    appliedChunks,
+    failures,
+    ...(receipts.length === 1 ? { receipt: receipts[0] } : {}),
+    ...(receipts.length > 0 ? { receipts } : {}),
+    groups: groupResults,
+    plan,
+  };
+}
+
+function resolveSessionlessPath(repository: RepositoryRecord, rawPath: string, allowedPaths?: unknown): string {
+  const policy = getToolPolicy('controller', { repoRoot: repository.canonicalRoot });
+  const resolved = resolveMcpPath(repository.canonicalRoot, rawPath, policy, 'write');
+  if (!resolved.ok || !resolved.relativePath || !resolved.absolutePath)
+    throw new Error(`SAFE_PATCH_PATH_DENIED: ${resolved.reason ?? rawPath}`);
+  const path = resolved.relativePath;
+  const allowed = Array.isArray(allowedPaths) ? allowedPaths.map((value) => String(value).trim()).filter(Boolean) : [];
+  if (allowed.length && !allowed.some((pattern) => globMatches(pattern, path)))
+    throw new Error(`SAFE_PATCH_PATH_OUTSIDE_SCOPE: ${path}`);
+  return path;
+}
+
+export function applySessionlessSafePatch(
+  repository: RepositoryRecord,
+  input: {
+    operations: unknown;
+    allowedPaths?: unknown;
+    refreshFingerprints?: unknown;
+  },
+): SessionlessSafePatchResult {
+  const operations = normalizedSafePatchOperations(input.operations);
+  if (
+    operations.length !== 1 ||
+    !['create', 'replace', 'write', 'prepend', 'append', 'insert_before', 'insert_after', 'delete', 'move'].includes(
+      operations[0]!.type,
+    )
+  ) {
+    throw new Error('SESSIONLESS_SAFE_PATCH_SINGLE_TEXT_OPERATION_REQUIRED');
+  }
+  const operation = operations[0]!;
+  const path = resolveSessionlessPath(repository, operation.path, input.allowedPaths);
+  recoverPendingTextTransactionsForOperations(repository, operations, input.allowedPaths);
+
+  const plan = buildSafePatchPlan(repository, { operations, chunkSize: 1 });
+  if (operation.type === 'create') return applySessionlessCreate(repository, path, operation, plan);
+  if (operation.type === 'delete') return applySessionlessDelete(repository, path, operation, plan);
+  if (operation.type === 'move') return applySessionlessMove(repository, path, operation, plan, input.allowedPaths);
+  return applySessionlessTextOperation(repository, path, operation, plan);
+}
