@@ -45,6 +45,7 @@ describe('independent Windows/WSL host rescue', () => {
     expect(env).not.toContain('sk-');
     expect(unit).toContain(`ExecStart=${TEST_LINUX_HOME}/.forge-recovery/bin/forge-wsl-rescue watch`);
     expect(unit).toContain('Restart=always');
+    expect(unit).toContain('StartLimitIntervalSec=0');
     expect(windows).toContain(`"wslRescuePath": "${TEST_LINUX_HOME}/.forge-recovery/bin/forge-wsl-rescue"`);
     expect(windows).not.toContain('sk-');
   });
@@ -90,5 +91,10 @@ describe('independent Windows/WSL host rescue', () => {
     expect(rescue).toContain('reconnect_stale_tunnel_if_due || status=1');
     expect(installer).toContain("!stageOnly && !process.argv.includes('--skip-windows-logon-task')");
     expect(installer).toContain("'task_install'");
+    const windowsRecovery = readFileSync(resolve(import.meta.dir, '../../assets/recovery/ForgeRecovery.ps1'), 'utf8');
+    expect(windowsRecovery).toContain("'watch' {");
+    expect(windowsRecovery).toContain("Invoke-WslRescue 'watch'");
+    expect(windowsRecovery).toContain('while ($true)');
+    expect(windowsRecovery).toContain('Start-Sleep -Seconds 10');
   });
 });
