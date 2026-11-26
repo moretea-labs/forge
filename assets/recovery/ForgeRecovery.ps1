@@ -9,7 +9,7 @@ param(
         'connector_status', 'connector_start', 'connector_restart',
         'recovery_status', 'recovery_start', 'recovery_restart',
         'tunnel_status', 'tunnel_start', 'tunnel_restart',
-        'forge_cloud_verify', 'full_recover'
+        'forge_cloud_verify', 'full_recover', 'watch'
     )]
     [string]$Action
 )
@@ -35,7 +35,7 @@ $PowerShell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.
 $TaskName = 'Forge Independent Recovery WSL'
 $RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $RunValueName = 'ForgeIndependentRecoveryWSL'
-$RunCommand = ('"' + $PowerShell + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" full_recover')
+$WatchCommand = ('"' + $PowerShell + '" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" watch')
 if (-not (Test-Path -LiteralPath $Wsl -PathType Leaf)) {
     throw "FORGE_RESCUE_WSL_MISSING: $Wsl"
 }
@@ -60,23 +60,28 @@ switch ($Action) {
     'task_status' {
         $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         if ($null -ne $Task) {
-            [PSCustomObject]@{ installed = $true; method = 'scheduled_task'; taskName = $TaskName; state = [string]$Task.State; execute = $Task.Actions[0].Execute; arguments = $Task.Actions[0].Arguments } | ConvertTo-Json -Depth 4
+            $ActionMatches = ($Task.Actions.Count -eq 1 -and ('"' + [string]$Task.Actions[0].Execute + '" ' + [string]$Task.Actions[0].Arguments) -eq $WatchCommand)
+            [PSCustomObject]@{ installed = $true; method = 'scheduled_task'; taskName = $TaskName; identityMatches = $ActionMatches; watchdog = $ActionMatches; state = [string]$Task.State; execute = $Task.Actions[0].Execute; arguments = $Task.Actions[0].Arguments } | ConvertTo-Json -Depth 4
         } else {
             $RunValue = (Get-ItemProperty -LiteralPath $RunKey -Name $RunValueName -ErrorAction SilentlyContinue).$RunValueName
-            [PSCustomObject]@{ installed = ($RunValue -eq $RunCommand); method = $(if ($RunValue) { 'hkcu_run' } else { 'none' }); taskName = $TaskName; runValueName = $RunValueName; identityMatches = ($RunValue -eq $RunCommand) } | ConvertTo-Json -Depth 4
+            [PSCustomObject]@{ installed = ($RunValue -eq $WatchCommand); method = $(if ($RunValue) { 'hkcu_run' } else { 'none' }); taskName = $TaskName; runValueName = $RunValueName; identityMatches = ($RunValue -eq $WatchCommand); watchdog = ($RunValue -eq $WatchCommand) } | ConvertTo-Json -Depth 4
         }
     }
     'task_install' {
-        $ActionObject = New-ScheduledTaskAction -Execute $PowerShell -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" full_recover')
+        $ActionObject = New-ScheduledTaskAction -Execute $PowerShell -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" watch')
         $Trigger = New-ScheduledTaskTrigger -AtLogOn
+        $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -MultipleInstances IgnoreNew
         try {
-            $null = Register-ScheduledTask -TaskName $TaskName -Action $ActionObject -Trigger $Trigger -Description 'Forge independent Windows/WSL rescue cold-start trigger.' -Force -ErrorAction Stop
-            [PSCustomObject]@{ installed = $true; method = 'scheduled_task'; taskName = $TaskName } | ConvertTo-Json -Depth 3
+            $null = Register-ScheduledTask -TaskName $TaskName -Action $ActionObject -Trigger $Trigger -Settings $Settings -Description 'Forge independent Windows/WSL continuous recovery watchdog.' -Force -ErrorAction Stop
+            $Verify = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+            $VerifyCommand = ('"' + [string]$Verify.Actions[0].Execute + '" ' + [string]$Verify.Actions[0].Arguments)
+            if ($Verify.Actions.Count -ne 1 -or $VerifyCommand -ne $WatchCommand) { throw 'FORGE_RESCUE_WATCHDOG_IDENTITY_MISMATCH' }
+            [PSCustomObject]@{ installed = $true; method = 'scheduled_task'; taskName = $TaskName; identityMatches = $true; watchdog = $true } | ConvertTo-Json -Depth 3
         } catch {
             if (-not (Test-Path -LiteralPath $RunKey)) { $null = New-Item -Path $RunKey -Force }
-            Set-ItemProperty -LiteralPath $RunKey -Name $RunValueName -Value $RunCommand -Type String -Force
+            Set-ItemProperty -LiteralPath $RunKey -Name $RunValueName -Value $WatchCommand -Type String -Force
             $InstalledValue = (Get-ItemProperty -LiteralPath $RunKey -Name $RunValueName -ErrorAction Stop).$RunValueName
-            if ($InstalledValue -ne $RunCommand) { throw 'FORGE_RESCUE_LOGON_TRIGGER_IDENTITY_MISMATCH' }
+            if ($InstalledValue -ne $WatchCommand) { throw 'FORGE_RESCUE_LOGON_TRIGGER_IDENTITY_MISMATCH' }
             [PSCustomObject]@{ installed = $true; method = 'hkcu_run'; taskName = $TaskName; schedulerError = $_.Exception.HResult } | ConvertTo-Json -Depth 3
         }
     }
@@ -84,7 +89,7 @@ switch ($Action) {
         $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         if ($null -ne $Task) {
             Start-ScheduledTask -InputObject $Task
-            [PSCustomObject]@{ started = $true; method = 'scheduled_task'; taskName = $TaskName } | ConvertTo-Json -Depth 3
+            [PSCustomObject]@{ started = $true; method = 'scheduled_task'; taskName = $TaskName; identityMatches = $true; watchdog = $true } | ConvertTo-Json -Depth 3
         } else {
             & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath full_recover
             if ($LASTEXITCODE -ne 0) { throw "FORGE_RESCUE_DIRECT_TRIGGER_FAILED: exitCode=$LASTEXITCODE" }

@@ -37,6 +37,7 @@ function fixture(
     siblingTerminalNames?: string[];
     duplicateExactTerminalWindow?: boolean;
     terminalAppearanceAfterObservations?: number;
+    initiallyDisconnected?: boolean;
   } = {},
 ) {
   const cliCalls: string[][] = [];
@@ -47,9 +48,10 @@ function fixture(
   let terminalFocused = options.terminalInitiallyFocused ?? true;
   let currentSessionName = 'session1';
   let elementObservationCount = 0;
+  let deviceConnected = !(options.initiallyDisconnected ?? false);
   const runCli = async (_config: unknown, args: string[]) => {
     cliCalls.push(args);
-    if (args[0] === 'device')
+    if (args[0] === 'device' && args[1] === 'info')
       return {
         success: true,
         data: {
@@ -59,6 +61,30 @@ function fixture(
           isOnline: !options.offline,
         },
       };
+    if (args[0] === 'device' && args[1] === 'status')
+      return {
+        success: true,
+        data: {
+          connections: deviceConnected
+            ? [
+                {
+                  deviceId: config.device.id,
+                  deviceName: config.device.name,
+                  platform: 'windows',
+                  connectionState: 'connected',
+                  isControlling: true,
+                  lastError: null,
+                },
+              ]
+            : [],
+          hasActiveConnections: deviceConnected,
+          total: deviceConnected ? 1 : 0,
+        },
+      };
+    if (args[0] === 'device' && args[1] === 'connect') {
+      deviceConnected = true;
+      return { success: true, data: { connected: true } };
+    }
     return { success: true, data: { success: true } };
   };
   const terminalWindow = (name: string, ref: string, focused: boolean, exact = false) => ({
@@ -277,6 +303,30 @@ describe('UU Remote rescue helper', () => {
     ).resolves.toMatchObject({
       device: { deviceId: config.device.id, deviceName: config.device.name, platform: 'windows', isOnline: true },
     });
+  });
+
+  test('connects the exact online device before opening a rescue terminal when control is disconnected', async () => {
+    const fx = fixture({ initiallyDisconnected: true });
+    await executeAction('forge_health', {}, config, { ...fx, requestId: 'connect-before-terminal-1' });
+
+    const statusIndex = fx.cliCalls.findIndex((args) => args[0] === 'device' && args[1] === 'status');
+    const connectIndex = fx.cliCalls.findIndex(
+      (args) => args[0] === 'device' && args[1] === 'connect' && args[2] === config.device.id,
+    );
+    const terminalIndex = fx.cliCalls.findIndex((args) => args[0] === 'term' && args[1] === 'new');
+
+    expect(statusIndex).toBeGreaterThanOrEqual(0);
+    expect(connectIndex).toBeGreaterThan(statusIndex);
+    expect(terminalIndex).toBeGreaterThan(connectIndex);
+    expect(
+      fx.cliCalls.filter((args) => args[0] === 'device' && args[1] === 'status').length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  test('does not reconnect when the exact controlling UU connection already exists', async () => {
+    const fx = fixture();
+    await executeAction('forge_health', {}, config, { ...fx, requestId: 'reuse-device-connection-1' });
+    expect(fx.cliCalls.some((args) => args[0] === 'device' && args[1] === 'connect')).toBe(false);
   });
 
   test('derives canonical service identities from the configured Controller Home', () => {

@@ -14,13 +14,15 @@ describe('Windows host Recovery plugin registration', () => {
       .toEqual({ installed: true, method: 'hkcu_run', identityMatches: true });
     expect(parseTaskStatus(JSON.stringify({ installed: false, method: 'none', identityMatches: false })))
       .toEqual({ installed: false, method: 'none', identityMatches: false });
-    expect(parseTaskStatus(JSON.stringify({ installed: true, method: 'scheduled_task', state: 'Ready' })))
-      .toEqual({ installed: true, method: 'scheduled_task' });
+    expect(parseTaskStatus(JSON.stringify({ installed: true, method: 'scheduled_task', identityMatches: true, watchdog: true, state: 'Running' })))
+      .toEqual({ installed: true, method: 'scheduled_task', identityMatches: true });
   });
 
   test('rejects malformed or inconsistent task receipts instead of inferring installation from exit code 0', () => {
     for (const output of ['not json', '{}', '[]', '{"installed":"true","method":"hkcu_run"}',
-      '{"installed":true,"method":"none"}', '{"installed":true,"method":"hkcu_run","identityMatches":false}']) {
+      '{"installed":true,"method":"none"}', '{"installed":true,"method":"hkcu_run","identityMatches":false}',
+      '{"installed":true,"method":"scheduled_task","identityMatches":false}',
+      '{"installed":true,"method":"scheduled_task"}']) {
       expect(() => parseTaskStatus(output)).toThrow('Windows Recovery task_status');
     }
   });
@@ -80,6 +82,17 @@ describe('Windows host Recovery plugin registration', () => {
       process.chdir(previousCwd);
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test('installs a continuous WSL recovery watchdog instead of one-shot logon recovery', async () => {
+    const recoveryScript = await Bun.file(new URL('../../assets/recovery/ForgeRecovery.ps1', import.meta.url)).text();
+    expect(recoveryScript).toContain('$WatchCommand');
+    expect(recoveryScript).toContain('-ExecutionTimeLimit ([TimeSpan]::Zero)');
+    expect(recoveryScript).toContain('-RestartCount 3');
+    expect(recoveryScript).toContain('-RestartInterval (New-TimeSpan -Minutes 1)');
+    expect(recoveryScript).toContain('-MultipleInstances IgnoreNew');
+    expect(recoveryScript).toContain('continuous recovery watchdog');
+    expect(recoveryScript).toContain("'forge_cloud_verify', 'full_recover', 'watch'");
   });
 
   test('managed helper protocol uses real newline-delimited JSON records', async () => {

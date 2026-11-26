@@ -608,8 +608,36 @@ async function verifyDevice(config, deps, requireOnline) {
   };
 }
 
+function configuredDeviceConnection(config, response) {
+  const data = response?.data || {};
+  const connections = Array.isArray(data.connections) ? data.connections : [];
+  return connections.find(
+    (connection) =>
+      connection?.deviceId === config.device.id &&
+      String(connection?.platform || '').toLowerCase() === 'windows' &&
+      String(connection?.connectionState || '').toLowerCase() === 'connected' &&
+      connection?.isControlling === true,
+  );
+}
+
+async function ensureDeviceConnected(config, deps) {
+  let status = await deps.runCli(config, ['device', 'status']);
+  if (configuredDeviceConnection(config, status)) return;
+
+  await deps.runCli(config, ['device', 'connect', config.device.id]);
+  status = await deps.runCli(config, ['device', 'status']);
+  if (!configuredDeviceConnection(config, status)) {
+    throw rescueError(
+      'UU_RESCUE_DEVICE_CONNECTION_UNAVAILABLE',
+      'The registration-bound UU Remote device is online but no controlling connection could be established.',
+      true,
+    );
+  }
+}
+
 async function runTerminalCommand(config, requestId, command, deps, options = {}) {
   await verifyDevice(config, deps, true);
+  await ensureDeviceConnected(config, deps);
   const sessionName = `forge-rescue-${createHash('sha256').update(requestId).digest('hex').slice(0, 12)}`;
   await deps.runCli(config, ['term', 'kill', '--device', config.device.id, sessionName]);
   await deps.runCliText(config, ['term', 'new', '--device', config.device.id, sessionName]);

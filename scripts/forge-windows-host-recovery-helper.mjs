@@ -77,7 +77,7 @@ export function parseTaskStatus(output) {
     || !['scheduled_task', 'hkcu_run', 'none'].includes(value.method)
     || (value.identityMatches !== undefined && typeof value.identityMatches !== 'boolean')
     || (value.installed && value.method === 'none')
-    || (value.installed && value.method === 'hkcu_run' && value.identityMatches !== true)) {
+    || (value.installed && ['scheduled_task', 'hkcu_run'].includes(value.method) && value.identityMatches !== true)) {
     throw providerError('WINDOWS_RECOVERY_TASK_STATUS_INVALID', 'Windows Recovery task_status returned an inconsistent installation identity.');
   }
   return {
