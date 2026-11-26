@@ -13,9 +13,7 @@ import {
 } from '../agent-jobs/job-manager';
 import { cleanupIntegratedWorktree, integrateAgentJob, taskRunDiff } from '../agent-jobs/integration';
 import { listControllerChecks, runControllerCheck } from '../../runtime/execution/process-runtime/check-runner';
-import { projectBoard } from '../controller/issue-store';
 import { inspectProjectGovernance } from '../controller/governance';
-import { loadControllerProjectState } from '../controller/project-state';
 import { legacyIssueCutoverState } from '../controller/legacy-issue-cutover';
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../runtime/control-plane/facade/requirement-board';
 import {
@@ -233,15 +231,6 @@ function queryString(value: unknown): string | undefined {
 function controllerStateSignature(repoRoot: string): string {
   const snapshot = cachedLocalControllerSnapshot(repoRoot);
   return JSON.stringify({
-    issues: snapshot.board.issues.map((issue) => ({
-      id: issue.id,
-      status: issue.status,
-      updatedAt: issue.updatedAt,
-      tasks: (Array.isArray(issue.tasks) ? issue.tasks : []).map((task) => {
-        const value = task as { id?: unknown; status?: unknown; updatedAt?: unknown; runIds?: unknown[] };
-        return [value.id, value.status, value.updatedAt, Array.isArray(value.runIds) ? value.runIds.at(-1) : undefined];
-      }),
-    })),
     runs: snapshot.runs.map((run) => [
       run.runId,
       run.status,
@@ -251,7 +240,6 @@ function controllerStateSignature(repoRoot: string): string {
       run.autoIntegrationError,
     ]),
     jobs: snapshot.localJobs.map((job) => [job.jobId, job.status, job.updatedAt, job.runId]),
-    projectState: snapshot.projectState,
   });
 }
 
@@ -303,22 +291,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     : undefined;
   const runs = listAgentJobs(repoRoot, 30);
   const localJobs = listLocalBridgeJobs(repoRoot, 30);
-  const legacyBoard = retiredLegacyControlPlane ? undefined : projectBoard(repoRoot);
-  const board = legacyBoard ?? {
-    schemaVersion: 1,
-    projection: 'deprecated_frozen_legacy_board',
-    authority: 'controller-home-sqlite',
-    deprecated: true,
-    frozen: true,
-    issues: [],
-    counts: requirementBoard?.counts ?? {},
-    declaredCounts: {},
-    archivedCounts: {},
-    readyTasks: [],
-    queueableTasks: [],
-    archivedIssueCount: 0,
-    notice: 'Requirement Board is authoritative. Legacy Issue/Task board data is intentionally omitted.',
-  };
   const runtime = runtimeControllerSnapshot(repoRoot);
   const activeExecutionJobs = 'activeExecutionJobs' in runtime ? (runtime.activeExecutionJobs ?? []) : [];
   const recentExecutionJobs = 'recentExecutionJobs' in runtime ? (runtime.recentExecutionJobs ?? []) : [];
@@ -356,21 +328,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     })),
   }));
   const mobileIntents = listMobileIntentDevices(repoRoot);
-  const boardIssues = board.issues as Array<{
-    id: string;
-    tasks?: Array<{ id: string; title: string; effectiveStatus: string }>;
-  }>;
-  const reviewTasks = boardIssues.flatMap((issue) =>
-    (issue.tasks ?? [])
-      .filter((task) => ['review', 'verified', 'changes_requested'].includes(task.effectiveStatus))
-      .map((task) => ({
-        kind: 'task',
-        issueId: issue.id,
-        taskId: task.id,
-        title: task.title,
-        status: task.effectiveStatus,
-      })),
-  );
   const decisionQueues = {
     needsAttention: [
       ...runs
@@ -422,7 +379,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
           updatedAt: job.updatedAt,
         })),
     ].slice(0, 12),
-    readyForReview: reviewTasks.slice(0, 12),
     pendingApprovals: [
       ...localJobs
         .filter((job) => job.status === 'pending_approval')
@@ -565,15 +521,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     },
     requirementBoard,
     executionDiagnostics,
-    legacyCompatibility: retiredLegacyControlPlane
-      ? {
-          authority: 'controller-home-sqlite',
-          projection: 'deprecated_frozen',
-          mutationApis: 'retired',
-        }
-      : undefined,
-    board,
-    projectState: loadControllerProjectState(repoRoot),
     governance: inspectProjectGovernance(repoRoot, requirementBoard),
     recovery,
     githubPlugin: getGitHubPluginStatus(repoRoot),
@@ -738,23 +685,6 @@ function userFacingAttentionItems(snapshot: LocalControllerSnapshot): UserFacing
     items.push(item);
   };
   const queues = snapshot.decisionQueues;
-  for (const entry of queues.readyForReview.slice(0, 12)) {
-    const value = entry as typeof entry & Record<string, unknown>;
-    push({
-      id: `review:${String(value.issueId ?? value.id ?? value.title)}:${String(value.taskId ?? '')}`,
-      category: 'confirm_result',
-      categoryLabel: '任务待确认',
-      title: String(value.title ?? '任务结果待确认'),
-      reason: '任务已有可审阅结果，请直接查看实际变更和验证结果。',
-      scope: '当前仓库',
-      icon: '✓',
-      primaryAction: action('view_advanced', '查看结果'),
-      refs: {
-        ...(typeof value.issueId === 'string' ? { issueId: value.issueId } : {}),
-        ...(typeof value.taskId === 'string' ? { taskId: value.taskId } : {}),
-      },
-    });
-  }
   for (const entry of queues.pendingApprovals.slice(0, 12)) {
     const value = entry as typeof entry & Record<string, unknown>;
     push({
@@ -798,27 +728,6 @@ function userFacingAttentionItems(snapshot: LocalControllerSnapshot): UserFacing
       primaryAction: action('configure_plugins', '去配置'),
       refs: { pluginId: plugin.id },
     });
-  }
-  const issues = Array.isArray(snapshot.board.issues) ? snapshot.board.issues : [];
-  for (const issue of issues.slice(0, 40)) {
-    const tasks = Array.isArray(issue.tasks) ? issue.tasks : [];
-    for (const task of tasks) {
-      const effectiveStatus = String(
-        (task as Record<string, unknown>).effectiveStatus ?? (task as Record<string, unknown>).status ?? '',
-      );
-      if (effectiveStatus !== 'changes_requested') continue;
-      push({
-        id: `changes:${issue.id}:${String((task as Record<string, unknown>).id ?? '')}`,
-        category: 'changes_requested',
-        categoryLabel: '已打回等待修改',
-        title: String((task as Record<string, unknown>).title ?? issue.title ?? '任务等待修改'),
-        reason: '该任务已经被打回，不应该继续显示成待审批。',
-        scope: String(issue.title ?? issue.id),
-        icon: '↩',
-        primaryAction: action('start_task', '继续修改'),
-        refs: { issueId: String(issue.id), taskId: String((task as Record<string, unknown>).id ?? '') },
-      });
-    }
   }
   return items.slice(0, 24);
 }

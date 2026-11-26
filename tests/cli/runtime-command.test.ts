@@ -315,6 +315,8 @@ describe('runtime command surface', () => {
     expect(runtimeObservation).not.toContain('buildControllerTaskLedgerProjection');
     expect(runtimeObservation).not.toContain("'taskLedger'");
     expect(snapshotSource).not.toContain('buildControllerTaskLedgerProjection');
+    expect(snapshotSource).not.toContain('projectBoard(repoRoot)');
+    expect(snapshotSource).not.toContain('projectState:');
     const readinessStart = runtimeObservation.indexOf("case 'controller_ready':");
     const readinessEnd = runtimeObservation.indexOf("case 'repository_runtime_snapshot':", readinessStart);
     const readinessBlock = runtimeObservation.slice(readinessStart, readinessEnd);
@@ -358,8 +360,8 @@ describe('runtime command surface', () => {
     const contextHandlerBlock = runtimeObservation.slice(contextHandlerStart, contextHandlerEnd);
     expect(contextHandlerBlock).toContain('requestedSections');
     expect(contextHandlerBlock).toContain("measureSection('git'");
-    expect(contextHandlerBlock).toContain("measureSection('focus.source'");
-    expect(contextHandlerBlock).toContain("measureSection('focus'");
+    expect(contextHandlerBlock).not.toContain("measureSection('focus.source'");
+    expect(contextHandlerBlock).not.toContain("measureSection('focus'");
     expect(contextHandlerBlock).not.toContain("measureSection('taskLedger'");
     expect(contextHandlerBlock).toContain("measureSectionAsync('readiness'");
     expect(contextHandlerBlock).toContain("measureSection('activeRuns'");
@@ -381,7 +383,7 @@ describe('runtime command surface', () => {
     expect(contextHandlerBlock).toContain('runtimeStorageInspection: storageInspection');
     expect(contextHandlerBlock).not.toContain('buildControllerOperationalPlan');
     expect(contextHandlerBlock).not.toContain('build.operational_plan');
-    expect(contextHandlerBlock).toContain("markPhase('build.task_board', taskBoardStartedAt)");
+    expect(contextHandlerBlock).not.toContain('build.task_board');
     expect(contextHandlerBlock).not.toContain('build.task_ledger');
     expect(contextHandlerBlock).not.toContain('await controllerReadinessEvidence(ctx, repository)');
     expect(runtimeReadinessObservation).not.toContain('buildRuntimeOperationalView');

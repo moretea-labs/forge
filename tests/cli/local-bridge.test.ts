@@ -1652,7 +1652,8 @@ describe('Local Execution Bridge', () => {
       headers: { 'x-forge-local-token': handle.token },
     }).then((response) => response.json());
     expect(snapshot.repoRoot).toBe(realpathSync(root));
-    expect(snapshot.board).toBeDefined();
+    expect(snapshot.board).toBeUndefined();
+    expect(snapshot.projectState).toBeUndefined();
     expect(snapshot.toolSurface).toBe(FORGE_TOOL_SURFACE);
     expect(snapshot.timeoutPolicy).toEqual({
       defaultTimeoutMs: 3_600_000,

@@ -36,8 +36,6 @@ import {
 } from '../../../src/runtime/projections/materialized-view';
 import { evaluateRuntimeHealth } from '../../../src/runtime/health';
 import { inspectRepositoryRuntimeStorage } from '../../../src/runtime/repositories/runtime-storage';
-import { projectBoard } from '../../../src/cli/controller/issue-store';
-import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
 import {
   listControllerChecks,
   readLatestControllerCheckEvidence,
@@ -211,21 +209,6 @@ function summarizeRuntimeProjectionForReadiness<T extends { currentAttention?: u
  * while the live Runtime owner has the same Runtime instance and PID.
  */
 
-function compactContextTask(value: unknown): Record<string, unknown> {
-  const task = contextRecord(value);
-  return {
-    issueId: task.issueId ?? task.id,
-    taskId: task.taskId ?? task.id,
-    title: task.title,
-    effectiveStatus: task.effectiveStatus,
-    verificationStatus: task.verificationStatus,
-    latestRunStatus: task.latestRunStatus,
-    retryable: task.retryable,
-    dispatchable: task.dispatchable,
-    queueable: task.queueable,
-  };
-}
-
 function compactControllerContextSummaryPayload(payload: Record<string, unknown>): Record<string, unknown> {
   // Idempotent: already-compacted summaries pass through untouched.
   if (payload.detailLevel === 'summary') return payload;
@@ -234,12 +217,9 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
   const ready = contextRecord(payload.controllerReady);
   const runtimeProjection = contextRecord(payload.runtimeProjection);
   const runtimeProjectionState = contextRecord(payload.runtimeProjectionState);
-  const currentIssue = contextRecord(payload.currentIssue);
-  const currentIssueTasks = Array.isArray(currentIssue.tasks) ? currentIssue.tasks : [];
   const plugins = Array.isArray(payload.plugins) ? payload.plugins : [];
   const checks = Array.isArray(payload.checks) ? payload.checks : [];
   const activeRuns = Array.isArray(payload.activeRuns) ? payload.activeRuns : [];
-  const readyTasks = Array.isArray(payload.readyTasks) ? payload.readyTasks : [];
   const runtimeIdentity = contextRecord(payload.runtimeIdentity);
   const runtime = contextRecord(payload.runtime);
   const repoId = String(payload.repoId ?? repository.repoId ?? '');
@@ -275,8 +255,6 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
           : 0;
   const compact: Record<string, unknown> = {
     detailLevel: 'summary',
-    // Deprecated compatibility: legacy clients read this before focus.currentIssue.
-    ...(payload.currentIssueId !== undefined ? { currentIssueId: payload.currentIssueId } : {}),
     repoId,
     repository: {
       repoId,
@@ -287,21 +265,7 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
       dirty: git.dirty === true,
       changedFileCount,
     },
-    focus: {
-      ...(currentIssue.id
-        ? {
-            currentIssue: {
-              id: currentIssue.id,
-              title: currentIssue.title,
-              status: currentIssue.status,
-              lifecycleStatus: currentIssue.lifecycleStatus,
-              updatedAt: currentIssue.updatedAt,
-              taskCount: currentIssueTasks.length,
-              tasks: currentIssueTasks.slice(0, 5).map(compactContextTask),
-            },
-          }
-        : {}),
-      ...(payload.currentTask && typeof payload.currentTask === 'object' ? { currentTask: payload.currentTask } : {}),
+    executionFocus: {
       activeRunCount: activeRuns.length,
       ...(typeof payload.activeJobCount === 'number' ? { activeJobCount: payload.activeJobCount } : {}),
     },
@@ -311,7 +275,6 @@ function compactControllerContextSummaryPayload(payload: Record<string, unknown>
       diagnostics: contextRecord(ready.diagnostics),
       observedAt: ready.observedAt,
     },
-    readyTasks: readyTasks.slice(0, 5).map(compactContextTask),
     execution: {
       requiredChecks: recommendedCheckIds,
     },
@@ -706,7 +669,6 @@ export async function callRuntimeObservationAdapter(
           : [];
         const supportedSections = [
           'git',
-          'focus',
           'readiness',
           'activeRuns',
           'localBridge',
@@ -749,29 +711,6 @@ export async function callRuntimeObservationAdapter(
 
           if (selectedSections.includes('git')) {
             sectionPayload.git = measureSection('git', () => gitSnapshot(repository.canonicalRoot));
-          }
-          if (selectedSections.includes('focus')) {
-            const board = measureSection('focus.source', () => {
-              const legacyIssuesRetired = legacyIssueAuthorityRetired(repository.canonicalRoot);
-              return legacyIssuesRetired ? undefined : projectBoard(repository.canonicalRoot);
-            });
-            sectionPayload.focus = measureSection('focus', () => {
-              const issue = board?.currentIssueId
-                ? board.issues.find((candidate) => candidate.id === board.currentIssueId)
-                : undefined;
-              return {
-                currentIssueId: board?.currentIssueId,
-                currentIssue: issue
-                  ? {
-                      id: issue.id,
-                      title: issue.title,
-                      status: issue.status,
-                      lifecycleStatus: issue.lifecycleStatus,
-                      updatedAt: issue.updatedAt,
-                    }
-                  : undefined,
-              };
-            });
           }
           if (selectedSections.includes('readiness')) {
             sectionPayload.readiness = await measureSectionAsync('readiness', () =>
@@ -1090,12 +1029,6 @@ export async function callRuntimeObservationAdapter(
 
         const buildStartedAt = performance.now();
         const buildPayload = async (): Promise<Record<string, unknown>> => {
-          const taskStateStartedAt = performance.now();
-          const taskBoardStartedAt = performance.now();
-          const legacyIssuesRetired = legacyIssueAuthorityRetired(repository.canonicalRoot);
-          const board = legacyIssuesRetired ? undefined : projectBoard(repository.canonicalRoot);
-          markPhase('build.task_board', taskBoardStartedAt);
-          markPhase('build.task_state', taskStateStartedAt);
           const readinessStartedAt = performance.now();
           const runtimeObservation = observeRuntimeStatus(ctx.controllerHome);
           const readiness = await controllerReadiness(
@@ -1126,29 +1059,6 @@ export async function callRuntimeObservationAdapter(
                 }
               : gitSnapshot(repository.canonicalRoot);
           markPhase('build.git', gitStartedAt);
-          const currentIssueRecord = board?.currentIssueId
-            ? board.issues.find((issue) => issue.id === board.currentIssueId)
-            : undefined;
-          const currentIssue = currentIssueRecord
-            ? {
-                id: currentIssueRecord.id,
-                title: currentIssueRecord.title,
-                status: currentIssueRecord.status,
-                lifecycleStatus: currentIssueRecord.lifecycleStatus,
-                updatedAt: currentIssueRecord.updatedAt,
-                tasks: Array.isArray(currentIssueRecord.tasks)
-                  ? currentIssueRecord.tasks.slice(0, 20).map((task) => {
-                      const item = task as Record<string, unknown>;
-                      return {
-                        id: item.id,
-                        title: item.title,
-                        effectiveStatus: item.effectiveStatus,
-                        latestRunStatus: item.latestRunStatus,
-                      };
-                    })
-                  : [],
-              }
-            : undefined;
           const jobsStartedAt = performance.now();
           const activeRuns = listActiveAgentJobSnapshots(repository.canonicalRoot, 20).map((run) => ({
             runId: run.runId,
@@ -1227,9 +1137,6 @@ export async function callRuntimeObservationAdapter(
                     diffStat: '',
                     dirty: false,
                   },
-            currentIssueId: board?.currentIssueId,
-            currentIssue,
-            readyTasks: (board?.readyTasks ?? []).slice(0, 20),
             activeRuns,
             activeJobCount: activeLocalJobs,
             localBridge: {
