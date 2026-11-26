@@ -6017,6 +6017,59 @@ describe('process handle index write amplification', () => {
     expect(after?.revision).toBe(1);
   });
 
+  test('re-recording an identical handle strips historical non-native fields without losing the locator', () => {
+    const fx = fixture();
+    const processId = 'proc_handle_native_shape';
+    const target = forgeInstanceExecutionTarget(fx.controllerHome);
+    writeControlPlaneRecord(fx.controllerHome, {
+      namespace: 'process_handle_index',
+      scope: 'instance',
+      key: processId,
+      schemaVersion: 1,
+      action: 'fixture_old_process_index',
+      value: {
+        schemaVersion: 1,
+        processId,
+        lane: 'managed',
+        target,
+        commandId: 'cmd-native',
+        recordedAt: '2026-10-24T00:00:00.000Z',
+        updatedAt: '2026-10-24T00:00:00.000Z',
+        obsoleteMarker: 'no-longer-a-process-field',
+      },
+    });
+    const before = readControlPlaneRecord(fx.controllerHome, 'process_handle_index', 'instance', processId);
+    expect(before?.revision).toBe(1);
+    expect(before?.value).toHaveProperty('obsoleteMarker');
+
+    const normalized = recordProcessHandleIndexEntry(fx.controllerHome, {
+      processId,
+      lane: 'managed',
+      target,
+      commandId: 'cmd-native',
+      now: '2026-11-26T00:00:00.000Z',
+    });
+    expect(normalized?.processId).toBe(processId);
+    const after = readControlPlaneRecord(fx.controllerHome, 'process_handle_index', 'instance', processId);
+    expect(after?.revision).toBe(2);
+    expect(after?.value).not.toHaveProperty('obsoleteMarker');
+    expect(after?.value).toMatchObject({
+      processId,
+      target,
+      commandId: 'cmd-native',
+      recordedAt: '2026-10-24T00:00:00.000Z',
+      updatedAt: '2026-11-26T00:00:00.000Z',
+    });
+    recordProcessHandleIndexEntry(fx.controllerHome, {
+      processId,
+      lane: 'managed',
+      target,
+      commandId: 'cmd-native',
+      now: '2026-11-26T00:00:01.000Z',
+    });
+    expect(readControlPlaneRecord(fx.controllerHome, 'process_handle_index', 'instance', processId)?.revision).toBe(2);
+  });
+
   test('deleteProcessRecord removes the rebuildable handle locator', () => {
     const fx = fixture();
     const processId = 'proc_handle_delete_with_record';

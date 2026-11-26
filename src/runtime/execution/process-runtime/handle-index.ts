@@ -27,6 +27,19 @@ import {
 export const PROCESS_HANDLE_INDEX_NAMESPACE = 'process_handle_index';
 const PROCESS_HANDLE_INDEX_SCOPE = 'instance';
 const PROCESS_HANDLE_INDEX_SCHEMA_VERSION = 1;
+// A rebuildable locator must be rewritten from its native schema when an older
+// persistence version left extra properties. Identity equality alone is not
+// enough: otherwise obsolete process metadata survives forever.
+const PROCESS_HANDLE_INDEX_FIELDS = new Set([
+  'schemaVersion',
+  'processId',
+  'lane',
+  'target',
+  'principalId',
+  'commandId',
+  'recordedAt',
+  'updatedAt',
+]);
 
 export type ProcessExecutionTargetScope = 'forge_instance' | 'repository' | 'workspace';
 
@@ -155,7 +168,8 @@ export function recordProcessHandleIndexEntry(
           currentValue.lane === input.lane &&
           sameProcessExecutionTarget(currentValue.target, input.target) &&
           currentValue.principalId === nextPrincipal &&
-          currentValue.commandId === nextCommand
+          currentValue.commandId === nextCommand &&
+          Object.keys(currentValue).every((key) => PROCESS_HANDLE_INDEX_FIELDS.has(key))
         ) {
           // Locator identity unchanged: keep the current value object so the
           // control-plane writer skips revision/audit amplification (#377).
