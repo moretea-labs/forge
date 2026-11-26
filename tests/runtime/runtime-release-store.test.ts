@@ -10,6 +10,7 @@ import {
   writeControlPlaneRecord,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import {
+  applyStoppedWorkReferenceRetirement,
   ensureActiveRuntimeRelease,
   migrateRuntimeReleaseAuthorityState,
   prepareRuntimeReleaseDatabaseBackup,
@@ -135,6 +136,71 @@ describe('whole Runtime release store', () => {
     } finally {
       observer.close();
     }
+  });
+
+  test('stopped release retirement uses the exact published backup generation and preserves it', () => {
+    const fx = fixture();
+    ensureActiveRuntimeRelease(fx.controllerHome, fx.manifest('release-a', 'artifact-a'));
+    writeControlPlaneRecord(fx.controllerHome, {
+      namespace: 'execution_session',
+      scope: 'fixture',
+      key: 'session',
+      schemaVersion: 1,
+      value: { activeWorkId: 'old', goalDelegation: { workId: 'old', goal: 'native' } },
+      expectedRevision: null,
+    });
+    const authority = publishRuntimeRelease(fx.controllerHome, fx.manifest('release-b', 'artifact-b'), 'retire-op');
+    const backup = authority.previous!.databaseBackup!;
+    expect(() => applyStoppedWorkReferenceRetirement(fx.controllerHome, 'wrong-op', () => {})).toThrow(
+      'WORK_REFERENCE_RETIREMENT_RELEASE_BACKUP_REQUIRED',
+    );
+    expect(() =>
+      applyStoppedWorkReferenceRetirement(fx.controllerHome, 'retire-op', () => {
+        throw new Error('runtime running');
+      }),
+    ).toThrow('runtime running');
+    const result = applyStoppedWorkReferenceRetirement(fx.controllerHome, 'retire-op', () => {});
+    expect(result).toEqual({ recordCount: 1, fieldCount: 2 });
+    expect(readControlPlaneRecord(fx.controllerHome, 'execution_session', 'fixture', 'session')?.value).toEqual({
+      goalDelegation: { goal: 'native' },
+    });
+    expect(sha256ControlPlaneDatabaseFile(backup.path)).toBe(backup.databaseSha256!);
+    // The old pre-migration backup must never overwrite the new native facts.
+    expect(rollbackRuntimeReleaseWithResult(fx.controllerHome, 'rollback-op').databaseDisposition).toBe(
+      'preserved_newer_live_state',
+    );
+    expect(readControlPlaneRecord(fx.controllerHome, 'execution_session', 'fixture', 'session')?.value).toEqual({
+      goalDelegation: { goal: 'native' },
+    });
+  });
+
+  test('stopped release retirement refuses an intervening live commit', () => {
+    const fx = fixture();
+    ensureActiveRuntimeRelease(fx.controllerHome, fx.manifest('release-a', 'artifact-a'));
+    const initial = writeControlPlaneRecord(fx.controllerHome, {
+      namespace: 'execution_session',
+      scope: 'fixture',
+      key: 'session',
+      schemaVersion: 1,
+      value: { activeWorkId: 'old' },
+      expectedRevision: null,
+    });
+    publishRuntimeRelease(fx.controllerHome, fx.manifest('release-b', 'artifact-b'), 'retire-op');
+    writeControlPlaneRecord(fx.controllerHome, {
+      namespace: 'execution_session',
+      scope: 'fixture',
+      key: 'session',
+      schemaVersion: 1,
+      value: { activeWorkId: 'old', nativeReceipt: 'new' },
+      expectedRevision: initial.revision,
+    });
+    expect(() => applyStoppedWorkReferenceRetirement(fx.controllerHome, 'retire-op', () => {})).toThrow(
+      'WORK_REFERENCE_RETIREMENT_LIVE_GENERATION_CHANGED',
+    );
+    expect(readControlPlaneRecord(fx.controllerHome, 'execution_session', 'fixture', 'session')?.value).toEqual({
+      activeWorkId: 'old',
+      nativeReceipt: 'new',
+    });
   });
 
   test('reuses a prepared rollback database snapshot when no SQLite commit occurs before publish', () => {

@@ -169,6 +169,7 @@ async function prepareRuntimeReleaseSession(
   sourceRepositoryId?: string,
   expectedSourceRevision?: string,
   requestId?: string,
+  retireLegacyWorkReferences?: boolean,
 ) {
   const selectedSourceRepositoryId = sourceRepositoryId?.trim();
   if (!selectedSourceRepositoryId) {
@@ -209,6 +210,7 @@ async function prepareRuntimeReleaseSession(
     requestId,
     selectedSourceRepositoryId,
     expectedSourceRevision,
+    retireLegacyWorkReferences,
   );
 }
 
@@ -517,6 +519,7 @@ async function cli(): Promise<void> {
           sourceRepositoryId,
           expectedSourceRevision,
           'recovery-cli:' + process.pid + ':' + Date.now(),
+          process.argv.includes('--retire-legacy-work-references'),
         ),
       );
       return;
@@ -538,7 +541,12 @@ async function cli(): Promise<void> {
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
       output(
-        await cutoverConfiguredRuntimeReleaseSession(config, sessionId, `recovery-cli:${process.pid}:${Date.now()}`),
+        await cutoverConfiguredRuntimeReleaseSession(
+          config,
+          sessionId,
+          `recovery-cli:${process.pid}:${Date.now()}`,
+          process.argv.includes('--retire-legacy-work-references'),
+        ),
       );
       return;
     }
@@ -841,6 +849,11 @@ export const RECOVERY_TOOLS = [
         expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' },
         expected_active_release_id: { type: 'string', minLength: 1, maxLength: 256 },
         expected_authority_revision: { type: 'integer', minimum: 1 },
+        retire_legacy_work_references: {
+          type: 'boolean',
+          description:
+            'Explicitly authorize the one-time #483 offline Work reference retirement as part of this exact release transition. The old release must already support Work-free data.',
+        },
       },
       [
         'release_path',
@@ -908,6 +921,11 @@ export const RECOVERY_TOOLS = [
       {
         source_repository_id: { type: 'string', pattern: '^repo_[A-Za-z0-9_-]+$' },
         expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' },
+        retire_legacy_work_references: {
+          type: 'boolean',
+          description:
+            'Explicitly persist #483 offline Work retirement intent in this exact-source ReleaseSession before autonomous cutover. Ordinary prepare never enables it.',
+        },
       },
       ['source_repository_id', 'expected_source_revision'],
     ),
@@ -925,6 +943,11 @@ export const RECOVERY_TOOLS = [
     inputSchema: mutationInputSchema(
       {
         session_id: { type: 'string', minLength: 8, maxLength: 120 },
+        retire_legacy_work_references: {
+          type: 'boolean',
+          description:
+            'Explicitly retire classified legacy Work references offline during this exact ReleaseSession cutover. Never inferred or enabled for automatic cutover.',
+        },
       },
       ['session_id'],
     ),
@@ -1513,6 +1536,7 @@ export async function dispatchRecoveryTool(
             expectedSourceRevision: args.expected_source_revision.trim(),
             expectedActiveReleaseId: args.expected_active_release_id.trim(),
             expectedAuthorityRevision: Number(args.expected_authority_revision),
+            retireLegacyWorkReferences: args.retire_legacy_work_references === true,
           },
         ),
       );
@@ -1593,6 +1617,7 @@ export async function dispatchRecoveryTool(
           args.source_repository_id.trim(),
           args.expected_source_revision.trim(),
           'recovery-gateway:' + args.request_id,
+          args.retire_legacy_work_references === true,
         ),
       );
     }
@@ -1621,6 +1646,7 @@ export async function dispatchRecoveryTool(
           config,
           args.session_id.trim(),
           `recovery-gateway:${args.request_id}`,
+          args.retire_legacy_work_references === true,
         ),
       );
     }

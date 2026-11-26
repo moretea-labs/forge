@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   backupControlPlaneDatabase,
+  prepareRetiredWorkReferenceSnapshot,
   sha256ControlPlaneDatabaseFile,
   controlPlaneDatabasePath,
   disableControlPlaneReadConnectionReuse,
@@ -463,6 +464,342 @@ describe('final SQLite control-plane cutover', () => {
         expectedRevision: null,
       });
       expect(recreated.revision).toBe(6);
+      expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+    });
+  });
+
+  test('offline Work-reference retirement preserves native facts, audit and backup and is idempotent', () => {
+    withHome((controllerHome) => {
+      const fixtures = [
+        [
+          'execution_session',
+          { activeWorkId: 'old', goalDelegation: { workId: 'old', goal: 'native' } },
+          { goalDelegation: { goal: 'native' } },
+        ],
+        [
+          'plan_revision',
+          { steps: [{ workId: 'old', title: 'native' }, { title: 'second' }] },
+          { steps: [{ title: 'native' }, { title: 'second' }] },
+        ],
+        [
+          'controller_round_relay',
+          { originWorkId: 'old', observationWindow: [{ workId: 'old', receiptId: 'r' }] },
+          { observationWindow: [{ receiptId: 'r' }] },
+        ],
+        ['requirement', { remainingWork: ['native user task'] }, { remainingWork: ['native user task'] }],
+      ] as const;
+      for (const [namespace, value] of fixtures) {
+        writeControlPlaneRecord(controllerHome, {
+          namespace,
+          scope: 'fixture',
+          key: 'record',
+          schemaVersion: 1,
+          value,
+          expectedRevision: null,
+        });
+      }
+      const backup = join(controllerHome, 'backup.sqlite');
+      const candidate = join(controllerHome, 'candidate.sqlite');
+      const before = backupControlPlaneDatabase(controllerHome, backup);
+      const digest = sha256ControlPlaneDatabaseFile(backup);
+      const result = prepareRetiredWorkReferenceSnapshot(backup, digest, candidate);
+      expect(result).toMatchObject({ recordCount: 3, fieldCount: 5 });
+      expect(sha256ControlPlaneDatabaseFile(backup)).toBe(digest);
+      const database = new Database(candidate, { readonly: true });
+      try {
+        for (const [namespace, , expected] of fixtures) {
+          const row = database
+            .query('SELECT payload, revision FROM control_plane_records WHERE namespace = ?')
+            .get(namespace) as { payload: string; revision: number };
+          expect(JSON.parse(row.payload)).toEqual(expected);
+          expect(row.revision).toBe(1);
+        }
+        expect(database.query('SELECT count(*) AS count FROM control_plane_audit').get()).toEqual({
+          count: before.auditEventCount,
+        });
+        expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
+      } finally {
+        database.close();
+      }
+      const repeated = prepareRetiredWorkReferenceSnapshot(
+        candidate,
+        result.sha256,
+        join(controllerHome, 'again.sqlite'),
+      );
+      expect(repeated).toMatchObject({ recordCount: 0, fieldCount: 0 });
+      expect(() => prepareRetiredWorkReferenceSnapshot(backup, digest, backup)).toThrow();
+      expect(sha256ControlPlaneDatabaseFile(backup)).toBe(digest);
+    });
+  });
+
+  test('offline Work-reference retirement fails closed on an unclassified path without modifying its input', () => {
+    withHome((controllerHome) => {
+      for (const [namespace, value] of [
+        ['execution_session', { activeWorkId: 'old' }],
+        ['requirement', { unexpected: { workId: 'unknown' } }],
+      ] as const) {
+        writeControlPlaneRecord(controllerHome, {
+          namespace,
+          scope: 'fixture',
+          key: 'record',
+          schemaVersion: 1,
+          value,
+          expectedRevision: null,
+        });
+      }
+      const backup = join(controllerHome, 'backup.sqlite');
+      const candidate = join(controllerHome, 'candidate.sqlite');
+      backupControlPlaneDatabase(controllerHome, backup);
+      const digest = sha256ControlPlaneDatabaseFile(backup);
+      expect(() => prepareRetiredWorkReferenceSnapshot(backup, digest, candidate)).toThrow(
+        'WORK_REFERENCE_RETIREMENT_UNCLASSIFIED',
+      );
+      expect(sha256ControlPlaneDatabaseFile(backup)).toBe(digest);
+      expect(readdirSync(controllerHome)).not.toContain('candidate.sqlite');
+    });
+  });
+
+  test('SQLite maintenance removes every retired Work namespace without touching current semantic authority', () => {
+    withHome((controllerHome) => {
+      let retiredHandle = writeControlPlaneRecord(controllerHome, {
+        namespace: 'execution_work_handle',
+        scope: 'repo-retired',
+        key: 'handle-a',
+        schemaVersion: 1,
+        value: { state: 'running' },
+        expectedRevision: null,
+      });
+      retiredHandle = writeControlPlaneRecord(controllerHome, {
+        namespace: 'execution_work_handle',
+        scope: 'repo-retired',
+        key: 'handle-a',
+        schemaVersion: 1,
+        value: { state: 'completed' },
+        expectedRevision: retiredHandle.revision,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'work_semantic_revision',
+        scope: 'repo-retired',
+        key: 'work-a:r1',
+        schemaVersion: 1,
+        value: { goal: 'retired snapshot' },
+        expectedRevision: null,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'work_contract',
+        scope: 'repo-retired',
+        key: 'work-contract-a',
+        schemaVersion: 1,
+        value: { state: 'retired' },
+        expectedRevision: null,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'chatgpt_work_conversation_binding',
+        scope: 'repo-retired',
+        key: 'conversation-a',
+        schemaVersion: 1,
+        value: { state: 'retired' },
+        expectedRevision: null,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'controller_work_binding',
+        scope: 'repo-retired',
+        key: 'controller-a',
+        schemaVersion: 1,
+        value: { state: 'retired' },
+        expectedRevision: null,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'execution_work_validation_index',
+        scope: 'repo-retired',
+        key: 'validation-a',
+        schemaVersion: 1,
+        value: { state: 'retired' },
+        expectedRevision: null,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace: 'work_prepare_request',
+        scope: 'repo-retired',
+        key: 'prepare-a',
+        schemaVersion: 1,
+        value: { state: 'retired' },
+        expectedRevision: null,
+      });
+      const requirement = writeControlPlaneRecord(controllerHome, {
+        namespace: 'requirement',
+        scope: 'controller',
+        key: 'req-live',
+        schemaVersion: 1,
+        value: { title: 'live semantic authority' },
+        expectedRevision: null,
+      });
+      const legacyDatabase = new Database(controlPlaneDatabasePath(controllerHome));
+      try {
+        legacyDatabase.exec(
+          'CREATE INDEX control_plane_candidate_aaaaaaaaaaaaaaaa_bbbbbbbbbbbbbbbb ' +
+            "ON control_plane_records (scope, updated_at, record_key) WHERE namespace = 'work_contract'",
+        );
+        legacyDatabase
+          .query(
+            'INSERT OR REPLACE INTO control_plane_audit_record_cursor ' +
+              '(name, namespace, scope, record_key, updated_at) VALUES (?, ?, ?, ?, ?)',
+          )
+          .run('current', 'work_contract', 'repo-retired', 'work-contract-a', new Date().toISOString());
+      } finally {
+        legacyDatabase.close();
+      }
+
+      const report = maintainControlPlaneDatabase(controllerHome, {
+        allowVacuum: false,
+        minimumReclaimableBytes: Number.MAX_SAFE_INTEGER,
+      });
+      expect(report.prunedRetiredRecordRows).toBe(7);
+      expect(report.prunedRetiredAuditRows).toBe(8);
+      expect(
+        readControlPlaneRecord(controllerHome, 'execution_work_handle', 'repo-retired', 'handle-a'),
+      ).toBeUndefined();
+      expect(
+        readControlPlaneRecord(controllerHome, 'work_semantic_revision', 'repo-retired', 'work-a:r1'),
+      ).toBeUndefined();
+      expect(
+        readControlPlaneRecord(controllerHome, 'work_contract', 'repo-retired', 'work-contract-a'),
+      ).toBeUndefined();
+      expect(
+        readControlPlaneRecord(controllerHome, 'chatgpt_work_conversation_binding', 'repo-retired', 'conversation-a'),
+      ).toBeUndefined();
+      expect(
+        readControlPlaneRecord(controllerHome, 'controller_work_binding', 'repo-retired', 'controller-a'),
+      ).toBeUndefined();
+      expect(
+        readControlPlaneRecord(controllerHome, 'execution_work_validation_index', 'repo-retired', 'validation-a'),
+      ).toBeUndefined();
+      expect(
+        readControlPlaneRecord(controllerHome, 'work_prepare_request', 'repo-retired', 'prepare-a'),
+      ).toBeUndefined();
+      const cleanedDatabase = new Database(controlPlaneDatabasePath(controllerHome));
+      try {
+        const legacyIndex = cleanedDatabase
+          .query(
+            'SELECT COUNT(*) AS count FROM sqlite_master ' +
+              "WHERE type = 'index' AND name = 'control_plane_candidate_aaaaaaaaaaaaaaaa_bbbbbbbbbbbbbbbb'",
+          )
+          .get() as { count: number };
+        const retiredCursor = cleanedDatabase
+          .query(
+            'SELECT COUNT(*) AS count FROM control_plane_audit_record_cursor ' + "WHERE namespace = 'work_contract'",
+          )
+          .get() as { count: number };
+        expect(legacyIndex.count).toBe(0);
+        expect(retiredCursor.count).toBe(0);
+      } finally {
+        cleanedDatabase.close();
+      }
+      expect(readControlPlaneRecord(controllerHome, 'requirement', 'controller', 'req-live')).toMatchObject({
+        revision: requirement.revision,
+        value: { title: 'live semantic authority' },
+      });
+      expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+    });
+  });
+
+  test('SQLite maintenance bounds rebuildable history and deletes retired Work history while preserving live semantic history', () => {
+    withHome((controllerHome) => {
+      const namespace = 'computer_interaction_target_index';
+      let current = writeControlPlaneRecord(controllerHome, {
+        namespace,
+        scope: 'controller',
+        key: 'current-long',
+        schemaVersion: 1,
+        value: { revision: 1 },
+        expectedRevision: null,
+      });
+      let retiredWork = writeControlPlaneRecord(controllerHome, {
+        namespace: 'work_contract',
+        scope: 'repo-test',
+        key: 'retired-work-long',
+        schemaVersion: 1,
+        value: { revision: 1 },
+        expectedRevision: null,
+      });
+      let liveSemantic = writeControlPlaneRecord(controllerHome, {
+        namespace: 'plan_contract',
+        scope: 'repo-test',
+        key: 'semantic-long',
+        schemaVersion: 1,
+        value: { revision: 1 },
+        expectedRevision: null,
+      });
+      for (let revision = 2; revision <= 100; revision += 1) {
+        current = writeControlPlaneRecord(controllerHome, {
+          namespace,
+          scope: 'controller',
+          key: 'current-long',
+          schemaVersion: 1,
+          value: { revision },
+          expectedRevision: current.revision,
+        });
+        retiredWork = writeControlPlaneRecord(controllerHome, {
+          namespace: 'work_contract',
+          scope: 'repo-test',
+          key: 'retired-work-long',
+          schemaVersion: 1,
+          value: { revision },
+          expectedRevision: retiredWork.revision,
+        });
+        liveSemantic = writeControlPlaneRecord(controllerHome, {
+          namespace: 'plan_contract',
+          scope: 'repo-test',
+          key: 'semantic-long',
+          schemaVersion: 1,
+          value: { revision },
+          expectedRevision: liveSemantic.revision,
+        });
+      }
+
+      const report = maintainControlPlaneDatabase(controllerHome, {
+        minimumReclaimableBytes: 1,
+        minimumReclaimableRatio: 0,
+        pruneRebuildableRecordAudit: { olderThanMs: -1_000, keepTail: 10, maxRows: 1_000 },
+      });
+      expect(report.prunedCurrentAuditRows).toBe(90);
+
+      const database = new Database(controlPlaneDatabasePath(controllerHome));
+      try {
+        const currentRevisions = database
+          .query(
+            'SELECT revision FROM control_plane_audit WHERE namespace = ? AND scope = ? AND record_key = ? ORDER BY revision',
+          )
+          .all(namespace, 'controller', 'current-long')
+          .map((row) => (row as { revision: number }).revision);
+        expect(currentRevisions).toEqual(Array.from({ length: 10 }, (_, index) => 91 + index));
+        const currentFloor = database
+          .query(
+            'SELECT floor_revision FROM control_plane_audit_floor WHERE namespace = ? AND scope = ? AND record_key = ?',
+          )
+          .get(namespace, 'controller', 'current-long') as { floor_revision: number } | null;
+        expect(currentFloor?.floor_revision).toBe(91);
+
+        const workAudit = database
+          .query(
+            "SELECT COUNT(*) AS count FROM control_plane_audit WHERE namespace = 'work_contract' AND scope = 'repo-test' AND record_key = 'retired-work-long'",
+          )
+          .get() as { count: number };
+        expect(workAudit.count).toBe(0);
+        expect(
+          readControlPlaneRecord(controllerHome, 'work_contract', 'repo-test', 'retired-work-long'),
+        ).toBeUndefined();
+
+        const semanticRevisions = database
+          .query(
+            "SELECT revision FROM control_plane_audit WHERE namespace = 'plan_contract' AND scope = 'repo-test' AND record_key = 'semantic-long' ORDER BY revision",
+          )
+          .all()
+          .map((row) => (row as { revision: number }).revision);
+        expect(semanticRevisions).toHaveLength(100);
+      } finally {
+        database.close();
+      }
+      expect(retiredWork.revision).toBe(100);
       expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
     });
   });

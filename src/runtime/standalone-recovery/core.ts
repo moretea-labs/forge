@@ -83,6 +83,7 @@ import {
   type StagedRuntimeRelease,
 } from '../root/release-materialize';
 import {
+  applyStoppedWorkReferenceRetirement,
   prepareRuntimeReleaseDatabaseBackup,
   protectRuntimeReleaseAuthority,
   publishRuntimeRelease,
@@ -2302,6 +2303,8 @@ export interface RuntimeReleaseActivationGuard {
   expectedSourceRevision?: string;
   /** Explicit incompatible-migration path may bind activation to one isolated Recovery ReleaseSession. */
   releaseSessionId?: string;
+  /** Explicit one-time #483 offline retirement; never inferred from release version. */
+  retireLegacyWorkReferences?: boolean;
 }
 
 function configuredPrimaryRuntimeService(
@@ -4290,6 +4293,19 @@ async function activateRuntimeReleaseInternal(
       };
     }
   }
+  if (
+    guard.retireLegacyWorkReferences &&
+    (!expectedSourceRevision ||
+      !expectedSourceRepositoryId ||
+      candidate.manifest.sourceRepositoryId !== expectedSourceRepositoryId ||
+      typeof guard.expectedActiveReleaseId !== 'string' ||
+      !Number.isSafeInteger(guard.expectedAuthorityRevision) ||
+      guard.requiredPinnedReleaseRevision ||
+      guard.allowPreviousRelease ||
+      guard.preserveDatabaseOnFailure)
+  ) {
+    return { ok: false, attempted: false, noOp: true, detail: 'WORK_REFERENCE_RETIREMENT_EXACT_RELEASE_REQUIRED' };
+  }
   const platform = dependencies.platform ?? process.platform;
   const uid = await (dependencies.currentUid ?? currentUid)();
   const service = primaryRuntimeServiceOwner(config, platform, uid);
@@ -4359,6 +4375,15 @@ async function activateRuntimeReleaseInternal(
         current.active.artifactIdentity === candidate.manifest.artifactIdentity &&
         resolve(current.active.manifestPath) === resolve(candidate.manifestPath),
     );
+    if (guard.retireLegacyWorkReferences && (!current || requestedCandidateAlreadyActive)) {
+      return {
+        ok: false,
+        attempted: false,
+        noOp: true,
+        detail: 'WORK_REFERENCE_RETIREMENT_REQUIRES_FRESH_RELEASE',
+        operationId,
+      };
+    }
     if ((authorityRevisionStale || activeReleaseStale) && requestedCandidateAlreadyActive) {
       const verify = await verifyLocal(config);
       audit(config, 'runtime_release_activation_reconciled_active', {
@@ -4458,7 +4483,12 @@ async function activateRuntimeReleaseInternal(
           });
         }
       }
-      if (behaviorEquivalent && !storageMigrationRequired && serviceContractMatches) {
+      if (
+        behaviorEquivalent &&
+        !storageMigrationRequired &&
+        serviceContractMatches &&
+        !guard.retireLegacyWorkReferences
+      ) {
         const verify = await verifyLocal(config);
         audit(config, 'runtime_release_activation_behavior_identical', {
           operationId,
@@ -4656,6 +4686,12 @@ async function activateRuntimeReleaseInternal(
             timeoutMs: configuredPrimaryRuntimeService(config).postRestartVerifyTimeoutMs ?? 60_000,
             successDetail: 'requested Runtime release started and passed whole-Runtime verification',
             beforeStart: () => {
+              if (guard.retireLegacyWorkReferences) {
+                const retired = applyStoppedWorkReferenceRetirement(config.controllerHome, operationId, () => {
+                  if (runtimeRunning(config)) throw new Error('WORK_REFERENCE_RETIREMENT_RUNTIME_NOT_STOPPED');
+                });
+                audit(config, 'runtime_work_references_retired_offline', { operationId, ...retired });
+              }
               storageMigration = migrateStoppedRepoLocalControllerHomeStorage(config.controllerHome, platform);
               if (storageMigration.migrated) {
                 audit(config, 'runtime_controller_home_noindex_migrated', {
@@ -5253,6 +5289,7 @@ export async function prepareConfiguredRuntimeReleaseSession(
   requestId?: string,
   sourceRepositoryId?: string,
   expectedSourceRevision?: string,
+  retireLegacyWorkReferences?: boolean,
 ): Promise<ConfiguredRuntimeActivationResult> {
   let selection: RuntimeReleaseSourceSelection;
   try {
@@ -5521,6 +5558,22 @@ export async function prepareConfiguredRuntimeReleaseSession(
         };
       }
 
+      // A repeated prepare may resume a candidate, but must never change a frozen
+      // destructive intent after automatic progression has seen its session.
+      if (
+        resumableMatchingSession &&
+        retireLegacyWorkReferences !== undefined &&
+        (resumableMatchingSession.retireLegacyWorkReferences === true) !== retireLegacyWorkReferences
+      ) {
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: 'RELEASE_SESSION_RETIREMENT_INTENT_MISMATCH',
+          releaseSession: resumableMatchingSession,
+        };
+      }
+
       if (resumableMatchingSession && resumableMatchingSession.phase !== 'source_frozen') {
         return {
           ok: true as const,
@@ -5583,6 +5636,7 @@ export async function prepareConfiguredRuntimeReleaseSession(
           candidate: candidateLane,
           sourceRepositoryId: selectedSourceRepositoryId,
           sourceRevision: selectedSourceRevision,
+          retireLegacyWorkReferences,
         });
       }
       return {
@@ -5941,19 +5995,28 @@ async function stopCandidateServiceAtHome(
       const unitName = systemdUserUnitName(label);
       const stopped = await runCommand('systemctl', ['--user', 'disable', '--now', unitName], 20_000);
       const stoppedDetail = `${stopped.stderr}\n${stopped.stdout}`;
-      if (!stopped.ok && !/not loaded|not found|does not exist|no such file/i.test(stoppedDetail)) {
+      const unitPath = systemdUserUnitPath(unitName);
+      const busUnavailable = /failed to connect to bus|no medium found/i.test(stoppedDetail);
+      const candidateAlreadyAbsent = busUnavailable && !existsSync(unitPath) && !observeRuntimeStatus(home).running;
+      if (
+        !stopped.ok &&
+        !candidateAlreadyAbsent &&
+        !/not loaded|not found|does not exist|no such file/i.test(stoppedDetail)
+      ) {
         return {
           ok: false,
           detail: `RELEASE_SESSION_CANDIDATE_SYSTEMD_STOP_FAILED: ${stoppedDetail.trim() || stopped.status}`,
         };
       }
-      rmSync(systemdUserUnitPath(unitName), { force: true });
-      const reloaded = await runCommand('systemctl', ['--user', 'daemon-reload'], 20_000);
-      if (!reloaded.ok) {
-        return {
-          ok: false,
-          detail: `RELEASE_SESSION_CANDIDATE_SYSTEMD_RELOAD_FAILED: ${reloaded.stderr || reloaded.stdout || reloaded.status}`,
-        };
+      rmSync(unitPath, { force: true });
+      if (!candidateAlreadyAbsent) {
+        const reloaded = await runCommand('systemctl', ['--user', 'daemon-reload'], 20_000);
+        if (!reloaded.ok) {
+          return {
+            ok: false,
+            detail: `RELEASE_SESSION_CANDIDATE_SYSTEMD_RELOAD_FAILED: ${reloaded.stderr || reloaded.stdout || reloaded.status}`,
+          };
+        }
       }
     } else {
       return { ok: false, detail: `RELEASE_SESSION_CANDIDATE_SERVICE_PLATFORM_UNSUPPORTED: ${process.platform}` };
@@ -6978,6 +7041,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
   config: RecoveryConfig,
   sessionId: string,
   requestId?: string,
+  retireLegacyWorkReferences = false,
 ): Promise<ConfiguredRuntimeActivationResult> {
   const locked = await withLock(
     config,
@@ -6990,6 +7054,10 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       if (!initialSession)
         return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
       let session: ReleaseSession = initialSession;
+      // The independent Recovery prepare is the durable authorization point.
+      // Auto progression cannot silently turn an explicitly armed retirement
+      // into an ordinary cutover by omitting a transient API argument.
+      const retireForCutover = retireLegacyWorkReferences || session.retireLegacyWorkReferences === true;
       const candidateRelease = session.candidateRelease;
       if (!candidateRelease)
         return {
@@ -7398,6 +7466,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
               expectedSourceRepositoryId: releaseSessionSourceRepositoryId(session),
               expectedSourceRevision: session.sourceRevision,
               releaseSessionId: session.sessionId,
+              ...(retireForCutover ? { retireLegacyWorkReferences: true } : {}),
             },
             releaseSessionLock,
           );

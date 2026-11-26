@@ -142,19 +142,24 @@ function productionTypeScriptFiles() {
   ].sort();
 }
 
-// #483 terminal invariant: retired semantic Work APIs and identities cannot
-// return anywhere in production TypeScript. The one-time migration path is gone.
+// #483 terminal invariant: retired semantic Work APIs cannot return anywhere
+// in production TypeScript. Historical field names remain temporarily readable
+// only inside the explicit one-time offline retirement transformer; once the
+// production migration is accepted, deleting that transformer makes this
+// inventory naturally converge to zero.
 for (const path of productionTypeScriptFiles()) {
   forbid(
     path,
     /\b(?:WorkHandle|WorkContract|rh_work)\b/,
     'retired Work/WorkHandle/WorkContract API vocabulary must not return in production source (#483)',
   );
-  forbid(
-    path,
-    /\b(?:activeWorkId|sourceWorkId|originWorkId|predecessorWorkId|successorWorkId|workHandleId|workContractId)\b/,
-    'retired Work identity fields cannot return in production source (#483)',
-  );
+  if (path !== 'src/runtime/control-plane/persistence/work-reference-retirement.ts') {
+    forbid(
+      path,
+      /\b(?:activeWorkId|sourceWorkId|originWorkId|predecessorWorkId|successorWorkId|workHandleId|workContractId)\b/,
+      'retired Work identity fields may exist only in the one-time offline retirement transformer (#483)',
+    );
+  }
 }
 
 for (const retiredWorkAsset of [

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import {
+  constants,
   closeSync,
   copyFileSync,
   existsSync,
@@ -13,6 +14,7 @@ import {
 } from 'fs';
 import { dirname, join } from 'path';
 import { durableControllerHome } from '../../../effects/controller-home';
+import { removeRetiredWorkReferences } from './work-reference-retirement';
 
 /**
  * Small, dependency-free SQLite boundary for controller-owned runtime facts.
@@ -142,6 +144,22 @@ export const REBUILDABLE_RECORD_AUDIT_NAMESPACES = [
   'process_check_execution_binding',
 ] as const;
 
+/**
+ * Global namespaces removed from the current Forge runtime. They are not
+ * compatibility authorities: keeping their rows would preserve a retired
+ * semantic execution ledger that #483 explicitly removed.
+ */
+export const RETIRED_CONTROL_PLANE_NAMESPACES = [
+  'execution_work_handle',
+  'work_semantic_revision',
+  'work_contract',
+  'chatgpt_work_conversation_binding',
+  'controller_work_binding',
+  'execution_work_validation_index',
+  'work_prepare_request',
+] as const;
+const RETIRED_NAMESPACE_AUDIT_MAX_ROWS_PER_PASS = 100_000;
+
 export interface PruneOrphanedAuditOptions {
   /** Delete only orphaned history older than this age. A negative value is test-only. */
   olderThanMs: number;
@@ -206,6 +224,10 @@ export interface ControlPlaneDatabaseMaintenanceReport {
   prunedAuditRows?: number;
   /** Current-record rebuildable audit rows removed before compaction. */
   prunedCurrentAuditRows?: number;
+  /** Current rows removed from globally retired namespaces. */
+  prunedRetiredRecordRows?: number;
+  /** Audit rows removed from globally retired namespaces. */
+  prunedRetiredAuditRows?: number;
   skippedReason?: 'database_missing' | 'below_threshold' | 'vacuum_disabled' | 'database_busy';
 }
 
@@ -1610,7 +1632,8 @@ function pruneOrphanedAuditRows(database: SqliteDatabase, options: PruneOrphaned
  * Bound current-record history only for explicitly approved namespaces. The
  * newest `keepTail` revisions always remain, and every prune advances the
  * record's audit floor so inspection still proves an exact contiguous chain.
- * Mutable semantic domains remain excluded.
+ * Mutable semantic domains remain excluded. Retired Work namespaces are removed
+ * by pruneRetiredControlPlaneNamespaces instead of being retained or bounded.
  */
 function pruneRebuildableRecordAuditRows(
   database: SqliteDatabase,
@@ -1769,8 +1792,148 @@ function pruneRebuildableRecordAuditRows(
 }
 
 /**
+ * Remove storage for globally retired namespaces without turning cleanup into a
+ * generic semantic-deletion API. Current rows go first so partial audit pruning
+ * can never make a still-authoritative record fail continuity inspection.
+ */
+function pruneRetiredControlPlaneNamespaces(
+  database: SqliteDatabase,
+  maxAuditRows = RETIRED_NAMESPACE_AUDIT_MAX_ROWS_PER_PASS,
+): { recordRows: number; auditRows: number } {
+  const namespaces = [...RETIRED_CONTROL_PLANE_NAMESPACES];
+  if (namespaces.length === 0) return { recordRows: 0, auditRows: 0 };
+  const placeholders = namespaces.map(() => '?').join(',');
+  const hasRetiredRecords = withSqliteStatement(
+    database,
+    `SELECT 1 AS present FROM control_plane_records WHERE namespace IN (${placeholders}) LIMIT 1`,
+    (statement) => statement.get(...namespaces),
+  );
+  const hasRetiredAudit = withSqliteStatement(
+    database,
+    `SELECT 1 AS present FROM control_plane_audit WHERE namespace IN (${placeholders}) LIMIT 1`,
+    (statement) => statement.get(...namespaces),
+  );
+  const hasRetiredAuditFloor =
+    tableExists(database, AUDIT_FLOOR_TABLE) &&
+    Boolean(
+      withSqliteStatement(
+        database,
+        'SELECT 1 AS present FROM ' + AUDIT_FLOOR_TABLE + ' WHERE namespace IN (' + placeholders + ') LIMIT 1',
+        (statement) => statement.get(...namespaces),
+      ),
+    );
+  const hasRetiredRecordCursor =
+    tableExists(database, AUDIT_RECORD_CURSOR_TABLE) &&
+    Boolean(
+      withSqliteStatement(
+        database,
+        'SELECT 1 AS present FROM ' + AUDIT_RECORD_CURSOR_TABLE + ' WHERE namespace IN (' + placeholders + ') LIMIT 1',
+        (statement) => statement.get(...namespaces),
+      ),
+    );
+  const retiredCandidateIndexes = (
+    withSqliteStatement(
+      database,
+      "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL AND name GLOB 'control_plane_candidate_*'",
+      (statement) => statement.all(),
+    ) as Array<{ name: string; sql: string }>
+  ).filter(
+    (index) =>
+      /^control_plane_candidate_[a-f0-9]{16}_[a-f0-9]{16}$/.test(index.name) &&
+      namespaces.some(
+        (namespace) =>
+          index.sql.includes("namespace = '" + namespace + "'") || index.sql.includes("namespace='" + namespace + "'"),
+      ),
+  );
+  if (
+    !hasRetiredRecords &&
+    !hasRetiredAudit &&
+    !hasRetiredAuditFloor &&
+    !hasRetiredRecordCursor &&
+    retiredCandidateIndexes.length === 0
+  )
+    return { recordRows: 0, auditRows: 0 };
+  let recordRows = 0;
+
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    for (const index of retiredCandidateIndexes) database.exec('DROP INDEX ' + index.name);
+    withSqliteStatement(
+      database,
+      `DELETE FROM control_plane_records WHERE namespace IN (${placeholders})`,
+      (statement) => statement.run(...namespaces),
+    );
+    recordRows = Number(
+      withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0,
+    );
+    if (tableExists(database, AUDIT_FLOOR_TABLE)) {
+      withSqliteStatement(
+        database,
+        `DELETE FROM ${AUDIT_FLOOR_TABLE} WHERE namespace IN (${placeholders})`,
+        (statement) => statement.run(...namespaces),
+      );
+    }
+    if (tableExists(database, AUDIT_RECORD_CURSOR_TABLE)) {
+      withSqliteStatement(
+        database,
+        `DELETE FROM ${AUDIT_RECORD_CURSOR_TABLE} WHERE namespace IN (${placeholders})`,
+        (statement) => statement.run(...namespaces),
+      );
+    }
+    database.exec('COMMIT');
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK');
+    } catch {
+      /* preserve the original error */
+    }
+    throw error;
+  }
+
+  const boundedMaxRows = Math.max(1, Math.min(Math.trunc(maxAuditRows), 100_000));
+  const rows = withSqliteStatement(
+    database,
+    `
+      SELECT event_id
+      FROM control_plane_audit
+      WHERE namespace IN (${placeholders})
+      ORDER BY event_id ASC
+      LIMIT ?
+    `,
+    (statement) => statement.all(...namespaces, boundedMaxRows),
+  ) as Array<{ event_id: number }>;
+  let auditRows = 0;
+  for (let offset = 0; offset < rows.length; offset += AUDIT_RETENTION_CHUNK_ROWS) {
+    const ids = rows.slice(offset, offset + AUDIT_RETENTION_CHUNK_ROWS).map((row) => row.event_id);
+    if (ids.length === 0) continue;
+    const idPlaceholders = ids.map(() => '?').join(',');
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      withSqliteStatement(
+        database,
+        `DELETE FROM control_plane_audit WHERE event_id IN (${idPlaceholders})`,
+        (statement) => statement.run(...ids),
+      );
+      auditRows += Number(
+        withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0,
+      );
+      database.exec('COMMIT');
+    } catch (error) {
+      try {
+        database.exec('ROLLBACK');
+      } catch {
+        /* preserve the original error */
+      }
+      throw error;
+    }
+  }
+  return { recordRows, auditRows };
+}
+
+/**
  * SQLite lifecycle maintenance. Domain lifecycles own canonical row deletion;
- * this boundary bounds explicitly rebuildable audit history. PASSIVE checkpointing is
+ * this boundary only removes namespaces already declared globally retired and
+ * bounds explicitly rebuildable audit history. PASSIVE checkpointing is
  * non-blocking, and VACUUM is attempted only when
  * already-reclaimable free pages exceed both configured thresholds. A live
  * writer causes a fail-closed busy skip instead of lock stealing or corruption
@@ -1844,6 +2007,18 @@ export function maintainControlPlaneDatabase(
   try {
     database.exec('PRAGMA busy_timeout = 0; PRAGMA foreign_keys = ON;');
     assertSupportedSchema(database, path, true);
+    try {
+      const retired = pruneRetiredControlPlaneNamespaces(database);
+      report.prunedRetiredRecordRows = retired.recordRows;
+      report.prunedRetiredAuditRows = retired.auditRows;
+    } catch (error) {
+      const busy = sqliteBusyError(path, error);
+      if (busy) {
+        report.skippedReason = 'database_busy';
+        return report;
+      }
+      throw error;
+    }
     if (options.pruneOrphanedAudit) {
       try {
         report.prunedAuditRows = pruneOrphanedAuditRows(database, options.pruneOrphanedAudit);
@@ -1971,6 +2146,64 @@ export function backupControlPlaneDatabase(
     return inspectControlPlaneDatabaseFile(destination);
   } catch (error) {
     if (existsSync(destination)) unlinkSync(destination);
+    throw error;
+  }
+}
+
+/**
+ * Prepare a new, verified offline migration candidate from an immutable
+ * backup. Never edit the input or active Controller Home. Recovery must still
+ * own the stopped-Runtime apply, source-generation fence and rollback.
+ */
+export function prepareRetiredWorkReferenceSnapshot(
+  backupPath: string,
+  expectedSha256: string,
+  destinationPath: string,
+): { recordCount: number; fieldCount: number; sha256: string } {
+  for (const path of [backupPath, destinationPath]) {
+    if (['-wal', '-shm', '-journal'].some((suffix) => existsSync(path + suffix))) {
+      throw new Error('WORK_REFERENCE_RETIREMENT_SIDECAR_PRESENT');
+    }
+  }
+  if (sha256ControlPlaneDatabaseFile(backupPath) !== expectedSha256) {
+    throw new Error('WORK_REFERENCE_RETIREMENT_BACKUP_DIGEST_MISMATCH');
+  }
+  // Exclusive creation prevents overwriting a live DB, existing backup or
+  // symlink even when a caller accidentally supplies its path.
+  copyFileSync(backupPath, destinationPath, constants.COPYFILE_EXCL);
+  try {
+    if (sha256ControlPlaneDatabaseFile(destinationPath) !== expectedSha256) {
+      throw new Error('WORK_REFERENCE_RETIREMENT_COPY_DIGEST_MISMATCH');
+    }
+    const database = openRawDatabase(destinationPath);
+    let retired: ReturnType<typeof removeRetiredWorkReferences>;
+    try {
+      database.exec('PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;');
+      const before = inspectOpenDatabase(database, destinationPath);
+      database.exec('BEGIN IMMEDIATE');
+      try {
+        retired = removeRetiredWorkReferences(database);
+        const after = inspectOpenDatabase(database, destinationPath);
+        if (before.recordCount !== after.recordCount || before.auditEventCount !== after.auditEventCount) {
+          throw new Error('WORK_REFERENCE_RETIREMENT_NATIVE_FACT_COUNT_CHANGED');
+        }
+        if (withSqliteStatement(database, 'PRAGMA foreign_key_check', (statement) => statement.all()).length > 0) {
+          throw new Error('WORK_REFERENCE_RETIREMENT_FOREIGN_KEY_VIOLATION');
+        }
+        database.exec('COMMIT');
+      } catch (error) {
+        database.exec('ROLLBACK');
+        throw error;
+      }
+      // Reclaim historical pages only on the disposable copy.
+      if (retired.fieldCount > 0) database.exec('VACUUM;');
+      inspectOpenDatabase(database, destinationPath);
+    } finally {
+      database.close();
+    }
+    return { ...retired, sha256: sha256ControlPlaneDatabaseFile(destinationPath) };
+  } catch (error) {
+    unlinkSync(destinationPath);
     throw error;
   }
 }

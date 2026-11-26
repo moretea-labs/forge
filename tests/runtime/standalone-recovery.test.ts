@@ -3364,6 +3364,7 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
     'recovery-gateway:stage-request-1',
     config.primaryRuntimeSourceRepositoryId,
     sourceRevision,
+    true,
   );
   expect(stageCalls).toBe(1);
   expect(stagedFrom).not.toBe(resolve(sourceRoot));
@@ -3376,6 +3377,7 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
       phase: 'built',
       stable: { controllerHome: resolve(home) },
       candidate: { controllerHome: candidateHome },
+      retireLegacyWorkReferences: true,
       candidateRelease: {
         releaseId: 'release-new',
         sourceCommit: sourceRevision,
@@ -3433,6 +3435,7 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
     releaseSession: {
       sessionId: progressed.sessionId,
       phase: 'cutover_eligible',
+      retireLegacyWorkReferences: true,
     },
   });
   expect(readRuntimeReleaseAuthority(home)).toMatchObject({
@@ -4809,12 +4812,16 @@ describe('standalone recovery on canonical Runtime', () => {
       type: 'string',
       pattern: '^[a-fA-F0-9]{40}$',
     });
-    expect(prepareSchema?.properties).not.toHaveProperty('retire_legacy_work_references');
+    expect(prepareSchema?.properties?.retire_legacy_work_references).toMatchObject({ type: 'boolean' });
+    expect(prepareSchema?.required).not.toContain('retire_legacy_work_references');
     const cutoverTool = RECOVERY_TOOLS.find((tool) => tool.name === 'cutover_runtime_release_session');
     const cutoverSchema = cutoverTool?.inputSchema as
       | { required?: readonly string[]; properties?: Record<string, unknown> }
       | undefined;
-    expect(cutoverSchema?.properties).not.toHaveProperty('retire_legacy_work_references');
+    expect(cutoverSchema?.properties?.retire_legacy_work_references).toMatchObject({
+      type: 'boolean',
+    });
+    expect(cutoverSchema?.required).not.toContain('retire_legacy_work_references');
     const migrateTool = RECOVERY_TOOLS.find((tool) => tool.name === 'migrate_controller_home');
     expect(migrateTool?.inputSchema.required).toEqual(
       expect.arrayContaining(['request_id', 'canonical_source_root', 'expected_source_revision']),
@@ -7493,6 +7500,404 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(reboundUnit).toBe(renderPackageRuntimeSystemdUserService(home));
       expect(reboundUnit).toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));
       expect(reboundUnit).not.toContain(join(home, 'runtime', 'releases', 'release-a', 'forge-runtime'));
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('explicit #483 migration retires Work references after systemd stop and before start', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const active = verifiedManifest(home, 'release-a', 'runtime-a');
+      const sourceRevision = 'a'.repeat(40);
+      const candidate = verifiedManifest(home, 'release-b', 'runtime-b', sourceRevision, 'repo_retirement');
+      const base = ensureActiveRuntimeRelease(home, active.path);
+      writeControlPlaneRecord(home, {
+        namespace: 'execution_session',
+        scope: 'fixture',
+        key: 'session',
+        schemaVersion: 1,
+        value: { activeWorkId: 'old', nativeReceipt: 'keep' },
+        expectedRevision: null,
+      });
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      const unitName = `${paths.label}.service`;
+      const unitPath = writePackageRuntimeSystemdUserService(home);
+      const beforeUnit = readFileSync(unitPath, 'utf8');
+      expect(beforeUnit).toContain(join(home, 'runtime', 'releases', 'release-a', 'forge-runtime'));
+      expect(beforeUnit).not.toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));
+      let serviceActive = true;
+      let connectorBindings = 0;
+      const commands: string[][] = [];
+      const activationOrder: string[] = [];
+      const config = createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 },
+      });
+      const sessionId = 'release-work-retirement-12345678';
+      const candidateHome = join(home, 'candidate-runtime-lanes', sessionId);
+      mkdirSync(candidateHome, { recursive: true });
+      let session = createReleaseSession({
+        controllerHome: home,
+        sessionId,
+        stable: {
+          schemaVersion: 1,
+          kind: 'stable',
+          controllerHome: home,
+          serviceLabel: 'stable-runtime',
+          port: 8765,
+          authTokenFile: join(home, 'stable-runtime-token'),
+        },
+        stableRelease: {
+          authorityRevision: base.revision,
+          releaseId: base.active.releaseId,
+          artifactIdentity: base.active.artifactIdentity,
+          manifestSha256: base.active.manifestSha256,
+          workerProtocolVersion: base.active.workerProtocolVersion,
+          releaseFencingTokenSha256: createHash('sha256').update(base.fencingToken).digest('hex'),
+        },
+        candidate: {
+          schemaVersion: 1,
+          kind: 'candidate',
+          sessionId,
+          controllerHome: candidateHome,
+          serviceLabel: 'candidate-runtime',
+          port: 8766,
+          authTokenFile: join(candidateHome, 'runtime-token'),
+          databaseSnapshotPath: join(candidateHome, 'control-plane.sqlite'),
+          sourceStableControllerHome: home,
+          createdAt: new Date().toISOString(),
+        },
+        sourceRepositoryId: 'repo_retirement',
+        sourceRevision,
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'built',
+        candidateRelease: {
+          releaseId: 'release-b',
+          manifestPath: candidate.path,
+          artifactIdentity: candidate.artifactIdentity,
+          manifestSha256: createHash('sha256').update(readFileSync(candidate.path)).digest('hex'),
+          treeSha256: runtimeReleaseTreeSha256(dirname(candidate.path)),
+          sourceCommit: sourceRevision,
+          sourceRepositoryId: 'repo_retirement',
+        },
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_booted',
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_verified',
+        receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+          id,
+          kind: 'candidate_canary' as const,
+          summary: id,
+        })),
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_eligible',
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_attempting',
+      });
+      const noFence = await activateRuntimeRelease(config, candidate.path, {}, { retireLegacyWorkReferences: true });
+      expect(noFence).toMatchObject({
+        ok: false,
+        attempted: false,
+        detail: 'WORK_REFERENCE_RETIREMENT_EXACT_RELEASE_REQUIRED',
+      });
+      const result = await activateRuntimeRelease(
+        config,
+        candidate.path,
+        {
+          platform: 'linux',
+          currentUid: async () => 1000,
+          runCommand: async (name, args) => {
+            commands.push([name, ...args]);
+            if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+            if (name === 'systemctl' && args[0] === '--user' && args[1] === 'stop') serviceActive = false;
+            if (name === 'systemctl' && args[0] === '--user' && args[1] === 'start') {
+              expect(readControlPlaneRecord(home, 'execution_session', 'fixture', 'session')?.value).toEqual({
+                nativeReceipt: 'keep',
+              });
+              activationOrder.push('runtime-start');
+              serviceActive = true;
+            }
+            if (name === 'systemctl' && args[0] === '--user' && args[1] === 'show') {
+              return { ok: true, status: 0, stdout: serviceActive ? 'active\n' : 'inactive\n', stderr: '' };
+            }
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => serviceActive,
+          repairPrimaryConnectorBinding: async () => {
+            connectorBindings += 1;
+            activationOrder.push('connector-bind');
+            if (!serviceActive) {
+              return {
+                ok: false,
+                attempted: true,
+                detail: 'candidate Connector cannot become ready before the Runtime starts',
+              };
+            }
+            return { ok: true, attempted: true, detail: 'candidate Connector binding refreshed' };
+          },
+          verifyLocal: async () => {
+            const authority = readRuntimeReleaseAuthority(home)!;
+            return {
+              ...healthyVerify(),
+              releases: {
+                active: {
+                  path: authority.active.manifestPath,
+                  revision: authority.active.releaseId,
+                  artifactIdentity: authority.active.artifactIdentity,
+                  manifestSha256: 'test-sha',
+                  workerProtocolVersion: 1,
+                },
+                coherent: true,
+              },
+            };
+          },
+          now: (() => {
+            let value = 0;
+            return () => (value += 1_000);
+          })(),
+          sleep: async () => undefined,
+        },
+        {
+          retireLegacyWorkReferences: true,
+          expectedSourceRepositoryId: 'repo_retirement',
+          expectedSourceRevision: sourceRevision,
+          expectedActiveReleaseId: base.active.releaseId,
+          expectedAuthorityRevision: base.revision,
+          releaseSessionId: session.sessionId,
+        },
+      );
+      expect(result).toMatchObject({ ok: true, attempted: true, serviceTarget: unitName });
+      expect(readReleaseSession(home, session.sessionId)?.transaction).toMatchObject({
+        candidateReleaseId: 'release-b',
+        rollbackRelease: { releaseId: 'release-a' },
+      });
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
+      expect(commands).toContainEqual(['systemctl', '--user', 'stop', unitName]);
+      expect(commands).toContainEqual(['systemctl', '--user', 'daemon-reload']);
+      expect(commands).toContainEqual(['systemctl', '--user', 'enable', unitName]);
+      expect(commands).toContainEqual(['systemctl', '--user', 'start', unitName]);
+      expect(commands.some((entry) => entry[0] === 'launchctl')).toBe(false);
+      expect(connectorBindings).toBe(1);
+      expect(activationOrder).toEqual(['runtime-start', 'connector-bind']);
+      const reboundUnit = readFileSync(unitPath, 'utf8');
+      expect(reboundUnit).toBe(renderPackageRuntimeSystemdUserService(home));
+      expect(reboundUnit).toContain(join(home, 'runtime', 'releases', 'release-b', 'forge-runtime'));
+      expect(reboundUnit).not.toContain(join(home, 'runtime', 'releases', 'release-a', 'forge-runtime'));
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  test('ReleaseSession cutover can retire legacy Work references without invalidating the SQLite generation fence', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const active = verifiedManifest(home, 'release-session-retire-a', 'runtime-a');
+      const sourceRevision = 'b'.repeat(40);
+      const sourceRepositoryId = 'repo_retirement_session';
+      const candidateReleaseFiles = verifiedManifest(
+        home,
+        'release-session-retire-b',
+        'runtime-b',
+        sourceRevision,
+        sourceRepositoryId,
+      );
+      const portableManifest = JSON.parse(readFileSync(candidateReleaseFiles.path, 'utf8')) as Record<string, unknown>;
+      delete portableManifest.controllerHome;
+      portableManifest.deploymentScope = 'portable';
+      writeFileSync(candidateReleaseFiles.path, `${JSON.stringify(portableManifest, null, 2)}\n`);
+
+      const base = ensureActiveRuntimeRelease(home, active.path);
+      writeControlPlaneRecord(home, {
+        namespace: 'execution_session',
+        scope: 'fixture',
+        key: 'release-session-retirement',
+        schemaVersion: 1,
+        value: { activeWorkId: 'legacy-work', nativeReceipt: 'keep' },
+        expectedRevision: null,
+      });
+      runtimeServiceConfig(home);
+      writePackageRuntimeSystemdUserService(home);
+
+      const sessionId = 'release-retirement-session-12345678';
+      const candidateHome = join(home, 'candidate-runtime-lanes', sessionId);
+      mkdirSync(candidateHome, { recursive: true });
+      let session = createReleaseSession({
+        controllerHome: home,
+        sessionId,
+        stable: {
+          schemaVersion: 1,
+          kind: 'stable',
+          controllerHome: home,
+          serviceLabel: 'stable-runtime',
+          port: 8765,
+          authTokenFile: join(home, 'mcp', 'runtime-token'),
+        },
+        stableRelease: {
+          authorityRevision: base.revision,
+          releaseId: base.active.releaseId,
+          artifactIdentity: base.active.artifactIdentity,
+          manifestSha256: base.active.manifestSha256,
+          workerProtocolVersion: base.active.workerProtocolVersion,
+          releaseFencingTokenSha256: createHash('sha256').update(base.fencingToken).digest('hex'),
+        },
+        candidate: {
+          schemaVersion: 1,
+          kind: 'candidate',
+          sessionId,
+          controllerHome: candidateHome,
+          serviceLabel: 'candidate-runtime',
+          port: 8766,
+          authTokenFile: join(candidateHome, 'mcp', 'runtime-token'),
+          databaseSnapshotPath: join(candidateHome, 'control-plane.sqlite'),
+          sourceStableControllerHome: home,
+          createdAt: new Date().toISOString(),
+        },
+        sourceRepositoryId,
+        sourceRevision,
+      });
+      const candidateRelease = {
+        releaseId: 'release-session-retire-b',
+        manifestPath: candidateReleaseFiles.path,
+        artifactIdentity: candidateReleaseFiles.artifactIdentity,
+        manifestSha256: createHash('sha256').update(readFileSync(candidateReleaseFiles.path)).digest('hex'),
+        treeSha256: runtimeReleaseTreeSha256(dirname(candidateReleaseFiles.path)),
+        sourceCommit: sourceRevision,
+        sourceRepositoryId,
+      };
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'built',
+        candidateRelease,
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_booted',
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'candidate_verified',
+        receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({
+          id,
+          kind: 'candidate_canary' as const,
+          summary: id,
+        })),
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_eligible',
+      });
+      session = advanceReleaseSession({
+        controllerHome: home,
+        sessionId,
+        expectedRevision: session.revision,
+        phase: 'cutover_attempting',
+      });
+
+      let serviceActive = true;
+      const result = await activateRuntimeRelease(
+        createRecoveryConfig(home, {
+          primaryRuntimeService: { platform: 'systemd-user', postRestartVerifyTimeoutMs: 10_000 },
+        }),
+        candidateReleaseFiles.path,
+        {
+          platform: 'linux',
+          currentUid: async () => 1000,
+          runCommand: async (name, args) => {
+            if (name === 'lsof') return { ok: false, status: 1, stdout: '', stderr: '' };
+            if (name === 'systemctl' && args[0] === '--user' && args[1] === 'stop') serviceActive = false;
+            if (name === 'systemctl' && args[0] === '--user' && args[1] === 'start') serviceActive = true;
+            if (name === 'systemctl' && args[0] === '--user' && args[1] === 'show') {
+              return { ok: true, status: 0, stdout: serviceActive ? 'active\n' : 'inactive\n', stderr: '' };
+            }
+            return { ok: true, status: 0, stdout: '', stderr: '' };
+          },
+          runtimeRunning: () => serviceActive,
+          repairPrimaryConnectorBinding: async () => ({
+            ok: true,
+            attempted: true,
+            detail: 'candidate Connector binding refreshed',
+          }),
+          verifyLocal: async () => {
+            const authority = readRuntimeReleaseAuthority(home)!;
+            return {
+              ...healthyVerify(),
+              releases: {
+                active: {
+                  path: authority.active.manifestPath,
+                  revision: authority.active.releaseId,
+                  artifactIdentity: authority.active.artifactIdentity,
+                  manifestSha256: authority.active.manifestSha256,
+                  workerProtocolVersion: authority.active.workerProtocolVersion,
+                },
+                coherent: true,
+              },
+            };
+          },
+          now: (() => {
+            let value = 0;
+            return () => (value += 1_000);
+          })(),
+          sleep: async () => undefined,
+        },
+        {
+          releaseSessionId: sessionId,
+          retireLegacyWorkReferences: true,
+          expectedSourceRepositoryId: sourceRepositoryId,
+          expectedSourceRevision: sourceRevision,
+          expectedActiveReleaseId: base.active.releaseId,
+          expectedAuthorityRevision: base.revision,
+        },
+      );
+
+      expect(result).toMatchObject({ ok: true, attempted: true });
+      expect(readControlPlaneRecord(home, 'execution_session', 'fixture', 'release-session-retirement')?.value).toEqual(
+        {
+          nativeReceipt: 'keep',
+        },
+      );
+      const committed = readReleaseSession(home, sessionId)!;
+      expect(committed.phase).toBe('cutover_attempting');
+      expect(committed.transaction).toMatchObject({
+        candidateReleaseId: candidateRelease.releaseId,
+        cutoverAuthorityRevision: base.revision + 1,
+        rollbackRelease: { releaseId: base.active.releaseId },
+      });
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe(candidateRelease.releaseId);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
