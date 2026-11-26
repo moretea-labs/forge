@@ -172,7 +172,7 @@ describe('execution identity pre-spawn guard', () => {
         identity,
         cwd: fx.repoARoot,
       }),
-    ).toThrow(/WORK_HANDLE_BRANCH_CHANGED/);
+    ).toThrow(/EXECUTION_IDENTITY_BRANCH_CHANGED/);
   });
 
   test('rejects HEAD drift', () => {
@@ -190,7 +190,7 @@ describe('execution identity pre-spawn guard', () => {
         identity,
         cwd: fx.repoARoot,
       }),
-    ).toThrow(/WORK_HANDLE_HEAD_CHANGED/);
+    ).toThrow(/EXECUTION_IDENTITY_HEAD_CHANGED/);
   });
 
   test('symlink path alias still validates through realpath', () => {
@@ -580,7 +580,7 @@ describe('execution identity pre-spawn guard', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(ExecutionIdentityError);
       const typed = error as ExecutionIdentityError;
-      expect(typed.code).toBe('WORK_HANDLE_HEAD_CHANGED');
+      expect(typed.code).toBe('EXECUTION_IDENTITY_HEAD_CHANGED');
       expect(typed.details.expected).toBe('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
       expect(typed.details.actual).toBe(fx.headA);
       expect(typed.details.repoId).toBe(fx.repoA.repoId);

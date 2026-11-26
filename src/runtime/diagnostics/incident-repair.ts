@@ -59,7 +59,7 @@ function transportFailureMessage(message: string): boolean {
 /**
  * Conservative product-defect classifier. Expected policy, scope, admission,
  * user-code acceptance, and ordinary contention failures are intentionally not
- * auto-promoted into Forge source Work.
+ * auto-promoted into a Forge source-repair task.
  */
 export function classifyForgeIncidentForRepair(incident: McpIncident): ForgeIncidentRepairClassification {
   const code = incident.code.trim().toUpperCase();
@@ -67,7 +67,7 @@ export function classifyForgeIncidentForRepair(incident: McpIncident): ForgeInci
   // Browser diagnostics on the native Apple Events provider are intentionally
   // unsupported and already fail closed at the plugin boundary. Repeating that
   // expected capability limitation is not evidence of a Forge infrastructure
-  // defect and must not manufacture recurrent repair Work.
+  // defect and must not manufacture recurrent repair tasks.
   if (code === 'PLUGIN_BROWSER_DIAGNOSTICS_UNAVAILABLE') {
     return { eligible: false, reason: `expected provider capability limitation ${code}` };
   }
@@ -76,7 +76,6 @@ export function classifyForgeIncidentForRepair(incident: McpIncident): ForgeInci
     if (code === 'MCP_REQUEST_EXCEPTION' && transportFailureMessage(incident.message))
       return 'MCP_TRANSPORT_UNAVAILABLE';
     if (code === 'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED') return code;
-    if (code === 'WORK_CONTROLLER_SCOPE_MISMATCH') return code;
     if (code.startsWith('CANONICAL_RUNTIME_')) return code;
     if (code.startsWith('RECOVERY_')) return code;
     if (code.startsWith('CONTROLLER_RELAY_')) return code;

@@ -14,9 +14,8 @@ export type ExecutionIdentityErrorCode =
   | 'CHECKOUT_ROUTE_MISMATCH'
   | 'CHECKOUT_NOT_REGISTERED'
   | 'CHECKOUT_NOT_ACTIVE'
-  | 'WORK_HANDLE_CHECKOUT_DRIFT'
-  | 'WORK_HANDLE_BRANCH_CHANGED'
-  | 'WORK_HANDLE_HEAD_CHANGED'
+  | 'EXECUTION_IDENTITY_BRANCH_CHANGED'
+  | 'EXECUTION_IDENTITY_HEAD_CHANGED'
   | 'GIT_TOPLEVEL_MISMATCH'
   | 'GIT_COMMON_DIR_MISMATCH'
   | 'WORKTREE_MISSING'
@@ -388,7 +387,7 @@ export function assertExecutionIdentity(input: {
   const currentBranch = gitSnapshot.branch;
   const currentHead = gitSnapshot.head;
   if (identity.branch && currentBranch !== identity.branch) {
-    fail('WORK_HANDLE_BRANCH_CHANGED', 'branch drifted from execution identity', {
+    fail('EXECUTION_IDENTITY_BRANCH_CHANGED', 'branch drifted from execution identity', {
       repoId: identity.repositoryId,
       checkoutId: identity.checkoutId,
       expected: identity.branch,
@@ -396,7 +395,7 @@ export function assertExecutionIdentity(input: {
     });
   }
   if (identity.expectedHead && currentHead !== identity.expectedHead) {
-    fail('WORK_HANDLE_HEAD_CHANGED', 'HEAD drifted from execution identity; re-prepare required', {
+    fail('EXECUTION_IDENTITY_HEAD_CHANGED', 'HEAD drifted from execution identity; re-prepare required', {
       repoId: identity.repositoryId,
       checkoutId: identity.checkoutId,
       expected: identity.expectedHead,

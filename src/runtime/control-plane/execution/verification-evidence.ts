@@ -33,7 +33,7 @@ export interface HistoricalVerificationEvidenceIdentity
 function decodeGitQuotedPath(rawPath: string): string {
   if (!rawPath.startsWith('"') && !rawPath.endsWith('"')) return rawPath;
   if (!rawPath.startsWith('"') || !rawPath.endsWith('"')) {
-    throw new Error(`WORK_VALIDATION_PATH_UNSUPPORTED: malformed Git quoted path: ${rawPath}`);
+    throw new Error(`VERIFICATION_PATH_UNSUPPORTED: malformed Git quoted path: ${rawPath}`);
   }
   const bytes: number[] = [];
   const body = rawPath.slice(1, -1);
@@ -44,7 +44,7 @@ function decodeGitQuotedPath(rawPath: string): string {
       continue;
     }
     const escaped = body[index + 1];
-    if (!escaped) throw new Error(`WORK_VALIDATION_PATH_UNSUPPORTED: malformed Git escape: ${rawPath}`);
+    if (!escaped) throw new Error(`VERIFICATION_PATH_UNSUPPORTED: malformed Git escape: ${rawPath}`);
     index += 1;
     const simple: Record<string, number> = {
       a: 7,
@@ -70,7 +70,7 @@ function decodeGitQuotedPath(rawPath: string): string {
       bytes.push(Number.parseInt(octal, 8));
       continue;
     }
-    throw new Error(`WORK_VALIDATION_PATH_UNSUPPORTED: unsupported Git escape in ${rawPath}`);
+    throw new Error(`VERIFICATION_PATH_UNSUPPORTED: unsupported Git escape in ${rawPath}`);
   }
   return Buffer.from(bytes).toString('utf8');
 }
@@ -109,7 +109,7 @@ function nestedGitStatus(
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
   const read = (args: string[], missingHead = false): string | null => {
     const remainingMs = Math.floor(deadline - performance.now());
-    if (remainingMs <= 0) throw new Error('WORK_VALIDATION_NESTED_GIT_TIMEOUT');
+    if (remainingMs <= 0) throw new Error('VERIFICATION_NESTED_GIT_TIMEOUT');
     const result = spawnSync('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', root, ...args], {
       encoding: 'utf8',
       timeout: remainingMs,
@@ -118,11 +118,11 @@ function nestedGitStatus(
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     if (missingHead && !result.error && result.status === 1 && !result.stderr.trim()) return null;
-    if (result.error || result.status !== 0) throw new Error(`WORK_VALIDATION_NESTED_GIT_UNAVAILABLE: ${root}`);
+    if (result.error || result.status !== 0) throw new Error(`VERIFICATION_NESTED_GIT_UNAVAILABLE: ${root}`);
     return result.stdout;
   };
   const topLevel = read(['rev-parse', '--show-toplevel'])!.replace(/\r?\n$/, '');
-  if (realpathSync(topLevel) !== realpathSync(root)) throw new Error(`WORK_VALIDATION_PATH_TYPE_UNSUPPORTED: ${root}`);
+  if (realpathSync(topLevel) !== realpathSync(root)) throw new Error(`VERIFICATION_PATH_TYPE_UNSUPPORTED: ${root}`);
   const head = read(['rev-parse', '--verify', '--quiet', 'HEAD'], true)?.trim() ?? null;
   const porcelain = read([
     'status',
@@ -144,12 +144,12 @@ function fingerprintWorkspace(
 ): string {
   const canonicalRoot = resolve(root);
   if (status.porcelain.includes(OUTPUT_TRUNCATION_MARKER)) {
-    throw new Error('WORK_VALIDATION_STATUS_TRUNCATED: exact changed-path identity is unavailable');
+    throw new Error('VERIFICATION_STATUS_TRUNCATED: exact changed-path identity is unavailable');
   }
   const changedPaths = [...new Set([...status.staged, ...status.unstaged, ...status.untracked].map(statusPath))].sort();
   budget.paths += changedPaths.length;
   if (budget.paths > MAX_VALIDATION_PATHS) {
-    throw new Error(`WORK_VALIDATION_TOO_MANY_PATHS: ${budget.paths} exceeds ${MAX_VALIDATION_PATHS}`);
+    throw new Error(`VERIFICATION_TOO_MANY_PATHS: ${budget.paths} exceeds ${MAX_VALIDATION_PATHS}`);
   }
   const hash = createHash('sha256');
   hash.update(
@@ -165,7 +165,7 @@ function fingerprintWorkspace(
     const absolutePath = resolve(canonicalRoot, path);
     const relativePath = relative(canonicalRoot, absolutePath);
     if (!relativePath || relativePath.startsWith('..') || isAbsolute(relativePath)) {
-      throw new Error(`WORK_VALIDATION_PATH_OUTSIDE_CHECKOUT: ${path}`);
+      throw new Error(`VERIFICATION_PATH_OUTSIDE_CHECKOUT: ${path}`);
     }
     hash.update(`\npath:${path}\n`);
     if (!existsSync(absolutePath)) {
@@ -184,14 +184,14 @@ function fingerprintWorkspace(
       continue;
     }
     if (!stat.isFile()) {
-      throw new Error(`WORK_VALIDATION_PATH_TYPE_UNSUPPORTED: ${path}`);
+      throw new Error(`VERIFICATION_PATH_TYPE_UNSUPPORTED: ${path}`);
     }
     if (stat.size > MAX_VALIDATION_FILE_BYTES) {
-      throw new Error(`WORK_VALIDATION_FILE_TOO_LARGE: ${path} exceeds ${MAX_VALIDATION_FILE_BYTES} bytes`);
+      throw new Error(`VERIFICATION_FILE_TOO_LARGE: ${path} exceeds ${MAX_VALIDATION_FILE_BYTES} bytes`);
     }
     budget.bytes += stat.size;
     if (budget.bytes > MAX_VALIDATION_TOTAL_BYTES) {
-      throw new Error(`WORK_VALIDATION_WORKSPACE_TOO_LARGE: changed files exceed ${MAX_VALIDATION_TOTAL_BYTES} bytes`);
+      throw new Error(`VERIFICATION_WORKSPACE_TOO_LARGE: changed files exceed ${MAX_VALIDATION_TOTAL_BYTES} bytes`);
     }
     hash.update(readFileSync(absolutePath));
   }
