@@ -1848,8 +1848,8 @@ export function createRecoveryToolExecutor(
   const activationObservationMs = Math.max(1, options.activationObservationMs ?? 750);
   let activeStatus = 0;
   let activeActivation = 0;
-  let activeCandidateWork = 0;
-  const usesCandidateWorkCapacity = (name: string): boolean =>
+  let activeCandidateCapacity = 0;
+  const usesCandidateCapacity = (name: string): boolean =>
     name === 'stage_runtime_release' ||
     name === 'prepare_runtime_release_session' ||
     name === 'verify_runtime_release_session_candidate' ||
@@ -1996,17 +1996,17 @@ export function createRecoveryToolExecutor(
       return activationRunning(rawRequestId, task.startedAt);
     }
 
-    const candidateWork = usesCandidateWorkCapacity(name);
-    if (status ? activeStatus >= 2 : candidateWork && activeCandidateWork >= 1) {
+    const usesCandidateSlot = usesCandidateCapacity(name);
+    if (status ? activeStatus >= 2 : usesCandidateSlot && activeCandidateCapacity >= 1) {
       throw new Error('RECOVERY_BUSY: execution capacity reached; no operation was started.');
     }
     if (status) activeStatus += 1;
-    else if (candidateWork) activeCandidateWork += 1;
+    else if (usesCandidateSlot) activeCandidateCapacity += 1;
     try {
       return await executeChild(name, input, status);
     } finally {
       if (status) activeStatus -= 1;
-      else if (candidateWork) activeCandidateWork = Math.max(0, activeCandidateWork - 1);
+      else if (usesCandidateSlot) activeCandidateCapacity = Math.max(0, activeCandidateCapacity - 1);
     }
   };
 }

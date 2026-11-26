@@ -208,7 +208,7 @@ const roots: string[] = [];
 const servers: Server[] = [];
 const ownerships: RuntimeOwnershipHandle[] = [];
 
-test('Recovery bounds Candidate work while reserving status capacity and releasing failed slots', async () => {
+test('Recovery bounds Candidate operations while reserving status capacity and releasing failed slots', async () => {
   let finishHeavy!: () => void;
   let calls = 0;
   const execute = createRecoveryToolExecutor(createRecoveryConfig('/tmp/unused-recovery-home'), {
@@ -239,13 +239,13 @@ test('Recovery bounds Candidate work while reserving status capacity and releasi
     },
   });
   const heavy = execute('prepare_runtime_release_session', {
-    request_id: 'candidate-work-a',
+    request_id: 'candidate-slot-a',
     source_repository_id: 'repo_source_fixture',
     expected_source_revision: 'a'.repeat(40),
   });
   await expect(
     execute('verify_runtime_release_session_candidate', {
-      request_id: 'candidate-work-b',
+      request_id: 'candidate-slot-b',
       session_id: 'release-session-b',
     }),
   ).rejects.toThrow('RECOVERY_BUSY');
@@ -260,7 +260,7 @@ test('Recovery bounds Candidate work while reserving status capacity and releasi
   expect(calls).toBe(4);
 });
 
-test('Recovery Gateway lets unrelated Connector work enter while Candidate work is isolated', async () => {
+test('Recovery Gateway lets unrelated Connector operations enter while Candidate operations are isolated', async () => {
   let finishCandidate!: () => void;
   let calls = 0;
   const execute = createRecoveryToolExecutor(createRecoveryConfig('/tmp/unused-recovery-home'), {

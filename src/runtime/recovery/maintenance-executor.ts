@@ -499,12 +499,12 @@ function looksLikeForgeManagedWorktree(path: string): boolean {
   );
 }
 
-type StaleWorkSourceState = NonNullable<RuntimeMaintenanceCandidate['sourceState']>;
+type ManagedWorktreeSourceState = NonNullable<RuntimeMaintenanceCandidate['sourceState']>;
 
 interface OwnedManagedWorktreeInspection {
   safe: boolean;
   path: string;
-  sourceState: StaleWorkSourceState;
+  sourceState: ManagedWorktreeSourceState;
   detail: string;
   workspaceResourceId?: string;
   checkoutId?: string;
