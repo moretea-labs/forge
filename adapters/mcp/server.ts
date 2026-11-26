@@ -349,7 +349,7 @@ function canonicalRuntimeToken(ctx: MultiRepositoryMcpToolContext): string {
 export const CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS = 5_000;
 /**
  * The loopback connection should fail fast, but a valid Canonical Runtime tool
- * call may legitimately outlive five seconds (for example Work finalization).
+ * call may legitimately outlive five seconds (for example bounded process finalization).
  * Do not let the thin Public Gateway report a false timeout while authoritative
  * work continues successfully behind it.
  */
@@ -1116,7 +1116,7 @@ export function createCanonicalRuntimeProxy(
         // The outer Connector session is already bound to the Canonical Runtime
         // schema and fenced by the Runtime-published fingerprint before dispatch.
         // Caller identity stays request-scoped while the inner MCP lane is reused.
-        // Only keyed Work-attributed Process Runtime commands may replay after a
+        // Only keyed Process Runtime commands may replay after a
         // transient inner disconnect: the stable request_id resolves to the
         // original Process instead of spawning the side effect twice.
         const response = await callCanonicalRuntimeToolWithReplay({

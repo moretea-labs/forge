@@ -206,15 +206,14 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     activeProtection:
       'Registered checkout identity, dirty/unintegrated source, Git containment, active Process/resource leases and explicit retained references block unsafe worktree deletion.',
     retentionCapacity:
-      'Orphaned managed worktrees use a six-hour default TTL, cleanup-pending ownership releases after one hour, and every pass is scan/removal-budget bounded; active Work, lease and explicit references remain protected.',
+      'Orphaned managed worktrees use a six-hour default TTL, cleanup-pending ownership releases after one hour, and every pass is scan/removal-budget bounded; active Process/resource leases and explicit references remain protected.',
     cleanupAuthority:
-      'Work finalization/terminal cleanup and centralized Runtime maintenance; both reuse the managed-workspace/registry authority and never infer semantic completion from deletion.',
+      'Process/resource terminal cleanup and centralized Runtime maintenance reuse the managed-workspace/registry authority and never infer semantic completion from deletion.',
     recoverySemantics:
       'Dirty/unintegrated source is preserved and surfaced for reconciliation; malformed/unknown ownership and active leases fail closed instead of deleting the workspace.',
     closureStatus: 'existing_bounded',
     evidencePaths: [
       'src/runtime/execution/managed-workspace.ts',
-      'src/runtime/control-plane/execution/work-terminal-cleanup.ts',
       'src/runtime/control-plane/runtime-cleanup.ts',
       'tests/runtime/runtime-cleanup.test.ts',
     ],

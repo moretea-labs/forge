@@ -461,7 +461,7 @@ export function inspectTaskReadiness(
   options: TaskReadinessOptions = {},
 ): TaskReadiness {
   if (legacyIssueAuthorityRetired(repoRoot)) {
-    throw new Error('LEGACY_TASK_READINESS_RETIRED: use PlanStep and Work diagnostics from controller-home SQLite.');
+    throw new Error('LEGACY_TASK_READINESS_RETIRED: use GitHub Issue/Project progress and Process/Run diagnostics.');
   }
   const issue = getIssue(repoRoot, issueIdValue);
   const task = issue.tasks.find((entry) => entry.id === taskId);
@@ -691,7 +691,7 @@ function finding(code: string, level: 'blocker' | 'warning', message: string, ta
 export function inspectIssueReadiness(repoRoot: string, issueIdValue: string): IssueReadiness {
   if (legacyIssueAuthorityRetired(repoRoot)) {
     throw new Error(
-      'LEGACY_ISSUE_READINESS_RETIRED: use Requirement Board, Plan and Work diagnostics from controller-home SQLite.',
+      'LEGACY_ISSUE_READINESS_RETIRED: use GitHub Issue/Project progress and Process/Run diagnostics.',
     );
   }
   const issue = getIssue(repoRoot, issueIdValue);

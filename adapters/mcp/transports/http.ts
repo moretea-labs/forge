@@ -192,7 +192,7 @@ function sendMcpToolSurfaceReset(
 /**
  * A schema-fenced transport cannot be reused after the reset response. Delay
  * retirement until Express has flushed the reconnect instruction, then release
- * its session-local state. Work identity is Controller-owned, not transport-owned.
+ * its session-local state. Execution identity is Controller-owned, not transport-owned.
  */
 function retireAfterToolSurfaceReset(res: Response, registry: HttpSessionRegistry, sessionId: string): void {
   let retired = false;

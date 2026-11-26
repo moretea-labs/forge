@@ -517,7 +517,7 @@ describe('runtime command surface', () => {
     expect(releaseStore).toContain('backupControlPlaneDatabase');
     expect(releaseStore).toContain('restoreControlPlaneDatabase');
     expect(releaseStore).toContain('never part of a release artifact');
-    expect(releaseStore).toContain("'runtime', 'releases', 'backups'");
+    expect(releaseStore).toMatch(/'runtime',\s*'releases',\s*'backups'/);
     expect(releaseStore).not.toContain('slot');
     expect(releaseStore).not.toContain('ingress');
     expect(releaseStore).not.toContain('component');

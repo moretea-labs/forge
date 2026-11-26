@@ -81,7 +81,7 @@ export function assertLegacyIssueWritesAllowed(repoRoot: string, issue?: { id?: 
   const state = legacyIssueCutoverState(repoRoot);
   if (!state.retired) return;
   throw new Error(
-    `LEGACY_ISSUE_WRITES_RETIRED: ${issue?.id ?? 'durable Issue'} is frozen history after ${REQUIREMENT_PORTFOLIO_MIGRATION_ID}; write Requirement/Plan/Work authority instead.`,
+    `LEGACY_ISSUE_WRITES_RETIRED: ${issue?.id ?? 'durable Issue'} is frozen history after ${REQUIREMENT_PORTFOLIO_MIGRATION_ID}; use the current GitHub Issue/Project progress authority instead.`,
   );
 }
 
@@ -212,7 +212,7 @@ export function frozenLegacyIssueProjection(
     updatedAt: [requirement.updatedAt, plan.updatedAt].sort().at(-1) ?? requirement.updatedAt,
     tasks,
     notice:
-      'Deprecated frozen compatibility projection. Requirement, Plan and Work records in controller-home SQLite are authoritative; repository Issue/Task file changes are ignored.',
+      'Deprecated frozen compatibility projection. GitHub Issue/Project is the current development progress authority; repository Issue/Task file changes are ignored.',
   };
 }
 

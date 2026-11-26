@@ -86,7 +86,7 @@ function statusPath(rawPath: string): string {
  * Git status supplies the bounded changed-path set; every current path is then
  * hashed from the filesystem so edits that retain the same HEAD and porcelain
  * shape still invalidate previous evidence. The index is intentionally not a
- * separate authority because Work finalization stages the current filesystem.
+ * separate authority because execution finalization stages the current filesystem.
  */
 export function workspaceValidationFingerprint(
   root: string,

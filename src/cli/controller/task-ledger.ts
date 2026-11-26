@@ -210,7 +210,7 @@ function statusProjection(input: {
     let nextAction = `Review Task ${review.issueId}/${review.taskId}; inspect raw diff and evidence before accepting or requesting changes.`;
     if (readyToIntegrate) {
       label = 'Ready to integrate';
-      reason = 'Work is complete and validated; integration is the next step (not finalization wait).';
+      reason = 'Task implementation is complete and validated; integration is the next step (not finalization wait).';
       nextAction = `Integrate Task ${review.issueId}/${review.taskId}, then run owned cleanup for branch/worktree/process/lease state.`;
     } else if (integrationBlocked) {
       label = 'Integration blocked';
@@ -350,15 +350,15 @@ export function buildControllerTaskLedgerProjection(
         kind: "complete_or_idle",
         severity: "info",
         label: "Legacy task ledger retired",
-        reason: "Requirement Board, Plan and Work records in controller-home SQLite are authoritative.",
-        nextAction: "Use get_project_board summary or Execution Diagnostics.",
+        reason: "Legacy task-ledger data is frozen history; GitHub Issue/Project is the current progress authority.",
+        nextAction: "Use GitHub Issue/Project for progress and Process/Run diagnostics for execution.",
       },
       issues: [],
       attention: [],
       readyTasks: [],
       queueableTasks: [],
       recentEvents: [],
-      suggestedNextActions: ["Use Requirement Board for user-facing status and Work diagnostics for execution details."],
+      suggestedNextActions: ["Use GitHub Issue/Project for user-facing progress and Process/Run diagnostics for execution details."],
       contextContract: {
         strategy: "deprecated-frozen-compatibility-projection",
         rawCodeRequiredForImplementation: true,

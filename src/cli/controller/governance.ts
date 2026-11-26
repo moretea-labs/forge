@@ -214,7 +214,7 @@ export function inspectProjectGovernance(
         label: needsAttention > 0 ? "Requirement maintenance findings" : "Requirement authority healthy",
         reason: needsAttention > 0
           ? `${needsAttention} Requirement maintenance finding(s) are visible without reopening completed outcomes.`
-          : "Requirement, Plan and Work authority is consistent in controller-home SQLite.",
+          : "Legacy controller semantic projections are internally consistent; GitHub Issue/Project remains progress authority.",
       },
       activeIssueCount: board.activeRequirementCount ?? 0,
       archivedIssueCount: 0,
@@ -226,7 +226,7 @@ export function inspectProjectGovernance(
       frozenCompatibility: true,
       authority: "controller-home-sqlite",
       requirements: board.requirements ?? [],
-      notice: "Legacy Issue governance and currentIssue focus are retired. Use Requirement Board and Work diagnostics.",
+      notice: "Legacy Issue governance and currentIssue focus are retired. Use GitHub Issue/Project progress and Process/Run diagnostics.",
     };
   }
   const issues = listIssues(repoRoot);

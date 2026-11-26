@@ -198,7 +198,7 @@ function projectionWithExecutionIndexOverlay(
       : base.releaseFrozen,
     // Lifecycle attention is producer-owned materialized state. Hot reads overlay
     // only lightweight ExecutionJob/Lease indexes and must never synchronously
-    // re-run Git/Work lifecycle reconciliation on the MCP request event loop.
+    // re-run Git/process lifecycle reconciliation on the MCP request event loop.
     // Re-apply the current readiness classifier to persisted lifecycle entries so
     // a policy cutover cannot leave obsolete blockers stuck in currentAttention.
     currentAttention: [...currentAttention, ...materializedCurrentLifecycleAttention].slice(0, 100),
