@@ -10,6 +10,8 @@ export interface ComputerProviderTargetBinding {
   observedAt: string;
   /** Rebuildable exact native process observation for cross-target lifecycle fencing. */
   processId?: number;
+  /** Latest one-shot AX observation revision, scoped to this exact provider session. */
+  elementSnapshotRevision?: number;
 }
 
 export type ComputerApplicationLaunchProvenance =
@@ -103,7 +105,10 @@ export interface ComputerInteractionTargetEntry {
 
 export interface ComputerApplicationTargetLease {
   current(): ComputerApplicationTarget;
-  bind(binding: ComputerProviderTargetBinding, launchProvenance?: ComputerApplicationLaunchProvenance): ComputerApplicationTarget;
+  bind(
+    binding: ComputerProviderTargetBinding,
+    launchProvenance?: ComputerApplicationLaunchProvenance,
+  ): ComputerApplicationTarget;
   tombstone(): ComputerApplicationTarget;
 }
 
@@ -195,12 +200,26 @@ export interface ComputerInteractionTargetAuthorityPort {
   getSurface(controllerHome: string, targetId: string): ComputerSurfaceTarget | undefined;
   requireSurface(controllerHome: string, targetId: string): ComputerSurfaceTarget;
   findSurfaceByAlias(controllerHome: string, alias: string, repoId?: string): ComputerSurfaceTarget | undefined;
-  findSurfaceByStableIdentity(controllerHome: string, identity: ComputerSurfaceStableIdentity, repoId?: string): ComputerSurfaceTarget | undefined;
-  findSurfaceByProviderBinding(controllerHome: string, binding: ComputerSurfaceProviderBinding): ComputerSurfaceTarget | undefined;
+  findSurfaceByStableIdentity(
+    controllerHome: string,
+    identity: ComputerSurfaceStableIdentity,
+    repoId?: string,
+  ): ComputerSurfaceTarget | undefined;
+  findSurfaceByProviderBinding(
+    controllerHome: string,
+    binding: ComputerSurfaceProviderBinding,
+  ): ComputerSurfaceTarget | undefined;
   listSurfaces(controllerHome: string, options?: { repoId?: string; limit?: number }): ComputerSurfaceTarget[];
   listAllSurfaces(controllerHome: string, options?: { repoId?: string }): ComputerSurfaceTarget[];
-  compatibilityMigrationMarker(controllerHome: string, migrationId: string, scopeId: string): ComputerCompatibilityMigrationMarker | undefined;
-  closeCompatibilityMigration(controllerHome: string, input: { migrationId: string; scopeId: string; importedRecordCount: number }): ComputerCompatibilityMigrationMarker;
+  compatibilityMigrationMarker(
+    controllerHome: string,
+    migrationId: string,
+    scopeId: string,
+  ): ComputerCompatibilityMigrationMarker | undefined;
+  closeCompatibilityMigration(
+    controllerHome: string,
+    input: { migrationId: string; scopeId: string; importedRecordCount: number },
+  ): ComputerCompatibilityMigrationMarker;
   tombstoneSurface(controllerHome: string, targetId: string): boolean;
   withSurfaceLease<T>(
     controllerHome: string,

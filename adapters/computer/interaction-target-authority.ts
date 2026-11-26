@@ -41,12 +41,15 @@ const MAX_SURFACE_COMPATIBILITY_RECORDS = 16;
 const MAX_SURFACE_COMPATIBILITY_NAMESPACE_LENGTH = 128;
 const MAX_SURFACE_COMPATIBILITY_VALUE_BYTES = 65_536;
 
-function now(): string { return new Date().toISOString(); }
+function now(): string {
+  return new Date().toISOString();
+}
 
 function normalizeStableIdentity(identity: ComputerApplicationStableIdentity): ComputerApplicationStableIdentity {
   const bundleId = identity.bundleId?.trim();
   const appName = identity.appName?.trim();
-  if (!bundleId && !appName) throw new Error('COMPUTER_TARGET_STABLE_IDENTITY_REQUIRED: bundleId or appName is required');
+  if (!bundleId && !appName)
+    throw new Error('COMPUTER_TARGET_STABLE_IDENTITY_REQUIRED: bundleId or appName is required');
   return { ...(bundleId ? { bundleId } : {}), ...(appName ? { appName } : {}) };
 }
 
@@ -56,22 +59,38 @@ function normalizeProviderBinding(binding: ComputerProviderTargetBinding): Compu
   const observedAt = binding.observedAt.trim();
   if (!providerId) throw new Error('COMPUTER_TARGET_PROVIDER_ID_REQUIRED');
   if (!providerSessionId) throw new Error('COMPUTER_TARGET_PROVIDER_SESSION_ID_REQUIRED');
-  if (!observedAt || !Number.isFinite(Date.parse(observedAt))) throw new Error('COMPUTER_TARGET_PROVIDER_OBSERVED_AT_INVALID');
+  if (!observedAt || !Number.isFinite(Date.parse(observedAt)))
+    throw new Error('COMPUTER_TARGET_PROVIDER_OBSERVED_AT_INVALID');
   const processId = binding.processId;
   if (processId !== undefined && (!Number.isInteger(processId) || processId <= 0 || processId > 2_147_483_647)) {
     throw new Error(`COMPUTER_TARGET_PROVIDER_PROCESS_ID_INVALID: ${String(processId)}`);
   }
-  return { providerId, providerSessionId, observedAt, ...(processId !== undefined ? { processId } : {}) };
+  const elementSnapshotRevision = binding.elementSnapshotRevision;
+  if (
+    elementSnapshotRevision !== undefined &&
+    (!Number.isSafeInteger(elementSnapshotRevision) || elementSnapshotRevision < 1)
+  ) {
+    throw new Error('COMPUTER_TARGET_PROVIDER_ELEMENT_EPOCH_INVALID');
+  }
+  return {
+    providerId,
+    providerSessionId,
+    observedAt,
+    ...(processId !== undefined ? { processId } : {}),
+    ...(elementSnapshotRevision !== undefined ? { elementSnapshotRevision } : {}),
+  };
 }
 
 function normalizeApplicationLaunchProvenance(
   provenance: ComputerApplicationLaunchProvenance,
 ): ComputerApplicationLaunchProvenance {
   if (provenance.kind === 'preexisting') return { kind: 'preexisting' };
-  if (provenance.kind !== 'provider_launched'
-      || !Number.isInteger(provenance.processId)
-      || provenance.processId <= 0
-      || provenance.processId > 2_147_483_647) {
+  if (
+    provenance.kind !== 'provider_launched' ||
+    !Number.isInteger(provenance.processId) ||
+    provenance.processId <= 0 ||
+    provenance.processId > 2_147_483_647
+  ) {
     throw new Error('COMPUTER_TARGET_LAUNCH_PROVENANCE_INVALID');
   }
   return { kind: 'provider_launched', processId: provenance.processId };
@@ -81,14 +100,26 @@ function normalizeSurfaceStableIdentity(identity: ComputerSurfaceStableIdentity)
   if (identity.surfaceType !== 'browser-tab' && identity.surfaceType !== 'browser-page') {
     throw new Error(`COMPUTER_SURFACE_TYPE_INVALID: ${String(identity.surfaceType)}`);
   }
-  if (identity.ownership !== 'plugin_owned' && identity.ownership !== 'user_owned' && identity.ownership !== 'provider_owned') {
+  if (
+    identity.ownership !== 'plugin_owned' &&
+    identity.ownership !== 'user_owned' &&
+    identity.ownership !== 'provider_owned'
+  ) {
     throw new Error(`COMPUTER_SURFACE_OWNERSHIP_INVALID: ${String(identity.ownership)}`);
   }
-  const resource = identity.resource ? {
-    namespace: identity.resource.namespace.trim(),
-    key: identity.resource.key.trim(),
-  } : undefined;
-  if (resource && (!/^[a-z0-9][a-z0-9._-]*$/i.test(resource.namespace) || resource.namespace.length > 128 || !resource.key || resource.key.length > 512)) {
+  const resource = identity.resource
+    ? {
+        namespace: identity.resource.namespace.trim(),
+        key: identity.resource.key.trim(),
+      }
+    : undefined;
+  if (
+    resource &&
+    (!/^[a-z0-9][a-z0-9._-]*$/i.test(resource.namespace) ||
+      resource.namespace.length > 128 ||
+      !resource.key ||
+      resource.key.length > 512)
+  ) {
     throw new Error('COMPUTER_SURFACE_RESOURCE_IDENTITY_INVALID');
   }
   return {
@@ -147,14 +178,18 @@ function normalizeCompatibilityRecord(record: ComputerSurfaceCompatibilityRecord
     throw new Error(`COMPUTER_SURFACE_COMPATIBILITY_SCHEMA_INVALID: ${record.schemaVersion}`);
   }
   const updatedAt = record.updatedAt.trim();
-  if (!updatedAt || !Number.isFinite(Date.parse(updatedAt))) throw new Error('COMPUTER_SURFACE_COMPATIBILITY_UPDATED_AT_INVALID');
+  if (!updatedAt || !Number.isFinite(Date.parse(updatedAt)))
+    throw new Error('COMPUTER_SURFACE_COMPATIBILITY_UPDATED_AT_INVALID');
   const value = structuredClone(record.value);
   const bytes = Buffer.byteLength(JSON.stringify(value), 'utf8');
-  if (bytes > MAX_SURFACE_COMPATIBILITY_VALUE_BYTES) throw new Error(`COMPUTER_SURFACE_COMPATIBILITY_VALUE_TOO_LARGE: ${bytes}`);
+  if (bytes > MAX_SURFACE_COMPATIBILITY_VALUE_BYTES)
+    throw new Error(`COMPUTER_SURFACE_COMPATIBILITY_VALUE_TOO_LARGE: ${bytes}`);
   return { namespace, schemaVersion: record.schemaVersion, value, updatedAt };
 }
 
-function normalizeCompatibilityRecords(records?: readonly ComputerSurfaceCompatibilityRecord[]): ComputerSurfaceCompatibilityRecord[] {
+function normalizeCompatibilityRecords(
+  records?: readonly ComputerSurfaceCompatibilityRecord[],
+): ComputerSurfaceCompatibilityRecord[] {
   const byNamespace = new Map<string, ComputerSurfaceCompatibilityRecord>();
   for (const record of records ?? []) byNamespace.set(record.namespace.trim(), normalizeCompatibilityRecord(record));
   if (byNamespace.size > MAX_SURFACE_COMPATIBILITY_RECORDS) {
@@ -167,7 +202,8 @@ function normalizeSurfaceProviderBinding(binding: ComputerSurfaceProviderBinding
   const providerId = binding.providerId.trim();
   const observedAt = binding.observedAt.trim();
   if (!providerId) throw new Error('COMPUTER_SURFACE_PROVIDER_ID_REQUIRED');
-  if (!observedAt || !Number.isFinite(Date.parse(observedAt))) throw new Error('COMPUTER_SURFACE_PROVIDER_OBSERVED_AT_INVALID');
+  if (!observedAt || !Number.isFinite(Date.parse(observedAt)))
+    throw new Error('COMPUTER_SURFACE_PROVIDER_OBSERVED_AT_INVALID');
   const optional = (value: string | undefined): string | undefined => {
     const normalized = value?.trim();
     return normalized || undefined;
@@ -197,25 +233,35 @@ function targetKey(targetId: string): string {
 function surfaceAlias(alias: string): string {
   const normalized = alias.trim();
   if (!normalized) throw new Error('COMPUTER_SURFACE_ALIAS_REQUIRED');
-  if (normalized.length > MAX_SURFACE_ALIAS_LENGTH) throw new Error(`COMPUTER_SURFACE_ALIAS_TOO_LONG: ${normalized.length}`);
+  if (normalized.length > MAX_SURFACE_ALIAS_LENGTH)
+    throw new Error(`COMPUTER_SURFACE_ALIAS_TOO_LONG: ${normalized.length}`);
   return normalized;
 }
 
-function surfaceBindingMatches(left: ComputerSurfaceProviderBinding | undefined, right: ComputerSurfaceProviderBinding | undefined): boolean {
+function surfaceBindingMatches(
+  left: ComputerSurfaceProviderBinding | undefined,
+  right: ComputerSurfaceProviderBinding | undefined,
+): boolean {
   if (!left || !right || !left.windowId || !right.windowId || !left.tabId || !right.tabId) return false;
-  return left.providerId === right.providerId
-    && (left.browserProduct ?? '') === (right.browserProduct ?? '')
-    && left.windowId === right.windowId
-    && left.tabId === right.tabId
-    && (left.ownerToken ?? '') === (right.ownerToken ?? '');
+  return (
+    left.providerId === right.providerId &&
+    (left.browserProduct ?? '') === (right.browserProduct ?? '') &&
+    left.windowId === right.windowId &&
+    left.tabId === right.tabId &&
+    (left.ownerToken ?? '') === (right.ownerToken ?? '')
+  );
 }
 
 function requireNativeBrowserOwnerToken(
   identity: ComputerSurfaceStableIdentity,
   binding: ComputerSurfaceProviderBinding | undefined,
 ): void {
-  if (identity.surfaceType === 'browser-tab' && identity.ownership === 'plugin_owned'
-    && binding?.providerId === 'macos-apple-events' && !binding.ownerToken) {
+  if (
+    identity.surfaceType === 'browser-tab' &&
+    identity.ownership === 'plugin_owned' &&
+    binding?.providerId === 'macos-apple-events' &&
+    !binding.ownerToken
+  ) {
     throw new Error('COMPUTER_SURFACE_NATIVE_OWNER_TOKEN_REQUIRED');
   }
 }
@@ -256,9 +302,7 @@ function surfaceStableIdentityIndexKey(identity: ComputerSurfaceStableIdentity):
 }
 
 function surfaceAliasIndexKey(alias: string, repoId?: string): string {
-  return repoId
-    ? `alias-repo-${digest40(`${repoId}:${alias}`)}`
-    : `alias-controller-${digest40(alias)}`;
+  return repoId ? `alias-repo-${digest40(`${repoId}:${alias}`)}` : `alias-controller-${digest40(alias)}`;
 }
 
 function surfaceIndexKeysForTarget(target: ComputerSurfaceTarget): string[] {
@@ -306,13 +350,23 @@ function writeSurfaceIndexes(
 ): void {
   const keys = surfaceIndexKeysForStatus(target, status);
   for (const key of keys) {
-    const current = transaction.read<ComputerSurfaceIndexRecord>(COMPUTER_TARGET_INDEX_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
+    const current = transaction.read<ComputerSurfaceIndexRecord>(
+      COMPUTER_TARGET_INDEX_NAMESPACE,
+      COMPUTER_TARGET_SCOPE,
+      key,
+    );
     if (current?.value.targetId === target.targetId) continue;
     if (current) {
-      const referenced = transaction.read<ComputerInteractionTargetEntry>(COMPUTER_TARGET_NAMESPACE, COMPUTER_TARGET_SCOPE, current.value.targetId);
-      if (referenced?.value.target.kind === 'surface'
-        && !(key.startsWith('binding-') && referenced.value.status === 'tombstoned')
-        && surfaceIndexKeysForTarget(normalizedSurfaceTarget(referenced.value.target)).includes(key)) {
+      const referenced = transaction.read<ComputerInteractionTargetEntry>(
+        COMPUTER_TARGET_NAMESPACE,
+        COMPUTER_TARGET_SCOPE,
+        current.value.targetId,
+      );
+      if (
+        referenced?.value.target.kind === 'surface' &&
+        !(key.startsWith('binding-') && referenced.value.status === 'tombstoned') &&
+        surfaceIndexKeysForTarget(normalizedSurfaceTarget(referenced.value.target)).includes(key)
+      ) {
         throw new Error(`COMPUTER_SURFACE_INDEX_CONFLICT: ${key}`);
       }
     }
@@ -340,14 +394,20 @@ function ensureSurfaceIndexes(transaction: ComputerTargetPersistenceTransaction)
     scope: COMPUTER_TARGET_SCOPE,
   });
   for (const record of surfaces) {
-    if (record.value.target.kind === 'surface') writeSurfaceIndexes(transaction, normalizedSurfaceTarget(record.value.target), record.value.status);
+    if (record.value.target.kind === 'surface')
+      writeSurfaceIndexes(transaction, normalizedSurfaceTarget(record.value.target), record.value.status);
   }
   transaction.write({
     namespace: COMPUTER_TARGET_INDEX_NAMESPACE,
     scope: COMPUTER_TARGET_SCOPE,
     key: COMPUTER_SURFACE_INDEX_READY_KEY,
     schemaVersion: 1,
-    value: { schemaVersion: 1, status: 'ready', indexedAt: now(), terminalBindingIndexReady: true } satisfies ComputerSurfaceIndexReadyRecord,
+    value: {
+      schemaVersion: 1,
+      status: 'ready',
+      indexedAt: now(),
+      terminalBindingIndexReady: true,
+    } satisfies ComputerSurfaceIndexReadyRecord,
     action: ready ? 'computer_surface_index_ready_repair' : 'computer_surface_index_ready',
     expectedRevision: ready?.revision ?? null,
   });
@@ -367,14 +427,22 @@ function readIndexedSurfaceRecord(
   transaction: ComputerTargetPersistenceTransaction,
   indexKey: string,
 ): ComputerTargetPersistenceRecord<ComputerInteractionTargetEntry> | undefined {
-  const index = transaction.read<ComputerSurfaceIndexRecord>(COMPUTER_TARGET_INDEX_NAMESPACE, COMPUTER_TARGET_SCOPE, indexKey);
+  const index = transaction.read<ComputerSurfaceIndexRecord>(
+    COMPUTER_TARGET_INDEX_NAMESPACE,
+    COMPUTER_TARGET_SCOPE,
+    indexKey,
+  );
   if (!index) return undefined;
-  const target = transaction.read<ComputerInteractionTargetEntry>(COMPUTER_TARGET_NAMESPACE, COMPUTER_TARGET_SCOPE, index.value.targetId);
+  const target = transaction.read<ComputerInteractionTargetEntry>(
+    COMPUTER_TARGET_NAMESPACE,
+    COMPUTER_TARGET_SCOPE,
+    index.value.targetId,
+  );
   const surface = target?.value.target.kind === 'surface' ? normalizedSurfaceTarget(target.value.target) : undefined;
   const valid = indexKey.startsWith('terminal-')
     ? target?.value.status === 'tombstoned' && terminalBindingIndexKey(surface?.providerBinding) === indexKey
-    : (target?.value.status === 'active' || !indexKey.startsWith('binding-'))
-      && Boolean(surface && surfaceIndexKeysForTarget(surface).includes(indexKey));
+    : (target?.value.status === 'active' || !indexKey.startsWith('binding-')) &&
+      Boolean(surface && surfaceIndexKeysForTarget(surface).includes(indexKey));
   if (target && valid) return target;
   transaction.delete({
     namespace: COMPUTER_TARGET_INDEX_NAMESPACE,
@@ -399,7 +467,11 @@ function deleteSurfaceIndexes(
   }
   for (const key of keys) {
     if (preserveKeys?.has(key)) continue;
-    const index = transaction.read<ComputerSurfaceIndexRecord>(COMPUTER_TARGET_INDEX_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
+    const index = transaction.read<ComputerSurfaceIndexRecord>(
+      COMPUTER_TARGET_INDEX_NAMESPACE,
+      COMPUTER_TARGET_SCOPE,
+      key,
+    );
     if (!index || index.value.targetId !== target.targetId) continue;
     transaction.delete({
       namespace: COMPUTER_TARGET_INDEX_NAMESPACE,
@@ -420,7 +492,11 @@ function deleteSurfaceBindingIndex(
 ): void {
   const key = surfaceBindingIndexKey(target.providerBinding);
   if (!key) return;
-  const index = transaction.read<ComputerSurfaceIndexRecord>(COMPUTER_TARGET_INDEX_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
+  const index = transaction.read<ComputerSurfaceIndexRecord>(
+    COMPUTER_TARGET_INDEX_NAMESPACE,
+    COMPUTER_TARGET_SCOPE,
+    key,
+  );
   if (index?.value.targetId !== target.targetId) return;
   transaction.delete({
     namespace: COMPUTER_TARGET_INDEX_NAMESPACE,
@@ -449,12 +525,18 @@ function surfaceConvergenceLockKey(input: ComputerSurfaceUpsertInput): string {
     ? `stable:${stableIdentity.surfaceType}:${stableIdentity.resource.namespace}:${stableIdentity.resource.key}`
     : undefined;
   const binding = input.providerBinding ? normalizeSurfaceProviderBinding(input.providerBinding) : undefined;
-  const nativeKey = binding?.windowId && binding.tabId
-    ? `binding:${binding.providerId}:${binding.browserProduct ?? ''}:${binding.windowId}:${binding.tabId}`
-    : undefined;
+  const nativeKey =
+    binding?.windowId && binding.tabId
+      ? `binding:${binding.providerId}:${binding.browserProduct ?? ''}:${binding.windowId}:${binding.tabId}`
+      : undefined;
   const aliases = normalizeCompatibilityAliases(input.compatibilityAliases);
   const repositories = normalizeRepositoryIds(input.repositoryIds);
-  const fallback = aliases[0] && repositories[0] ? `alias:${repositories[0]}:${aliases[0]}` : aliases[0] ? `alias:${aliases[0]}` : undefined;
+  const fallback =
+    aliases[0] && repositories[0]
+      ? `alias:${repositories[0]}:${aliases[0]}`
+      : aliases[0]
+        ? `alias:${aliases[0]}`
+        : undefined;
   const source = stableKey ?? nativeKey ?? fallback;
   if (!source) throw new Error('COMPUTER_SURFACE_CONVERGENCE_KEY_REQUIRED');
   return `surface-converge-${createHash('sha256').update(source).digest('hex').slice(0, 40)}`;
@@ -468,7 +550,10 @@ export function createComputerInteractionTargetAuthority(
     targetId: string,
   ): ComputerTargetPersistenceRecord<ComputerInteractionTargetEntry> | undefined {
     const current = persistence.read<ComputerInteractionTargetEntry>(
-      controllerHome, COMPUTER_TARGET_NAMESPACE, COMPUTER_TARGET_SCOPE, targetId,
+      controllerHome,
+      COMPUTER_TARGET_NAMESPACE,
+      COMPUTER_TARGET_SCOPE,
+      targetId,
     );
     return current?.value.status === 'active' ? current : undefined;
   }
@@ -478,8 +563,11 @@ export function createComputerInteractionTargetAuthority(
     targetId: string,
   ): ComputerTargetPersistenceRecord<ComputerInteractionTargetEntry & { target: ComputerApplicationTarget }> {
     const current = readActiveTargetRecord(controllerHome, targetId);
-    if (!current || current.value.target.kind !== 'application') throw new Error(`COMPUTER_TARGET_NOT_FOUND: ${targetId}`);
-    return current as ComputerTargetPersistenceRecord<ComputerInteractionTargetEntry & { target: ComputerApplicationTarget }>;
+    if (!current || current.value.target.kind !== 'application')
+      throw new Error(`COMPUTER_TARGET_NOT_FOUND: ${targetId}`);
+    return current as ComputerTargetPersistenceRecord<
+      ComputerInteractionTargetEntry & { target: ComputerApplicationTarget }
+    >;
   }
 
   function requireActiveSurfaceTargetRecord(
@@ -487,8 +575,11 @@ export function createComputerInteractionTargetAuthority(
     targetId: string,
   ): ComputerTargetPersistenceRecord<ComputerInteractionTargetEntry & { target: ComputerSurfaceTarget }> {
     const current = readActiveTargetRecord(controllerHome, targetId);
-    if (!current || current.value.target.kind !== 'surface') throw new Error(`COMPUTER_SURFACE_TARGET_NOT_FOUND: ${targetId}`);
-    return current as ComputerTargetPersistenceRecord<ComputerInteractionTargetEntry & { target: ComputerSurfaceTarget }>;
+    if (!current || current.value.target.kind !== 'surface')
+      throw new Error(`COMPUTER_SURFACE_TARGET_NOT_FOUND: ${targetId}`);
+    return current as ComputerTargetPersistenceRecord<
+      ComputerInteractionTargetEntry & { target: ComputerSurfaceTarget }
+    >;
   }
 
   function create(
@@ -506,7 +597,9 @@ export function createComputerInteractionTargetAuthority(
       targetId,
       kind: 'application',
       stableIdentity: normalizeStableIdentity(input.stableIdentity),
-      ...(input.launchProvenance ? { launchProvenance: normalizeApplicationLaunchProvenance(input.launchProvenance) } : {}),
+      ...(input.launchProvenance
+        ? { launchProvenance: normalizeApplicationLaunchProvenance(input.launchProvenance) }
+        : {}),
       ...(input.providerBinding ? { providerBinding: normalizeProviderBinding(input.providerBinding) } : {}),
       createdAt: at,
       updatedAt: at,
@@ -535,10 +628,11 @@ export function createComputerInteractionTargetAuthority(
   }
 
   function listAllApplications(controllerHome: string): ComputerApplicationTarget[] {
-    return persistence.listAll<ComputerInteractionTargetEntry>(controllerHome, {
-      namespace: COMPUTER_TARGET_NAMESPACE,
-      scope: COMPUTER_TARGET_SCOPE,
-    })
+    return persistence
+      .listAll<ComputerInteractionTargetEntry>(controllerHome, {
+        namespace: COMPUTER_TARGET_NAMESPACE,
+        scope: COMPUTER_TARGET_SCOPE,
+      })
       .filter((record) => record.value.status === 'active' && record.value.target.kind === 'application')
       .map((record) => structuredClone(record.value.target as ComputerApplicationTarget));
   }
@@ -641,10 +735,18 @@ export function createComputerInteractionTargetAuthority(
     const visibility = normalizeSurfaceVisibility(rawInput.visibility);
     const repositoryIds = normalizeRepositoryIds(rawInput.repositoryIds);
     const compatibilityRecords = normalizeCompatibilityRecords(rawInput.compatibilityRecords);
-    const providerBinding = rawInput.providerBinding ? normalizeSurfaceProviderBinding(rawInput.providerBinding) : undefined;
+    const providerBinding = rawInput.providerBinding
+      ? normalizeSurfaceProviderBinding(rawInput.providerBinding)
+      : undefined;
     requireNativeBrowserOwnerToken(stableIdentity, providerBinding);
     const lockKey = surfaceConvergenceLockKey(rawInput);
-    const inputIndexKeys = surfaceInputIndexKeys({ stableIdentity, visibility, compatibilityAliases, repositoryIds, providerBinding });
+    const inputIndexKeys = surfaceInputIndexKeys({
+      stableIdentity,
+      visibility,
+      compatibilityAliases,
+      repositoryIds,
+      providerBinding,
+    });
     return persistence.transaction(controllerHome, (transaction) => {
       ensureSurfaceIndexes(transaction);
       // An old repository's import is observation, not permission to revive a
@@ -653,7 +755,11 @@ export function createComputerInteractionTargetAuthority(
         const terminalKey = terminalBindingIndexKey(providerBinding);
         const terminal = terminalKey ? readIndexedSurfaceRecord(transaction, terminalKey) : undefined;
         if (terminal?.value.status === 'tombstoned' && terminal.value.target.kind === 'surface') {
-          return { target: structuredClone(normalizedSurfaceTarget(terminal.value.target)), status: 'tombstoned', created: false };
+          return {
+            target: structuredClone(normalizedSurfaceTarget(terminal.value.target)),
+            status: 'tombstoned',
+            created: false,
+          };
         }
       }
       const indexed = new Map<string, ComputerTargetPersistenceRecord<ComputerInteractionTargetEntry>>();
@@ -692,7 +798,10 @@ export function createComputerInteractionTargetAuthority(
             target,
             ...(status === 'tombstoned' ? { tombstonedAt: at } : {}),
           } satisfies ComputerInteractionTargetEntry,
-          action: status === 'tombstoned' ? 'computer_surface_target_import_tombstone' : 'computer_surface_target_upsert_create',
+          action:
+            status === 'tombstoned'
+              ? 'computer_surface_target_import_tombstone'
+              : 'computer_surface_target_upsert_create',
           expectedRevision: null,
         });
         writeSurfaceIndexes(transaction, target, status);
@@ -702,16 +811,19 @@ export function createComputerInteractionTargetAuthority(
       const currentTarget = normalizedSurfaceTarget(existing.value.target as ComputerSurfaceTarget);
       const currentBinding = currentTarget.providerBinding;
       const sameSessionAlias = currentTarget.compatibilityAliases.some((alias) => compatibilityAliases.includes(alias));
-      const browserOwnershipConflict = currentTarget.stableIdentity.surfaceType === 'browser-tab'
-        && stableIdentity.surfaceType === 'browser-tab'
-        && currentTarget.stableIdentity.ownership !== stableIdentity.ownership;
+      const browserOwnershipConflict =
+        currentTarget.stableIdentity.surfaceType === 'browser-tab' &&
+        stableIdentity.surfaceType === 'browser-tab' &&
+        currentTarget.stableIdentity.ownership !== stableIdentity.ownership;
       if (browserOwnershipConflict) {
         throw new Error(`COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT: ${lockKey}`);
       }
-      if (currentTarget.stableIdentity.surfaceType === 'browser-tab'
-        && stableIdentity.surfaceType === 'browser-tab'
-        && currentTarget.stableIdentity.ownership === 'plugin_owned'
-        && stableIdentity.ownership === 'plugin_owned') {
+      if (
+        currentTarget.stableIdentity.surfaceType === 'browser-tab' &&
+        stableIdentity.surfaceType === 'browser-tab' &&
+        currentTarget.stableIdentity.ownership === 'plugin_owned' &&
+        stableIdentity.ownership === 'plugin_owned'
+      ) {
         const currentOwnerToken = currentBinding?.ownerToken;
         const nextOwnerToken = providerBinding?.ownerToken;
         const sameOwner = Boolean(currentOwnerToken && currentOwnerToken === nextOwnerToken);
@@ -729,14 +841,21 @@ export function createComputerInteractionTargetAuthority(
       if (previousStableKey && requestedStableKey && previousStableKey !== requestedStableKey) {
         throw new Error(`COMPUTER_SURFACE_STABLE_IDENTITY_CONFLICT: ${lockKey}`);
       }
-      const compatibilityByNamespace = new Map(currentTarget.compatibilityRecords.map((record) => [record.namespace, record]));
+      const compatibilityByNamespace = new Map(
+        currentTarget.compatibilityRecords.map((record) => [record.namespace, record]),
+      );
       for (const record of compatibilityRecords) compatibilityByNamespace.set(record.namespace, record);
-      const nextStatus = existing.value.status === 'tombstoned' && rawInput.reactivate === true ? 'active' : existing.value.status;
+      const nextStatus =
+        existing.value.status === 'tombstoned' && rawInput.reactivate === true ? 'active' : existing.value.status;
       const target: ComputerSurfaceTarget = {
         ...currentTarget,
         stableIdentity,
-        compatibilityAliases: normalizeCompatibilityAliases([...currentTarget.compatibilityAliases, ...compatibilityAliases]),
-        visibility: currentTarget.visibility === 'controller' || visibility === 'controller' ? 'controller' : 'repositories',
+        compatibilityAliases: normalizeCompatibilityAliases([
+          ...currentTarget.compatibilityAliases,
+          ...compatibilityAliases,
+        ]),
+        visibility:
+          currentTarget.visibility === 'controller' || visibility === 'controller' ? 'controller' : 'repositories',
         repositoryIds: normalizeRepositoryIds([...currentTarget.repositoryIds, ...repositoryIds]),
         compatibilityRecords: normalizeCompatibilityRecords([...compatibilityByNamespace.values()]),
         // Reactivation keeps the durable identity, not the terminated provider
@@ -744,7 +863,12 @@ export function createComputerInteractionTargetAuthority(
         ...(existing.value.status === 'tombstoned' ? { providerBinding } : providerBinding ? { providerBinding } : {}),
         updatedAt: at,
       };
-      deleteSurfaceIndexes(transaction, currentTarget, existing.value.status, new Set(surfaceIndexKeysForStatus(target, nextStatus)));
+      deleteSurfaceIndexes(
+        transaction,
+        currentTarget,
+        existing.value.status,
+        new Set(surfaceIndexKeysForStatus(target, nextStatus)),
+      );
       transaction.write({
         namespace: COMPUTER_TARGET_NAMESPACE,
         scope: COMPUTER_TARGET_SCOPE,
@@ -756,7 +880,10 @@ export function createComputerInteractionTargetAuthority(
           target,
           ...(nextStatus === 'tombstoned' ? { tombstonedAt: existing.value.tombstonedAt ?? at } : {}),
         } satisfies ComputerInteractionTargetEntry,
-        action: nextStatus !== existing.value.status ? 'computer_surface_target_reactivate' : 'computer_surface_target_upsert',
+        action:
+          nextStatus !== existing.value.status
+            ? 'computer_surface_target_reactivate'
+            : 'computer_surface_target_upsert',
         expectedRevision: existing.revision,
       });
       writeSurfaceIndexes(transaction, target, nextStatus);
@@ -781,11 +908,12 @@ export function createComputerInteractionTargetAuthority(
   ): ComputerSurfaceTarget[] {
     const repoId = options.repoId?.trim();
     const limit = Math.max(1, Math.min(Math.trunc(options.limit ?? 200), MAX_TARGET_RETENTION_SCAN));
-    return persistence.list<ComputerInteractionTargetEntry>(controllerHome, {
-      namespace: COMPUTER_TARGET_NAMESPACE,
-      scope: COMPUTER_TARGET_SCOPE,
-      limit: MAX_TARGET_RETENTION_SCAN,
-    })
+    return persistence
+      .list<ComputerInteractionTargetEntry>(controllerHome, {
+        namespace: COMPUTER_TARGET_NAMESPACE,
+        scope: COMPUTER_TARGET_SCOPE,
+        limit: MAX_TARGET_RETENTION_SCAN,
+      })
       .filter((record) => record.value.status === 'active' && record.value.target.kind === 'surface')
       .map((record) => normalizedSurfaceTarget(record.value.target as ComputerSurfaceTarget))
       .filter((target) => !repoId || target.visibility === 'controller' || target.repositoryIds.includes(repoId))
@@ -795,31 +923,41 @@ export function createComputerInteractionTargetAuthority(
 
   function listAllSurfaces(controllerHome: string, options: { repoId?: string } = {}): ComputerSurfaceTarget[] {
     const repoId = options.repoId?.trim();
-    return persistence.listAll<ComputerInteractionTargetEntry>(controllerHome, {
-      namespace: COMPUTER_TARGET_NAMESPACE,
-      scope: COMPUTER_TARGET_SCOPE,
-    })
+    return persistence
+      .listAll<ComputerInteractionTargetEntry>(controllerHome, {
+        namespace: COMPUTER_TARGET_NAMESPACE,
+        scope: COMPUTER_TARGET_SCOPE,
+      })
       .filter((record) => record.value.status === 'active' && record.value.target.kind === 'surface')
       .map((record) => normalizedSurfaceTarget(record.value.target as ComputerSurfaceTarget))
       .filter((target) => !repoId || target.visibility === 'controller' || target.repositoryIds.includes(repoId))
       .map((target) => structuredClone(target));
   }
 
-  function findSurfaceByAlias(controllerHome: string, alias: string, repoId?: string): ComputerSurfaceTarget | undefined {
+  function findSurfaceByAlias(
+    controllerHome: string,
+    alias: string,
+    repoId?: string,
+  ): ComputerSurfaceTarget | undefined {
     const normalizedAlias = surfaceAlias(alias);
     const normalizedRepoId = repoId?.trim();
     return persistence.transaction(controllerHome, (transaction) => {
       ensureSurfaceIndexes(transaction);
       const indexed = new Map<string, ComputerTargetPersistenceRecord<ComputerInteractionTargetEntry>>();
-      for (const indexKey of [surfaceAliasIndexKey(normalizedAlias), ...(normalizedRepoId ? [surfaceAliasIndexKey(normalizedAlias, normalizedRepoId)] : [])]) {
+      for (const indexKey of [
+        surfaceAliasIndexKey(normalizedAlias),
+        ...(normalizedRepoId ? [surfaceAliasIndexKey(normalizedAlias, normalizedRepoId)] : []),
+      ]) {
         const candidate = readIndexedSurfaceRecord(transaction, indexKey);
         if (candidate) indexed.set(candidate.key, candidate);
       }
       const matches = [...indexed.values()].filter((record) => {
         if (record.value.status !== 'active' || record.value.target.kind !== 'surface') return false;
         const target = normalizedSurfaceTarget(record.value.target);
-        return target.compatibilityAliases.includes(normalizedAlias)
-          && (!normalizedRepoId || target.visibility === 'controller' || target.repositoryIds.includes(normalizedRepoId));
+        return (
+          target.compatibilityAliases.includes(normalizedAlias) &&
+          (!normalizedRepoId || target.visibility === 'controller' || target.repositoryIds.includes(normalizedRepoId))
+        );
       });
       if (matches.length > 1) throw new Error(`COMPUTER_SURFACE_ALIAS_AMBIGUOUS: ${normalizedAlias}`);
       const target = matches[0]?.value.target;
@@ -827,7 +965,11 @@ export function createComputerInteractionTargetAuthority(
     });
   }
 
-  function findSurfaceByStableIdentity(controllerHome: string, rawIdentity: ComputerSurfaceStableIdentity, repoId?: string): ComputerSurfaceTarget | undefined {
+  function findSurfaceByStableIdentity(
+    controllerHome: string,
+    rawIdentity: ComputerSurfaceStableIdentity,
+    repoId?: string,
+  ): ComputerSurfaceTarget | undefined {
     const identity = normalizeSurfaceStableIdentity(rawIdentity);
     const indexKey = surfaceStableIdentityIndexKey(identity);
     if (!indexKey) return undefined;
@@ -837,12 +979,16 @@ export function createComputerInteractionTargetAuthority(
       const match = readIndexedSurfaceRecord(transaction, indexKey);
       if (!match || match.value.status !== 'active' || match.value.target.kind !== 'surface') return undefined;
       const target = normalizedSurfaceTarget(match.value.target);
-      if (normalizedRepoId && target.visibility !== 'controller' && !target.repositoryIds.includes(normalizedRepoId)) return undefined;
+      if (normalizedRepoId && target.visibility !== 'controller' && !target.repositoryIds.includes(normalizedRepoId))
+        return undefined;
       return structuredClone(target);
     });
   }
 
-  function findSurfaceByProviderBinding(controllerHome: string, rawBinding: ComputerSurfaceProviderBinding): ComputerSurfaceTarget | undefined {
+  function findSurfaceByProviderBinding(
+    controllerHome: string,
+    rawBinding: ComputerSurfaceProviderBinding,
+  ): ComputerSurfaceTarget | undefined {
     const binding = normalizeSurfaceProviderBinding(rawBinding);
     const indexKey = surfaceBindingIndexKey(binding);
     return persistence.transaction(controllerHome, (transaction) => {
@@ -850,8 +996,12 @@ export function createComputerInteractionTargetAuthority(
       let matches: ComputerTargetPersistenceRecord<ComputerInteractionTargetEntry>[] = [];
       if (indexKey) {
         const candidate = readIndexedSurfaceRecord(transaction, indexKey);
-        if (candidate?.value.status === 'active' && candidate.value.target.kind === 'surface'
-          && surfaceBindingMatches(candidate.value.target.providerBinding, binding)) matches = [candidate];
+        if (
+          candidate?.value.status === 'active' &&
+          candidate.value.target.kind === 'surface' &&
+          surfaceBindingMatches(candidate.value.target.providerBinding, binding)
+        )
+          matches = [candidate];
       }
       if (matches.length > 1) throw new Error('COMPUTER_SURFACE_PROVIDER_BINDING_AMBIGUOUS');
       const target = matches[0]?.value.target;
@@ -873,7 +1023,11 @@ export function createComputerInteractionTargetAuthority(
       compatibilityMigrationKey(normalizedMigrationId, normalizedScopeId),
     );
     if (!record) return undefined;
-    if (record.value.migrationId !== normalizedMigrationId || record.value.scopeId !== normalizedScopeId || record.value.status !== 'closed') {
+    if (
+      record.value.migrationId !== normalizedMigrationId ||
+      record.value.scopeId !== normalizedScopeId ||
+      record.value.status !== 'closed'
+    ) {
       throw new Error('COMPUTER_COMPATIBILITY_MIGRATION_MARKER_INVALID');
     }
     return structuredClone(record.value);
@@ -890,9 +1044,17 @@ export function createComputerInteractionTargetAuthority(
     }
     const key = compatibilityMigrationKey(migrationId, scopeId);
     return persistence.transaction(controllerHome, (transaction) => {
-      const existing = transaction.read<ComputerCompatibilityMigrationMarker>(COMPUTER_TARGET_MIGRATION_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
+      const existing = transaction.read<ComputerCompatibilityMigrationMarker>(
+        COMPUTER_TARGET_MIGRATION_NAMESPACE,
+        COMPUTER_TARGET_SCOPE,
+        key,
+      );
       if (existing) {
-        if (existing.value.migrationId !== migrationId || existing.value.scopeId !== scopeId || existing.value.status !== 'closed') {
+        if (
+          existing.value.migrationId !== migrationId ||
+          existing.value.scopeId !== scopeId ||
+          existing.value.status !== 'closed'
+        ) {
           throw new Error('COMPUTER_COMPATIBILITY_MIGRATION_MARKER_INVALID');
         }
         return structuredClone(existing.value);
@@ -921,7 +1083,11 @@ export function createComputerInteractionTargetAuthority(
   function tombstoneSurface(controllerHome: string, targetId: string): boolean {
     const key = targetKey(targetId);
     return persistence.transaction(controllerHome, (transaction) => {
-      const current = transaction.read<ComputerInteractionTargetEntry>(COMPUTER_TARGET_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
+      const current = transaction.read<ComputerInteractionTargetEntry>(
+        COMPUTER_TARGET_NAMESPACE,
+        COMPUTER_TARGET_SCOPE,
+        key,
+      );
       if (!current || current.value.status !== 'active' || current.value.target.kind !== 'surface') return false;
       const at = now();
       deleteSurfaceBindingIndex(transaction, normalizedSurfaceTarget(current.value.target));
@@ -955,11 +1121,25 @@ export function createComputerInteractionTargetAuthority(
       const persist = (target: ComputerSurfaceTarget, action: string): ComputerSurfaceTarget => {
         const previousTarget = normalizedSurfaceTarget(record.value.target);
         record = persistence.transaction(controllerHome, (transaction) => {
-          const current = transaction.read<ComputerInteractionTargetEntry>(COMPUTER_TARGET_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
-          if (!current || current.value.status !== 'active' || current.value.target.kind !== 'surface' || current.revision !== record.revision) {
+          const current = transaction.read<ComputerInteractionTargetEntry>(
+            COMPUTER_TARGET_NAMESPACE,
+            COMPUTER_TARGET_SCOPE,
+            key,
+          );
+          if (
+            !current ||
+            current.value.status !== 'active' ||
+            current.value.target.kind !== 'surface' ||
+            current.revision !== record.revision
+          ) {
             throw new Error(`COMPUTER_SURFACE_TARGET_CHANGED: ${key}`);
           }
-          deleteSurfaceIndexes(transaction, previousTarget, 'active', new Set(surfaceIndexKeysForStatus(target, 'active')));
+          deleteSurfaceIndexes(
+            transaction,
+            previousTarget,
+            'active',
+            new Set(surfaceIndexKeysForStatus(target, 'active')),
+          );
           const written = transaction.write({
             namespace: COMPUTER_TARGET_NAMESPACE,
             scope: COMPUTER_TARGET_SCOPE,
@@ -980,17 +1160,22 @@ export function createComputerInteractionTargetAuthority(
           const current = normalizedSurfaceTarget(record.value.target);
           const providerBinding = normalizeSurfaceProviderBinding(binding);
           requireNativeBrowserOwnerToken(current.stableIdentity, providerBinding);
-          if (current.stableIdentity.surfaceType === 'browser-tab'
-            && current.stableIdentity.ownership === 'plugin_owned'
-            && current.providerBinding?.ownerToken
-            && current.providerBinding.ownerToken !== providerBinding.ownerToken) {
+          if (
+            current.stableIdentity.surfaceType === 'browser-tab' &&
+            current.stableIdentity.ownership === 'plugin_owned' &&
+            current.providerBinding?.ownerToken &&
+            current.providerBinding.ownerToken !== providerBinding.ownerToken
+          ) {
             throw new Error(`COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT: ${key}`);
           }
-          return persist({
-            ...current,
-            providerBinding,
-            updatedAt: now(),
-          }, 'computer_surface_target_bind_provider');
+          return persist(
+            {
+              ...current,
+              providerBinding,
+              updatedAt: now(),
+            },
+            'computer_surface_target_bind_provider',
+          );
         },
         clearBinding() {
           const { providerBinding: _providerBinding, ...withoutBinding } = record.value.target;
@@ -1002,34 +1187,46 @@ export function createComputerInteractionTargetAuthority(
             ...current.compatibilityAliases,
             ...(input.compatibilityAliases ?? []),
           ]);
-          const repositoryIds = normalizeRepositoryIds([
-            ...current.repositoryIds,
-            ...(input.repositoryIds ?? []),
-          ]);
-          return persist({
-            ...current,
-            compatibilityAliases,
-            repositoryIds,
-            updatedAt: now(),
-          }, 'computer_surface_target_merge_compatibility');
+          const repositoryIds = normalizeRepositoryIds([...current.repositoryIds, ...(input.repositoryIds ?? [])]);
+          return persist(
+            {
+              ...current,
+              compatibilityAliases,
+              repositoryIds,
+              updatedAt: now(),
+            },
+            'computer_surface_target_merge_compatibility',
+          );
         },
         putCompatibility(compatibility) {
           const current = normalizedSurfaceTarget(record.value.target);
           const next = new Map(current.compatibilityRecords.map((entry) => [entry.namespace, entry]));
           const normalized = normalizeCompatibilityRecord(compatibility);
           next.set(normalized.namespace, normalized);
-          return persist({
-            ...current,
-            compatibilityRecords: normalizeCompatibilityRecords([...next.values()]),
-            updatedAt: now(),
-          }, 'computer_surface_target_put_compatibility');
+          return persist(
+            {
+              ...current,
+              compatibilityRecords: normalizeCompatibilityRecords([...next.values()]),
+              updatedAt: now(),
+            },
+            'computer_surface_target_put_compatibility',
+          );
         },
         tombstone() {
           const at = now();
           const target: ComputerSurfaceTarget = { ...record.value.target, updatedAt: at };
           persistence.transaction(controllerHome, (transaction) => {
-            const current = transaction.read<ComputerInteractionTargetEntry>(COMPUTER_TARGET_NAMESPACE, COMPUTER_TARGET_SCOPE, key);
-            if (!current || current.value.status !== 'active' || current.value.target.kind !== 'surface' || current.revision !== record.revision) {
+            const current = transaction.read<ComputerInteractionTargetEntry>(
+              COMPUTER_TARGET_NAMESPACE,
+              COMPUTER_TARGET_SCOPE,
+              key,
+            );
+            if (
+              !current ||
+              current.value.status !== 'active' ||
+              current.value.target.kind !== 'surface' ||
+              current.revision !== record.revision
+            ) {
               throw new Error(`COMPUTER_SURFACE_TARGET_CHANGED: ${key}`);
             }
             deleteSurfaceBindingIndex(transaction, normalizedSurfaceTarget(current.value.target));
@@ -1057,7 +1254,10 @@ export function createComputerInteractionTargetAuthority(
   ): Promise<ComputerInteractionTargetCleanupReport> {
     const nowMs = Number.isFinite(options.nowMs) ? Number(options.nowMs) : Date.now();
     const ttlMs = Math.max(60_000, Math.trunc(options.ttlMs ?? DEFAULT_TARGET_TOMBSTONE_TTL_MS));
-    const maxTombstones = Math.max(0, Math.min(Math.trunc(options.maxTombstones ?? DEFAULT_MAX_TARGET_TOMBSTONES), MAX_TARGET_RETENTION_SCAN));
+    const maxTombstones = Math.max(
+      0,
+      Math.min(Math.trunc(options.maxTombstones ?? DEFAULT_MAX_TARGET_TOMBSTONES), MAX_TARGET_RETENTION_SCAN),
+    );
     const maxRemovals = Math.max(1, Math.min(Math.trunc(options.maxRemovals ?? DEFAULT_MAX_TARGET_REMOVALS), 128));
     const records = persistence.list<ComputerInteractionTargetEntry>(controllerHome, {
       namespace: COMPUTER_TARGET_NAMESPACE,
@@ -1070,7 +1270,10 @@ export function createComputerInteractionTargetAuthority(
       .sort((left, right) => {
         const leftAt = Date.parse(left.value.tombstonedAt ?? left.updatedAt);
         const rightAt = Date.parse(right.value.tombstonedAt ?? right.updatedAt);
-        return (Number.isFinite(leftAt) ? leftAt : Number.MIN_SAFE_INTEGER) - (Number.isFinite(rightAt) ? rightAt : Number.MIN_SAFE_INTEGER);
+        return (
+          (Number.isFinite(leftAt) ? leftAt : Number.MIN_SAFE_INTEGER) -
+          (Number.isFinite(rightAt) ? rightAt : Number.MIN_SAFE_INTEGER)
+        );
       });
     let overCapacityCount = Math.max(0, tombstones.length - maxTombstones);
     let removed = 0;
@@ -1083,21 +1286,28 @@ export function createComputerInteractionTargetAuthority(
       if (!expired && !capacityEligible) continue;
       if (removed >= maxRemovals) break;
       try {
-        const deleted = await persistence.withTargetLock(controllerHome, record.key, async () => persistence.transaction(controllerHome, (transaction) => {
-          const current = transaction.read<ComputerInteractionTargetEntry>(COMPUTER_TARGET_NAMESPACE, COMPUTER_TARGET_SCOPE, record.key);
-          if (!current || current.value.status !== 'tombstoned') return false;
-          const currentAtMs = Date.parse(current.value.tombstonedAt ?? current.updatedAt);
-          const stillExpired = !Number.isFinite(currentAtMs) || nowMs - currentAtMs >= ttlMs;
-          if (!stillExpired && !capacityEligible) return false;
-          if (current.value.target.kind === 'surface') deleteSurfaceIndexes(transaction, normalizedSurfaceTarget(current.value.target), 'tombstoned');
-          return transaction.delete({
-            namespace: COMPUTER_TARGET_NAMESPACE,
-            scope: COMPUTER_TARGET_SCOPE,
-            key: record.key,
-            action: 'computer_target_retention_delete',
-            expectedRevision: current.revision,
-          });
-        }));
+        const deleted = await persistence.withTargetLock(controllerHome, record.key, async () =>
+          persistence.transaction(controllerHome, (transaction) => {
+            const current = transaction.read<ComputerInteractionTargetEntry>(
+              COMPUTER_TARGET_NAMESPACE,
+              COMPUTER_TARGET_SCOPE,
+              record.key,
+            );
+            if (!current || current.value.status !== 'tombstoned') return false;
+            const currentAtMs = Date.parse(current.value.tombstonedAt ?? current.updatedAt);
+            const stillExpired = !Number.isFinite(currentAtMs) || nowMs - currentAtMs >= ttlMs;
+            if (!stillExpired && !capacityEligible) return false;
+            if (current.value.target.kind === 'surface')
+              deleteSurfaceIndexes(transaction, normalizedSurfaceTarget(current.value.target), 'tombstoned');
+            return transaction.delete({
+              namespace: COMPUTER_TARGET_NAMESPACE,
+              scope: COMPUTER_TARGET_SCOPE,
+              key: record.key,
+              action: 'computer_target_retention_delete',
+              expectedRevision: current.revision,
+            });
+          }),
+        );
         if (deleted) {
           removed += 1;
           if (capacityEligible) overCapacityCount = Math.max(0, overCapacityCount - 1);
@@ -1108,10 +1318,11 @@ export function createComputerInteractionTargetAuthority(
     }
 
     const retained = Math.max(0, tombstones.length - removed);
-    const eligibleCount = tombstones.filter((record) => {
-      const atMs = Date.parse(record.value.tombstonedAt ?? record.updatedAt);
-      return !Number.isFinite(atMs) || nowMs - atMs >= ttlMs;
-    }).length + Math.max(0, tombstones.length - maxTombstones);
+    const eligibleCount =
+      tombstones.filter((record) => {
+        const atMs = Date.parse(record.value.tombstonedAt ?? record.updatedAt);
+        return !Number.isFinite(atMs) || nowMs - atMs >= ttlMs;
+      }).length + Math.max(0, tombstones.length - maxTombstones);
     return {
       policyVersion: COMPUTER_TARGET_RETENTION_POLICY_VERSION,
       inspected: records.length,

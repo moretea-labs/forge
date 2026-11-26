@@ -82,7 +82,6 @@ const DESKTOP_TARGET_OPEN_ACTION = 'desktop_target_open';
 const DESKTOP_TARGET_CLOSE_ACTION = 'desktop_target_close';
 const DESKTOP_ELEMENT_OBSERVE_ACTION = 'desktop_element_observe';
 const DESKTOP_ELEMENT_ACTION_ACTION = 'desktop_element_action';
-const elementObservationEpochs = new Map<string, { providerSessionId: string; snapshotRevision: number }>();
 export const COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION = 'console_unlock_prepare';
 export const COMPUTER_CONSOLE_UNLOCK_ACTION = 'console_unlock';
 export const COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION = 'console_unlock_enroll';
@@ -898,7 +897,8 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
           observation_revision: {
             type: 'integer',
             minimum: 1,
-            description: 'snapshotRevision returned by desktop_element_observe for this target. Provider session identity stays inside Computer.',
+            description:
+              'snapshotRevision returned by desktop_element_observe for this target. Provider session identity stays inside Computer.',
           },
           ref: { type: 'string' },
           action: { type: 'string', enum: [...COMPUTER_ELEMENT_SEMANTIC_ACTIONS] },
@@ -1777,22 +1777,6 @@ async function retireDesktopApplicationTargets(
   }
 }
 
-function elementObservationKey(controllerHome: string, targetId: string): string {
-  return `${controllerHome}\0${targetId}`;
-}
-
-function rememberElementObservation(
-  controllerHome: string,
-  targetId: string,
-  providerSessionId: string,
-  snapshotRevision: number,
-): void {
-  elementObservationEpochs.set(elementObservationKey(controllerHome, targetId), {
-    providerSessionId,
-    snapshotRevision,
-  });
-}
-
 function projectElementObservation(result: Record<string, unknown>): Record<string, unknown> {
   const projected: Record<string, unknown> = { ...result };
   delete projected.interactionId;
@@ -2173,17 +2157,14 @@ async function executeDesktopSemanticAction(
       const current = lease.current();
       const binding = current.providerBinding;
       const observationRevision = input.args.observation_revision;
-      const epoch = elementObservationEpochs.get(elementObservationKey(input.controllerHome, targetId));
       const appName = current.stableIdentity.appName ?? current.stableIdentity.bundleId;
       if (
         !binding ||
         binding.providerId !== DESKTOP_PROVIDER_ID ||
         typeof binding.processId !== 'number' ||
         !appName ||
-        !epoch ||
-        epoch.providerSessionId !== binding.providerSessionId ||
-        typeof observationRevision !== 'number' ||
-        epoch.snapshotRevision !== observationRevision
+        !Number.isSafeInteger(observationRevision) ||
+        binding.elementSnapshotRevision !== observationRevision
       ) {
         throw new AssistantPluginError(
           'COMPUTER_ELEMENT_OBSERVATION_STALE',
@@ -2194,6 +2175,10 @@ async function executeDesktopSemanticAction(
           },
         );
       }
+      // Consume before dispatch: a lost action receipt cannot allow replay.
+      // The existing Computer target authority stores this rebuildable epoch,
+      // so separate MCP requests/processes agree on the same one-shot guard.
+      lease.bind({ ...binding, elementSnapshotRevision: undefined }, current.launchProvenance);
       const { target_id: _targetId, observation_revision: _revision, ...rest } = input.args;
       const providerArgs = {
         ...rest,
@@ -2227,12 +2212,18 @@ async function executeDesktopSemanticAction(
     const { target_id: _targetId, ...rest } = input.args;
     try {
       const result = await executeRetainedDesktopAction(input, rest, binding.providerSessionId);
-      if (input.actionId === DESKTOP_ELEMENT_OBSERVE_ACTION && typeof result.snapshotRevision === 'number') {
-        rememberElementObservation(
-          input.controllerHome,
-          targetId,
-          binding.providerSessionId,
-          result.snapshotRevision,
+      if (input.actionId === DESKTOP_ELEMENT_OBSERVE_ACTION) {
+        if (!Number.isSafeInteger(result.snapshotRevision) || Number(result.snapshotRevision) < 1) {
+          throw new AssistantPluginError(
+            'COMPUTER_ELEMENT_OBSERVATION_INVALID',
+            'Desktop provider did not return a valid element observation revision.',
+            { retryable: false },
+          );
+        }
+        const current = lease.current();
+        lease.bind(
+          { ...binding, elementSnapshotRevision: result.snapshotRevision as number },
+          current.launchProvenance,
         );
         return projectElementObservation(result);
       }

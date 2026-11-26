@@ -1705,6 +1705,8 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(observed.interactionId).toBeUndefined();
     expect(observed.pid).toBeUndefined();
     expect(elementTarget).toBeUndefined();
+    // Observation must survive separate MCP calls/processes without an in-memory Map.
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.elementSnapshotRevision).toBe(1);
 
     const acted = await computerPluginAdapter.executeAction(
       actionInput(
@@ -1717,6 +1719,9 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(acted).toMatchObject({ acted: true, action: 'invoke', ref });
     expect(fixture.state.sessionOpenCount).toBe(1);
     expect(fixture.state.elementActionCount).toBe(1);
+    expect(
+      targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.elementSnapshotRevision,
+    ).toBeUndefined();
 
     await expect(
       computerPluginAdapter.executeAction(
@@ -2023,12 +2028,7 @@ describe('protected Computer console unlock composition', () => {
     ).rejects.toThrow();
 
     const unlocked = await computerPluginAdapter.executeAction({
-      ...actionInput(
-        fixture.controllerHome,
-        'console_unlock',
-        { credential_handle: handle },
-        'console-unlock-plugin',
-      ),
+      ...actionInput(fixture.controllerHome, 'console_unlock', { credential_handle: handle }, 'console-unlock-plugin'),
       confirmAuthorization: true,
       timeoutMs: 5_000,
     });
