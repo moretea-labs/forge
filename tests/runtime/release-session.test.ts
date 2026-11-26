@@ -938,6 +938,95 @@ describe('Recovery ReleaseSession', () => {
     ).toThrow('RELEASE_SESSION_ACTIVE_EXISTS');
   });
 
+  test('advance with no active ReleaseSession fails closed without calling any provider operation', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-no-active-'));
+    roots.push(home);
+    let providerCalls = 0;
+    const unavailable = async () => {
+      providerCalls += 1;
+      throw new Error('provider must not be called without an active ReleaseSession');
+    };
+    const result = await advanceConfiguredRuntimeRelease(
+      { controllerHome: home },
+      {
+        prepare: unavailable,
+        verifyCandidate: unavailable,
+        cutover: unavailable,
+        promoteKnownGood: unavailable,
+      },
+      'release-session-no-active',
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      attempted: false,
+      noOp: true,
+      detail: 'RELEASE_SESSION_NOT_ACTIVE',
+      releaseRun: { actions: ['none'], boundary: 'terminal' },
+    });
+    expect(providerCalls).toBe(0);
+  });
+
+  test('advance resumes a frozen ReleaseSession using its immutable repository and revision', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-frozen-source-'));
+    roots.push(home);
+    const { stable, stableRelease, candidate } = lanes(home);
+    const sourceRepositoryId = 'repo_frozen_resume';
+    const sourceRevision = sourceCommit('frozen-source-revision');
+    const session = createReleaseSession({
+      controllerHome: home,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRepositoryId,
+      sourceRevision,
+    });
+    const observed: Array<{ repositoryId?: string; revision?: string; requestId?: string }> = [];
+    const result = await advanceConfiguredRuntimeRelease(
+      { controllerHome: home },
+      {
+        prepare: async (_config, repositoryId, revision, requestId) => {
+          observed.push({ repositoryId, revision, requestId });
+          return {
+            ok: true,
+            attempted: false,
+            noOp: true,
+            detail: 'waiting at provider boundary',
+            releaseSession: readReleaseSession(home, session.sessionId),
+          };
+        },
+        verifyCandidate: async () => {
+          throw new Error('frozen source must still be in prepare phase');
+        },
+        cutover: async () => {
+          throw new Error('frozen source must still be in prepare phase');
+        },
+        promoteKnownGood: async () => {
+          throw new Error('frozen source must still be in prepare phase');
+        },
+      },
+      'release-session-frozen-resume',
+    );
+    expect(observed).toEqual([
+      {
+        repositoryId: sourceRepositoryId,
+        revision: sourceRevision,
+        requestId: 'release-session-frozen-resume',
+      },
+    ]);
+    expect(result).toMatchObject({
+      ok: true,
+      attempted: false,
+      noOp: true,
+      releaseSession: {
+        sessionId: session.sessionId,
+        sourceRepositoryId,
+        sourceRevision,
+      },
+      releaseRun: { actions: ['prepare'], boundary: 'provider_boundary' },
+    });
+  });
+
   test('derives the next incompatible-migration action only from durable ReleaseSession phase', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-coordinator-'));
     roots.push(home);
