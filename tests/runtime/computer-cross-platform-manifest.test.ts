@@ -47,6 +47,13 @@ describe('Computer cross-platform manifest contract', () => {
       }
     )?.properties?.action?.enum;
     expect(actionEnum).toContain('click');
+    const desktopActionSchema = desktopAction?.argumentsSchema as {
+      properties?: { selector?: { properties?: Record<string, unknown> } };
+      anyOf?: Array<{ required?: string[] }>;
+    };
+    expect(desktopActionSchema.properties?.selector?.properties).toHaveProperty('identifier');
+    expect(desktopActionSchema.properties?.selector?.properties).not.toHaveProperty('ref');
+    expect(desktopActionSchema.anyOf).toContainEqual({ required: ['selector'] });
   });
 
   test('platform-specific Computer execution readiness must not be mistaken for cross-host native support', () => {

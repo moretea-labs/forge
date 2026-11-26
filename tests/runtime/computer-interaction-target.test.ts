@@ -1783,6 +1783,81 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.state.elementActionCount).toBe(2);
   });
 
+  test('atomically resolves a stable selector and acts under one latest-snapshot target lease', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+
+    const exposed = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_element_observe',
+        { target_id: targetId, root_selector: { identifier: 'agent.settings' } },
+        'element-exposed-before-atomic',
+      ),
+    );
+    const exposedRoot = exposed.root as Record<string, unknown>;
+    expect(exposed.snapshotRevision).toBe(1);
+
+    const acted = await computerPluginAdapter.executeAction(
+      actionInput(
+        fixture.controllerHome,
+        'desktop_element_action',
+        { target_id: targetId, selector: { identifier: 'agent.settings' }, action: 'invoke' },
+        'element-atomic-selector-action',
+      ),
+    );
+    expect(acted).toMatchObject({ acted: true, action: 'invoke', ref: 'ax_3_1' });
+    expect(fixture.state.elementObserveCount).toBe(2);
+    expect(fixture.state.elementActionCount).toBe(1);
+    expect(
+      targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.elementSnapshotRevision,
+    ).toBeUndefined();
+
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_element_action',
+          {
+            target_id: targetId,
+            observation_revision: exposed.snapshotRevision,
+            ref: exposedRoot.ref,
+            action: 'invoke',
+          },
+          'element-exposed-stale-after-atomic',
+        ),
+      ),
+    ).rejects.toThrow('COMPUTER_ELEMENT_OBSERVATION_STALE');
+    expect(fixture.state.elementActionCount).toBe(1);
+  });
+
+  test('rejects mixed selector and explicit-ref element action modes before provider mutation', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+    const observed = await computerPluginAdapter.executeAction(
+      actionInput(fixture.controllerHome, 'desktop_element_observe', { target_id: targetId }, 'element-mixed-observe'),
+    );
+    const root = observed.root as Record<string, unknown>;
+
+    await expect(
+      computerPluginAdapter.executeAction(
+        actionInput(
+          fixture.controllerHome,
+          'desktop_element_action',
+          {
+            target_id: targetId,
+            observation_revision: observed.snapshotRevision,
+            ref: root.ref,
+            selector: { identifier: 'agent.settings' },
+            action: 'invoke',
+          },
+          'element-mixed-action',
+        ),
+      ),
+    ).rejects.toThrow('PLUGIN_COMPUTER_ELEMENT_ACTION_INVALID');
+    expect(fixture.state.elementActionCount).toBe(0);
+  });
+
   test('closes a preexisting bound target without terminating its application', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture);
