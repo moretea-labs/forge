@@ -537,7 +537,12 @@ async function cli(): Promise<void> {
       const sessionId = option('--session-id');
       if (!sessionId) throw new Error('RECOVERY_RELEASE_SESSION_ID_REQUIRED');
       output(
-        await cutoverConfiguredRuntimeReleaseSession(config, sessionId, `recovery-cli:${process.pid}:${Date.now()}`),
+        await cutoverConfiguredRuntimeReleaseSession(
+          config,
+          sessionId,
+          `recovery-cli:${process.pid}:${Date.now()}`,
+          process.argv.includes('--retire-legacy-work-references'),
+        ),
       );
       return;
     }
@@ -920,7 +925,17 @@ export const RECOVERY_TOOLS = [
     name: 'cutover_runtime_release_session',
     description:
       'Perform the single fenced cutover attempt for a cutover-eligible ReleaseSession using the byte-identical verified Candidate B artifact. Failed cutover restores exact Stable A and terminalizes without retry.',
-    inputSchema: mutationInputSchema({ session_id: { type: 'string', minLength: 8, maxLength: 120 } }, ['session_id']),
+    inputSchema: mutationInputSchema(
+      {
+        session_id: { type: 'string', minLength: 8, maxLength: 120 },
+        retire_legacy_work_references: {
+          type: 'boolean',
+          description:
+            'Explicitly retire classified legacy Work references offline during this exact ReleaseSession cutover. Never inferred or enabled for automatic cutover.',
+        },
+      },
+      ['session_id'],
+    ),
   },
   {
     name: 'cancel_runtime_release_session',
@@ -1554,6 +1569,7 @@ export async function dispatchRecoveryTool(
           config,
           args.session_id.trim(),
           `recovery-gateway:${args.request_id}`,
+          args.retire_legacy_work_references === true,
         ),
       );
     }

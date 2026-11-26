@@ -7000,6 +7000,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
   config: RecoveryConfig,
   sessionId: string,
   requestId?: string,
+  retireLegacyWorkReferences = false,
 ): Promise<ConfiguredRuntimeActivationResult> {
   const locked = await withLock(
     config,
@@ -7420,6 +7421,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
               expectedSourceRepositoryId: releaseSessionSourceRepositoryId(session),
               expectedSourceRevision: session.sourceRevision,
               releaseSessionId: session.sessionId,
+              ...(retireLegacyWorkReferences ? { retireLegacyWorkReferences: true } : {}),
             },
             releaseSessionLock,
           );
