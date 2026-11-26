@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { execFileSync } from 'child_process';
 import { isAbsolute, join, resolve } from 'path';
 import { hostname } from 'os';
 import { systemdUserUnitName } from '../src/runtime/platform/systemd-user';
@@ -102,8 +103,57 @@ if (!controllerHomeRaw || controllerHome === resolve('.')) throw new Error('RECO
 const port = integerOption('--port', 8787, 1024, 65535);
 const stageOnly = process.argv.includes('--stage-only');
 const existingRecoveryConfig = loadRecoveryConfig(controllerHome);
-const primaryRuntimeSourceRoot = existingRecoveryConfig.primaryRuntimeSourceRoot;
-const primaryRuntimeSourceRepositoryId = existingRecoveryConfig.primaryRuntimeSourceRepositoryId;
+const requestedPrimaryRuntimeSourceRoot = option('--primary-runtime-source-root')?.trim();
+const requestedPrimaryRuntimeSourceRepositoryId = option('--primary-runtime-source-repository-id')?.trim();
+const expectedPrimaryRuntimeSourceRevision = option('--expected-primary-runtime-source-revision')?.trim();
+const sourceAuthorityOverrideRequested = Boolean(
+  requestedPrimaryRuntimeSourceRoot ||
+    requestedPrimaryRuntimeSourceRepositoryId ||
+    expectedPrimaryRuntimeSourceRevision,
+);
+if (
+  sourceAuthorityOverrideRequested &&
+  (!requestedPrimaryRuntimeSourceRoot ||
+    !requestedPrimaryRuntimeSourceRepositoryId ||
+    !expectedPrimaryRuntimeSourceRevision)
+) {
+  throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_OVERRIDE_INCOMPLETE');
+}
+if (
+  requestedPrimaryRuntimeSourceRepositoryId &&
+  !/^repo_[A-Za-z0-9_-]+$/.test(requestedPrimaryRuntimeSourceRepositoryId)
+) {
+  throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_ID_INVALID');
+}
+if (expectedPrimaryRuntimeSourceRevision && !/^[a-f0-9]{40}$/i.test(expectedPrimaryRuntimeSourceRevision)) {
+  throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_REVISION_INVALID');
+}
+const primaryRuntimeSourceRoot = requestedPrimaryRuntimeSourceRoot
+  ? resolve(requestedPrimaryRuntimeSourceRoot)
+  : existingRecoveryConfig.primaryRuntimeSourceRoot;
+const primaryRuntimeSourceRepositoryId =
+  requestedPrimaryRuntimeSourceRepositoryId ?? existingRecoveryConfig.primaryRuntimeSourceRepositoryId;
+if (sourceAuthorityOverrideRequested && primaryRuntimeSourceRoot && expectedPrimaryRuntimeSourceRevision) {
+  const sourceHead = execFileSync('git', ['-C', primaryRuntimeSourceRoot, 'rev-parse', '--verify', 'HEAD'], {
+    encoding: 'utf8',
+  }).trim();
+  if (sourceHead !== expectedPrimaryRuntimeSourceRevision) {
+    throw new Error(
+      'RECOVERY_PRIMARY_RUNTIME_SOURCE_REVISION_MISMATCH: expected ' +
+        expectedPrimaryRuntimeSourceRevision +
+        ', got ' +
+        sourceHead,
+    );
+  }
+  const dirty = execFileSync(
+    'git',
+    ['-C', primaryRuntimeSourceRoot, 'status', '--porcelain=v1', '--untracked-files=no'],
+    { encoding: 'utf8' },
+  ).trim();
+  if (dirty) {
+    throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_DIRTY: ' + dirty.split(/\r?\n/).slice(0, 20).join(', '));
+  }
+}
 if (!stageOnly && !primaryRuntimeSourceRoot) throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_ROOT_REQUIRED');
 if (!stageOnly && !primaryRuntimeSourceRepositoryId)
   throw new Error('RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_ID_REQUIRED');
