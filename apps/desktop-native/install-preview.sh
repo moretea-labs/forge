@@ -3,9 +3,12 @@ set -euo pipefail
 
 MODE="${1:-install}"
 case "$MODE" in
-  install) ;;
-  --build-only) ;;
-  *) printf 'Usage: %s [--build-only]\n' "$0" >&2; exit 2 ;;
+install) ;;
+--build-only) ;;
+*)
+  printf 'Usage: %s [--build-only]\n' "$0" >&2
+  exit 2
+  ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -56,7 +59,7 @@ if [[ ! -f "$TMP/Contents/Resources/ForgeNative_ForgeNative.bundle/Contents/Reso
   exit 1
 fi
 
-cat > "$TMP/Contents/Info.plist" <<'PLIST'
+cat >"$TMP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -96,10 +99,10 @@ chmod +x "$TMP/Contents/MacOS/Forge" "$TMP/Contents/MacOS/forge-desktop"
 # showing an interactive Keychain Allow prompt.
 SIGN_IDENTITY="${FORGE_CODESIGN_IDENTITY:-}"
 if [ -z "$SIGN_IDENTITY" ]; then
-  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null     | sed -n 's/^[[:space:]]*[0-9][0-9]*) [0-9A-F]* "\(Developer ID Application:[^"]*\)".*/\1/p'     | head -1)"
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/^[[:space:]]*[0-9][0-9]*) [0-9A-F]* "\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)"
 fi
 if [ -n "$SIGN_IDENTITY" ]; then
-# Local-only preview: retain the stable Developer ID signing identity while
+  # Local-only preview: retain the stable Developer ID signing identity while
   # avoiding Apple online timestamp availability as an installation dependency.
   # Distribution / release packaging is a separate process with its own gates.
   codesign --force --timestamp=none --sign "$SIGN_IDENTITY" "$TMP/Contents/MacOS/Forge"
