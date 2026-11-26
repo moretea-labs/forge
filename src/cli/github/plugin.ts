@@ -5,7 +5,6 @@ import {
 } from "./issue-sync";
 import type { ControllerIssue } from "../controller/types";
 import type { GitHubIssueSyncPort } from "../../runtime/plugins/types";
-import { tryAppendControllerWorklogEvent } from "../../runtime/evidence/controller-worklog";
 import {
   invalidateGitHubPluginStatus,
   loadGitHubPluginConfig,
@@ -27,14 +26,6 @@ export function publishIssueWithGitHubPlugin(repoRoot: string, issueId: string):
     projectNumber: config.projectNumber,
   });
   invalidateGitHubPluginStatus(repoRoot);
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: "github",
-    action: "github_issue_published",
-    summary: `Published ${issue.id} to GitHub.`,
-    actor: "github-plugin",
-    issueId: issue.id,
-    details: { url: issue.github?.url },
-  });
   return issue;
 }
 
@@ -48,14 +39,6 @@ export function refreshIssueWithGitHubPlugin(repoRoot: string, issueId: string) 
   requireEnabled(repoRoot);
   const result = refreshGitHubIssue(repoRoot, issueId);
   invalidateGitHubPluginStatus(repoRoot);
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: "github",
-    action: "github_issue_refreshed",
-    summary: `Refreshed ${issueId} from GitHub.`,
-    actor: "github-plugin",
-    issueId,
-    details: { url: result.issue.github?.url, remote: result.remote },
-  });
   return result;
 }
 
@@ -63,13 +46,5 @@ export function closeIssueWithGitHubPlugin(repoRoot: string, issueId: string): C
   requireEnabled(repoRoot);
   const issue = closeGitHubIssue(repoRoot, issueId);
   invalidateGitHubPluginStatus(repoRoot);
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: "github",
-    action: "github_issue_closed",
-    summary: `Closed the linked GitHub Issue for ${issueId}.`,
-    actor: "github-plugin",
-    issueId,
-    details: { url: issue.github?.url },
-  });
   return issue;
 }

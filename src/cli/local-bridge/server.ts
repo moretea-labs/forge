@@ -15,11 +15,6 @@ import { cleanupIntegratedWorktree, integrateAgentJob, taskRunDiff } from '../ag
 import { listControllerChecks, runControllerCheck } from '../../runtime/execution/process-runtime/check-runner';
 import { projectBoard } from '../controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../controller/task-ledger';
-import {
-  exportControllerWorklog,
-  listControllerWorklogEvents,
-  parseWorklogCategory,
-} from '../../runtime/evidence/controller-worklog';
 import { inspectProjectGovernance } from '../controller/governance';
 import { loadControllerProjectState } from '../controller/project-state';
 import { legacyIssueCutoverState } from '../controller/legacy-issue-cutover';
@@ -238,7 +233,6 @@ function queryString(value: unknown): string | undefined {
 
 function controllerStateSignature(repoRoot: string): string {
   const snapshot = cachedLocalControllerSnapshot(repoRoot);
-  const latestWorklog = listControllerWorklogEvents(repoRoot, { limit: 1 })[0];
   return JSON.stringify({
     issues: snapshot.board.issues.map((issue) => ({
       id: issue.id,
@@ -258,7 +252,6 @@ function controllerStateSignature(repoRoot: string): string {
       run.autoIntegrationError,
     ]),
     jobs: snapshot.localJobs.map((job) => [job.jobId, job.status, job.updatedAt, job.runId]),
-    worklog: latestWorklog?.id,
     projectState: snapshot.projectState,
   });
 }
@@ -586,7 +579,6 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
     projectState: loadControllerProjectState(repoRoot),
     governance: inspectProjectGovernance(repoRoot, requirementBoard),
     recovery,
-    timeline: listControllerWorklogEvents(repoRoot, { limit: 40 }),
     githubPlugin: getGitHubPluginStatus(repoRoot),
     assistantPlugins,
     mobileIntents,
@@ -2182,40 +2174,6 @@ export async function startLocalBridgeServer(options: LocalBridgeServerOptions):
         };
       });
       response.json({ ok: results.every((entry: { ok: boolean }) => entry.ok), results });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.get('/api/timeline', (request, response) => {
-    try {
-      response.json({
-        events: listControllerWorklogEvents(requestRepositoryRoot(request, options, controllerHome), {
-          category: parseWorklogCategory(queryString(request.query.category)),
-          issueId: queryString(request.query.issueId),
-          taskId: queryString(request.query.taskId),
-          runId: queryString(request.query.runId),
-          since: queryString(request.query.since),
-          until: queryString(request.query.until),
-          limit: request.query.limit ? Number(request.query.limit) : 300,
-        }),
-      });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-  app.post('/api/worklog/export', (request, response) => {
-    try {
-      response.json(
-        exportControllerWorklog(requestRepositoryRoot(request, options, controllerHome), {
-          format: request.body?.format === 'json' ? 'json' : 'markdown',
-          outputPath: queryString(request.body?.outputPath),
-          filter: {
-            issueId: queryString(request.body?.issueId),
-            taskId: queryString(request.body?.taskId),
-            runId: queryString(request.body?.runId),
-          },
-        }),
-      );
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
     }

@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { tryAppendControllerWorklogEvent } from "../../runtime/evidence/controller-worklog";
 import { assertLegacyCurrentIssueWriteAllowed, legacyIssueAuthorityRetired, legacyIssueCutoverState } from "./legacy-issue-cutover";
 
 const PROJECT_STATE_PATH = ".ai/harness/controller/project-state.json";
@@ -89,35 +88,6 @@ export function saveControllerProjectState(
   const path = statePath(repoRoot);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
-  const focusChanged = Object.prototype.hasOwnProperty.call(patch, "currentIssueId") && previous.currentIssueId !== next.currentIssueId;
-  const creationPolicyChanged = patch.issueCreationMode !== undefined && patch.issueCreationMode !== previous.issueCreationMode;
-  const archiveViewChanged = patch.showArchivedByDefault !== undefined && patch.showArchivedByDefault !== previous.showArchivedByDefault;
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: "system",
-    action: focusChanged
-      ? "project_focus_changed"
-      : creationPolicyChanged
-        ? "issue_creation_policy_changed"
-        : archiveViewChanged
-          ? "archive_view_policy_changed"
-          : "project_state_changed",
-    summary: focusChanged
-      ? next.currentIssueId
-        ? `Current execution focus set to ${next.currentIssueId}.`
-        : "Current execution focus cleared."
-      : creationPolicyChanged
-        ? `Issue creation mode changed from ${previous.issueCreationMode} to ${next.issueCreationMode}.`
-        : archiveViewChanged
-          ? `Archived-Issue default visibility changed to ${next.showArchivedByDefault}.`
-          : "Controller project state refreshed.",
-    actor,
-    issueId: next.currentIssueId,
-    details: {
-      previousCurrentIssueId: previous.currentIssueId,
-      issueCreationMode: next.issueCreationMode,
-      showArchivedByDefault: next.showArchivedByDefault,
-    },
-  });
   return next;
 }
 
@@ -132,13 +102,6 @@ export function clearCurrentIssue(repoRoot: string, actor?: string): ControllerP
   const path = statePath(repoRoot);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: "system",
-    action: "project_focus_cleared",
-    summary: "Cleared the current execution focus.",
-    actor: actor ?? "forge-controller",
-    issueId: previous.currentIssueId,
-  });
   return next;
 }
 

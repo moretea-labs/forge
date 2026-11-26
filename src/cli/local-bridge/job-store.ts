@@ -13,7 +13,6 @@ import {
   normalizeAgentTimeoutMs,
 } from '../../runtime/shared/runtime-config';
 import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
-import { tryAppendControllerWorklogEvent } from '../../runtime/evidence/controller-worklog';
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { findExecutionJob } from '../../runtime/execution/jobs/store';
 import {
@@ -182,25 +181,6 @@ function appendEvent(repoRoot: string, jobId: string, event: Omit<LocalBridgeJob
   mkdirSync(dirname(path), { recursive: true });
   const at = now();
   appendFileSync(path, `${JSON.stringify({ ...event, at })}\n`, 'utf-8');
-  let job: LocalBridgeJob | undefined;
-  try {
-    const stored = metaPath(repoRoot, jobId);
-    if (existsSync(stored)) job = readJson<LocalBridgeJob>(stored);
-  } catch (_error) {
-    job = undefined;
-  }
-  tryAppendControllerWorklogEvent(repoRoot, {
-    at,
-    category: 'local_job',
-    action: event.type,
-    summary: event.message || event.type,
-    actor: job?.requestedBy || 'local-controller',
-    issueId: job?.issueId,
-    taskId: job?.taskId,
-    runId: job?.runId,
-    jobId,
-    details: event.data,
-  });
 }
 
 export function localBridgeTimeoutPolicy(repoRoot: string): {

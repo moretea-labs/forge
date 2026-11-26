@@ -12,11 +12,6 @@ import {
   summarizeCapabilityGroups,
 } from '../../../src/runtime/control-plane/facade/capability-registry';
 import {
-  exportControllerWorklog,
-  listControllerWorklogEvents,
-  parseWorklogCategory,
-} from '../../../src/runtime/evidence/controller-worklog';
-import {
   FORGE_MCP_SCHEMA_VERSION,
   FORGE_TOOL_SURFACE,
   FORGE_VERSION,
@@ -490,45 +485,6 @@ export function buildMcpToolDefinitions(
         annotations: readOnly,
       },
       {
-        name: 'get_worklog_timeline',
-        description:
-          'Read the unified controller worklog across Issues, Tasks, Runs, Direct Edits, Verification, and GitHub sync.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            category: {
-              type: 'string',
-              enum: ['issue', 'task', 'run', 'verification', 'edit', 'github', 'local_job', 'system'],
-            },
-            issue_id: { type: 'string' },
-            task_id: { type: 'string' },
-            run_id: { type: 'string' },
-            since: { type: 'string' },
-            until: { type: 'string' },
-            limit: { type: 'number' },
-          },
-          additionalProperties: false,
-        },
-        annotations: readOnly,
-      },
-      {
-        name: 'export_worklog',
-        description:
-          'Export the controller worklog to a repository report under tasks/reports or another safe repo-relative path.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            format: { type: 'string', enum: ['markdown', 'json'] },
-            output_path: { type: 'string' },
-            issue_id: { type: 'string' },
-            task_id: { type: 'string' },
-            run_id: { type: 'string' },
-          },
-          additionalProperties: false,
-        },
-        annotations: write,
-      },
-      {
         name: 'apply_patch',
         description:
           'Apply a sessionless mutation batch through the canonical Semantic Mutation Planner using operations, optional allowed_paths, and optional refresh_fingerprints.',
@@ -821,36 +777,6 @@ export async function callMcpTool(
         const checks = listControllerChecks(ctx.repoRoot);
         audit(ctx, name, 'ok', args);
         return textResult({ checks });
-      }
-      case 'get_worklog_timeline': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'get_worklog_timeline requires the controller profile');
-        const events = listControllerWorklogEvents(ctx.repoRoot, {
-          category: parseWorklogCategory(args.category),
-          issueId: typeof args.issue_id === 'string' ? args.issue_id : undefined,
-          taskId: typeof args.task_id === 'string' ? args.task_id : undefined,
-          runId: typeof args.run_id === 'string' ? args.run_id : undefined,
-          since: typeof args.since === 'string' ? args.since : undefined,
-          until: typeof args.until === 'string' ? args.until : undefined,
-          limit: typeof args.limit === 'number' ? Math.trunc(args.limit) : undefined,
-        });
-        audit(ctx, name, 'ok', args);
-        return textResult({ events });
-      }
-      case 'export_worklog': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'export_worklog requires the controller profile');
-        const result = exportControllerWorklog(ctx.repoRoot, {
-          format: args.format === 'json' ? 'json' : 'markdown',
-          outputPath: typeof args.output_path === 'string' ? args.output_path : undefined,
-          filter: {
-            issueId: typeof args.issue_id === 'string' ? args.issue_id : undefined,
-            taskId: typeof args.task_id === 'string' ? args.task_id : undefined,
-            runId: typeof args.run_id === 'string' ? args.run_id : undefined,
-          },
-        });
-        audit(ctx, name, 'ok', args, result.path);
-        return textResult(result);
       }
       case 'apply_patch': {
         if (ctx.policy.profile !== 'controller')

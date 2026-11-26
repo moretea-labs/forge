@@ -1,6 +1,5 @@
 import { existsSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
-import { tryAppendControllerWorklogEvent } from "../evidence/controller-worklog";
 import { resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { listRepositories, updateRepository } from "../repositories/registry";
 import type { RepositoryRecord } from "../../core/repository/types";
@@ -236,13 +235,6 @@ export function saveGitHubPluginConfig(
     at: Date.now() - STATUS_CACHE_TTL_MS + CONFIG_STATUS_CACHE_TTL_MS,
     fingerprint: JSON.stringify(config),
     status: configuredGitHubPluginStatus(config),
-  });
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: "github",
-    action: "github_plugin_configured",
-    summary: `GitHub plugin ${config.enabled ? "enabled" : "disabled"}.`,
-    actor: "local-controller",
-    details: { config },
   });
   return config;
 }

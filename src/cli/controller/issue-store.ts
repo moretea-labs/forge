@@ -21,7 +21,6 @@ import {
   resolveIssueTaskStates,
   resolveTaskDependencies,
 } from './task-status-resolver';
-import { tryAppendControllerWorklogEvent } from '../../runtime/evidence/controller-worklog';
 import {
   completionEvidenceComplete,
   taskExecutionPolicy,
@@ -555,7 +554,6 @@ export function updateIssue(
 ): ControllerIssue {
   assertLegacyIssueWritesAllowed(repoRoot, { id });
   const issue = getIssue(repoRoot, id);
-  const previousStatus = issue.status;
   if (patch.title !== undefined) {
     issue.title = patch.title.trim() || issue.title;
     issue.slug = slugify(issue.title);
@@ -569,18 +567,6 @@ export function updateIssue(
   if (patch.github !== undefined) issue.github = patch.github;
   issue.updatedAt = new Date().toISOString();
   const written = writeIssue(repoRoot, issue);
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: patch.github ? 'github' : 'issue',
-    action: patch.github ? 'issue_github_linked' : 'issue_updated',
-    summary:
-      patch.status && patch.status !== previousStatus
-        ? `Issue ${issue.id} moved from ${previousStatus} to ${patch.status}.`
-        : `Updated ${issue.id}: ${issue.title}`,
-    issueId: issue.id,
-    statusFrom: previousStatus,
-    statusTo: issue.status,
-    details: { fields: Object.keys(patch), githubUrl: patch.github?.url },
-  });
   return written;
 }
 
@@ -633,54 +619,6 @@ export function updateTask(
   issue.updatedAt = task.updatedAt;
   refreshReadiness(repoRoot, issue);
   const written = writeIssue(repoRoot, issue);
-  if (patch.status && patch.status !== previousStatus) {
-    tryAppendControllerWorklogEvent(repoRoot, {
-      category: 'task',
-      action: 'task_status_changed',
-      summary: `${task.id} moved from ${previousStatus} to ${task.status}.`,
-      issueId: issue.id,
-      taskId: task.id,
-      statusFrom: previousStatus,
-      statusTo: task.status,
-      details: { title: task.title },
-    });
-  }
-  if (patch.note?.trim())
-    tryAppendControllerWorklogEvent(repoRoot, {
-      category: 'task',
-      action: 'task_note_added',
-      summary: patch.note.trim(),
-      issueId: issue.id,
-      taskId: task.id,
-    });
-  if (patch.runId?.trim())
-    tryAppendControllerWorklogEvent(repoRoot, {
-      category: 'run',
-      action: 'run_linked_to_task',
-      summary: `Linked ${patch.runId.trim()} to ${task.id}.`,
-      issueId: issue.id,
-      taskId: task.id,
-      runId: patch.runId.trim(),
-    });
-  if (patch.github)
-    tryAppendControllerWorklogEvent(repoRoot, {
-      category: 'github',
-      action: 'task_github_linked',
-      summary: `Linked ${task.id} to GitHub.`,
-      issueId: issue.id,
-      taskId: task.id,
-      details: { url: patch.github.url },
-    });
-  if (patch.verification)
-    tryAppendControllerWorklogEvent(repoRoot, {
-      category: 'verification',
-      action: task.status === 'verified' ? 'verification_passed' : 'verification_recorded',
-      summary: `${task.id} verification recorded by ${patch.verification.reviewer}.`,
-      issueId: issue.id,
-      taskId: task.id,
-      runId: patch.verification.runId,
-      details: { checks: patch.verification.checkResults, acceptance: patch.verification.acceptanceResults },
-    });
   return written;
 }
 
@@ -771,12 +709,6 @@ export function removeEphemeralIssue(repoRoot: string, issueIdValue: string): bo
   if (!issue.ephemeral) throw new Error(`refusing to remove durable Issue ${issueIdValue}`);
   rmSync(issuePath(repoRoot, issue), { force: true });
   rmSync(markdownPath(repoRoot, issue), { force: true });
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: 'issue',
-    action: 'ephemeral_issue_cleaned',
-    summary: `Cleaned ephemeral Issue ${issue.id}.`,
-    issueId: issue.id,
-  });
   return true;
 }
 

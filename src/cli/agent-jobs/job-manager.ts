@@ -19,7 +19,6 @@ import { getGitHubAgentSession, getGitHubAgentSessionLog } from '../github/sessi
 import { getIssue, inspectTaskReadiness, removeEphemeralIssue, updateTask } from '../controller/issue-store';
 import { readTaskRunEvidence } from '../controller/run-evidence';
 import { resolveEffectiveTaskState } from '../controller/task-status-resolver';
-import { tryAppendControllerWorklogEvent } from '../../runtime/evidence/controller-worklog';
 import {
   ensureControllerEpoch,
   hasControllerOwnershipMetadata,
@@ -482,21 +481,6 @@ export function appendAgentJobEvent(
     `${JSON.stringify({ ...event, at, eventId, requestId: event.requestId ?? meta?.requestId, commandId, executionId: event.executionId ?? commandId })}\n`,
     'utf-8',
   );
-  try {
-    tryAppendControllerWorklogEvent(repoRoot, {
-      at,
-      category: 'run',
-      action: event.type,
-      summary: event.message || event.type,
-      actor: meta?.agent ?? 'agent-runner',
-      issueId: meta?.issueId,
-      taskId: meta?.taskId,
-      runId,
-      details: event.data,
-    });
-  } catch (_error) {
-    // The Run event remains authoritative even when the aggregate worklog is unavailable.
-  }
 }
 
 function activeRunIndexEntries(repoRoot: string): AgentRunIndexEntry[] {

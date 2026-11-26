@@ -913,13 +913,12 @@ describe('Local Execution Bridge', () => {
     expect(configured.enabled).toBe(true);
     expect(configured.syncMode).toBe('checkpoint');
 
-    const exported = await fetch(new URL('/api/worklog/export', handle.url), {
+    const retiredWorklog = await fetch(new URL('/api/worklog/export', handle.url), {
       method: 'POST',
       headers: { ...headers, 'content-type': 'application/json' },
       body: JSON.stringify({ outputPath: 'tasks/reports/controller-v5.md' }),
-    }).then((response) => response.json());
-    expect(exported.eventCount).toBeGreaterThan(0);
-    expect(existsSync(join(root, exported.path))).toBe(true);
+    });
+    expect(retiredWorklog.status).toBe(404);
   });
 
   test('serves generic plugin discovery and durable plugin action submission APIs', async () => {
