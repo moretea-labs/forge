@@ -169,6 +169,7 @@ for (const retiredWorkAsset of [
   'evaluation/scenarios/shared-work-investigation-stays-direct.json',
   'evaluation/scenarios/shared-work-recovery-durable-admission.json',
   '.design-harness/screens/work-focus.json',
+  'tests/runtime/retired-work-plan-compat.test.ts',
 ]) {
   requireMissing(retiredWorkAsset);
 }

@@ -895,10 +895,6 @@
       "module": "controller",
       "resource": "temp-isolated"
     },
-    "tests/runtime/retired-work-plan-compat.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
-    },
     "tests/runtime/rh-project-project-operations.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
