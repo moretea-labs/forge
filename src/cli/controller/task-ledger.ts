@@ -1,5 +1,4 @@
 import { projectBoard } from "./issue-store";
-import { listControllerWorklogEvents } from "../../runtime/evidence/controller-worklog";
 import { legacyIssueCutoverState } from "./legacy-issue-cutover";
 import { buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 
@@ -329,7 +328,6 @@ export function buildControllerTaskLedgerProjection(
   repoRoot: string,
   boardInput?: ControllerBoardProjection,
   requirementBoardInput?: ReturnType<typeof buildRequirementBoard>,
-  options: { includeRecentEvents?: boolean } = {},
 ): TaskLedgerProjection {
   const cutover = legacyIssueCutoverState(repoRoot);
   if (cutover.retired) {
@@ -401,22 +399,7 @@ export function buildControllerTaskLedgerProjection(
     attention,
     readyTasks,
     queueableTasks,
-    recentEvents: options.includeRecentEvents === false
-      ? []
-      : listControllerWorklogEvents(
-          repoRoot,
-          { limit: 20 },
-          cutover.repoId ? { controllerHome: cutover.controllerHome, repoId: cutover.repoId } : undefined,
-        ).map((event) => ({
-          at: event.at,
-          category: event.category,
-          action: event.action,
-          summary: event.summary,
-          issueId: event.issueId,
-          taskId: event.taskId,
-          runId: event.runId,
-          jobId: event.jobId,
-        })),
+    recentEvents: [],
     suggestedNextActions: buildSuggestedNextActions({
       currentIssueId: board.currentIssueId,
       issues,

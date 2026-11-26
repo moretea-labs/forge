@@ -798,9 +798,7 @@ export async function callRuntimeObservationAdapter(
             }
             if (selectedSections.includes('taskLedger')) {
               sectionPayload.taskLedger = measureSection('taskLedger', () =>
-                buildControllerTaskLedgerProjection(repository.canonicalRoot, board, undefined, {
-                  includeRecentEvents: false,
-                }),
+                buildControllerTaskLedgerProjection(repository.canonicalRoot, board, undefined),
               );
             }
           }
@@ -1127,9 +1125,7 @@ export async function callRuntimeObservationAdapter(
           const board = legacyIssuesRetired ? undefined : projectBoard(repository.canonicalRoot);
           markPhase('build.task_board', taskBoardStartedAt);
           const taskLedgerStartedAt = performance.now();
-          const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot, board, undefined, {
-            includeRecentEvents: variant !== 'summary',
-          });
+          const taskLedger = buildControllerTaskLedgerProjection(repository.canonicalRoot, board, undefined);
           markPhase('build.task_ledger', taskLedgerStartedAt);
           markPhase('build.task_state', taskStateStartedAt);
           const readinessStartedAt = performance.now();

@@ -76,21 +76,6 @@ function listRuns(record: RepositoryRecord): WorkbenchRunSummary[] {
   return result.sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')));
 }
 
-function countWorklog(root: string): number {
-  for (const path of [
-    join(root, '.ai', 'harness', 'controller', 'worklog.jsonl'),
-    join(root, '.ai', 'harness', 'worklog.jsonl'),
-  ]) {
-    if (!existsSync(path)) continue;
-    try {
-      return readFileSync(path, 'utf-8').split(/\r?\n/).filter((line) => line.trim()).length;
-    } catch (_error) {
-      return 0;
-    }
-  }
-  return 0;
-}
-
 export function buildControllerWorkbench(
   controllerHome: string,
   options: { repoId?: string; includeRemoved?: boolean } = {},
@@ -112,7 +97,6 @@ export function buildControllerWorkbench(
         tasks: issues.reduce((total, issue) => total + (Array.isArray(issue.tasks) ? issue.tasks.length : 0), 0),
         runs: runs.length,
         activeRuns: activeRuns.length,
-        worklogEvents: countWorklog(record.canonicalRoot),
       },
       activeRuns,
     };
@@ -134,7 +118,6 @@ export function buildControllerWorkbench(
       tasks: total.tasks + entry.counts.tasks,
       runs: total.runs + entry.counts.runs,
       activeRuns: total.activeRuns + entry.counts.activeRuns,
-      worklogEvents: total.worklogEvents + entry.counts.worklogEvents,
-    }), { repositories: 0, enabledRepositories: 0, issues: 0, tasks: 0, runs: 0, activeRuns: 0, worklogEvents: 0 }),
+    }), { repositories: 0, enabledRepositories: 0, issues: 0, tasks: 0, runs: 0, activeRuns: 0 }),
   };
 }

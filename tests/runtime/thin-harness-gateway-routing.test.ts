@@ -36,11 +36,6 @@ import { getProcessRecord, listProcessRecords } from '../../src/runtime/executio
 import { getProcessHandle, waitForProcess } from '../../src/runtime/execution/process-runtime/runtime';
 import { readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { resolveRepositoryCheckStorage } from '../../src/runtime/execution/process-runtime/check-storage';
-import {
-  appendControllerWorklogEvent,
-  listControllerWorklogEvents,
-  resolveControllerWorklogStorage,
-} from '../../src/runtime/evidence/controller-worklog';
 import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 import { MCP_SERVER_INSTRUCTIONS } from '../../adapters/mcp/instructions';
 import { executeRepositoryBatch } from '../../src/runtime/execution/thin-harness/batch-executor';
@@ -1584,29 +1579,6 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(artifact.ok).toBe(false);
     expect(artifact.status).toBe(7);
     expect(artifact.stderr).toContain('expected-failure');
-  });
-
-  test('Controller worklog uses Controller Home authority without creating repository runtime state', () => {
-    const fx = fixture();
-    roots.push(fx.root);
-    const authority = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
-    const event = appendControllerWorklogEvent(
-      fx.repoRoot,
-      {
-        category: 'edit',
-        action: 'controller_home_worklog_regression',
-        summary: 'Controller-owned runtime evidence',
-      },
-      authority,
-    );
-    const storage = resolveControllerWorklogStorage(fx.repoRoot, authority);
-
-    expect(storage.physicalPath).toBe(
-      join(fx.controllerHome, 'repositories', fx.repository.repoId, 'controller', 'worklog.jsonl'),
-    );
-    expect(existsSync(storage.physicalPath)).toBe(true);
-    expect(existsSync(join(fx.repoRoot, '.ai', 'harness', 'controller', 'worklog.jsonl'))).toBe(false);
-    expect(listControllerWorklogEvents(fx.repoRoot, { limit: 1 }, authority)[0]?.id).toBe(event.id);
   });
 
   test('run_check preserves Process Runtime request conflicts instead of masking them', async () => {

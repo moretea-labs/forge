@@ -125,19 +125,6 @@ function migrateJsonFile(path: string, record: RepositoryRecord, kind: 'issue' |
   return changed;
 }
 
-function migrateJsonl(path: string, record: RepositoryRecord): boolean {
-  const raw = readFileSync(path, 'utf-8');
-  let changed = false;
-  const output = raw.split(/\r?\n/).map((line: string) => {
-    if (!line.trim()) return line;
-    const value = JSON.parse(line) as Record<string, unknown>;
-    changed = bindOwnedField(value, 'repoId', record.repoId, 'Worklog event') || changed;
-    return JSON.stringify(value);
-  }).join('\n');
-  if (changed) writeFileSync(path, output, 'utf-8');
-  return changed;
-}
-
 export function bindRepositoryEntities(record: RepositoryRecord): EntityMigrationReport {
   const report: EntityMigrationReport = {
     repoId: record.repoId,
@@ -165,20 +152,6 @@ export function bindRepositoryEntities(record: RepositoryRecord): EntityMigratio
         report.unresolved += 1;
         report.errors.push({ path: relative(record.canonicalRoot, path), error: error instanceof Error ? error.message : String(error) });
       }
-    }
-  }
-  for (const root of ['.ai/harness/controller/worklog.jsonl', '.ai/harness/worklog.jsonl']) {
-    const path = join(record.canonicalRoot, root);
-    if (!existsSync(path)) continue;
-    report.scanned += 1;
-    try {
-      if (migrateJsonl(path, record)) {
-        report.updated += 1;
-        report.files.push(root);
-      }
-    } catch (error) {
-      report.unresolved += 1;
-      report.errors.push({ path: root, error: error instanceof Error ? error.message : String(error) });
     }
   }
   return report;

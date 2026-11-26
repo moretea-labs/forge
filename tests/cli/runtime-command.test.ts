@@ -300,7 +300,7 @@ describe('runtime command surface', () => {
     expect(runtimeTools).not.toContain('ensureControllerDaemon');
     expect(runtimeTools).not.toContain('cli/mcp/keepalive');
     expect(runtimeObservation).not.toContain('cli/local-bridge/job-store');
-    expect(runtimeObservation).toContain("includeRecentEvents: variant !== 'summary'");
+    expect(runtimeObservation).not.toContain('includeRecentEvents');
     expect(runtimeObservation).toContain('const requestedSections = Array.isArray(args.sections)');
     expect(runtimeObservation).toContain('const selectedSections = requestedSections;');
     expect(runtimeObservation).toContain("if (selectedSections.includes('git'))");
@@ -313,10 +313,9 @@ describe('runtime command surface', () => {
       "'Working tree has changes; request repository_git_status for bounded detail.'",
     );
     const taskLedgerSource = readFileSync(join(ROOT, 'src/cli/controller/task-ledger.ts'), 'utf8');
-    expect(taskLedgerSource).toContain('options.includeRecentEvents === false');
-    expect(taskLedgerSource).toContain(
-      'cutover.repoId ? { controllerHome: cutover.controllerHome, repoId: cutover.repoId } : undefined',
-    );
+    expect(taskLedgerSource).not.toContain('controller-worklog');
+    expect(taskLedgerSource).not.toContain('listControllerWorklogEvents');
+    expect(taskLedgerSource).toContain('recentEvents: []');
     const readinessStart = runtimeObservation.indexOf("case 'controller_ready':");
     const readinessEnd = runtimeObservation.indexOf("case 'repository_runtime_snapshot':", readinessStart);
     const readinessBlock = runtimeObservation.slice(readinessStart, readinessEnd);
