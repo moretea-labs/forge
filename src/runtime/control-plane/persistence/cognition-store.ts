@@ -91,79 +91,6 @@ function derivedIndexesHealthy(database: SqliteDatabase): boolean {
   }
 }
 
-const RETIRED_COGNITION_SCOPE_KIND = 'work';
-const RETIRED_COGNITION_SCOPE_TABLES = [
-  'cognition_memory_evidence',
-  'cognition_memory_usage',
-  'cognition_concept_index',
-  'cognition_term_index',
-  'cognition_memory_edges',
-  'cognition_memory_units',
-] as const;
-
-function cognitionTableColumns(
-  database: SqliteDatabase,
-  table: 'cognition_memory_units' | 'cognition_memory_edges',
-): Set<string> {
-  if (!tablesAvailable(database, [table])) return new Set();
-  return new Set(
-    statement(database, `PRAGMA table_info(${table})`, (prepared) =>
-      (prepared.all() as Array<{ name?: string }>).map((row) => String(row.name ?? '')).filter(Boolean),
-    ),
-  );
-}
-
-function cognitionTableHasRetiredWorkScope(
-  database: SqliteDatabase,
-  table: (typeof RETIRED_COGNITION_SCOPE_TABLES)[number],
-): boolean {
-  if (!tablesAvailable(database, [table])) return false;
-  const row = statement(
-    database,
-    `SELECT 1 AS present FROM ${table} WHERE lower(scope_kind) = ? LIMIT 1`,
-    (prepared) => prepared.get(RETIRED_COGNITION_SCOPE_KIND) as { present?: number } | undefined,
-  );
-  return row?.present === 1;
-}
-
-/**
- * #483 final data migration: historical Work is not a supported Cognition
- * scope or provenance dimension. Older SQLite homes may still have Work rows
- * and source_work_id/source_round_id columns even though current source no
- * longer reads or writes them. Remove them in-place instead of keeping a
- * compatibility reader or a second migration store.
- */
-function retireLegacyWorkCognitionState(database: SqliteDatabase): void {
-  const unitColumns = cognitionTableColumns(database, 'cognition_memory_units');
-  const edgeColumns = cognitionTableColumns(database, 'cognition_memory_edges');
-  const hasLegacyColumns =
-    unitColumns.has('source_work_id') ||
-    unitColumns.has('source_round_id') ||
-    edgeColumns.has('source_work_id') ||
-    edgeColumns.has('source_round_id');
-  const hasRetiredRows =
-    cognitionTableHasRetiredWorkScope(database, 'cognition_memory_units') ||
-    cognitionTableHasRetiredWorkScope(database, 'cognition_memory_edges');
-
-  if (!hasLegacyColumns && !hasRetiredRows) return;
-
-  for (const table of RETIRED_COGNITION_SCOPE_TABLES) {
-    if (!tablesAvailable(database, [table])) continue;
-    statement(database, `DELETE FROM ${table} WHERE lower(scope_kind) = ?`, (prepared) =>
-      prepared.run(RETIRED_COGNITION_SCOPE_KIND),
-    );
-  }
-
-  for (const [table, columns] of [
-    ['cognition_memory_edges', edgeColumns],
-    ['cognition_memory_units', unitColumns],
-  ] as const) {
-    for (const column of ['source_work_id', 'source_round_id'] as const) {
-      if (columns.has(column)) database.exec(`ALTER TABLE ${table} DROP COLUMN ${column};`);
-    }
-  }
-}
-
 function ensureSchema(database: SqliteDatabase): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS cognition_memory_units (
@@ -262,7 +189,6 @@ function ensureSchema(database: SqliteDatabase): void {
     CREATE INDEX IF NOT EXISTS cognition_term_lookup
       ON cognition_term_index (scope_kind, scope_id, term);
   `);
-  retireLegacyWorkCognitionState(database);
 }
 
 function rowToMemory(row: Record<string, unknown>, evidenceRefs: string[], counterEvidenceRefs: string[]): MemoryUnit {
