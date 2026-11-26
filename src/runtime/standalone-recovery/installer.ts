@@ -32,7 +32,20 @@ import {
   type SystemdUserUnitInput,
 } from '../platform/systemd-user';
 import { FORGE_VERSION } from '../../version';
-import { initializeStandaloneRecovery, loadRecoveryConfig, normalizeRecoveryInstallProfile, recoveryInstallProfileRoles, type LaunchdPrimaryConnectorServiceConfig, type LaunchdPublicTunnelServiceConfig, type PrimaryConnectorServiceConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig, type RecoveryInstallProfile, type RecoveryTunnelServiceConfig } from './core';
+import {
+  initializeStandaloneRecovery,
+  loadRecoveryConfig,
+  normalizeRecoveryInstallProfile,
+  recoveryInstallProfileRoles,
+  type LaunchdPrimaryConnectorServiceConfig,
+  type LaunchdPublicTunnelServiceConfig,
+  type PrimaryConnectorServiceConfig,
+  type PrimaryRuntimeServiceConfig,
+  type PublicTunnelServiceConfig,
+  type RecoveryConfig,
+  type RecoveryInstallProfile,
+  type RecoveryTunnelServiceConfig,
+} from './core';
 import { RECOVERY_DAEMON_LABEL, RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
 import { acquireRecoveryOperationLock } from './operation-lock';
 export { RECOVERY_DAEMON_LABEL, RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
@@ -141,7 +154,6 @@ export interface RecoveryActivationVerification {
   healthStatus?: number;
 }
 
-
 export interface RecoveryServiceHandoffResult {
   platform: 'launchd' | 'systemd-user';
   serviceRegistered: boolean;
@@ -180,7 +192,12 @@ export interface RecoveryInstallerDependencies {
   now?: () => number;
   uuid?: () => string;
   compileBinary?: (input: { sourceRoot: string; outputPath: string }) => ProcessRunResult;
-  runCanary?: (input: { binaryPath: string; controllerHome: string; productVersion: string; role?: RecoveryRuntimeRole }) => ProcessRunResult;
+  runCanary?: (input: {
+    binaryPath: string;
+    controllerHome: string;
+    productVersion: string;
+    role?: RecoveryRuntimeRole;
+  }) => ProcessRunResult;
   installAgent?: typeof installLaunchAgent;
   handoff?: typeof safeLaunchdHandoff;
   verify?: (input: {
@@ -218,13 +235,18 @@ function recoveryReleaseProductVersion(release: RecoveryReleaseDescriptor): stri
   // Compatibility for Recovery releases created before productVersion became
   // manifest-bound. Prefer their exact recorded source package when it still
   // exists; only the legacy fallback may inherit the current process version.
-  try { return recoverySourceProductVersion(release.sourceRoot); } catch { /* legacy/retired source */ }
+  try {
+    return recoverySourceProductVersion(release.sourceRoot);
+  } catch {
+    /* legacy/retired source */
+  }
   return FORGE_VERSION;
 }
 
 function gitText(root: string, args: string[]): string {
   const result = runProcess('git', ['-C', root, ...args], { timeoutMs: 15_000, maxOutputBytes: 128 * 1024 });
-  if (!result.ok) throw new Error(`RECOVERY_RELEASE_GIT_FAILED: ${result.stderr || result.stdout || result.error}`.slice(0, 2_000));
+  if (!result.ok)
+    throw new Error(`RECOVERY_RELEASE_GIT_FAILED: ${result.stderr || result.stdout || result.error}`.slice(0, 2_000));
   return result.stdout.trim();
 }
 
@@ -232,7 +254,13 @@ export function recoverySourceIdentity(sourceRoot: string): RecoverySourceIdenti
   const root = resolve(sourceRoot);
   const sourceCommit = gitText(root, ['rev-parse', '--verify', 'HEAD']);
   if (!/^[a-f0-9]{40}$/i.test(sourceCommit)) throw new Error('RECOVERY_RELEASE_SOURCE_COMMIT_INVALID');
-  const dirty = gitText(root, ['status', '--porcelain=v1', '--untracked-files=all', '--', ...RECOVERY_RELEASE_SOURCE_PATHS]);
+  const dirty = gitText(root, [
+    'status',
+    '--porcelain=v1',
+    '--untracked-files=all',
+    '--',
+    ...RECOVERY_RELEASE_SOURCE_PATHS,
+  ]);
   if (dirty) throw new Error(`RECOVERY_RELEASE_DIRTY_SOURCE: ${dirty.split(/\r?\n/).slice(0, 20).join(', ')}`);
   return { sourceCommit, releaseRevision: sourceCommit, cleanWorkspace: true, sourceRoot: root };
 }
@@ -251,16 +279,39 @@ export function resolveRecoveryCompilerExecutable(
 
 function defaultCompileBinary(input: { sourceRoot: string; outputPath: string }): ProcessRunResult {
   const bun = resolveRecoveryCompilerExecutable();
-  return runProcess(bun, [
-    'build',
-    join(input.sourceRoot, 'src/runtime/standalone-recovery/entry.ts'),
-    '--compile',
-    '--outfile',
-    input.outputPath,
-  ], { cwd: input.sourceRoot, timeoutMs: 180_000, maxOutputBytes: 512 * 1024 });
+  const compiled = runProcess(
+    bun,
+    [
+      'build',
+      join(input.sourceRoot, 'src/runtime/standalone-recovery/entry.ts'),
+      '--compile',
+      '--outfile',
+      input.outputPath,
+    ],
+    { cwd: input.sourceRoot, timeoutMs: 180_000, maxOutputBytes: 512 * 1024 },
+  );
+  if (!compiled.ok || process.platform !== 'darwin') return compiled;
+
+  // Bun's linker signature can become invalid after embedding the compiled
+  // executable payload. Re-sign the final bytes before copies, manifest
+  // digests and canaries; never rewrite a published immutable release.
+  const signed = runProcess('/usr/bin/codesign', ['--force', '--sign', '-', '--timestamp=none', input.outputPath], {
+    timeoutMs: 30_000,
+    maxOutputBytes: 128 * 1024,
+  });
+  if (!signed.ok) return signed;
+  return runProcess('/usr/bin/codesign', ['--verify', '--deep', '--strict', input.outputPath], {
+    timeoutMs: 30_000,
+    maxOutputBytes: 128 * 1024,
+  });
 }
 
-function defaultRunCanary(input: { binaryPath: string; controllerHome: string; productVersion: string; role?: RecoveryRuntimeRole }): ProcessRunResult {
+function defaultRunCanary(input: {
+  binaryPath: string;
+  controllerHome: string;
+  productVersion: string;
+  role?: RecoveryRuntimeRole;
+}): ProcessRunResult {
   const args = input.role
     ? [input.role, RECOVERY_RELEASE_ROLE_CANARY_ARG, '--controller-home', input.controllerHome]
     : ['status', '--controller-home', input.controllerHome];
@@ -278,10 +329,13 @@ function completeArtifacts(releasePath: string): RecoveryReleaseManifest['artifa
   return artifacts;
 }
 
-export function stageRecoveryRelease(input: {
-  controllerHome: string;
-  sourceRoot: string;
-}, dependencies: RecoveryInstallerDependencies = {}): StagedRecoveryRelease {
+export function stageRecoveryRelease(
+  input: {
+    controllerHome: string;
+    sourceRoot: string;
+  },
+  dependencies: RecoveryInstallerDependencies = {},
+): StagedRecoveryRelease {
   const identity = recoverySourceIdentity(input.sourceRoot);
   const productVersion = recoverySourceProductVersion(identity.sourceRoot);
   const now = dependencies.now ?? Date.now;
@@ -294,8 +348,14 @@ export function stageRecoveryRelease(input: {
   mkdirSync(staging, { recursive: true, mode: 0o700 });
   try {
     const primary = join(staging, RECOVERY_RELEASE_BINARIES[0]);
-    const compile = (dependencies.compileBinary ?? defaultCompileBinary)({ sourceRoot: identity.sourceRoot, outputPath: primary });
-    if (!compile.ok) throw new Error(`RECOVERY_RELEASE_BUILD_FAILED: ${compile.stderr || compile.stdout || compile.error}`.slice(0, 2_000));
+    const compile = (dependencies.compileBinary ?? defaultCompileBinary)({
+      sourceRoot: identity.sourceRoot,
+      outputPath: primary,
+    });
+    if (!compile.ok)
+      throw new Error(
+        `RECOVERY_RELEASE_BUILD_FAILED: ${compile.stderr || compile.stdout || compile.error}`.slice(0, 2_000),
+      );
     chmodSync(primary, 0o700);
     for (const binary of RECOVERY_RELEASE_BINARIES.slice(1)) {
       const destination = join(staging, binary);
@@ -323,7 +383,12 @@ export function stageRecoveryRelease(input: {
         role: canary.role,
       });
       if (!canaryResult.ok) {
-        throw new Error(`RECOVERY_RELEASE_CANARY_FAILED (${canary.label}): ${canaryResult.stderr || canaryResult.stdout || canaryResult.error}`.slice(0, 2_000));
+        throw new Error(
+          `RECOVERY_RELEASE_CANARY_FAILED (${canary.label}): ${canaryResult.stderr || canaryResult.stdout || canaryResult.error}`.slice(
+            0,
+            2_000,
+          ),
+        );
       }
       canaryDetails.push(`${canary.label}: ${canaryResult.stdout.trim() || 'passed'}`);
     }
@@ -339,11 +404,18 @@ export function stageRecoveryRelease(input: {
 
 function flatBinaryPaths(controllerHome: string): Record<(typeof RECOVERY_RELEASE_BINARIES)[number], string> {
   const root = join(recoveryRoot(controllerHome), 'bin');
-  return Object.fromEntries(RECOVERY_RELEASE_BINARIES.map((binary) => [binary, join(root, binary)])) as Record<(typeof RECOVERY_RELEASE_BINARIES)[number], string>;
+  return Object.fromEntries(RECOVERY_RELEASE_BINARIES.map((binary) => [binary, join(root, binary)])) as Record<
+    (typeof RECOVERY_RELEASE_BINARIES)[number],
+    string
+  >;
 }
 
 function flatBinaryIsLegacy(path: string): boolean {
-  try { return !lstatSync(path).isSymbolicLink(); } catch { return false; }
+  try {
+    return !lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 export function captureLegacyRecoveryRelease(
@@ -356,7 +428,8 @@ export function captureLegacyRecoveryRelease(
   if (present.length === 0) return undefined;
   if (present.length !== RECOVERY_RELEASE_BINARIES.length) throw new Error('RECOVERY_LEGACY_RELEASE_INCOMPLETE');
   const aggregate = createHash('sha256');
-  for (const binary of RECOVERY_RELEASE_BINARIES) aggregate.update(binary).update('\0').update(sha256(paths[binary])).update('\0');
+  for (const binary of RECOVERY_RELEASE_BINARIES)
+    aggregate.update(binary).update('\0').update(sha256(paths[binary])).update('\0');
   const revision = `legacy-${aggregate.digest('hex').slice(0, 24)}`;
   const now = dependencies.now ?? Date.now;
   const uuid = dependencies.uuid ?? randomUUID;
@@ -393,7 +466,16 @@ export function captureLegacyRecoveryRelease(
 
 function recoveryProxyEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
   const proxy: Record<string, string> = {};
-  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy']) {
+  for (const key of [
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'ALL_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'all_proxy',
+    'no_proxy',
+  ]) {
     const value = env[key];
     if (value?.trim()) proxy[key] = value;
   }
@@ -406,9 +488,15 @@ export function recoverySystemdUserUnitInput(
   env: NodeJS.ProcessEnv = process.env,
   productVersion: string = FORGE_VERSION,
 ): SystemdUserUnitInput {
-  const binary = role === 'daemon' ? 'forge-recovery' : role === 'gateway' ? 'forge-recovery-gateway' : 'forge-recovery-watchdog';
+  const binary =
+    role === 'daemon' ? 'forge-recovery' : role === 'gateway' ? 'forge-recovery-gateway' : 'forge-recovery-watchdog';
   return {
-    description: role === 'daemon' ? 'Forge Standalone Recovery' : role === 'gateway' ? 'Forge Standalone Recovery Gateway (legacy)' : 'Forge Standalone Recovery Watchdog (legacy)',
+    description:
+      role === 'daemon'
+        ? 'Forge Standalone Recovery'
+        : role === 'gateway'
+          ? 'Forge Standalone Recovery Gateway (legacy)'
+          : 'Forge Standalone Recovery Watchdog (legacy)',
     executable: join(recoveryCurrentPath(controllerHome), binary),
     args: [role, '--controller-home', resolve(controllerHome)],
     environment: {
@@ -426,27 +514,41 @@ export function recoverySystemdUserUnitInput(
 }
 
 function recoverySystemdLabel(role: RecoveryRuntimeRole): string {
-  return role === 'daemon' ? RECOVERY_DAEMON_LABEL : role === 'gateway' ? RECOVERY_GATEWAY_LABEL : RECOVERY_WATCHDOG_LABEL;
+  return role === 'daemon'
+    ? RECOVERY_DAEMON_LABEL
+    : role === 'gateway'
+      ? RECOVERY_GATEWAY_LABEL
+      : RECOVERY_WATCHDOG_LABEL;
 }
 
 function recoveryRoleServesGateway(role: RecoveryRuntimeRole): boolean {
   return role === 'daemon' || role === 'gateway';
 }
 
-export function recoveryPlist(input: {
-  label: string;
-  executable: string;
-  command: RecoveryRuntimeRole;
-  controllerHome: string;
-  logPath: string;
-  productVersion: string;
-}, env: NodeJS.ProcessEnv = process.env): string {
+export function recoveryPlist(
+  input: {
+    label: string;
+    executable: string;
+    command: RecoveryRuntimeRole;
+    controllerHome: string;
+    logPath: string;
+    productVersion: string;
+  },
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   const xml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const argumentsList = [
-    '/usr/bin/env', '-i', `HOME=${env.HOME?.trim() || homedir()}`,
+    '/usr/bin/env',
+    '-i',
+    `HOME=${env.HOME?.trim() || homedir()}`,
     ...Object.entries(recoveryProxyEnvironment(env)).map(([key, value]) => `${key}=${value}`),
-    'PATH=/usr/bin:/bin:/usr/sbin:/sbin', `FORGE_BUILD_VERSION=${input.productVersion}`, `FORGE_CONNECTOR_EXECUTABLE=${process.execPath}`,
-    input.executable, input.command, '--controller-home', input.controllerHome,
+    'PATH=/usr/bin:/bin:/usr/sbin:/sbin',
+    `FORGE_BUILD_VERSION=${input.productVersion}`,
+    `FORGE_CONNECTOR_EXECUTABLE=${process.execPath}`,
+    input.executable,
+    input.command,
+    '--controller-home',
+    input.controllerHome,
   ];
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${xml(input.label)}</string><key>ProgramArguments</key><array>${argumentsList.map((argument) => `<string>${xml(argument)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>5</integer><key>StandardOutPath</key><string>${xml(input.logPath)}</string><key>StandardErrorPath</key><string>${xml(input.logPath)}</string></dict></plist>\n`;
 }
@@ -475,13 +577,16 @@ function defaultCurrentPid(controllerHome: string, role: RecoveryRuntimeRole): n
   return recoveryLaunchdPid(role);
 }
 
-export async function verifyRecoveryReleaseActivation(input: {
-  controllerHome: string;
-  config: RecoveryConfig;
-  expectedRelease: RecoveryReleaseDescriptor;
-  profile?: RecoveryInstallProfile;
-  timeoutMs?: number;
-}, dependencies: Pick<RecoveryInstallerDependencies, 'servicePid' | 'platform' | 'systemdEnv'> = {}): Promise<RecoveryActivationVerification> {
+export async function verifyRecoveryReleaseActivation(
+  input: {
+    controllerHome: string;
+    config: RecoveryConfig;
+    expectedRelease: RecoveryReleaseDescriptor;
+    profile?: RecoveryInstallProfile;
+    timeoutMs?: number;
+  },
+  dependencies: Pick<RecoveryInstallerDependencies, 'servicePid' | 'platform' | 'systemdEnv'> = {},
+): Promise<RecoveryActivationVerification> {
   const profile = normalizeRecoveryInstallProfile(input.profile ?? input.config.installProfile, 'self-healing');
   const selectedRoles = new Set(recoveryInstallProfileRoles(profile));
   const deadline = Date.now() + (input.timeoutMs ?? 60_000);
@@ -493,16 +598,21 @@ export async function verifyRecoveryReleaseActivation(input: {
   while (Date.now() < deadline) {
     const failures: string[] = [];
     const current = readCurrentRecoveryRelease(input.controllerHome);
-    if (!current || current.releasePath !== input.expectedRelease.releasePath || current.manifestSha256 !== input.expectedRelease.manifestSha256) {
+    if (
+      !current ||
+      current.releasePath !== input.expectedRelease.releasePath ||
+      current.manifestSha256 !== input.expectedRelease.manifestSha256
+    ) {
       failures.push('Recovery current authority does not match expected release');
     }
     const observedPids: Partial<Record<RecoveryRuntimeRole, number>> = {};
     const platform = dependencies.platform ?? process.platform;
-    const servicePid = dependencies.servicePid ?? ((_controllerHome: string, role: RecoveryRuntimeRole) => (
-      platform === 'linux'
-        ? systemdUserServicePid(recoverySystemdLabel(role), dependencies.systemdEnv ?? process.env)
-        : recoveryLaunchdPid(role)
-    ));
+    const servicePid =
+      dependencies.servicePid ??
+      ((_controllerHome: string, role: RecoveryRuntimeRole) =>
+        platform === 'linux'
+          ? systemdUserServicePid(recoverySystemdLabel(role), dependencies.systemdEnv ?? process.env)
+          : recoveryLaunchdPid(role));
     for (const role of ['daemon', 'gateway', 'watchdog'] as const) {
       const managedPid = servicePid(input.controllerHome, role);
       if (!selectedRoles.has(role)) {
@@ -516,27 +626,41 @@ export async function verifyRecoveryReleaseActivation(input: {
       if (!identity) failures.push(`${role} runtime identity missing`);
       else {
         if (!isProcessAlive(identity.pid)) failures.push(`${role} PID ${identity.pid} is not alive`);
-        if (managedPid !== undefined && identity.pid !== managedPid) failures.push(`${role} runtime identity PID does not match service-owner PID`);
+        if (managedPid !== undefined && identity.pid !== managedPid)
+          failures.push(`${role} runtime identity PID does not match service-owner PID`);
         if (identity.releasePath !== input.expectedRelease.releasePath) failures.push(`${role} release path mismatch`);
-        if (identity.releaseRevision !== input.expectedRelease.releaseRevision) failures.push(`${role} release revision mismatch`);
-        if (identity.manifestSha256 !== input.expectedRelease.manifestSha256) failures.push(`${role} manifest hash mismatch`);
+        if (identity.releaseRevision !== input.expectedRelease.releaseRevision)
+          failures.push(`${role} release revision mismatch`);
+        if (identity.manifestSha256 !== input.expectedRelease.manifestSha256)
+          failures.push(`${role} manifest hash mismatch`);
       }
     }
     let healthStatus: number | undefined;
     if ([...selectedRoles].some(recoveryRoleServesGateway)) {
       try {
-        const response = await fetch(`http://${input.config.gateway?.host ?? '127.0.0.1'}:${input.config.gateway?.port ?? 8787}/health`, {
-          signal: AbortSignal.timeout(3_000),
-        });
+        const response = await fetch(
+          `http://${input.config.gateway?.host ?? '127.0.0.1'}:${input.config.gateway?.port ?? 8787}/health`,
+          {
+            signal: AbortSignal.timeout(3_000),
+          },
+        );
         healthStatus = response.status;
-        const health = await response.json() as { status?: unknown; version?: unknown; releaseRevision?: unknown; manifestSha256?: unknown };
+        const health = (await response.json()) as {
+          status?: unknown;
+          version?: unknown;
+          releaseRevision?: unknown;
+          manifestSha256?: unknown;
+        };
         if (response.status !== 200 || health.status !== 'ok') failures.push(`gateway health HTTP ${response.status}`);
-        if (input.expectedRelease.productVersion && health.version !== input.expectedRelease.productVersion) failures.push('gateway health product version mismatch');
+        if (input.expectedRelease.productVersion && health.version !== input.expectedRelease.productVersion)
+          failures.push('gateway health product version mismatch');
         if (!input.expectedRelease.legacy || health.releaseRevision !== undefined) {
-          if (health.releaseRevision !== input.expectedRelease.releaseRevision) failures.push('gateway health release revision mismatch');
+          if (health.releaseRevision !== input.expectedRelease.releaseRevision)
+            failures.push('gateway health release revision mismatch');
         }
         if (!input.expectedRelease.legacy || health.manifestSha256 !== undefined) {
-          if (health.manifestSha256 !== input.expectedRelease.manifestSha256) failures.push('gateway health manifest hash mismatch');
+          if (health.manifestSha256 !== input.expectedRelease.manifestSha256)
+            failures.push('gateway health manifest hash mismatch');
         }
       } catch (error) {
         failures.push(`gateway health unavailable: ${error instanceof Error ? error.message : String(error)}`);
@@ -578,7 +702,8 @@ export async function acquireRecoveryReleaseLock(
   } = {},
 ): Promise<{ path: string; instanceId: string; close: () => void }> {
   const acquire = dependencies.acquire ?? acquireRecoveryOperationLock;
-  const sleep = dependencies.sleep ?? ((ms: number) => new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms)));
+  const sleep =
+    dependencies.sleep ?? ((ms: number) => new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms)));
   const now = dependencies.now ?? Date.now;
   const report = dependencies.report ?? ((detail: string) => process.stderr.write(detail));
   const deadline = now() + (dependencies.waitMs ?? RECOVERY_RELEASE_LOCK_WAIT_MS);
@@ -597,7 +722,9 @@ export async function acquireRecoveryReleaseLock(
       };
     }
     if (now() >= deadline) {
-      throw new Error(`RECOVERY_OPERATION_LOCK_BUSY: ${attempt.owner.action} pid=${attempt.owner.pid} acquiredAt=${attempt.owner.acquiredAt}`);
+      throw new Error(
+        `RECOVERY_OPERATION_LOCK_BUSY: ${attempt.owner.action} pid=${attempt.owner.pid} acquiredAt=${attempt.owner.acquiredAt}`,
+      );
     }
     if (!reported) {
       report(
@@ -645,7 +772,9 @@ function retireRecoveryRoleService(input: {
   if (platform !== 'darwin' && !input.dependencies.handoff) {
     throw new Error(`RECOVERY_RELEASE_ACTIVATION_UNSUPPORTED_PLATFORM: ${platform}`);
   }
-  const uid = (input.dependencies.uid ?? (() => typeof process.getuid === 'function' ? process.getuid() : Number.NaN))();
+  const uid = (
+    input.dependencies.uid ?? (() => (typeof process.getuid === 'function' ? process.getuid() : Number.NaN))
+  )();
   if (!Number.isInteger(uid)) throw new Error('RECOVERY_LAUNCHD_UID_UNAVAILABLE');
   const runner = input.dependencies.launchctlRunner ?? defaultRecoveryLaunchctl;
   const target = `gui/${uid}/${label}`;
@@ -666,11 +795,15 @@ async function handoffRecoveryServices(input: {
   expectedRelease: RecoveryReleaseDescriptor;
   profile: RecoveryInstallProfile;
   dependencies: RecoveryInstallerDependencies;
-}): Promise<{ services: Partial<Record<RecoveryRuntimeRole, RecoveryServiceHandoffResult>>; verification: RecoveryActivationVerification }> {
+}): Promise<{
+  services: Partial<Record<RecoveryRuntimeRole, RecoveryServiceHandoffResult>>;
+  verification: RecoveryActivationVerification;
+}> {
   const platform = input.dependencies.platform ?? process.platform;
   const selectedRoles = new Set(recoveryInstallProfileRoles(input.profile));
   for (const role of ['gateway', 'watchdog'] as const) {
-    if (!selectedRoles.has(role)) retireRecoveryRoleService({ controllerHome: input.controllerHome, role, dependencies: input.dependencies });
+    if (!selectedRoles.has(role))
+      retireRecoveryRoleService({ controllerHome: input.controllerHome, role, dependencies: input.dependencies });
   }
 
   const services: Partial<Record<RecoveryRuntimeRole, RecoveryServiceHandoffResult>> = {};
@@ -682,7 +815,12 @@ async function handoffRecoveryServices(input: {
     for (const role of recoveryInstallProfileRoles(input.profile)) {
       const servicePath = installUnit({
         unitName: recoveryRoleLabel(role),
-        unit: recoverySystemdUserUnitInput(input.controllerHome, role, env, recoveryReleaseProductVersion(input.expectedRelease)),
+        unit: recoverySystemdUserUnitInput(
+          input.controllerHome,
+          role,
+          env,
+          recoveryReleaseProductVersion(input.expectedRelease),
+        ),
         env,
         errorPrefix: 'RECOVERY_SYSTEMD_INSTALL_FAILED',
       });
@@ -695,8 +833,11 @@ async function handoffRecoveryServices(input: {
       };
     }
   } else {
-    if (platform !== 'darwin' && !input.dependencies.handoff) throw new Error(`RECOVERY_RELEASE_ACTIVATION_UNSUPPORTED_PLATFORM: ${platform}`);
-    const uid = (input.dependencies.uid ?? (() => typeof process.getuid === 'function' ? process.getuid() : Number.NaN))();
+    if (platform !== 'darwin' && !input.dependencies.handoff)
+      throw new Error(`RECOVERY_RELEASE_ACTIVATION_UNSUPPORTED_PLATFORM: ${platform}`);
+    const uid = (
+      input.dependencies.uid ?? (() => (typeof process.getuid === 'function' ? process.getuid() : Number.NaN))
+    )();
     if (!Number.isInteger(uid)) throw new Error('RECOVERY_LAUNCHD_UID_UNAVAILABLE');
     const domain = `gui/${uid}`;
     retireStaleRecoveryLaunchAgents(input.controllerHome, uid, input.dependencies.launchctlRunner);
@@ -711,14 +852,25 @@ async function handoffRecoveryServices(input: {
     for (const role of recoveryInstallProfileRoles(input.profile)) {
       const label = recoveryRoleLabel(role);
       const generatedPath = join(generatedRoot, `${label}.plist`);
-      writeFileSync(generatedPath, recoveryPlist({
-        label,
-        executable: join(recoveryCurrentPath(input.controllerHome), role === 'daemon' ? 'forge-recovery' : role === 'gateway' ? 'forge-recovery-gateway' : 'forge-recovery-watchdog'),
-        command: role,
-        controllerHome: resolve(input.controllerHome),
-        logPath: join(auditRoot, `${role}.log`),
-        productVersion,
-      }), { mode: 0o600 });
+      writeFileSync(
+        generatedPath,
+        recoveryPlist({
+          label,
+          executable: join(
+            recoveryCurrentPath(input.controllerHome),
+            role === 'daemon'
+              ? 'forge-recovery'
+              : role === 'gateway'
+                ? 'forge-recovery-gateway'
+                : 'forge-recovery-watchdog',
+          ),
+          command: role,
+          controllerHome: resolve(input.controllerHome),
+          logPath: join(auditRoot, `${role}.log`),
+          productVersion,
+        }),
+        { mode: 0o600 },
+      );
       const installedPath = installAgent(generatedPath, label).path;
       const launched = await handoff({
         label,
@@ -729,8 +881,18 @@ async function handoffRecoveryServices(input: {
         maxBootoutWaitMs: 20_000,
         maxBootstrapRetry: 3,
       });
-      if (!launched.serviceRegistered || !launched.pidWaitClean || (recoveryRoleServesGateway(role) && !launched.portWaitClean)) {
-        throw new Error(role === 'daemon' ? 'RECOVERY_DAEMON_HANDOFF_FAILED' : role === 'gateway' ? 'RECOVERY_GATEWAY_HANDOFF_FAILED' : 'RECOVERY_WATCHDOG_HANDOFF_FAILED');
+      if (
+        !launched.serviceRegistered ||
+        !launched.pidWaitClean ||
+        (recoveryRoleServesGateway(role) && !launched.portWaitClean)
+      ) {
+        throw new Error(
+          role === 'daemon'
+            ? 'RECOVERY_DAEMON_HANDOFF_FAILED'
+            : role === 'gateway'
+              ? 'RECOVERY_GATEWAY_HANDOFF_FAILED'
+              : 'RECOVERY_WATCHDOG_HANDOFF_FAILED',
+        );
       }
       services[role] = {
         platform: 'launchd',
@@ -743,8 +905,9 @@ async function handoffRecoveryServices(input: {
     }
   }
 
-  const verification = await (input.dependencies.verify
-    ?? ((verifyInput) => verifyRecoveryReleaseActivation(verifyInput, input.dependencies)))({
+  const verification = await (
+    input.dependencies.verify ?? ((verifyInput) => verifyRecoveryReleaseActivation(verifyInput, input.dependencies))
+  )({
     controllerHome: input.controllerHome,
     config: input.config,
     expectedRelease: input.expectedRelease,
@@ -754,7 +917,12 @@ async function handoffRecoveryServices(input: {
   for (const role of recoveryInstallProfileRoles(input.profile)) {
     const service = services[role];
     if (!service) continue;
-    service.pid = role === 'daemon' ? verification.daemonPid : role === 'gateway' ? verification.gatewayPid : verification.watchdogPid;
+    service.pid =
+      role === 'daemon'
+        ? verification.daemonPid
+        : role === 'gateway'
+          ? verification.gatewayPid
+          : verification.watchdogPid;
     service.pidReady = Boolean(service.pid);
     if (recoveryRoleServesGateway(role)) service.portReady = verification.healthStatus === 200;
   }
@@ -762,18 +930,23 @@ async function handoffRecoveryServices(input: {
 }
 
 function sameRecoveryReleasePayload(left: RecoveryReleaseDescriptor, right: RecoveryReleaseDescriptor): boolean {
-  return left.releaseRevision === right.releaseRevision
-    && left.sourceCommit === right.sourceCommit
-    && left.cleanWorkspace === right.cleanWorkspace
-    && left.productVersion === right.productVersion
-    && RECOVERY_RELEASE_BINARIES.every((binary) => left.artifacts[binary].sha256 === right.artifacts[binary].sha256);
+  return (
+    left.releaseRevision === right.releaseRevision &&
+    left.sourceCommit === right.sourceCommit &&
+    left.cleanWorkspace === right.cleanWorkspace &&
+    left.productVersion === right.productVersion &&
+    RECOVERY_RELEASE_BINARIES.every((binary) => left.artifacts[binary].sha256 === right.artifacts[binary].sha256)
+  );
 }
 
-export async function activateRecoveryRelease(input: {
-  controllerHome: string;
-  config?: RecoveryConfig;
-  candidate: RecoveryReleaseDescriptor;
-}, dependencies: RecoveryInstallerDependencies = {}): Promise<RecoveryActivationResult> {
+export async function activateRecoveryRelease(
+  input: {
+    controllerHome: string;
+    config?: RecoveryConfig;
+    candidate: RecoveryReleaseDescriptor;
+  },
+  dependencies: RecoveryInstallerDependencies = {},
+): Promise<RecoveryActivationResult> {
   const controllerHome = resolve(input.controllerHome);
   const config = input.config ?? loadRecoveryConfig(controllerHome);
   const profile = normalizeRecoveryInstallProfile(config.installProfile, 'self-healing');
@@ -781,8 +954,9 @@ export async function activateRecoveryRelease(input: {
   const current = readCurrentRecoveryRelease(controllerHome);
   try {
     if (current && sameRecoveryReleasePayload(current, input.candidate)) {
-      const verification = await (dependencies.verify
-        ?? ((verifyInput) => verifyRecoveryReleaseActivation(verifyInput, dependencies)))({
+      const verification = await (
+        dependencies.verify ?? ((verifyInput) => verifyRecoveryReleaseActivation(verifyInput, dependencies))
+      )({
         controllerHome,
         config,
         expectedRelease: current,
@@ -808,24 +982,42 @@ export async function activateRecoveryRelease(input: {
       publishRecoveryRelease(controllerHome, input.candidate.releasePath, previous?.releasePath);
       publishRecoveryCompatibilityLinks(controllerHome);
       try {
-        const activated = await handoffRecoveryServices({ controllerHome, config, expectedRelease: input.candidate, profile, dependencies });
-        return { release: input.candidate, previous, migratedLegacy, handoff: activated.services, verification: activated.verification };
+        const activated = await handoffRecoveryServices({
+          controllerHome,
+          config,
+          expectedRelease: input.candidate,
+          profile,
+          dependencies,
+        });
+        return {
+          release: input.candidate,
+          previous,
+          migratedLegacy,
+          handoff: activated.services,
+          verification: activated.verification,
+        };
       } catch (activationError) {
         if (!previous) throw activationError;
         publishRecoveryRelease(controllerHome, previous.releasePath, input.candidate.releasePath);
         publishRecoveryCompatibilityLinks(controllerHome);
         let rollbackResult: Awaited<ReturnType<typeof handoffRecoveryServices>>;
         try {
-          rollbackResult = await handoffRecoveryServices({ controllerHome, config, expectedRelease: previous, profile, dependencies });
+          rollbackResult = await handoffRecoveryServices({
+            controllerHome,
+            config,
+            expectedRelease: previous,
+            profile,
+            dependencies,
+          });
         } catch (rollbackError) {
           throw new Error(
-            `RECOVERY_RELEASE_ACTIVATION_FAILED: ${activationError instanceof Error ? activationError.message : String(activationError)}; `
-            + `rollback to ${previous.releaseRevision} failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+            `RECOVERY_RELEASE_ACTIVATION_FAILED: ${activationError instanceof Error ? activationError.message : String(activationError)}; ` +
+              `rollback to ${previous.releaseRevision} failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
           );
         }
         throw new Error(
-          `RECOVERY_RELEASE_ACTIVATION_FAILED_ROLLED_BACK: ${activationError instanceof Error ? activationError.message : String(activationError)}; `
-          + `restored=${previous.releaseRevision}; recovery=${rollbackResult.verification.daemonPid ?? rollbackResult.verification.gatewayPid ?? 'unknown'}`,
+          `RECOVERY_RELEASE_ACTIVATION_FAILED_ROLLED_BACK: ${activationError instanceof Error ? activationError.message : String(activationError)}; ` +
+            `restored=${previous.releaseRevision}; recovery=${rollbackResult.verification.daemonPid ?? rollbackResult.verification.gatewayPid ?? 'unknown'}`,
         );
       }
     } finally {
@@ -853,11 +1045,18 @@ function inspectLaunchdRestartContract(
   const plistPath = service.plistPath ?? launchAgentPath(service.label);
   let source = '';
   if (existsSync(plistPath)) {
-    try { source = readFileSync(plistPath, 'utf8'); } catch { source = ''; }
+    try {
+      source = readFileSync(plistPath, 'utf8');
+    } catch {
+      source = '';
+    }
   }
   const runAtLoad = /<key>\s*RunAtLoad\s*<\/key>\s*<true\s*\/>/s.test(source);
   const keepAliveAlways = /<key>\s*KeepAlive\s*<\/key>\s*<true\s*\/>/s.test(source);
-  const keepAliveOnFailure = /<key>\s*KeepAlive\s*<\/key>\s*<dict>[\s\S]*?<key>\s*SuccessfulExit\s*<\/key>\s*<false\s*\/>[\s\S]*?<\/dict>/s.test(source);
+  const keepAliveOnFailure =
+    /<key>\s*KeepAlive\s*<\/key>\s*<dict>[\s\S]*?<key>\s*SuccessfulExit\s*<\/key>\s*<false\s*\/>[\s\S]*?<\/dict>/s.test(
+      source,
+    );
   return {
     label: service.label,
     plistPath,
@@ -892,7 +1091,11 @@ function pathInside(parent: string, candidate: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !rel.startsWith('/') && !rel.startsWith('\\'));
 }
 
-function assertDurablePrimaryRuntimeSourceRoot(controllerHome: string, sourceRoot: string, env: NodeJS.ProcessEnv = process.env): void {
+function assertDurablePrimaryRuntimeSourceRoot(
+  controllerHome: string,
+  sourceRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
   const root = resolve(sourceRoot);
   const normalizedSegments = root.replace(/\\/g, '/').split('/').filter(Boolean);
   const explicitWorktreeHome = env.FORGE_WORKTREE_HOME?.trim();
@@ -905,26 +1108,27 @@ function assertDurablePrimaryRuntimeSourceRoot(controllerHome: string, sourceRoo
   }
 }
 
-export async function installStandaloneRecovery(input: {
-  controllerHome: string;
-  repoRoot: string;
-  primaryRuntimeSourceRepositoryId?: string;
-  sourceRoot?: string;
-  port?: number;
-  publicMcpUrl?: string;
-  recoveryPublicUrl?: string;
-  recoveryTunnelService?: RecoveryTunnelServiceConfig;
-  primaryPublicTunnelService?: PublicTunnelServiceConfig;
-  primaryRuntimeService?: PrimaryRuntimeServiceConfig;
-  primaryConnectorService?: PrimaryConnectorServiceConfig;
-  profile?: RecoveryInstallProfile;
-  /** @deprecated Compatibility alias for profile=manual without config/service activation. */
-  stageOnly?: boolean;
-}, dependencies: RecoveryInstallerDependencies = {}): Promise<RecoveryInstallResult> {
+export async function installStandaloneRecovery(
+  input: {
+    controllerHome: string;
+    repoRoot: string;
+    primaryRuntimeSourceRepositoryId?: string;
+    sourceRoot?: string;
+    port?: number;
+    publicMcpUrl?: string;
+    recoveryPublicUrl?: string;
+    recoveryTunnelService?: RecoveryTunnelServiceConfig;
+    primaryPublicTunnelService?: PublicTunnelServiceConfig;
+    primaryRuntimeService?: PrimaryRuntimeServiceConfig;
+    primaryConnectorService?: PrimaryConnectorServiceConfig;
+    profile?: RecoveryInstallProfile;
+    /** @deprecated Compatibility alias for profile=manual without config/service activation. */
+    stageOnly?: boolean;
+  },
+  dependencies: RecoveryInstallerDependencies = {},
+): Promise<RecoveryInstallResult> {
   const controllerHome = resolve(input.controllerHome);
-  const profile = input.stageOnly
-    ? 'manual'
-    : normalizeRecoveryInstallProfile(input.profile, 'self-healing');
+  const profile = input.stageOnly ? 'manual' : normalizeRecoveryInstallProfile(input.profile, 'self-healing');
   const sourceRoot = resolve(input.sourceRoot ?? input.repoRoot);
   const primaryRuntimeSourceRoot = resolve(input.repoRoot);
   const primaryRuntimeSourceRepositoryId = input.primaryRuntimeSourceRepositoryId?.trim();
@@ -947,7 +1151,9 @@ export async function installStandaloneRecovery(input: {
       throw new Error(`RECOVERY_PRIMARY_TUNNEL_LAUNCHD_PLIST_MISSING: ${tunnelContract.plistPath}`);
     }
     if (!tunnelContract.restartSafe) {
-      throw new Error('RECOVERY_PRIMARY_TUNNEL_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true or KeepAlive.SuccessfulExit=false');
+      throw new Error(
+        'RECOVERY_PRIMARY_TUNNEL_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true or KeepAlive.SuccessfulExit=false',
+      );
     }
   }
   if (input.primaryConnectorService?.platform === 'launchd') {
@@ -956,7 +1162,9 @@ export async function installStandaloneRecovery(input: {
       throw new Error(`RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_PLIST_MISSING: ${connectorContract.plistPath}`);
     }
     if (!connectorContract.restartSafe) {
-      throw new Error('RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true or KeepAlive.SuccessfulExit=false');
+      throw new Error(
+        'RECOVERY_PRIMARY_CONNECTOR_LAUNCHD_RESTART_CONTRACT_REQUIRED: RunAtLoad=true and KeepAlive=true or KeepAlive.SuccessfulExit=false',
+      );
     }
   }
   const staged = stageRecoveryRelease({ controllerHome, sourceRoot }, dependencies);
