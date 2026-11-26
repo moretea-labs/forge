@@ -91,9 +91,13 @@ switch ($Action) {
             Start-ScheduledTask -InputObject $Task
             [PSCustomObject]@{ started = $true; method = 'scheduled_task'; taskName = $TaskName; identityMatches = $true; watchdog = $true } | ConvertTo-Json -Depth 3
         } else {
-            & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath full_recover
-            if ($LASTEXITCODE -ne 0) { throw "FORGE_RESCUE_DIRECT_TRIGGER_FAILED: exitCode=$LASTEXITCODE" }
-            [PSCustomObject]@{ started = $true; method = 'direct_fixed_action'; taskName = $TaskName } | ConvertTo-Json -Depth 3
+            # HKCU Run is only evaluated at logon. When task_install falls back
+            # to that mechanism during an already-running session, start the
+            # same watchdog immediately instead of doing a one-shot recovery.
+            $WatchArguments = ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" watch')
+            $WatchProcess = Start-Process -FilePath $PowerShell -ArgumentList $WatchArguments -WindowStyle Hidden -PassThru
+            if ($null -eq $WatchProcess) { throw 'FORGE_RESCUE_WATCHDOG_START_FAILED' }
+            [PSCustomObject]@{ started = $true; method = 'hkcu_run_watch_process'; taskName = $TaskName; identityMatches = $true; watchdog = $true; pid = $WatchProcess.Id } | ConvertTo-Json -Depth 3
         }
     }
     'wsl_start' {
@@ -102,16 +106,31 @@ switch ($Action) {
         Invoke-WslRescue 'wsl_status'
     }
     'watch' {
-        # Keep the Windows logon owner alive even if WSL is restarted,
-        # terminated, or the inner rescue watcher exits after a transient
-        # failure. The fixed WSL rescue path remains the only executed target.
-        while ($true) {
-            try {
-                Invoke-WslRescue 'watch'
-            } catch {
-                Write-Warning ("FORGE_RESCUE_WSL_WATCH_RESTART: " + $_.Exception.Message)
+        # Keep exactly one watchdog owner per interactive Windows session.
+        # Repeated task_run/logon triggers may race; the losing process exits
+        # while the existing owner keeps supervising WSL recovery.
+        $CreatedNew = $false
+        $WatchMutex = New-Object System.Threading.Mutex($true, 'Local\ForgeIndependentRecoveryWSLWatch', [ref]$CreatedNew)
+        if (-not $CreatedNew) {
+            [PSCustomObject]@{ running = $true; owner = 'existing_process'; taskName = $TaskName } | ConvertTo-Json -Depth 3
+            $WatchMutex.Dispose()
+            return
+        }
+        try {
+            # Keep the Windows logon owner alive even if WSL is restarted,
+            # terminated, or the inner rescue watcher exits after a transient
+            # failure. The fixed WSL rescue path remains the only executed target.
+            while ($true) {
+                try {
+                    Invoke-WslRescue 'watch'
+                } catch {
+                    Write-Warning ("FORGE_RESCUE_WSL_WATCH_RESTART: " + $_.Exception.Message)
+                }
+                Start-Sleep -Seconds 10
             }
-            Start-Sleep -Seconds 10
+        } finally {
+            try { $WatchMutex.ReleaseMutex() } catch [System.ApplicationException] {}
+            $WatchMutex.Dispose()
         }
     }
     default { Invoke-WslRescue $Action }
