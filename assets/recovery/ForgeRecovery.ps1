@@ -71,18 +71,25 @@ switch ($Action) {
         $ActionObject = New-ScheduledTaskAction -Execute $PowerShell -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" watch')
         $Trigger = New-ScheduledTaskTrigger -AtLogOn
         $Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -MultipleInstances IgnoreNew
+        $CurrentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $Principal = New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType Interactive -RunLevel Limited
         try {
-            $null = Register-ScheduledTask -TaskName $TaskName -Action $ActionObject -Trigger $Trigger -Settings $Settings -Description 'Forge independent Windows/WSL continuous recovery watchdog.' -Force -ErrorAction Stop
+            $null = Register-ScheduledTask -TaskName $TaskName -Action $ActionObject -Trigger $Trigger -Settings $Settings -Principal $Principal -Description 'Forge independent Windows/WSL continuous recovery watchdog.' -Force -ErrorAction Stop
             $Verify = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
             $VerifyCommand = ('"' + [string]$Verify.Actions[0].Execute + '" ' + [string]$Verify.Actions[0].Arguments)
             if ($Verify.Actions.Count -ne 1 -or $VerifyCommand -ne $WatchCommand) { throw 'FORGE_RESCUE_WATCHDOG_IDENTITY_MISMATCH' }
-            [PSCustomObject]@{ installed = $true; method = 'scheduled_task'; taskName = $TaskName; identityMatches = $true; watchdog = $true } | ConvertTo-Json -Depth 3
+            Start-ScheduledTask -InputObject $Verify
+            [PSCustomObject]@{ installed = $true; started = $true; method = 'scheduled_task'; taskName = $TaskName; identityMatches = $true; watchdog = $true; principal = $CurrentUser; runLevel = 'Limited' } | ConvertTo-Json -Depth 3
         } catch {
+            $SchedulerError = $_.Exception.HResult
             if (-not (Test-Path -LiteralPath $RunKey)) { $null = New-Item -Path $RunKey -Force }
             Set-ItemProperty -LiteralPath $RunKey -Name $RunValueName -Value $WatchCommand -Type String -Force
             $InstalledValue = (Get-ItemProperty -LiteralPath $RunKey -Name $RunValueName -ErrorAction Stop).$RunValueName
             if ($InstalledValue -ne $WatchCommand) { throw 'FORGE_RESCUE_LOGON_TRIGGER_IDENTITY_MISMATCH' }
-            [PSCustomObject]@{ installed = $true; method = 'hkcu_run'; taskName = $TaskName; schedulerError = $_.Exception.HResult } | ConvertTo-Json -Depth 3
+            $WatchArguments = ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" watch')
+            $WatchProcess = Start-Process -FilePath $PowerShell -ArgumentList $WatchArguments -WindowStyle Hidden -PassThru
+            if ($null -eq $WatchProcess) { throw 'FORGE_RESCUE_WATCHDOG_START_FAILED' }
+            [PSCustomObject]@{ installed = $true; started = $true; method = 'hkcu_run_watch_process'; taskName = $TaskName; identityMatches = $true; watchdog = $true; schedulerError = $SchedulerError; pid = $WatchProcess.Id } | ConvertTo-Json -Depth 3
         }
     }
     'task_run' {
