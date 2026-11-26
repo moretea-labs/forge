@@ -57,6 +57,7 @@ export interface SafePatchPreflightFailure {
     | 'ANCHOR_NOT_FOUND'
     | 'NO_CHANGE'
     | 'STALE_FILE_SHA'
+    | 'SEMANTIC_CONFLICT'
     | 'MOVE_TARGET_EXISTS'
     | 'SEMANTIC_GROUP_UNSUPPORTED'
     | 'APPLY_FAILED';
@@ -537,11 +538,17 @@ function previewSessionlessText(
         ? (operation.replacements.find((replacement) => !currentContent.includes(replacement.oldText))?.oldText ??
           needle)
         : needle;
+    const ambiguous = message.includes('ambiguous');
+    const semanticConflict = retryLocal && !ambiguous;
     return {
       failure: {
         ...base,
-        code: operation.type === 'replace' ? 'REPLACEMENT_TEXT_NOT_FOUND' : 'ANCHOR_NOT_FOUND',
-        message,
+        code: semanticConflict
+          ? 'SEMANTIC_CONFLICT'
+          : operation.type === 'replace'
+            ? 'REPLACEMENT_TEXT_NOT_FOUND'
+            : 'ANCHOR_NOT_FOUND',
+        message: semanticConflict ? `semantic precondition no longer matches current content: ${message}` : message,
         currentSha256,
         context: snippetAround(currentContent, target),
       },
