@@ -185,6 +185,62 @@ describe('Workflow Graph durable event wake', () => {
     expect(() => findWorkflowGraphEventWaits(h, signal)).toThrow('WORKFLOW_RUN_EXECUTION_SNAPSHOT_CONTENT_UNAVAILABLE');
   });
 
+  test('survives process restart after Registry upgrade and resumes from the persisted v1 snapshot', async () => {
+    const h = home();
+    const { scopeId } = await waiting(h);
+    const oldRun = readWorkflowGraphRun(h, scopeId, 'run-1')!;
+    const oldPath = oldRun.value.execution.contentLocation.path;
+    installVersion(h, '2', 'done-v2', 2);
+
+    const eventWakeUrl = new URL('../../src/runtime/workflows/event-wake.ts', import.meta.url).href;
+    const child = execFileSync(
+      process.execPath,
+      [
+        '-e',
+        `
+          const { findWorkflowGraphEventWaits, resumeWorkflowGraphEventWait } = await import(${JSON.stringify(eventWakeUrl)});
+          const controllerHome = process.argv[1];
+          const signal = JSON.parse(process.argv[2]);
+          const [match] = findWorkflowGraphEventWaits(controllerHome, signal);
+          if (!match) throw new Error('MATCH_REQUIRED_AFTER_RESTART');
+          const actions = [];
+          const result = await resumeWorkflowGraphEventWait(controllerHome, match, signal, {
+            submitPluginAction: async (_home, _repo, request) => {
+              actions.push(request.actionId);
+              return {
+                receipt: {
+                  receiptId: 'restart-done-1',
+                  requestId: request.requestId,
+                  pluginId: 'case',
+                  actionId: request.actionId,
+                  status: 'succeeded',
+                  createdAt: signal.receivedAt,
+                },
+                result: {
+                  schemaVersion: 1,
+                  plugin: { pluginId: 'case' },
+                  action: { actionId: request.actionId, requestId: request.requestId },
+                  result: { ok: true },
+                },
+              };
+            },
+            now: () => new Date(signal.receivedAt),
+          });
+          process.stdout.write(JSON.stringify({ actions, status: result.status }));
+        `,
+        h,
+        JSON.stringify(signal),
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(JSON.parse(child)).toEqual({ actions: ['done'], status: 'succeeded' });
+    expect(readWorkflowGraphRun(h, scopeId, 'run-1')?.value).toMatchObject({
+      version: '1',
+      status: 'succeeded',
+      execution: { contentLocation: { path: oldPath } },
+    });
+  });
+
   test('pins exact graph content and capability bindings across Registry upgrade', async () => {
     const h = home();
     const { repository, scopeId } = await waiting(h);
