@@ -1454,68 +1454,72 @@ async fn read_local_provider_models() -> Result<Value, String> {
 }
 
 
+fn project_knowledge_runtime_arguments(
+    repo_id: &str,
+    query: &str,
+    recall: bool,
+    checkout_id: Option<&str>,
+) -> Value {
+    let mut arguments = if recall {
+        json!({
+            "repo_id": repo_id,
+            "operation": "get",
+            "query": query.trim(),
+            "include_learning_recall": true
+        })
+    } else {
+        json!({
+            "repo_id": repo_id,
+            "operation": "get",
+            "include_learning_recall": false,
+            "knowledge_query": if query.trim().is_empty() { "*" } else { query.trim() },
+            "knowledge_limit": 24
+        })
+    };
+    if let Some(checkout_id) = checkout_id {
+        arguments["checkout_id"] = json!(checkout_id);
+    }
+    arguments
+}
+
 #[tauri::command]
-async fn read_project_knowledge(repo_id: String, query: String, recall: Option<bool>, checkout_id: Option<String>) -> Result<Value, String> {
+async fn read_project_knowledge(
+    repo_id: String,
+    query: String,
+    recall: Option<bool>,
+    checkout_id: Option<String>,
+) -> Result<Value, String> {
     if repo_id.trim().is_empty() || repo_id.len() > 256 || query.chars().count() > 160 {
         return Err("FORGE_DESKTOP_KNOWLEDGE_ARGUMENT_INVALID".to_string());
     }
+    if recall == Some(true) && query.trim().is_empty() {
+        return Err("FORGE_DESKTOP_KNOWLEDGE_RECALL_QUERY_REQUIRED".to_string());
+    }
+
+    // rh_context source search was retired. Cognitive reads use the current
+    // bounded get contract; repository guidance is resolved independently
+    // by the Agent source/context path rather than hidden inside memory recall.
+    let arguments = project_knowledge_runtime_arguments(
+        &repo_id,
+        &query,
+        recall == Some(true),
+        checkout_id.as_deref(),
+    );
+    let result = call_runtime_tool("rh_context", arguments).await?;
+
     if recall == Some(true) {
-        if query.trim().is_empty() {
-            return Err("FORGE_DESKTOP_KNOWLEDGE_RECALL_QUERY_REQUIRED".to_string());
-        }
-        // Same Cognitive owner as ChatGPT MCP, with project/workspace scopes
-        // derived by rh_context. Do not resurrect Work-specific knowledge.
-        let mut arguments = json!({
-            "repo_id": repo_id,
-            "operation": "search",
-            "query": query.trim(),
-            // A known root guidance path lets the existing context engine
-            // discover relevant DESIGN.md references, even for a Chinese
-            // first-turn prompt with no English code search terms.
-            "known_paths": ["AGENTS.md"],
-            "max_files": 2,
-            "max_snippets": 1,
-            "include_learning_recall": true
-        });
-        if let Some(ref checkout_id) = checkout_id { arguments["checkout_id"] = json!(checkout_id); }
-        let result = call_runtime_tool("rh_context", arguments).await?;
-        let mut recall = result.pointer("/data/learningRecall")
+        return result
+            .pointer("/data/learningRecall")
             .filter(|value| value.get("advisoryOnly").and_then(Value::as_bool) == Some(true))
             .cloned()
-            .ok_or_else(|| "FORGE_DESKTOP_KNOWLEDGE_UNAVAILABLE".to_string())?;
-        // Reuse the MCP context owner's bounded current-file evidence.
-        // Do not introduce a second native design-document registry.
-        if let Some(contracts) = result.pointer("/data/instructionContext/contracts").and_then(Value::as_array) {
-            recall["repositoryGuidance"] = Value::Array(contracts.iter().take(5).filter_map(|item| {
-                let path = item.get("path")?.as_str()?;
-                let content = item.get("content")?.as_str()?;
-                Some(json!({
-                    "path": path,
-                    "content": content.chars().take(1_800).collect::<String>(),
-                    "truncated": item.get("truncated").and_then(Value::as_bool).unwrap_or(false)
-                        || content.chars().count() > 1_800,
-                }))
-            }).collect());
-        }
-        return Ok(recall);
+            .ok_or_else(|| "FORGE_DESKTOP_KNOWLEDGE_UNAVAILABLE".to_string());
     }
-    let mut arguments = json!({
-        "repo_id": repo_id,
-        "operation": "search",
-        "query": "Read bounded Cognitive advisory memory",
-        "search_terms": ["knowledge_query"],
-        "max_files": 1,
-        "max_snippets": 1,
-        "include_learning_recall": false,
-        "knowledge_query": if query.trim().is_empty() { "*" } else { query.trim() },
-        "knowledge_limit": 24
-    });
-    if let Some(ref checkout_id) = checkout_id { arguments["checkout_id"] = json!(checkout_id); }
-    let result = call_runtime_tool("rh_context", arguments).await?;
-    let audit = result.pointer("/data/cognitionAudit")
+
+    result
+        .pointer("/data/cognitionAudit")
         .filter(|value| value.get("readonly").and_then(Value::as_bool) == Some(true))
-        .ok_or_else(|| "FORGE_DESKTOP_KNOWLEDGE_UNAVAILABLE".to_string())?;
-    Ok(audit.clone())
+        .cloned()
+        .ok_or_else(|| "FORGE_DESKTOP_KNOWLEDGE_UNAVAILABLE".to_string())
 }
 
 const LOCAL_CONVERSATION_MAX_IMAGES: usize = 4;
@@ -4705,6 +4709,29 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_knowledge_runtime_contract_uses_current_cognition_get_path() {
+        let recall = project_knowledge_runtime_arguments(
+            "repo_1", "QQ Mail App Store Connect", true, Some("checkout_1"),
+        );
+        assert_eq!(recall["operation"], "get");
+        assert_eq!(recall["repo_id"], "repo_1");
+        assert_eq!(recall["checkout_id"], "checkout_1");
+        assert_eq!(recall["include_learning_recall"], true);
+        assert!(recall.get("known_paths").is_none());
+        assert!(recall.get("search_terms").is_none());
+        assert!(recall.get("max_files").is_none());
+        assert!(recall.get("max_snippets").is_none());
+
+        let audit = project_knowledge_runtime_arguments("repo_1", "", false, None);
+        assert_eq!(audit["operation"], "get");
+        assert_eq!(audit["knowledge_query"], "*");
+        assert_eq!(audit["knowledge_limit"], 24);
+        assert_eq!(audit["include_learning_recall"], false);
+        assert!(audit.get("query").is_none());
+        assert!(audit.get("search_terms").is_none());
+    }
 
     #[test]
     fn project_rows_rejects_missing_or_malformed_arrays_but_accepts_valid_empty() {
