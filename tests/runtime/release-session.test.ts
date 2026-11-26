@@ -115,56 +115,6 @@ function lanes(home: string): {
 }
 
 describe('Recovery ReleaseSession', () => {
-  test('freezes explicit Work retirement opt-in across restart and CAS transitions without enabling ordinary releases', () => {
-    for (const retirement of [false, true]) {
-      const home = mkdtempSync(join(tmpdir(), 'forge-release-retire-intent-'));
-      roots.push(home);
-      const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
-      const frozen = createReleaseSession({
-        controllerHome: home,
-        sessionId: candidate.sessionId,
-        stable,
-        stableRelease,
-        candidate,
-        sourceRevision: sourceCommit('abc123'),
-        retireLegacyWorkReferences: retirement,
-      });
-      expect(readReleaseSession(home, frozen.sessionId)?.retireLegacyWorkReferences).toBe(
-        retirement ? true : undefined,
-      );
-      const built = advanceReleaseSession({
-        controllerHome: home,
-        sessionId: frozen.sessionId,
-        expectedRevision: frozen.revision,
-        phase: 'built',
-        candidateRelease,
-        receipts: [{ id: 'build', kind: 'build', summary: 'built' }],
-      });
-      expect(built.retireLegacyWorkReferences).toBe(retirement ? true : undefined);
-      expect(readReleaseSession(home, built.sessionId)?.retireLegacyWorkReferences).toBe(retirement ? true : undefined);
-    }
-  });
-
-  test('rejects tampered non-boolean retirement intent when loading a persisted ReleaseSession', () => {
-    const home = mkdtempSync(join(tmpdir(), 'forge-release-retire-invalid-'));
-    roots.push(home);
-    const { stable, stableRelease, candidate } = lanes(home);
-    const frozen = createReleaseSession({
-      controllerHome: home,
-      sessionId: candidate.sessionId,
-      stable,
-      stableRelease,
-      candidate,
-      sourceRevision: sourceCommit('abc123'),
-      retireLegacyWorkReferences: true,
-    });
-    const path = join(home, 'recovery', 'state', 'release-sessions', frozen.sessionId + '.json');
-    const contents = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-    contents.retireLegacyWorkReferences = 'true';
-    writeFileSync(path, JSON.stringify(contents));
-    expect(() => readReleaseSession(home, frozen.sessionId)).toThrow('RELEASE_SESSION_INVALID');
-  });
-
   test('keeps legacy static phase readable while candidate canaries gate cutover eligibility', () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-release-session-'));
     roots.push(home);

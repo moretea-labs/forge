@@ -1,12 +1,11 @@
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { ensureControllerHome } from '../../effects/controller-home';
 import {
   backupControlPlaneDatabase,
   controlPlaneDatabasePath,
   openControlPlaneDatabaseChangeObserver,
-  prepareRetiredWorkReferenceSnapshot,
   restoreControlPlaneDatabase,
   sha256ControlPlaneDatabaseFile,
   type ControlPlaneDatabaseChangeObserver,
@@ -599,70 +598,6 @@ export function publishRuntimeRelease(
   } finally {
     releaseLease();
     preparedDatabaseBackup?.release();
-  }
-}
-
-/**
- * One-time #483 retirement, under Recovery's existing release mutation lock,
- * after a verified Runtime stop and before any candidate start. The previous
- * release's published rollback backup is the generation fence, not a source
- * of old live state. Never invoke from ordinary startup or maintenance.
- */
-export function applyStoppedWorkReferenceRetirement(
-  controllerHome: string,
-  operationId: string,
-  assertRuntimeStopped: () => void,
-): { recordCount: number; fieldCount: number } {
-  const authority = mutableRuntimeReleaseAuthority(controllerHome);
-  const rollback = authority?.previous?.databaseBackup;
-  if (!authority || authority.operationId !== operationId || !rollback?.databaseSha256) {
-    throw new Error('WORK_REFERENCE_RETIREMENT_RELEASE_BACKUP_REQUIRED');
-  }
-  const expectedDigest = rollback.databaseSha256;
-  assertRuntimeStopped();
-  if (sha256ControlPlaneDatabaseFile(rollback.path) !== expectedDigest) {
-    throw new Error('WORK_REFERENCE_RETIREMENT_ROLLBACK_BACKUP_CHANGED');
-  }
-  assertDatabaseBackupHeadroom(
-    controllerHome,
-    'retire_work_references_in_stopped_release',
-    2 * fileSize(rollback.path),
-  );
-  const scratch = mkdtempSync(join(dirname(rollback.path), 'work-retirement-'));
-  try {
-    const observer = openControlPlaneDatabaseChangeObserver(controllerHome);
-    let result: ReturnType<typeof prepareRetiredWorkReferenceSnapshot>;
-    const candidate = join(scratch, 'candidate.sqlite');
-    try {
-      const generation = observer.dataVersion();
-      const fresh = join(scratch, 'fresh.sqlite');
-      backupControlPlaneDatabase(controllerHome, fresh);
-      if (sha256ControlPlaneDatabaseFile(fresh) !== expectedDigest) {
-        throw new Error('WORK_REFERENCE_RETIREMENT_LIVE_GENERATION_CHANGED');
-      }
-      result = prepareRetiredWorkReferenceSnapshot(fresh, expectedDigest, candidate);
-      assertRuntimeStopped();
-      const latest = mutableRuntimeReleaseAuthority(controllerHome);
-      if (
-        latest?.revision !== authority.revision ||
-        latest.operationId !== operationId ||
-        observer.dataVersion() !== generation
-      ) {
-        throw new Error('WORK_REFERENCE_RETIREMENT_LIVE_GENERATION_CHANGED');
-      }
-    } finally {
-      observer.close();
-    }
-    if (result.fieldCount > 0) {
-      // Recovery still owns the stop and mutation lock. The native restore
-      // owner verifies and atomically replaces the SQLite file. Its previous
-      // release backup remains untouched for independently authorized recovery.
-      assertRuntimeStopped();
-      restoreControlPlaneDatabase(controllerHome, candidate);
-    }
-    return { recordCount: result.recordCount, fieldCount: result.fieldCount };
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
   }
 }
 

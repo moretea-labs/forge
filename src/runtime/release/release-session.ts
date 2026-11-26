@@ -112,8 +112,6 @@ export interface ReleaseSession {
   /** Exact registered source repository selected when this session was created. */
   sourceRepositoryId?: string;
   sourceRevision: string;
-  /** Explicit #483 authorization, frozen with the exact source/stable release. Never inferred on automated cutover. */
-  retireLegacyWorkReferences?: boolean;
   phase: ReleaseSessionPhase;
   revision: number;
   receipts: ReleaseSessionReceipt[];
@@ -203,7 +201,6 @@ function assertCurrentSession(value: ReleaseSession, sessionId: string): Release
     value.revision < 1 ||
     !/^[a-f0-9]{40}$/i.test(value.sourceRevision) ||
     (value.sourceRepositoryId !== undefined && !/^repo_[A-Za-z0-9_-]+$/.test(value.sourceRepositoryId)) ||
-    (value.retireLegacyWorkReferences !== undefined && typeof value.retireLegacyWorkReferences !== 'boolean') ||
     (value.candidateRelease?.sourceRepositoryId !== undefined &&
       !/^repo_[A-Za-z0-9_-]+$/.test(value.candidateRelease.sourceRepositoryId)) ||
     (value.sourceRepositoryId !== undefined &&
@@ -672,7 +669,6 @@ export function createReleaseSession(input: {
   candidate: CandidateExecutionLane;
   sourceRepositoryId: string;
   sourceRevision: string;
-  retireLegacyWorkReferences?: boolean;
 }): ReleaseSession {
   const sessionId = validSessionId(input.sessionId);
   const path = sessionPath(input.controllerHome, sessionId);
@@ -710,7 +706,6 @@ export function createReleaseSession(input: {
     candidate: input.candidate,
     sourceRepositoryId,
     sourceRevision,
-    ...(input.retireLegacyWorkReferences === true ? { retireLegacyWorkReferences: true } : {}),
     phase: 'source_frozen',
     revision: 1,
     receipts: [

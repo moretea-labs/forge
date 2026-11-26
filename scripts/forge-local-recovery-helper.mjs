@@ -218,33 +218,17 @@ function assertEmptyInput(input) {
   }
 }
 
-function retirementIntent(input, actionId) {
-  if (!Object.hasOwn(input, 'retire_legacy_work_references')) return {};
-  if (
-    !['prepare_runtime_release_session', 'cutover_runtime_release_session'].includes(actionId) ||
-    typeof input.retire_legacy_work_references !== 'boolean'
-  ) {
-    throw providerError(
-      'LOCAL_RECOVERY_RETIREMENT_INTENT_INVALID',
-      'Only ReleaseSession prepare/cutover may supply an explicit boolean Work retirement intent.',
-    );
-  }
-  return { retire_legacy_work_references: input.retire_legacy_work_references };
-}
-
-function releaseSessionInput(input, actionId) {
-  const acceptedKeys =
-    actionId === 'cutover_runtime_release_session' ? ['session_id', 'retire_legacy_work_references'] : ['session_id'];
+function releaseSessionInput(input) {
   if (
     !input ||
     typeof input !== 'object' ||
     Array.isArray(input) ||
-    Object.keys(input).some((key) => !acceptedKeys.includes(key)) ||
+    Object.keys(input).length !== 1 ||
     typeof input.session_id !== 'string'
   ) {
     throw providerError(
       'LOCAL_RECOVERY_RELEASE_SESSION_ARGUMENTS_INVALID',
-      'ReleaseSession actions accept only session_id, plus explicit cutover retirement intent.',
+      'ReleaseSession actions accept only session_id.',
     );
   }
   const sessionId = input.session_id.trim();
@@ -254,23 +238,19 @@ function releaseSessionInput(input, actionId) {
       'ReleaseSession session_id must be 8 to 120 characters.',
     );
   }
-  return { session_id: sessionId, ...retirementIntent(input, actionId) };
+  return { session_id: sessionId };
 }
 
-function releaseSourceIdentityInput(input, actionId) {
-  const acceptedKeys =
-    actionId === 'prepare_runtime_release_session'
-      ? ['source_repository_id', 'expected_source_revision', 'retire_legacy_work_references']
-      : ['source_repository_id', 'expected_source_revision'];
+function releaseSourceIdentityInput(input) {
   if (
     !input ||
     typeof input !== 'object' ||
     Array.isArray(input) ||
-    Object.keys(input).some((key) => !acceptedKeys.includes(key))
+    Object.keys(input).some((key) => !['source_repository_id', 'expected_source_revision'].includes(key))
   ) {
     throw providerError(
       'LOCAL_RECOVERY_RELEASE_SOURCE_ARGUMENTS_INVALID',
-      'Release source actions require only exact source identity and optional explicit prepare retirement intent.',
+      'Release source actions require only source_repository_id and expected_source_revision.',
     );
   }
   const revision =
@@ -288,11 +268,7 @@ function releaseSourceIdentityInput(input, actionId) {
       'source_repository_id must identify one registered repository.',
     );
   }
-  return {
-    source_repository_id: repositoryId,
-    expected_source_revision: revision,
-    ...retirementIntent(input, actionId),
-  };
+  return { source_repository_id: repositoryId, expected_source_revision: revision };
 }
 
 function mutationRequestId(requestId) {
@@ -303,9 +279,9 @@ export async function executeAction(actionId, input, providerConfig, injected = 
   const config = validateProviderConfig(providerConfig);
   if (!ACTIONS.includes(actionId))
     throw providerError('LOCAL_RECOVERY_ACTION_UNSUPPORTED', 'Unsupported Local Recovery action.');
-  const sessionArgs = RELEASE_SESSION_ACTIONS.has(actionId) ? releaseSessionInput(input, actionId) : undefined;
+  const sessionArgs = RELEASE_SESSION_ACTIONS.has(actionId) ? releaseSessionInput(input) : undefined;
   const sourceArgs = ['stage_runtime_release', 'prepare_runtime_release_session'].includes(actionId)
-    ? releaseSourceIdentityInput(input, actionId)
+    ? releaseSourceIdentityInput(input)
     : undefined;
   if (!sessionArgs && !sourceArgs) assertEmptyInput(input);
   const callTool = injected.callRecoveryTool ?? callRecoveryTool;
