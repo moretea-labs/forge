@@ -129,7 +129,9 @@ describe('Recovery ReleaseSession', () => {
         sourceRevision: sourceCommit('abc123'),
         retireLegacyWorkReferences: retirement,
       });
-      expect(readReleaseSession(home, frozen.sessionId)?.retireLegacyWorkReferences).toBe(retirement ? true : undefined);
+      expect(readReleaseSession(home, frozen.sessionId)?.retireLegacyWorkReferences).toBe(
+        retirement ? true : undefined,
+      );
       const built = advanceReleaseSession({
         controllerHome: home,
         sessionId: frozen.sessionId,

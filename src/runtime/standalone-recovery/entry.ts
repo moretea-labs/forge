@@ -916,7 +916,8 @@ export const RECOVERY_TOOLS = [
         expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' },
         retire_legacy_work_references: {
           type: 'boolean',
-          description: 'Explicitly persist #483 offline Work retirement intent in this exact-source ReleaseSession before autonomous cutover. Ordinary prepare never enables it.',
+          description:
+            'Explicitly persist #483 offline Work retirement intent in this exact-source ReleaseSession before autonomous cutover. Ordinary prepare never enables it.',
         },
       },
       ['source_repository_id', 'expected_source_revision'],
