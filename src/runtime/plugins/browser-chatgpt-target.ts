@@ -913,7 +913,13 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     identity: ComputerChatgptConversationIdentity,
     options: { createIfMissing?: boolean } = {},
   ): Promise<ComputerChatgptTargetResult> {
-    let record = this.upsert(identity, 'provider_owned');
+    // Reuse the durable Surface before choosing an ownership mode. A user-owned
+    // exact tab may have been discovered by an earlier observation; eagerly
+    // upserting provider_owned here would conflict before inventory can prove
+    // which physical target still exists.
+    let record =
+      this.authority.findSurfaceByStableIdentity(this.controllerHome, identityResource(identity)) ??
+      this.upsert(identity, 'provider_owned');
     const cached = this.pages.get(record.targetId);
     if (cached) {
       try {
@@ -1005,6 +1011,16 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
       );
     if (options.createIfMissing === false) {
       return failure(new Error('COMPUTER_CHATGPT_EXACT_TARGET_MISSING'), 'COMPUTER_CHATGPT_EXACT_TARGET_MISSING');
+    }
+    if (record.stableIdentity.ownership === 'user_owned') {
+      // Complete inventory proved the durable user-owned target is not
+      // physically present. Never turn that absence into authority to mint a
+      // provider-owned replacement for the same stable conversation identity.
+      // The caller may reopen the exact URL as a user-owned surface and retry.
+      return failure(
+        new Error('COMPUTER_CHATGPT_USER_TARGET_MISSING'),
+        'COMPUTER_CHATGPT_USER_TARGET_MISSING',
+      );
     }
     let created: ComputerChatgptNativePage | undefined;
     let bound = false;
