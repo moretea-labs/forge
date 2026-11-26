@@ -7,6 +7,7 @@ import {
 } from '../../../packages/plugin-runtime/computer';
 import { MacOsChatgptConversationTargetPort } from '../plugins/browser-chatgpt-target';
 import { runtimeComputerInteractionTargetAuthority } from './computer-target-composition';
+import * as linuxExtension from './computer-chatgpt-extension';
 
 export type RuntimeComputerChatgptActionInput =
   | { kind: 'ensure'; identity: ComputerChatgptTargetIdentity }
@@ -114,6 +115,8 @@ export async function ensureRuntimeComputerChatgptTarget(
   controllerHome: string,
   timeoutMs?: number,
 ): Promise<ComputerChatgptConversationTargetPort> {
+  if (process.platform === 'linux')
+    return await linuxExtension.runtimeComputerChatgptTargetPort(controllerHome, { timeoutMs });
   return portFor(controllerHome, timeoutMs);
 }
 
@@ -122,6 +125,8 @@ export async function runtimeComputerChatgptAction(
   input: RuntimeComputerChatgptActionInput,
   timeoutMs?: number,
 ): Promise<Record<string, unknown>> {
+  if (process.platform === 'linux')
+    return await linuxExtension.runtimeComputerChatgptAction(controllerHome, input, timeoutMs);
   return await executeRuntimeAction(portFor(controllerHome, timeoutMs), input);
 }
 
@@ -129,10 +134,16 @@ export async function runtimeComputerChatgptInventory(
   controllerHome: string,
   timeoutMs?: number,
 ): Promise<ComputerChatgptConversationInventory> {
+  if (process.platform === 'linux')
+    return await linuxExtension.runtimeComputerChatgptInventory(controllerHome, timeoutMs);
   return await portFor(controllerHome, timeoutMs).inventory();
 }
 
 export async function closeRuntimeComputerChatgptTarget(controllerHome: string): Promise<void> {
+  if (process.platform === 'linux') {
+    await linuxExtension.closeRuntimeComputerChatgptExtension(controllerHome);
+    return;
+  }
   const port = ports.get(controllerHome);
   if (!port) return;
   ports.delete(controllerHome);

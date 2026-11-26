@@ -479,6 +479,10 @@
       "module": "browser",
       "resource": "pure"
     },
+    "tests/runtime/computer-chatgpt-generic-bootstrap.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
     "tests/runtime/computer-chatgpt-macos-target.test.ts": {
       "module": "browser",
       "resource": "controller-home-isolated"

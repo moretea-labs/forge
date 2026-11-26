@@ -40,7 +40,12 @@ export type RuntimeComputerChatgptActionInput =
   | { kind: 'observe'; identity: ComputerChatgptConversationIdentity }
   | { kind: 'refresh'; identity: ComputerChatgptConversationIdentity }
   | { kind: 'find_marker'; marker: string; bootstrapKey: string }
-  | { kind: 'prepare' | 'dispatch'; identity: ComputerChatgptTargetIdentity; prompt: string; mode?: 'send' | 'resume' | 'recover' };
+  | {
+      kind: 'prepare' | 'dispatch';
+      identity: ComputerChatgptTargetIdentity;
+      prompt: string;
+      mode?: 'send' | 'resume' | 'recover';
+    };
 
 const runtimes = new Map<string, Promise<RuntimeComputerChatgptExtension>>();
 
@@ -49,7 +54,8 @@ export function runtimeComputerChatgptExtensionSocketPath(controllerHome: string
 }
 
 function request(value: unknown): RpcRequest {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('COMPUTER_CHATGPT_EXTENSION_RPC_INVALID');
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('COMPUTER_CHATGPT_EXTENSION_RPC_INVALID');
   const record = value as Record<string, unknown>;
   const id = typeof record.id === 'string' ? record.id.trim() : '';
   const method = typeof record.method === 'string' ? record.method.trim() : '';
@@ -57,15 +63,17 @@ function request(value: unknown): RpcRequest {
   return {
     id,
     method,
-    params: record.params && typeof record.params === 'object' && !Array.isArray(record.params)
-      ? record.params as Record<string, unknown>
-      : {},
+    params:
+      record.params && typeof record.params === 'object' && !Array.isArray(record.params)
+        ? (record.params as Record<string, unknown>)
+        : {},
   };
 }
 
 function requiredText(params: Record<string, unknown>, key: string): string {
   const value = params[key];
-  if (typeof value !== 'string' || !value.trim()) throw new Error(`COMPUTER_CHATGPT_EXTENSION_RPC_${key.toUpperCase()}_REQUIRED`);
+  if (typeof value !== 'string' || !value.trim())
+    throw new Error(`COMPUTER_CHATGPT_EXTENSION_RPC_${key.toUpperCase()}_REQUIRED`);
   return value.trim();
 }
 
@@ -77,8 +85,11 @@ function runtimeConversationIdentity(rawIdentity: unknown): ComputerChatgptConve
   const conversationId = typeof record.conversationId === 'string' ? record.conversationId.trim() : '';
   const canonicalUrl = typeof record.canonicalUrl === 'string' ? record.canonicalUrl.trim() : '';
   let parsed: ReturnType<typeof parseCanonicalChatgptConversationIdentity>;
-  try { parsed = parseCanonicalChatgptConversationIdentity(canonicalUrl); }
-  catch { throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID'); }
+  try {
+    parsed = parseCanonicalChatgptConversationIdentity(canonicalUrl);
+  } catch {
+    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
+  }
   if (record.namespace !== 'chatgpt.conversation' || !conversationId || conversationId !== parsed.conversationId) {
     throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
   }
@@ -94,14 +105,31 @@ function runtimeTargetIdentity(rawIdentity: unknown): ComputerChatgptTargetIdent
   const bootstrapKey = typeof record.bootstrapKey === 'string' ? record.bootstrapKey.trim() : '';
   const projectUrl = typeof record.projectUrl === 'string' ? record.projectUrl.trim() : '';
   let parsed: URL;
-  try { parsed = new URL(projectUrl); }
-  catch { throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID'); }
-  if (record.namespace !== 'chatgpt.bootstrap' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(bootstrapKey)
-    || parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com' || parsed.username || parsed.password || parsed.search || parsed.hash
-    || !/^\/g\/g-p-[a-z0-9]+(?:-[^/]+)?\/project\/?$/i.test(parsed.pathname)) {
+  try {
+    parsed = new URL(projectUrl);
+  } catch {
     throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
   }
-  return { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl: `https://chatgpt.com${parsed.pathname.replace(/\/+$/, '')}` };
+  const genericBootstrap = parsed.pathname === '/';
+  const projectBootstrap = /^\/g\/g-p-[a-z0-9]+(?:-[^/]+)?\/project\/?$/i.test(parsed.pathname);
+  if (
+    record.namespace !== 'chatgpt.bootstrap' ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(bootstrapKey) ||
+    parsed.protocol !== 'https:' ||
+    parsed.hostname !== 'chatgpt.com' ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    (!genericBootstrap && !projectBootstrap)
+  ) {
+    throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_IDENTITY_INVALID');
+  }
+  return {
+    namespace: 'chatgpt.bootstrap',
+    bootstrapKey,
+    projectUrl: genericBootstrap ? 'https://chatgpt.com/' : 'https://chatgpt.com' + parsed.pathname.replace(/\/+$/, ''),
+  };
 }
 
 function runtimeActionInput(value: unknown): RuntimeComputerChatgptActionInput {
@@ -136,7 +164,11 @@ async function executeRuntimeAction(
     const matches: Array<Record<string, unknown>> = [];
     for (const result of results) {
       if (result.state !== 'ready') {
-        matches.push({ state: 'unavailable', failure: result.failure, ...(result.observation ? { observation: result.observation } : {}) });
+        matches.push({
+          state: 'unavailable',
+          failure: result.failure,
+          ...(result.observation ? { observation: result.observation } : {}),
+        });
         continue;
       }
       if (!result.observation) continue;
@@ -145,37 +177,64 @@ async function executeRuntimeAction(
         matches.push({
           state: 'ready',
           targetId: result.target.targetId,
-          identity: { namespace: 'chatgpt.conversation', conversationId: parsed.conversationId, canonicalUrl: parsed.conversationUrl },
+          identity: {
+            namespace: 'chatgpt.conversation',
+            conversationId: parsed.conversationId,
+            canonicalUrl: parsed.conversationUrl,
+          },
           observation: result.observation,
         });
-      } catch { continue; }
+      } catch {
+        continue;
+      }
     }
     return { matches };
   }
-  const exact = action.kind === 'refresh'
-    ? await port.refreshExact(action.identity)
-    : action.identity.namespace === 'chatgpt.bootstrap'
-      ? await port.openBootstrap(action.identity.projectUrl, action.identity.bootstrapKey)
-      : await port.ensureExact(action.identity, { createIfMissing: action.kind !== 'observe' });
+  const exact =
+    action.kind === 'refresh'
+      ? await port.refreshExact(action.identity)
+      : action.identity.namespace === 'chatgpt.bootstrap'
+        ? await port.openBootstrap(action.identity.projectUrl, action.identity.bootstrapKey)
+        : await port.ensureExact(action.identity, { createIfMissing: action.kind !== 'observe' });
   if (exact.state !== 'ready') {
-    return { state: exact.state, failure: exact.failure, ...(exact.observation ? { observation: exact.observation } : {}) };
+    return {
+      state: exact.state,
+      failure: exact.failure,
+      ...(exact.observation ? { observation: exact.observation } : {}),
+    };
   }
   if (action.kind === 'ensure') {
     return {
-      state: 'ready', targetId: exact.target.targetId, identity: action.identity,
-      observation: exact.observation ?? await exact.target.observe({ includeUserHistory: false, includePageText: false }),
+      state: 'ready',
+      targetId: exact.target.targetId,
+      identity: action.identity,
+      observation:
+        exact.observation ?? (await exact.target.observe({ includeUserHistory: false, includePageText: false })),
     };
   }
   if (action.kind === 'observe' || action.kind === 'refresh') {
     return {
-      state: 'ready', targetId: exact.target.targetId, identity: action.identity,
-      observation: exact.observation ?? await exact.target.observe({ includeUserHistory: false, includePageText: false }),
+      state: 'ready',
+      targetId: exact.target.targetId,
+      identity: action.identity,
+      observation:
+        exact.observation ?? (await exact.target.observe({ includeUserHistory: false, includePageText: false })),
     };
   }
   if (action.kind === 'prepare') {
-    return { state: 'ready', targetId: exact.target.targetId, identity: action.identity, prepare: await exact.target.prepare(action.prompt, { mode: action.mode }) };
+    return {
+      state: 'ready',
+      targetId: exact.target.targetId,
+      identity: action.identity,
+      prepare: await exact.target.prepare(action.prompt, { mode: action.mode }),
+    };
   }
-  return { state: 'ready', targetId: exact.target.targetId, identity: action.identity, dispatch: await exact.target.dispatch(action.prompt, { mode: action.mode }) };
+  return {
+    state: 'ready',
+    targetId: exact.target.targetId,
+    identity: action.identity,
+    dispatch: await exact.target.dispatch(action.prompt, { mode: action.mode }),
+  };
 }
 
 function response(socket: Socket, id: string, result: unknown): void {
@@ -184,22 +243,30 @@ function response(socket: Socket, id: string, result: unknown): void {
 
 function failure(socket: Socket, id: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
-  socket.write(`${JSON.stringify({
-    id,
-    ok: false,
-    error: {
-      code: message.includes(':') ? message.slice(0, message.indexOf(':')) : message,
-      message,
-      retryable: false,
-    },
-  })}\n`);
+  socket.write(
+    `${JSON.stringify({
+      id,
+      ok: false,
+      error: {
+        code: message.includes(':') ? message.slice(0, message.indexOf(':')) : message,
+        message,
+        retryable: false,
+      },
+    })}\n`,
+  );
 }
 
 async function socketAcceptsConnections(socketPath: string): Promise<boolean> {
   return await new Promise((resolve) => {
     const socket = createConnection(socketPath);
-    socket.once('connect', () => { socket.destroy(); resolve(true); });
-    socket.once('error', () => { socket.destroy(); resolve(false); });
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
   });
 }
 
@@ -219,12 +286,10 @@ async function callRuntimeOwnerAction(
       settled = true;
       clearTimeout(timer);
       socket.destroy();
-      if (error) reject(error); else resolve(result ?? {});
+      if (error) reject(error);
+      else resolve(result ?? {});
     };
-    const timer = setTimeout(
-      () => finish(new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_TIMEOUT')),
-      boundedTimeoutMs,
-    );
+    const timer = setTimeout(() => finish(new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_TIMEOUT')), boundedTimeoutMs);
     socket.once('error', (error) => finish(error));
     socket.once('connect', () => {
       socket.write(JSON.stringify({ id, method: 'computer_runtime_action', params: { action } }) + '\n');
@@ -328,14 +393,14 @@ function serverFor(port: ChromeExtensionChatgptConversationTargetPort, socketPat
   server.once('close', () => {
     try {
       if (existsSync(socketPath) && lstatSync(socketPath).isSocket()) unlinkSync(socketPath);
-    } catch { /* process shutdown or concurrent cleanup */ }
+    } catch {
+      /* process shutdown or concurrent cleanup */
+    }
   });
   return server;
 }
 
-async function createRuntimeComputerChatgptExtension(
-  controllerHome: string,
-): Promise<RuntimeComputerChatgptExtension> {
+async function createRuntimeComputerChatgptExtension(controllerHome: string): Promise<RuntimeComputerChatgptExtension> {
   // Stage the Chrome-loadable extension + Native Messaging host before the
   // broker listens when an active Runtime release is present. Fixture/tests
   // without a release keep the socket-only path; production Runtime always has
@@ -386,7 +451,8 @@ export async function runtimeComputerChatgptTargetPort(
   const deadline = Date.now() + Math.max(0, Math.min(options.timeoutMs ?? PROVIDER_WAIT_MS, 15_000));
   while (true) {
     const inventory = await runtime.port.inventory();
-    if (inventory.providerInventoryReady === true || inventory.complete || inventory.conversations.length > 0) return runtime.port;
+    if (inventory.providerInventoryReady === true || inventory.complete || inventory.conversations.length > 0)
+      return runtime.port;
     if (Date.now() >= deadline) return runtime.port;
     await new Promise((resolve) => setTimeout(resolve, PROVIDER_POLL_MS));
   }
@@ -404,10 +470,7 @@ export async function runtimeComputerChatgptAction(
   if (await socketAcceptsConnections(socketPath)) {
     return await callRuntimeOwnerAction(socketPath, action, timeoutMs);
   }
-  return await executeRuntimeAction(
-    (await ensureRuntimeComputerChatgptExtension(controllerHome)).port,
-    action,
-  );
+  return await executeRuntimeAction((await ensureRuntimeComputerChatgptExtension(controllerHome)).port, action);
 }
 
 export async function runtimeComputerChatgptInventory(

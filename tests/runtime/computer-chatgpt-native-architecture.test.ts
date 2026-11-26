@@ -5,7 +5,7 @@ import { join } from 'node:path';
 const root = process.cwd();
 const read = (path: string) => readFileSync(join(root, path), 'utf8');
 
-test('production ChatGPT exact-target path is native Browser attach, not an extension runtime', () => {
+test('Mac ChatGPT exact-target path stays native while Linux selects its existing extension owner', () => {
   const registration = read('src/runtime/plugins/computer-registration.ts');
   const runtime = read('src/runtime/root/runtime.ts');
   const target = read('src/runtime/root/computer-chatgpt-target.ts');
@@ -18,6 +18,10 @@ test('production ChatGPT exact-target path is native Browser attach, not an exte
   expect(target).toContain('../plugins/browser-chatgpt-target');
   expect(target).not.toContain('ChromeExtensionChatgptConversationTargetPort');
   expect(target).not.toContain('projectComputerChatgptExtension');
+  expect(target).toContain("process.platform === 'linux'");
+  expect(target).toContain('linuxExtension.runtimeComputerChatgptInventory');
+  expect(target).toContain('linuxExtension.runtimeComputerChatgptAction');
+  expect(target).toContain('linuxExtension.closeRuntimeComputerChatgptExtension');
 });
 
 test('optional native browser absence does not poison exact-target inventory completeness', () => {

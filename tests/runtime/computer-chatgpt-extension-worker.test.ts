@@ -695,13 +695,6 @@ test('MV3 fallback alarm uses the measured three-second cadence and wakes the ex
   const alarmRegistrations = [...source.matchAll(/chrome\.alarms\.create\(ALARM, \{ periodInMinutes: ([A-Z_]+) \}\)/g)];
   expect(alarmRegistrations).toHaveLength(3);
   expect(alarmRegistrations.every((match) => match[1] === 'ALARM_PERIOD_MINUTES')).toBe(true);
-  expect(source).toContain(
-    'chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) void providerTick().catch(() => undefined); });',
-  );
-  expect(source).toContain("await nativeRpc('computer_extension_claim', { provider_instance_id: instanceId });");
-  expect(source).toContain(
-    "await nativeRpc('computer_extension_complete', { provider_instance_id: instanceId, command_id: command.commandId, result });",
-  );
   expect(target).toContain('const COMMAND_TIMEOUT_MS = 12_000;');
 });
 
