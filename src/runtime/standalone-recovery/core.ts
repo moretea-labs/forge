@@ -5275,6 +5275,7 @@ export async function prepareConfiguredRuntimeReleaseSession(
   requestId?: string,
   sourceRepositoryId?: string,
   expectedSourceRevision?: string,
+  retireLegacyWorkReferences = false,
 ): Promise<ConfiguredRuntimeActivationResult> {
   let selection: RuntimeReleaseSourceSelection;
   try {
@@ -5543,6 +5544,21 @@ export async function prepareConfiguredRuntimeReleaseSession(
         };
       }
 
+      // A repeated prepare may resume a candidate, but must never change a frozen
+      // destructive intent after automatic progression has seen its session.
+      if (
+        resumableMatchingSession &&
+        (resumableMatchingSession.retireLegacyWorkReferences === true) !== retireLegacyWorkReferences
+      ) {
+        return {
+          ok: false as const,
+          attempted: false,
+          noOp: true,
+          detail: 'RELEASE_SESSION_RETIREMENT_INTENT_MISMATCH',
+          releaseSession: resumableMatchingSession,
+        };
+      }
+
       if (resumableMatchingSession && resumableMatchingSession.phase !== 'source_frozen') {
         return {
           ok: true as const,
@@ -5605,6 +5621,7 @@ export async function prepareConfiguredRuntimeReleaseSession(
           candidate: candidateLane,
           sourceRepositoryId: selectedSourceRepositoryId,
           sourceRevision: selectedSourceRevision,
+          retireLegacyWorkReferences,
         });
       }
       return {
@@ -7013,6 +7030,10 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       if (!initialSession)
         return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
       let session: ReleaseSession = initialSession;
+      // The independent Recovery prepare is the durable authorization point.
+      // Auto progression cannot silently turn an explicitly armed retirement
+      // into an ordinary cutover by omitting a transient API argument.
+      const retireForCutover = retireLegacyWorkReferences || session.retireLegacyWorkReferences === true;
       const candidateRelease = session.candidateRelease;
       if (!candidateRelease)
         return {
@@ -7421,7 +7442,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
               expectedSourceRepositoryId: releaseSessionSourceRepositoryId(session),
               expectedSourceRevision: session.sourceRevision,
               releaseSessionId: session.sessionId,
-              ...(retireLegacyWorkReferences ? { retireLegacyWorkReferences: true } : {}),
+              ...(retireForCutover ? { retireLegacyWorkReferences: true } : {}),
             },
             releaseSessionLock,
           );

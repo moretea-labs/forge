@@ -4805,6 +4805,8 @@ describe('standalone recovery on canonical Runtime', () => {
       type: 'string',
       pattern: '^[a-fA-F0-9]{40}$',
     });
+    expect(prepareSchema?.properties?.retire_legacy_work_references).toMatchObject({ type: 'boolean' });
+    expect(prepareSchema?.required).not.toContain('retire_legacy_work_references');
     const cutoverTool = RECOVERY_TOOLS.find((tool) => tool.name === 'cutover_runtime_release_session');
     const cutoverSchema = cutoverTool?.inputSchema as
       | { required?: readonly string[]; properties?: Record<string, unknown> }

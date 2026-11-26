@@ -168,6 +168,7 @@ async function prepareRuntimeReleaseSession(
   sourceRepositoryId?: string,
   expectedSourceRevision?: string,
   requestId?: string,
+  retireLegacyWorkReferences = false,
 ) {
   const selectedSourceRepositoryId = sourceRepositoryId?.trim();
   if (!selectedSourceRepositoryId) {
@@ -208,6 +209,7 @@ async function prepareRuntimeReleaseSession(
     requestId,
     selectedSourceRepositoryId,
     expectedSourceRevision,
+    retireLegacyWorkReferences,
   );
 }
 
@@ -516,6 +518,7 @@ async function cli(): Promise<void> {
           sourceRepositoryId,
           expectedSourceRevision,
           'recovery-cli:' + process.pid + ':' + Date.now(),
+          process.argv.includes('--retire-legacy-work-references'),
         ),
       );
       return;
@@ -911,6 +914,10 @@ export const RECOVERY_TOOLS = [
       {
         source_repository_id: { type: 'string', pattern: '^repo_[A-Za-z0-9_-]+$' },
         expected_source_revision: { type: 'string', pattern: '^[a-fA-F0-9]{40}$' },
+        retire_legacy_work_references: {
+          type: 'boolean',
+          description: 'Explicitly persist #483 offline Work retirement intent in this exact-source ReleaseSession before autonomous cutover. Ordinary prepare never enables it.',
+        },
       },
       ['source_repository_id', 'expected_source_revision'],
     ),
@@ -1541,6 +1548,7 @@ export async function dispatchRecoveryTool(
           args.source_repository_id.trim(),
           args.expected_source_revision.trim(),
           'recovery-gateway:' + args.request_id,
+          args.retire_legacy_work_references === true,
         ),
       );
     }
