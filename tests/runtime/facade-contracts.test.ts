@@ -880,6 +880,7 @@ describe('handoff and facade contracts', () => {
     expect(capabilities.some((entry) => entry.exposedVia === 'plugin_action_execute')).toBe(true);
     expect([...new Set(capabilities.map((entry) => entry.group))].sort()).toEqual([
       'controller',
+      'event',
       'evidence',
       'git',
       'ios',

@@ -32,6 +32,14 @@ import {
   type WorkflowRegistryScope,
 } from '../../../src/runtime/control-plane/persistence/workflow-registry-store';
 import type { WorkflowJsonValue } from '../../../packages/workflow-runtime/api/index';
+import { applyEventRuleProposal, preflightEventRuleProposal } from '../../../src/runtime/events/event-rule-authoring';
+import {
+  evaluatePersistedEventRules,
+  listEventRules,
+  readEventRule,
+} from '../../../src/runtime/events/event-rule-store';
+import { listEventActionDefinitions } from '../../../src/runtime/events/event-action-registry-store';
+import { validateEventEnvelopeV1, type EventRuleScalar } from '../../../packages/kernel/events';
 import { preflightWorkflowProposal } from '../../../src/runtime/workflows/authoring';
 import { applyPackagedWorkflowProposal } from '../../../src/runtime/workflows/packaged-authoring';
 import { setWorkflowLifecycle } from '../../../src/runtime/workflows/lifecycle';
@@ -72,6 +80,35 @@ function workflowInputs(input: Record<string, unknown>): Record<string, Workflow
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('WORKFLOW_CAPABILITY_INPUTS_INVALID');
   return value as Record<string, WorkflowJsonValue>;
+}
+
+function eventFacts(input: Record<string, unknown>): Record<string, EventRuleScalar> {
+  const value = input.facts;
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('EVENT_CAPABILITY_FACTS_INVALID');
+  const facts: Record<string, EventRuleScalar> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (item !== null && typeof item !== 'string' && typeof item !== 'number' && typeof item !== 'boolean') {
+      throw new Error('EVENT_CAPABILITY_FACT_VALUE_INVALID');
+    }
+    facts[key] = item as EventRuleScalar;
+  }
+  return facts;
+}
+
+function eventLimit(input: Record<string, unknown>): number {
+  return typeof input.limit === 'number' ? Math.max(1, Math.min(Math.trunc(input.limit), 256)) : 256;
+}
+
+function approvedSensitiveActionRefs(input: Record<string, unknown>): string[] {
+  if (input.approved_sensitive_action_refs === undefined) return [];
+  if (
+    !Array.isArray(input.approved_sensitive_action_refs) ||
+    input.approved_sensitive_action_refs.some((value) => typeof value !== 'string' || !value.trim())
+  ) {
+    throw new Error('EVENT_CAPABILITY_SENSITIVE_ACTION_REFS_INVALID');
+  }
+  return [...new Set(input.approved_sensitive_action_refs.map((value) => String(value).trim()))];
 }
 
 export async function callCoreCapabilityAdapter(
@@ -164,6 +201,44 @@ export async function callCoreCapabilityAdapter(
           error: {
             code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED',
             message: `Unsupported controller.local_conversation action: ${action || '<empty>'}`,
+          },
+        },
+        true,
+      );
+    }
+    if (capabilityId === 'event.automation') {
+      if (action === 'list_rules') return result({ rules: listEventRules(ctx.controllerHome, eventLimit(input)) });
+      if (action === 'get_rule') {
+        const ruleId = typeof input.rule_id === 'string' ? input.rule_id.trim() : '';
+        if (!ruleId) throw new Error('EVENT_CAPABILITY_RULE_ID_REQUIRED');
+        return result({ rule: readEventRule(ctx.controllerHome, ruleId) ?? null });
+      }
+      if (action === 'list_actions')
+        return result({ actions: listEventActionDefinitions(ctx.controllerHome, eventLimit(input)) });
+      if (action === 'authoring_preflight')
+        return result({ preflight: preflightEventRuleProposal(ctx.controllerHome, input.proposal) });
+      if (action === 'evaluate') {
+        const event = validateEventEnvelopeV1(input.event);
+        return result({
+          event,
+          matches: evaluatePersistedEventRules(ctx.controllerHome, event, { facts: eventFacts(input) }),
+          execution: 'not_executed',
+        });
+      }
+      if (action === 'apply') {
+        return result({
+          rule: applyEventRuleProposal(ctx.controllerHome, input.proposal, {
+            canWriteRules: true,
+            canEnableRules: input.allow_enable === true,
+            approvedSensitiveActionRefs: approvedSensitiveActionRefs(input),
+          }),
+        });
+      }
+      return result(
+        {
+          error: {
+            code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED',
+            message: `Unsupported event.automation action: ${action || '<empty>'}`,
           },
         },
         true,

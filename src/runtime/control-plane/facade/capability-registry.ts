@@ -94,6 +94,17 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
       'Discover, inspect and preflight first-class Workflow assets, and manage their independent installed/active/inactive lifecycle without routing through Event or Project semantics.',
   },
   {
+    capabilityId: 'event.automation',
+    domain: 'event',
+    group: 'event',
+    operationClass: 'execute',
+    risk: 'workspace_write',
+    exposedVia: 'capability_execute',
+    schemaExposure: 'stable_static',
+    summary:
+      'Inspect, preflight, evaluate and author Event Automation rules through the canonical Event Rule and Action Registry owners without dispatching actions during evaluation.',
+  },
+  {
     capabilityId: 'repository.context',
     domain: 'repository',
     group: 'repository-core',
@@ -478,6 +489,86 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
                 items: { type: 'string', minLength: 1, maxLength: 4096 },
               },
               timeout_ms: { type: 'number', minimum: 5_000, maximum: 600_000 },
+            },
+          },
+        },
+      },
+    };
+  }
+  if (capabilityId === 'event.automation') {
+    const proposalSchema = { type: 'object', additionalProperties: true };
+    const identifier = { type: 'string', minLength: 1, maxLength: 128 };
+    return {
+      capabilityId,
+      executeWith: 'capability_execute',
+      actions: {
+        list_rules: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: { limit: { type: 'integer', minimum: 1, maximum: 256 } },
+          },
+        },
+        get_rule: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['rule_id'],
+            properties: { rule_id: identifier },
+          },
+        },
+        list_actions: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: { limit: { type: 'integer', minimum: 1, maximum: 256 } },
+          },
+        },
+        authoring_preflight: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['proposal'],
+            properties: { proposal: proposalSchema },
+          },
+        },
+        evaluate: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['event'],
+            properties: {
+              event: { type: 'object', additionalProperties: true },
+              facts: { type: 'object', additionalProperties: true },
+            },
+          },
+        },
+        apply: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['proposal'],
+            properties: {
+              proposal: proposalSchema,
+              allow_enable: { type: 'boolean' },
+              approved_sensitive_action_refs: {
+                type: 'array',
+                uniqueItems: true,
+                maxItems: 128,
+                items: identifier,
+              },
             },
           },
         },
