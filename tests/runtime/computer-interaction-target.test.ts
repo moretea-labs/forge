@@ -400,11 +400,7 @@ async function providerFixture(): Promise<ProviderFixture> {
             continue;
           }
           state.elementActionCount += 1;
-          if (
-            state.mutateElementOnAction &&
-            params.action === 'invoke' &&
-            state.elementSemanticValue !== undefined
-          ) {
+          if (state.mutateElementOnAction && params.action === 'invoke' && state.elementSemanticValue !== undefined) {
             state.elementSemanticValue = state.elementSemanticValue === 'closed' ? 'open' : 'closed';
           }
           session.snapshotRevision = Number(session.snapshotRevision ?? 0) + 1;
