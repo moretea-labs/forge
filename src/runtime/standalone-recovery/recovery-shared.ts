@@ -4,7 +4,11 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'f
 import { homedir, hostname } from 'os';
 import { delimiter, dirname, join, resolve } from 'path';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
-import { macSystemProxyEnvironment, runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
+import {
+  macSystemProxyEnvironment,
+  runtimeAuthorityFreeEnvironment,
+  systemdUserManagerProxyEnvironment,
+} from '../shared/process-environment';
 export { macSystemProxyEnvironment };
 import { forgeRuntimeServicePaths } from '../root/service';
 import { readRuntimeReleaseAuthority } from '../root/release-store';
@@ -658,7 +662,8 @@ export async function command(
   options: CommandOptions = {},
 ): Promise<CommandResult> {
   let environment = recoveryCommandEnvironment(process.env, options.home);
-  if (process.platform === 'darwin' && (commandName === 'tunnel-client' || commandName.endsWith('/tunnel-client'))) {
+  const tunnelClientCommand = commandName === 'tunnel-client' || commandName.endsWith('/tunnel-client');
+  if (process.platform === 'darwin' && tunnelClientCommand) {
     const systemProxy = await command('/usr/sbin/scutil', ['--proxy'], 2_500);
     if (!systemProxy.ok)
       return { ok: false, status: systemProxy.status, stdout: '', stderr: 'MACOS_SYSTEM_PROXY_UNAVAILABLE' };
@@ -671,6 +676,21 @@ export async function command(
         stdout: '',
         stderr: error instanceof Error ? error.message : 'MACOS_SYSTEM_PROXY_INVALID',
       };
+    }
+  } else if (process.platform === 'linux' && tunnelClientCommand) {
+    const manager = await command('systemctl', ['--user', 'show-environment'], 2_500, { maxOutputBytes: 8_000 });
+    if (manager.ok) {
+      try {
+        const refreshed = systemdUserManagerProxyEnvironment(manager.stdout, environment);
+        if (refreshed.HTTP_PROXY || refreshed.HTTPS_PROXY || refreshed.ALL_PROXY) environment = refreshed;
+      } catch (error) {
+        return {
+          ok: false,
+          status: null,
+          stdout: '',
+          stderr: error instanceof Error ? error.message : 'SYSTEMD_USER_PROXY_INVALID',
+        };
+      }
     }
   }
   return new Promise((resolveCommand) => {

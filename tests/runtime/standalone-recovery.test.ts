@@ -657,6 +657,50 @@ test('Recovery OpenAI reachability measures direct and configured proxy paths se
   expect(result.detail).toContain('configuredProxy=HTTP 401');
 });
 
+test('Recovery OpenAI reachability refreshes Linux proxy from the current systemd user manager environment', async () => {
+  const observedEnvironments: NodeJS.ProcessEnv[] = [];
+  const commands: Array<[string, string[]]> = [];
+  const result = await probeOpenAiApiReachability(
+    {
+      controllerHome: '/tmp/recovery-controller',
+    } as RecoveryConfig,
+    {
+      platform: 'linux',
+      env: {},
+      runCommand: async (name, args) => {
+        commands.push([name, args]);
+        if (name === 'systemctl' && args.join(' ') === '--user show-environment') {
+          return {
+            ok: true,
+            status: 0,
+            stdout:
+              'HTTP_PROXY=http://127.0.0.1:7890\nHTTPS_PROXY=http://127.0.0.1:7890\nALL_PROXY=http://127.0.0.1:7890\nNO_PROXY=localhost,127.0.0.1\n',
+            stderr: '',
+          };
+        }
+        return { ok: false, status: 1, stdout: '', stderr: 'unexpected command' };
+      },
+      transportFactory: (_home, options) => ({
+        request: async () => {
+          const environment = options?.childEnvironment?.() ?? {};
+          observedEnvironments.push(environment);
+          if (environment.HTTPS_PROXY === 'http://127.0.0.1:7890') {
+            return { status: 401, ok: false, headers: {}, body: '{"error":"unauthorized"}' };
+          }
+          throw new Error('RECOVERY_HTTP_TIMEOUT');
+        },
+      }),
+    },
+  );
+
+  expect(result.ok).toBe(true);
+  expect(result.configuredProxy.ok).toBe(true);
+  expect(commands).toContainEqual(['systemctl', ['--user', 'show-environment']]);
+  expect(observedEnvironments.some((environment) => environment.HTTPS_PROXY === 'http://127.0.0.1:7890')).toBe(
+    true,
+  );
+});
+
 test('standalone Recovery retries one transport-only active gateway failure within the strict verification budget', async () => {
   let calls = 0;
   const observedHeaders: Array<Record<string, string> | undefined> = [];

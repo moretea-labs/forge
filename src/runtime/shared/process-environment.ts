@@ -140,6 +140,30 @@ export function allowlistedProxyEnvironment(env: NodeJS.ProcessEnv = process.env
   return result;
 }
 
+/**
+ * Refresh proxy variables from the current systemd --user manager environment.
+ * The manager snapshot is authoritative for proxy keys, so stale proxy values
+ * inherited when a long-lived Recovery process started are removed first.
+ */
+export function systemdUserManagerProxyEnvironment(
+  snapshot: string,
+  inherited: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  const manager: NodeJS.ProcessEnv = {};
+  for (const line of snapshot.split(/\r?\n/)) {
+    const separator = line.indexOf('=');
+    if (separator <= 0) continue;
+    const key = line.slice(0, separator).trim().toUpperCase();
+    if (!PROXY_ENVIRONMENT_KEYS.includes(key as (typeof PROXY_ENVIRONMENT_KEYS)[number])) continue;
+    const value = line.slice(separator + 1).trim();
+    if (value) manager[key] = value;
+  }
+  return {
+    ...removeProxyEnvironment(inherited),
+    ...allowlistedProxyEnvironment(manager),
+  };
+}
+
 /** Parse the current macOS System Settings proxy snapshot without trusting inherited proxy URLs. */
 export function macSystemProxyEnvironment(snapshot: string, inherited: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const settings = new Map<string, string>();

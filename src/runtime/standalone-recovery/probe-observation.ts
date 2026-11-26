@@ -9,7 +9,11 @@ import {
   type RecoveryHttpTransport,
   type RecoveryHttpTransportOptions,
 } from './http-transport';
-import { allowlistedProxyEnvironment, macSystemProxyEnvironment } from '../shared/process-environment';
+import {
+  allowlistedProxyEnvironment,
+  macSystemProxyEnvironment,
+  systemdUserManagerProxyEnvironment,
+} from '../shared/process-environment';
 import {
   openAiSecureTunnelConnectArgs,
   openAiSecureTunnelStatusArgs,
@@ -849,10 +853,19 @@ async function resolveConfiguredOpenAiProxyEnvironment(
       return { environment, detail: 'macOS system proxy configured' };
     }
     const environment = allowlistedProxyEnvironment(env);
-    if (!environment.HTTP_PROXY && !environment.HTTPS_PROXY && !environment.ALL_PROXY) {
-      return { detail: 'configured proxy environment is not present' };
+    if (environment.HTTP_PROXY || environment.HTTPS_PROXY || environment.ALL_PROXY) {
+      return { environment, detail: 'configured proxy environment present' };
     }
-    return { environment, detail: 'configured proxy environment present' };
+    if (platform === 'linux') {
+      const manager = await runCommand('systemctl', ['--user', 'show-environment'], 2_500, { maxOutputBytes: 8_000 });
+      if (manager.ok) {
+        const refreshed = systemdUserManagerProxyEnvironment(manager.stdout);
+        if (refreshed.HTTP_PROXY || refreshed.HTTPS_PROXY || refreshed.ALL_PROXY) {
+          return { environment: refreshed, detail: 'systemd user manager proxy configured' };
+        }
+      }
+    }
+    return { detail: 'configured proxy environment is not present' };
   } catch (error) {
     return { detail: `proxy configuration unavailable: ${safeOpenAiProbeError(error)}` };
   }

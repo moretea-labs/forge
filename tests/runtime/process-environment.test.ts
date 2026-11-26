@@ -9,6 +9,7 @@ import {
   resolveBunExecutable,
   resolveRuntimeOutboundProxyEnvironment,
   runtimeAuthorityFreeEnvironment,
+  systemdUserManagerProxyEnvironment,
 } from '../../src/runtime/shared/process-environment';
 import {
   resolveSchedulerWorkerCommand,
@@ -121,6 +122,30 @@ describe('repository child process environment', () => {
       'linux',
     );
     expect(resolved.HTTPS_PROXY).toBe('http://127.0.0.1:7890');
+  });
+
+  test('systemd manager proxy refresh replaces stale long-lived Linux service proxy settings', () => {
+    const resolved = systemdUserManagerProxyEnvironment(
+      [
+        'HTTP_PROXY=http://127.0.0.1:6080',
+        'HTTPS_PROXY=http://127.0.0.1:6080',
+        'NO_PROXY=internal.local',
+        'CONTROL_PLANE_API_KEY=must-not-be-imported',
+      ].join('\n'),
+      {
+        HTTP_PROXY: 'http://127.0.0.1:7890',
+        HTTPS_PROXY: 'http://127.0.0.1:7890',
+        ALL_PROXY: 'socks5://127.0.0.1:7892',
+        PATH: '/usr/bin:/bin',
+      },
+    );
+    expect(resolved.HTTP_PROXY).toBe('http://127.0.0.1:6080');
+    expect(resolved.HTTPS_PROXY).toBe('http://127.0.0.1:6080');
+    expect(resolved.ALL_PROXY).toBeUndefined();
+    expect(resolved.NO_PROXY).toContain('internal.local');
+    expect(resolved.NO_PROXY).toContain('127.0.0.1');
+    expect(resolved.PATH).toBe('/usr/bin:/bin');
+    expect(resolved.CONTROL_PLANE_API_KEY).toBeUndefined();
   });
 
   test('direct egress is explicit and clears inherited proxy variables', () => {
