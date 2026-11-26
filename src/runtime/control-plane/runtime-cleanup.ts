@@ -233,6 +233,8 @@ export interface RuntimeCleanupReport {
   removedPidFiles: string[];
   skippedPidFiles: string[];
   removedWorktrees: string[];
+  /** Registered repositories whose stale, missing linked-worktree Git metadata was pruned. */
+  prunedGitWorktreeMetadataRepositories: string[];
   migratedDependencyPaths: string[];
   removedTemporaryPaths: string[];
   removedReleasePaths: string[];
@@ -828,6 +830,44 @@ function removeOrphanWorktreeDirectory(path: string, errors: string[], relativeP
   return !existsSync(path);
 }
 
+function pruneStaleRegisteredRepositoryWorktreeMetadata(
+  controllerHome: string,
+  errors: string[],
+): { inspected: number; prunedRepositories: string[] } {
+  let inspected = 0;
+  const prunedRepositories: string[] = [];
+  for (const repository of listRepositories(controllerHome)) {
+    if (!repository.enabled || !existsSync(repository.canonicalRoot)) continue;
+    inspected += 1;
+    try {
+      const before = execFileSync('git', ['-C', repository.canonicalRoot, 'worktree', 'list', '--porcelain'], {
+        encoding: 'utf8',
+        timeout: 15_000,
+        maxBuffer: 256 * 1024,
+      });
+      if (!/^prunable\s+/m.test(before)) continue;
+      execFileSync('git', ['-C', repository.canonicalRoot, 'worktree', 'prune', '--expire', 'now'], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        maxBuffer: 128 * 1024,
+      });
+      const after = execFileSync('git', ['-C', repository.canonicalRoot, 'worktree', 'list', '--porcelain'], {
+        encoding: 'utf8',
+        timeout: 15_000,
+        maxBuffer: 256 * 1024,
+      });
+      if (/^prunable\s+/m.test(after)) {
+        errors.push(`git-worktree-metadata-prune ${repository.repoId}: stale metadata remains after prune`);
+        continue;
+      }
+      prunedRepositories.push(repository.repoId);
+    } catch (error) {
+      errors.push(errorText(`git-worktree-metadata-prune ${repository.repoId}`, error));
+    }
+  }
+  return { inspected, prunedRepositories: prunedRepositories.sort() };
+}
+
 function cleanupOrphanWorktrees(
   controllerHome: string,
   references: WorktreeReferences,
@@ -1095,6 +1135,7 @@ function shouldPersistCleanupAudit(report: RuntimeCleanupReport): boolean {
   const hadMutations = Boolean(
     report.removedPidFiles.length ||
       report.removedWorktrees.length ||
+      report.prunedGitWorktreeMetadataRepositories.length ||
       report.migratedDependencyPaths.length ||
       report.removedTemporaryPaths.length ||
       report.removedReleasePaths.length ||
@@ -1140,6 +1181,7 @@ export function cleanupControllerRuntimeState(
       ? collectReferencedWorktrees(home, referenceBudget, errors, nowMs)
       : { referenced: new Set<string>(), unsafeRepositories: new Set<string>(), complete: true };
   let worktrees: ReturnType<typeof cleanupOrphanWorktrees> | undefined;
+  let gitWorktreeMetadata = { inspected: 0, prunedRepositories: [] as string[] };
   let dependencyCleanup: ReturnType<typeof cleanupManagedWorktreeDependencyCopies> | undefined;
   let temporaryCleanup: ReturnType<typeof cleanupTemporaryStatePaths> | undefined;
   let releaseRetention: ReturnType<typeof cleanupControllerReleaseHistory> | undefined;
@@ -1163,6 +1205,7 @@ export function cleanupControllerRuntimeState(
         skippedByReason[key] = (skippedByReason[key] ?? 0) + value;
       });
       worktrees = cleanupOrphanWorktrees(home, references, worktreeBudget, nowMs, errors, removalBudget);
+      gitWorktreeMetadata = pruneStaleRegisteredRepositoryWorktreeMetadata(home, errors);
       Object.entries(worktrees.skippedByReason).forEach(([key, value]) => {
         skippedByReason[key] = (skippedByReason[key] ?? 0) + value;
       });
@@ -1397,7 +1440,8 @@ export function cleanupControllerRuntimeState(
     schedulerBudget.inspected +
     repositoryNamespaceRetention.inspected +
     releaseRetention.inspected +
-    releaseSessionCandidates.inspected;
+    releaseSessionCandidates.inspected +
+    gitWorktreeMetadata.inspected;
   const budgetExhausted =
     referenceBudget.exhausted ||
     worktreeBudget.exhausted ||
@@ -1417,6 +1461,11 @@ export function cleanupControllerRuntimeState(
       count: worktrees.removed.length,
       bytes: worktrees.reclaim.reclaimedBytes,
       unknownByteCount: worktrees.reclaim.unknownReclaimedByteCount,
+    },
+    git_worktree_metadata: {
+      count: gitWorktreeMetadata.prunedRepositories.length,
+      bytes: 0,
+      unknownByteCount: 0,
     },
     runtime_temp: {
       count: pidFiles.removed.length + removedTemporaryPaths.length,
@@ -1504,6 +1553,7 @@ export function cleanupControllerRuntimeState(
     removedPidFiles: pidFiles.removed.sort(),
     skippedPidFiles: pidFiles.skipped.sort(),
     removedWorktrees: worktrees.removed.sort(),
+    prunedGitWorktreeMetadataRepositories: gitWorktreeMetadata.prunedRepositories,
     migratedDependencyPaths: dependencyCleanup.migrated.sort(),
     removedTemporaryPaths,
     removedReleasePaths,
@@ -1524,6 +1574,7 @@ export function cleanupControllerRuntimeState(
       eligible:
         pidFiles.removed.length +
         worktrees.removed.length +
+        gitWorktreeMetadata.prunedRepositories.length +
         dependencyCleanup.migrated.length +
         removedTemporaryPaths.length +
         schedulerHistory.eligible +
@@ -1533,6 +1584,7 @@ export function cleanupControllerRuntimeState(
       attempted:
         pidFiles.removed.length +
         worktrees.removed.length +
+        gitWorktreeMetadata.prunedRepositories.length +
         dependencyCleanup.migrated.length +
         removedTemporaryPaths.length +
         schedulerHistory.attempted +
@@ -1543,6 +1595,7 @@ export function cleanupControllerRuntimeState(
       removed:
         pidFiles.removed.length +
         worktrees.removed.length +
+        gitWorktreeMetadata.prunedRepositories.length +
         dependencyCleanup.migrated.length +
         removedTemporaryPaths.length +
         removedScheduleOccurrencePaths.length +
@@ -1562,6 +1615,7 @@ export function cleanupControllerRuntimeState(
         inspectedPaths -
           pidFiles.removed.length -
           worktrees.removed.length -
+          gitWorktreeMetadata.prunedRepositories.length -
           dependencyCleanup.migrated.length -
           removedTemporaryPaths.length -
           removedScheduleOccurrencePaths.length -

@@ -709,6 +709,50 @@ fi
     );
   });
 
+  test('prunes only stale missing linked-worktree Git metadata for registered repositories', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-runtime-git-worktree-metadata-'));
+    homes.push(root);
+    const home = join(root, 'controller');
+    const repositoryRoot = join(root, 'repository');
+    const staleWorktree = join(root, 'stale-release-snapshot');
+    mkdirSync(repositoryRoot, { recursive: true });
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
+    writeFileSync(join(repositoryRoot, 'README.md'), 'worktree metadata fixture\n');
+    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
+    const repository = registerRepository({
+      path: repositoryRoot,
+      controllerHome: home,
+      displayName: 'git-worktree-metadata',
+    });
+    expect(spawnSync(git, ['-C', repositoryRoot, 'worktree', 'add', '--detach', staleWorktree, 'HEAD']).status).toBe(0);
+    rmSync(staleWorktree, { recursive: true, force: true });
+    const before = spawnSync(git, ['-C', repositoryRoot, 'worktree', 'list', '--porcelain'], {
+      encoding: 'utf8',
+    }).stdout;
+    expect(before).toContain('prunable ');
+
+    const report = cleanupControllerRuntimeState(home, {
+      reason: 'manual',
+      maxEntries: 100,
+      maxRemovals: 10,
+    });
+    const after = spawnSync(git, ['-C', repositoryRoot, 'worktree', 'list', '--porcelain'], {
+      encoding: 'utf8',
+    }).stdout;
+    expect(after).not.toContain('prunable ');
+    expect(after).toContain(`worktree ${realpathSync(repositoryRoot)}`);
+    expect(report.prunedGitWorktreeMetadataRepositories).toEqual([repository.repoId]);
+    expect(report.lifecycleMetrics.reclaimedByClass.git_worktree_metadata).toEqual({
+      count: 1,
+      bytes: 0,
+      unknownByteCount: 0,
+    });
+  });
+
   test('periodic cleanup migrates an idle legacy physical node_modules copy to canonical dependency reuse', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-runtime-dependency-migration-'));
     homes.push(root);
