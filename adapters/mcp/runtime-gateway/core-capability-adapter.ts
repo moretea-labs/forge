@@ -28,11 +28,14 @@ import {
   type WorkflowInvocationOriginKind,
 } from '../../../src/runtime/workflows/catalog';
 import {
-  setWorkflowRegistryStatus,
+  readWorkflowRegistryEntry,
   type WorkflowRegistryScope,
 } from '../../../src/runtime/control-plane/persistence/workflow-registry-store';
 import type { WorkflowJsonValue } from '../../../packages/workflow-runtime/api/index';
-import { applyWorkflowProposal, preflightWorkflowProposal } from '../../../src/runtime/workflows/authoring';
+import { preflightWorkflowProposal } from '../../../src/runtime/workflows/authoring';
+import { applyPackagedWorkflowProposal } from '../../../src/runtime/workflows/packaged-authoring';
+import { setWorkflowLifecycle } from '../../../src/runtime/workflows/lifecycle';
+import { FORGE_VERSION } from '../../../src/runtime/shared/runtime-config';
 import { executeRegisteredWorkflowFeature } from '../../../src/runtime/workflows/feature-runtime';
 import { resumeDueWorkflowGraphWaits } from '../../../src/runtime/workflows/timeout-resume';
 import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
@@ -207,13 +210,18 @@ export async function callCoreCapabilityAdapter(
         const preflight = preflightWorkflowProposal(ctx.controllerHome, input.proposal);
         if (preflight.scope.kind !== 'controller')
           throw new Error('WORKFLOW_CAPABILITY_PROJECT_INSTALL_REQUIRES_PROJECT_CONTENT_AUTHORITY');
+        // Public authoring must not create a bare legacy Workflow. Unknown
+        // effects default to approval-required until explicitly reviewed.
+        applyPackagedWorkflowProposal({
+          controllerHome: ctx.controllerHome,
+          proposal: input.proposal,
+          destination: { kind: 'controller', controllerHome: ctx.controllerHome },
+          runtimeVersion: FORGE_VERSION,
+          package: { risk: { level: 'external_write', requiresApproval: true } },
+          authorization: { canInstallWorkflows: true, canUpdateWorkflows: true },
+        });
         return result({
-          workflow: applyWorkflowProposal(
-            ctx.controllerHome,
-            input.proposal,
-            { kind: 'controller', controllerHome: ctx.controllerHome },
-            { canInstallWorkflows: true },
-          ),
+          workflow: readWorkflowRegistryEntry(ctx.controllerHome, scope, preflight.descriptor.workflowId),
         });
       }
       if (action === 'resume_due') {
@@ -263,15 +271,17 @@ export async function callCoreCapabilityAdapter(
       if (action === 'activate' || action === 'deactivate') {
         const expectedRevision =
           typeof input.expected_revision === 'number' ? Math.trunc(input.expected_revision) : undefined;
-        return result({
-          workflow: setWorkflowRegistryStatus({
-            controllerHome: ctx.controllerHome,
-            scope,
-            workflowId: workflowId(input),
-            status: action === 'activate' ? 'active' : 'inactive',
-            ...(expectedRevision === undefined ? {} : { expectedRevision }),
-          }),
+        const id = workflowId(input);
+        setWorkflowLifecycle({
+          controllerHome: ctx.controllerHome,
+          scope,
+          workflowId: id,
+          status: action === 'activate' ? 'active' : 'inactive',
+          runtimeVersion: FORGE_VERSION,
+          ...(expectedRevision === undefined ? {} : { expectedRegistryRevision: expectedRevision }),
+          authorization: { canActivateWorkflows: true },
         });
+        return result({ workflow: readWorkflowRegistryEntry(ctx.controllerHome, scope, id) });
       }
       return result(
         {

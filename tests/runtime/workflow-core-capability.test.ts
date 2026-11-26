@@ -12,9 +12,11 @@ import {
   writeWorkflowGraphAssetContent,
 } from '../../src/runtime/control-plane/persistence/workflow-content-store';
 import {
+  readWorkflowRegistryEntry,
   recordWorkflowBindings,
   registerWorkflowFeatureAsset,
 } from '../../src/runtime/control-plane/persistence/workflow-registry-store';
+import { readWorkflowPackageBundleContent } from '../../src/runtime/workflows/package-content-store';
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 
 const roots: string[] = [];
@@ -312,6 +314,23 @@ describe('workflow.control core capability', () => {
       status: 'installed',
       engine: 'sequence_v1',
     });
+    const bundle = readWorkflowPackageBundleContent(
+      { kind: 'controller', controllerHome: h },
+      'model.workflow',
+      '1',
+    ).bundle;
+    expect(bundle.manifest.publisher).toEqual({ kind: 'model', id: 'model-1' });
+    expect(bundle.manifest.risk).toEqual({ level: 'external_write', requiresApproval: true });
+    const deniedActivation = content(
+      await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
+        capability_id: 'workflow.control',
+        action: 'activate',
+        request_id: 'r8-activate',
+        arguments: { workflow_id: 'model.workflow' },
+      }),
+    );
+    expect(JSON.stringify(deniedActivation)).toContain('WORKFLOW_PACKAGE_ACTIVATE_APPROVAL_REQUIRED');
+    expect(readWorkflowRegistryEntry(h, { kind: 'controller' }, 'model.workflow')?.value.status).toBe('installed');
     const prepared = content(
       await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
         capability_id: 'workflow.control',
