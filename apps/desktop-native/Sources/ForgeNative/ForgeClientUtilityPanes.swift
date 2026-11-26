@@ -2887,6 +2887,7 @@ struct KnowledgePane: View {
     @ObservedObject var model: NativeWorkspace
     @State private var selectedMemoryId: String?
     @State private var authoringTarget: KnowledgeAuthoringTarget?
+    @State private var feedbackMemoryId: String?
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -2910,7 +2911,7 @@ struct KnowledgePane: View {
                                     .font(.system(size:9.5))
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("清除知识搜索")
+                            .accessibilityLabel("清除记忆搜索")
                         }
                     }
                     .padding(.horizontal,10)
@@ -2936,7 +2937,7 @@ struct KnowledgePane: View {
                     .frame(width:30,height:30)
                     .help("检索")
                     .disabled(model.knowledgeLoading || model.repoId == nil)
-                    .accessibilityLabel("检索知识")
+                    .accessibilityLabel("检索记忆")
                     .accessibilityIdentifier("knowledge.search")
 
                     Button {
@@ -2959,11 +2960,11 @@ struct KnowledgePane: View {
             if model.repoId == nil {
                 knowledgeEmpty("先选择已注册的 Forge 项目，以限定知识检索范围。")
             } else if model.knowledgeLoading && model.knowledgeResult == nil {
-                ProgressView("正在读取知识…")
+                ProgressView("正在读取记忆…")
                     .controlSize(.small)
                     .frame(maxWidth:.infinity,maxHeight:.infinity)
             } else if let result=model.knowledgeResult,result.items.isEmpty {
-                knowledgeEmpty("没有匹配的知识记录。换一个更具体的概念或技术决策再试。")
+                knowledgeEmpty("没有匹配的记忆。换一个更具体的概念或技术决策再试。")
             } else if model.knowledgeResult == nil {
                 knowledgeEmpty("输入问题或概念开始检索。")
             } else {
@@ -2997,22 +2998,35 @@ struct KnowledgePane: View {
         }
     }
 
+    private var knowledgeItems:[KnowledgeItemDetail] {
+        model.knowledgeResult?.items ?? []
+    }
+
     private var memories:[KnowledgeMemoryDetail] {
-        model.knowledgeResult?.items.map(\.memory) ?? []
+        knowledgeItems.map(\.memory)
+    }
+
+    private var selectedItem:KnowledgeItemDetail? {
+        if let selectedMemoryId,
+           let exact=knowledgeItems.first(where:{$0.memory.id == selectedMemoryId}) {
+            return exact
+        }
+        return knowledgeItems.first
     }
 
     private var selectedMemory:KnowledgeMemoryDetail? {
-        if let selectedMemoryId,
-           let exact=memories.first(where:{$0.id == selectedMemoryId}) {
-            return exact
-        }
-        return memories.first
+        selectedItem?.memory
+    }
+
+    private var selectedMemoryIsStale:Bool {
+        (selectedItem?.recentUsage?.staleCount ?? 0) > 0
     }
 
     private var knowledgeList: some View {
         ScrollView {
             LazyVStack(alignment:.leading,spacing:0) {
-                ForEach(memories) { memory in
+                ForEach(knowledgeItems,id:\.memory.id) { item in
+                    let memory=item.memory
                     let selected=selectedMemory?.id == memory.id
                     Button {
                         selectedMemoryId=memory.id
@@ -3028,6 +3042,11 @@ struct KnowledgePane: View {
                                         .lineLimit(1)
                                 }
                                 Spacer()
+                                if (item.recentUsage?.staleCount ?? 0) > 0 {
+                                    Text("过时")
+                                        .font(.system(size:9,weight:.medium))
+                                        .foregroundStyle(.tertiary)
+                                }
                                 if selected {
                                     Image(systemName:"chevron.right")
                                         .font(.system(size:8.5,weight:.semibold))
@@ -3052,7 +3071,6 @@ struct KnowledgePane: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("knowledge.result.\(memory.id)")
-                    Divider().padding(.leading,14)
                 }
             }
         }
@@ -3100,6 +3118,31 @@ struct KnowledgePane: View {
                         }
                         .buttonStyle(.forgeText)
                         .accessibilityIdentifier("knowledge.copy.\(memory.id)")
+
+
+                        if let item=selectedItem {
+                            Button {
+                                feedbackMemoryId=memory.id
+                                Task {
+                                    _ = await model.markKnowledgeStale(item)
+                                    feedbackMemoryId=nil
+                                }
+                            } label: {
+                                if feedbackMemoryId == memory.id {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Label(
+                                        selectedMemoryIsStale ? "已标记过时" : "标记过时",
+                                        systemImage:selectedMemoryIsStale
+                                            ? "clock.badge.checkmark" : "clock.arrow.circlepath"
+                                    )
+                                }
+                            }
+                            .buttonStyle(.forgeText)
+                            .disabled(selectedMemoryIsStale || feedbackMemoryId != nil)
+                            .help("记录为过时反馈，降低后续自动召回优先级；保留历史记录")
+                            .accessibilityIdentifier("knowledge.stale.\(memory.id)")
+                        }
                     }
 
                     if !memory.concepts.isEmpty {
@@ -3158,7 +3201,7 @@ struct KnowledgePane: View {
             }
             .scrollIndicators(.automatic)
         } else {
-            knowledgeEmpty("选择左侧知识记录查看详情。")
+            knowledgeEmpty("选择左侧记忆查看详情。")
         }
     }
 
@@ -3175,7 +3218,7 @@ struct KnowledgePane: View {
                         .help(result.gaps.joined(separator:"、"))
                 }
             } else {
-                Text("Forge Cognitive · 只读 advisory")
+                Text("Forge Cognitive · 记忆")
             }
             Spacer()
             Text(model.project?.label ?? "未选择项目")
@@ -3350,7 +3393,7 @@ struct KnowledgeAuthoringSheet: View {
                 dismiss()
                 onSaved()
             } catch {
-                failure = "保存未确认：\(error.localizedDescription)。关闭后先刷新知识库核对，避免重复写入。"
+                failure = "保存未确认：\(error.localizedDescription)。关闭后先刷新记忆列表核对，避免重复写入。"
             }
         }
     }

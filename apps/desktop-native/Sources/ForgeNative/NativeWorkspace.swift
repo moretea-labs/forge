@@ -875,6 +875,7 @@ struct KnowledgeMemoryDetail: Codable, Identifiable {
 
 struct KnowledgeItemDetail: Codable {
   let memory: KnowledgeMemoryDetail
+  let recentUsage: KnowledgeRecallUsageDetail?
 }
 
 struct KnowledgeAuditDetail: Codable {
@@ -1027,7 +1028,7 @@ enum NativePage: String, CaseIterable, Identifiable {
   case
     schedule = "计划任务"
   case plugins = "项目插件"
-  case knowledge = "知识库"
+  case knowledge = "记忆"
   case
     assets = "资源"
   case usage = "消耗统计"
@@ -1683,17 +1684,17 @@ final class NativeWorkspace: ObservableObject {
     _ memory: KnowledgeMemoryDetail, expectedThreadId: String? = nil
   ) {
     if let expectedThreadId, expectedThreadId != selectedThreadId {
-      self.error = "当前会话已切换，请重新选择知识。"
+      self.error = "当前会话已切换，请重新选择记忆。"
       return
     }
     guard !rejectConversationMutationDuringZenRefinement() else { return }
     guard !busy else {
-      self.error = "请先停止正在运行的会话，再添加知识上下文。"
+      self.error = "请先停止正在运行的会话，再添加记忆上下文。"
       return
     }
     let text = memory.canonicalText.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return }
-    let addition = "请参考这条 Forge 项目知识继续当前任务：\n\(text)"
+    let addition = "请参考这条 Forge 记忆继续当前任务：\n\(text)"
     if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       draft = addition
     } else if !draft.contains(text) {
@@ -5640,6 +5641,35 @@ final class NativeWorkspace: ObservableObject {
       self.error = error.localizedDescription
     }
   }
+  func markKnowledgeStale(_ item: KnowledgeItemDetail) async -> Bool {
+    guard let repoId, let checkoutId else {
+      self.error = "请先选择项目，再更新记忆状态。"
+      return false
+    }
+    let memory = item.memory
+    do {
+      let response = try await ForgeBridge.request(
+        "record_knowledge_feedback",
+        [
+          "repoId": repoId,
+          "checkoutId": checkoutId,
+          "requestId": "native-knowledge-feedback-\(UUID().uuidString)",
+          "scopeKind": memory.scope.kind,
+          "scopeId": memory.scope.id,
+          "memoryId": memory.id,
+        ])
+      guard response["recorded"] as? Bool == true else {
+        throw ForgeBridgeError.invalidResponse
+      }
+      await searchKnowledge()
+      self.error = nil
+      return true
+    } catch {
+      self.error = "记忆反馈未确认：\(error.localizedDescription)"
+      return false
+    }
+  }
+
   func refreshLiveActivity(conversationId: String, generation: Int) async {
     guard
       Self.liveActivityRequestIsCurrent(

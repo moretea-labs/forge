@@ -11,7 +11,7 @@ enum AgentWorkSurface: String, CaseIterable, Identifiable, Equatable {
         case .changes: return "改动"
         case .files: return "附件"
         case .planning: return "规划"
-        case .knowledge: return "知识"
+        case .knowledge: return "记忆"
         case .capabilities: return "能力"
         }
     }
@@ -3014,9 +3014,9 @@ struct AgentKnowledgeInspector: View {
             HStack(alignment:.top,spacing:10) {
                 VStack(alignment:.leading,spacing:3) {
                     if !inline {
-                        Text("项目知识").font(.system(size:13,weight:.semibold))
+                        Text("项目记忆").font(.system(size:13,weight:.semibold))
                     }
-                    Text("选中的知识可加入草稿，不会自动发送。")
+                    Text("选中的记忆可加入草稿，不会自动发送。")
                         .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer(minLength:0)
@@ -3025,8 +3025,8 @@ struct AgentKnowledgeInspector: View {
                         ForgeGlyph(.close).forgeChromeSurface(cornerRadius:8)
                     }
                     .buttonStyle(.plain)
-                    .help("关闭项目知识")
-                    .accessibilityLabel("关闭项目知识")
+                    .help("关闭项目记忆")
+                    .accessibilityLabel("关闭项目记忆")
                     .accessibilityIdentifier("agent.knowledge-inspector.close")
                 }
             }
@@ -3048,14 +3048,14 @@ struct AgentKnowledgeInspector: View {
                         Image(systemName:"xmark.circle.fill").font(.system(size:9))
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("清除知识搜索")
+                    .accessibilityLabel("清除记忆搜索")
                 }
             }
             .forgeInspectorSearchSurface()
             .padding(.horizontal,14).padding(.vertical,7)
 
             HStack {
-                Text(query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? "当前项目知识" : "搜索结果")
+                Text(query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? "当前项目记忆" : "搜索结果")
                     .font(.system(size:9.5,weight:.semibold))
                     .foregroundStyle(ForgePalette.secondary)
                 Spacer()
@@ -3068,11 +3068,11 @@ struct AgentKnowledgeInspector: View {
             .padding(.horizontal,14).padding(.bottom,5)
 
             if loading && result == nil {
-                ProgressView("正在读取知识…").controlSize(.small)
+                ProgressView("正在读取记忆…").controlSize(.small)
                     .frame(maxWidth:.infinity,maxHeight:.infinity)
             } else if let error {
                 VStack(alignment:.leading,spacing:7) {
-                    Label("知识暂不可用",systemImage:"exclamationmark.circle")
+                    Label("记忆暂不可用",systemImage:"exclamationmark.circle")
                         .font(.system(size:11,weight:.medium))
                     Text(error).font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                     Button("重试") { Task { await reload() } }
@@ -3082,7 +3082,7 @@ struct AgentKnowledgeInspector: View {
             } else if memories.isEmpty {
                 ForgeInspectorEmptyState(
                     title:query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
-                        ? "暂无项目知识" : "没有匹配的知识",
+                        ? "暂无项目记忆" : "没有匹配的记忆",
                     symbol:"books.vertical")
                     .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
             } else {

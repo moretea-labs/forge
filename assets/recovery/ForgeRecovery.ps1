@@ -101,5 +101,18 @@ switch ($Action) {
         if ($LASTEXITCODE -ne 0) { throw "FORGE_RESCUE_WSL_START_FAILED: exitCode=$LASTEXITCODE" }
         Invoke-WslRescue 'wsl_status'
     }
+    'watch' {
+        # Keep the Windows logon owner alive even if WSL is restarted,
+        # terminated, or the inner rescue watcher exits after a transient
+        # failure. The fixed WSL rescue path remains the only executed target.
+        while ($true) {
+            try {
+                Invoke-WslRescue 'watch'
+            } catch {
+                Write-Warning ("FORGE_RESCUE_WSL_WATCH_RESTART: " + $_.Exception.Message)
+            }
+            Start-Sleep -Seconds 10
+        }
+    }
     default { Invoke-WslRescue $Action }
 }

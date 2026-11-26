@@ -111,13 +111,57 @@ tunnel_status_json() {
   timeout --kill-after=2s 10s "$TUNNEL_CLIENT" runtimes status "$TUNNEL_ALIAS" --json
 }
 
+tunnel_health_file() {
+  printf '%s\n' "$HOME/.local/state/tunnel-client/health/$TUNNEL_ALIAS.url"
+}
+
 tunnel_local_ready() {
-  local health_file="$HOME/.local/state/tunnel-client/health/$TUNNEL_ALIAS.url"
+  local health_file
   local health_url
+  health_file="$(tunnel_health_file)"
   [[ -r "$health_file" ]] || return 1
   health_url="$(<"$health_file")"
   [[ "$health_url" =~ ^http://127\.0\.0\.1:[0-9]+$ ]] || return 1
   [[ "$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --connect-timeout 2 --max-time 5 "$health_url/readyz" 2>/dev/null || true)" == '200' ]]
+}
+
+tunnel_control_plane_ready() {
+  local health_file
+  health_file="$(tunnel_health_file)"
+  [[ -r "$health_file" ]] || return 1
+  timeout --kill-after=2s 8s \
+    "$TUNNEL_CLIENT" health --json \
+    --url-file "$health_file" \
+    --require-control-plane-poll \
+    >/dev/null 2>&1
+}
+
+readonly TUNNEL_RECONNECT_COOLDOWN_SECONDS=180
+
+tunnel_reconnect_due() {
+  local stamp="$RESCUE_ROOT/state/tunnel-reconnect-at"
+  local now last=0
+  now="$(date +%s)"
+  if [[ -r "$stamp" ]]; then
+    last="$(<"$stamp")"
+  fi
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  (( now - last >= TUNNEL_RECONNECT_COOLDOWN_SECONDS ))
+}
+
+record_tunnel_reconnect_attempt() {
+  local dir="$RESCUE_ROOT/state"
+  local stamp="$dir/tunnel-reconnect-at"
+  local tmp="$stamp.$$"
+  mkdir -p "$dir"
+  printf '%s\n' "$(date +%s)" >"$tmp"
+  mv "$tmp" "$stamp"
+}
+
+reconnect_stale_tunnel_if_due() {
+  tunnel_reconnect_due || return 1
+  record_tunnel_reconnect_attempt
+  restart_tunnel
 }
 
 start_tunnel() {
@@ -191,6 +235,7 @@ tunnel_status() {
   printf 'TUNNEL_ALIAS=%s\n' "$TUNNEL_ALIAS"
   printf 'TUNNEL_ID=%s\n' "$TUNNEL_ID"
   tunnel_local_ready && printf 'TUNNEL_LOCAL_READY=true\n' || printf 'TUNNEL_LOCAL_READY=false\n'
+  tunnel_control_plane_ready && printf 'TUNNEL_CONTROL_PLANE_READY=true\n' || printf 'TUNNEL_CONTROL_PLANE_READY=false\n'
   tunnel_status_json || true
 }
 tunnel_start() { with_mutation_lock tunnel_start_impl; }
@@ -214,6 +259,7 @@ forge_cloud_verify() {
   printf 'TUNNEL_ID=%s\n' "$TUNNEL_ID"
   mcp_is_available || status=1
   tunnel_local_ready || status=1
+  tunnel_control_plane_ready || status=1
   return "$status"
 }
 
@@ -229,6 +275,11 @@ full_recover_impl() {
   wait_for_local_mcp || status=1
   if ! tunnel_local_ready; then
     start_tunnel || status=1
+  elif ! tunnel_control_plane_ready; then
+    # Loopback /readyz proves only that the local tunnel-client process is
+    # alive. A stale control-plane poll means the cloud side has lost this
+    # runtime even though the local tmux child still looks healthy.
+    reconnect_stale_tunnel_if_due || status=1
   fi
   forge_cloud_verify || status=1
   return "$status"

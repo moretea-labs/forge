@@ -64,7 +64,11 @@ const deployment = resolveWindowsRecoveryDeployment({
 const controllerHome = resolve(option('--controller-home') ?? join(home, '.forge', 'controller'));
 const tunnelClient = resolve(option('--tunnel-client') ?? join(home, '.local', 'bin', 'tunnel-client'));
 const stageOnly = process.argv.includes('--stage-only');
-const installWindowsLogonTask = process.argv.includes('--install-windows-logon-task');
+// A normal host-rescue install must survive Windows/WSL restarts without an
+// operator remembering an extra flag. Stage-only remains side-effect free, and
+// an explicit skip is retained for diagnostics or externally managed hosts.
+const installWindowsLogonTask =
+  !stageOnly && !process.argv.includes('--skip-windows-logon-task');
 
 const config = createIndependentHostRescueConfig({
   wslDistro: option('--distro') ?? process.env.WSL_DISTRO_NAME ?? '',

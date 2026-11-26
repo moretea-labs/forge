@@ -880,7 +880,7 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
       actionId: DESKTOP_ELEMENT_ACTION_ACTION,
       title: 'Act on observed Computer element',
       description:
-        'Perform one provider-neutral semantic action against an exact element ref and observation target returned by desktop_element_observe. Click uses only the observed element bounds when its exact window is already system-frontmost; stale or rebound observations fail closed.',
+        'Perform one provider-neutral semantic action either against an exact one-shot observed ref or atomically by a stable role/title/identifier selector. Selector mode observes and acts under the same Computer target lease so no model round-trip can stale the intermediate snapshot. Explicit refs remain single-epoch and stale or rebound observations fail closed.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -901,10 +901,23 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
               'snapshotRevision returned by desktop_element_observe for this target. Provider session identity stays inside Computer.',
           },
           ref: { type: 'string' },
+          selector: {
+            type: 'object',
+            properties: {
+              role: { type: 'string' },
+              title: { type: 'string' },
+              identifier: { type: 'string' },
+            },
+            anyOf: [{ required: ['role'] }, { required: ['title'] }, { required: ['identifier'] }],
+            additionalProperties: false,
+            description:
+              'Stable semantic selector for atomic observe→act. Snapshot-local refs are intentionally not accepted here.',
+          },
           action: { type: 'string', enum: [...COMPUTER_ELEMENT_SEMANTIC_ACTIONS] },
           value: { anyOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }, { type: 'null' }] },
         },
-        required: ['target_id', 'observation_revision', 'ref', 'action'],
+        required: ['target_id', 'action'],
+        anyOf: [{ required: ['observation_revision', 'ref'] }, { required: ['selector'] }],
         additionalProperties: false,
       },
     },
@@ -1443,23 +1456,32 @@ function desktopComputerRequest(
   );
 }
 
+async function executeDesktopProductAction(
+  input: AssistantPluginActionExecutionInput,
+  actionId: string,
+  args: Record<string, unknown>,
+  interactionId?: string,
+): Promise<Record<string, unknown>> {
+  const descriptor = desktopProductActions().find((action) => action.actionId === actionId);
+  if (!descriptor)
+    throw new AssistantPluginError(
+      'PLUGIN_COMPUTER_DESKTOP_ACTION_UNSUPPORTED',
+      `Computer product action ${actionId} is not registered.`,
+      { retryable: false },
+    );
+  return await executeRuntimeComputer(
+    desktopComputerRequest(actionId, args, interactionId),
+    input.timeoutMs ?? descriptor.defaultTimeoutMs ?? 30_000,
+    input.controllerHome,
+  );
+}
+
 async function executeRetainedDesktopAction(
   input: AssistantPluginActionExecutionInput,
   args: Record<string, unknown>,
   interactionId?: string,
 ): Promise<Record<string, unknown>> {
-  const descriptor = desktopProductActions().find((action) => action.actionId === input.actionId);
-  if (!descriptor)
-    throw new AssistantPluginError(
-      'PLUGIN_COMPUTER_DESKTOP_ACTION_UNSUPPORTED',
-      `Computer product action ${input.actionId} is not registered.`,
-      { retryable: false },
-    );
-  return await executeRuntimeComputer(
-    desktopComputerRequest(input.actionId, args, interactionId),
-    input.timeoutMs ?? descriptor.defaultTimeoutMs ?? 30_000,
-    input.controllerHome,
-  );
+  return await executeDesktopProductAction(input, input.actionId, args, interactionId);
 }
 
 function isMissingProviderSessionFailure(error: unknown): error is AssistantPluginError {
@@ -2140,6 +2162,18 @@ async function closeDesktopTarget(
   });
 }
 
+function stableElementSelector(value: unknown): ComputerSemanticSelector | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  if ('ref' in input) return undefined;
+  const selector: ComputerSemanticSelector = {};
+  for (const key of ['role', 'title', 'identifier'] as const) {
+    const item = input[key];
+    if (typeof item === 'string' && item.trim()) selector[key] = item.trim();
+  }
+  return Object.keys(selector).length > 0 ? selector : undefined;
+}
+
 async function executeDesktopSemanticAction(
   input: AssistantPluginActionExecutionInput,
   _provider: AssistantPluginAdapter,
@@ -2153,17 +2187,88 @@ async function executeDesktopSemanticAction(
       throw new AssistantPluginError('PLUGIN_COMPUTER_TARGET_REQUIRED', 'desktop_element_action requires target_id.', {
         retryable: false,
       });
+    const semanticAction =
+      typeof input.args.action === 'string' &&
+      (COMPUTER_ELEMENT_SEMANTIC_ACTIONS as readonly string[]).includes(input.args.action)
+        ? (input.args.action as ComputerElementSemanticAction)
+        : undefined;
+    const selector = stableElementSelector(input.args.selector);
+    const hasExplicitObservation = input.args.observation_revision !== undefined || input.args.ref !== undefined;
+    if (!semanticAction || Boolean(selector) === hasExplicitObservation) {
+      throw new AssistantPluginError(
+        'PLUGIN_COMPUTER_ELEMENT_ACTION_INVALID',
+        'desktop_element_action requires one semantic action and exactly one target mode: selector, or observation_revision + ref.',
+        { retryable: false },
+      );
+    }
     return computerTargetAuthority.withLease(input.controllerHome, targetId, async (lease) => {
       const current = lease.current();
       const binding = current.providerBinding;
-      const observationRevision = input.args.observation_revision;
       const appName = current.stableIdentity.appName ?? current.stableIdentity.bundleId;
+      if (!binding || binding.providerId !== DESKTOP_PROVIDER_ID || typeof binding.processId !== 'number' || !appName) {
+        throw staleProviderBinding(targetId, Boolean(binding));
+      }
+
+      if (selector) {
+        // Provider element snapshots are latest-only. Resolve a stable semantic
+        // selector and consume the resulting ref under one target lease so no
+        // model/tool round-trip can interleave another observation.
+        if (binding.elementSnapshotRevision !== undefined) {
+          lease.bind({ ...binding, elementSnapshotRevision: undefined }, current.launchProvenance);
+        }
+        let observed: Record<string, unknown>;
+        try {
+          observed = await executeDesktopProductAction(
+            input,
+            DESKTOP_ELEMENT_OBSERVE_ACTION,
+            { root_selector: selector, max_depth: 1, max_nodes: 8 },
+            binding.providerSessionId,
+          );
+        } catch (error) {
+          if (isMissingProviderSessionFailure(error)) throw staleProviderBinding(targetId, true);
+          throw error;
+        }
+        const snapshotRevision = observed.snapshotRevision;
+        const root =
+          observed.root && typeof observed.root === 'object' ? (observed.root as Record<string, unknown>) : undefined;
+        const ref = typeof root?.ref === 'string' ? root.ref : '';
+        if (!Number.isSafeInteger(snapshotRevision) || Number(snapshotRevision) < 1 || !ref) {
+          throw new AssistantPluginError(
+            'COMPUTER_ELEMENT_OBSERVATION_INVALID',
+            'Atomic element selector did not resolve to one valid observed element.',
+            { retryable: false, details: { targetId } },
+          );
+        }
+        const providerArgs = {
+          action: semanticAction,
+          target: {
+            interactionId: binding.providerSessionId,
+            pid: binding.processId,
+            ...(current.stableIdentity.bundleId ? { bundleIdentifier: current.stableIdentity.bundleId } : {}),
+            appName,
+            snapshotRevision,
+          },
+          ref,
+          ...(input.args.value !== undefined ? { value: input.args.value } : {}),
+        };
+        try {
+          return await executeDesktopProductAction(
+            input,
+            DESKTOP_ELEMENT_ACTION_ACTION,
+            providerArgs,
+            binding.providerSessionId,
+          );
+        } catch (error) {
+          if (isMissingProviderSessionFailure(error)) throw staleProviderBinding(targetId, true);
+          throw error;
+        }
+      }
+
+      const observationRevision = input.args.observation_revision;
       if (
-        !binding ||
-        binding.providerId !== DESKTOP_PROVIDER_ID ||
-        typeof binding.processId !== 'number' ||
-        !appName ||
         !Number.isSafeInteger(observationRevision) ||
+        typeof input.args.ref !== 'string' ||
+        !input.args.ref ||
         binding.elementSnapshotRevision !== observationRevision
       ) {
         throw new AssistantPluginError(
@@ -2179,9 +2284,8 @@ async function executeDesktopSemanticAction(
       // The existing Computer target authority stores this rebuildable epoch,
       // so separate MCP requests/processes agree on the same one-shot guard.
       lease.bind({ ...binding, elementSnapshotRevision: undefined }, current.launchProvenance);
-      const { target_id: _targetId, observation_revision: _revision, ...rest } = input.args;
       const providerArgs = {
-        ...rest,
+        action: semanticAction,
         target: {
           interactionId: binding.providerSessionId,
           pid: binding.processId,
@@ -2189,9 +2293,16 @@ async function executeDesktopSemanticAction(
           appName,
           snapshotRevision: observationRevision,
         },
+        ref: input.args.ref,
+        ...(input.args.value !== undefined ? { value: input.args.value } : {}),
       };
       try {
-        return await executeRetainedDesktopAction(input, providerArgs, binding.providerSessionId);
+        return await executeDesktopProductAction(
+          input,
+          DESKTOP_ELEMENT_ACTION_ACTION,
+          providerArgs,
+          binding.providerSessionId,
+        );
       } catch (error) {
         if (isMissingProviderSessionFailure(error)) throw staleProviderBinding(targetId, true);
         throw error;

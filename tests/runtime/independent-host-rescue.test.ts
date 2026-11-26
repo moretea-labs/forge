@@ -45,6 +45,7 @@ describe('independent Windows/WSL host rescue', () => {
     expect(env).not.toContain('sk-');
     expect(unit).toContain(`ExecStart=${TEST_LINUX_HOME}/.forge-recovery/bin/forge-wsl-rescue watch`);
     expect(unit).toContain('Restart=always');
+    expect(unit).toContain('StartLimitIntervalSec=0');
     expect(windows).toContain(`"wslRescuePath": "${TEST_LINUX_HOME}/.forge-recovery/bin/forge-wsl-rescue"`);
     expect(windows).not.toContain('sk-');
   });
@@ -76,10 +77,24 @@ describe('independent Windows/WSL host rescue', () => {
 
   test('binds the loopback Connector to Secure Tunnel authorization', () => {
     const migration = readFileSync(resolve(import.meta.dir, '../../scripts/migrate-windows-wsl-controller-home.ts'), 'utf8');
+    const installer = readFileSync(resolve(import.meta.dir, '../../scripts/install-independent-windows-wsl-recovery.ts'), 'utf8');
     const rescue = readFileSync(resolve(import.meta.dir, '../../assets/recovery/forge-wsl-rescue'), 'utf8');
     expect(migration).toContain("'--auth', 'none'");
     expect(migration).toContain("externalAuthorization: 'openai-secure-tunnel'");
     expect(migration).toContain('Description=Forge ChatGPT Secure Tunnel Gateway');
     expect(rescue).toContain('"method":"initialize"');
+    expect(rescue).toContain('health --json');
+    expect(rescue).toContain('--require-control-plane-poll');
+    expect(rescue).toContain('timeout --kill-after=2s 8s');
+    expect(rescue).toContain('TUNNEL_RECONNECT_COOLDOWN_SECONDS=180');
+    expect(rescue).toContain('elif ! tunnel_control_plane_ready; then');
+    expect(rescue).toContain('reconnect_stale_tunnel_if_due || status=1');
+    expect(installer).toContain("!stageOnly && !process.argv.includes('--skip-windows-logon-task')");
+    expect(installer).toContain("'task_install'");
+    const windowsRecovery = readFileSync(resolve(import.meta.dir, '../../assets/recovery/ForgeRecovery.ps1'), 'utf8');
+    expect(windowsRecovery).toContain("'watch' {");
+    expect(windowsRecovery).toContain("Invoke-WslRescue 'watch'");
+    expect(windowsRecovery).toContain('while ($true)');
+    expect(windowsRecovery).toContain('Start-Sleep -Seconds 10');
   });
 });

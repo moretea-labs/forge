@@ -268,7 +268,7 @@ struct ForgeWorkspaceView: View {
         VStack(alignment:.leading,spacing:5) {
             if activeSidebarDestination == .resources {
                 utilitySidebarButton("文件与图片",icon:"photo.on.rectangle",page:.assets)
-                utilitySidebarButton("知识库",icon:"books.vertical",page:.knowledge)
+                utilitySidebarButton("记忆",icon:"books.vertical",page:.knowledge)
             } else if activeSidebarDestination == .settings {
                 Text("设置").font(.system(size:11,weight:.semibold))
                     .foregroundStyle(ForgePalette.secondary)

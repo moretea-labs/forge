@@ -447,7 +447,7 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(model.thread?.messages.count, messageCount)
     XCTAssertTrue(model.draft.contains("Continue the current task."))
     XCTAssertTrue(model.draft.contains(memory.canonicalText))
-    XCTAssertTrue(model.draft.contains("请参考这条 Forge 项目知识继续当前任务"))
+    XCTAssertTrue(model.draft.contains("请参考这条 Forge 记忆继续当前任务"))
 
     model.useKnowledgeInCurrentConversation(memory)
     XCTAssertEqual(
@@ -558,7 +558,7 @@ final class NativeWorkspaceTests: XCTestCase {
     model.useKnowledgeInCurrentConversation(memory, expectedThreadId: priorThreadId)
     XCTAssertEqual(model.draft, "Current thread draft")
     XCTAssertFalse(model.draft.contains(memory.canonicalText))
-    XCTAssertEqual(model.error, "当前会话已切换，请重新选择知识。")
+    XCTAssertEqual(model.error, "当前会话已切换，请重新选择记忆。")
     model.useKnowledgeInCurrentConversation(memory, expectedThreadId: model.selectedThreadId)
     XCTAssertTrue(model.draft.contains(memory.canonicalText))
   }
@@ -1860,7 +1860,8 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(merged.nextRequirementOffset, 200)
     XCTAssertTrue(merged.hasMore)
 
-    let childPage = try page(0, [row("child", parent: "root"), row("grandchild", parent: "child")], hasMore: true)
+    let childPage = try page(
+      0, [row("child", parent: "root"), row("grandchild", parent: "child")], hasMore: true)
     XCTAssertEqual(childPage.taskTreeRows.map(\.id), ["child", "grandchild"])
     XCTAssertEqual(childPage.taskTreeRows.map(\.depth), [0, 1])
     XCTAssertTrue(childPage.taskTreeRows[0].parentUnavailable)
@@ -2091,24 +2092,31 @@ final class NativeWorkspaceTests: XCTestCase {
   }
 
   func testRequirementCreationUsesCanonicalProjectHierarchy() throws {
-    let empty = try NativeWorkspace.decodeSemanticProject(["project": [
-      "projectId": "PROJECT-a", "displayName": "Project", "status": "active", "revision": 1,
-      "placements": [], "requirementCount": 0,
-    ]])
+    let empty = try NativeWorkspace.decodeSemanticProject([
+      "project": [
+        "projectId": "PROJECT-a", "displayName": "Project", "status": "active", "revision": 1,
+        "placements": [], "requirementCount": 0,
+      ]
+    ])
     XCTAssertNil(empty.rootRequirementId)
-    XCTAssertEqual(NativeWorkspace.requirementCreationHierarchy(
-      project: empty, parentRequirementId: nil, createProjectRoot: true
-    )?["isProjectRoot"] as? Bool, true)
-    XCTAssertNil(NativeWorkspace.requirementCreationHierarchy(
-      project: empty, parentRequirementId: "REQ-parent", createProjectRoot: false
-    ))
-    XCTAssertNil(NativeWorkspace.requirementCreationHierarchy(
-      project: empty, parentRequirementId: nil, createProjectRoot: false
-    ))
-    let rooted = try NativeWorkspace.decodeSemanticProject(["project": [
-      "projectId": "PROJECT-a", "displayName": "Project", "status": "active", "revision": 2,
-      "rootRequirementId": "REQ-root", "placements": [], "requirementCount": 1,
-    ]])
+    XCTAssertEqual(
+      NativeWorkspace.requirementCreationHierarchy(
+        project: empty, parentRequirementId: nil, createProjectRoot: true
+      )?["isProjectRoot"] as? Bool, true)
+    XCTAssertNil(
+      NativeWorkspace.requirementCreationHierarchy(
+        project: empty, parentRequirementId: "REQ-parent", createProjectRoot: false
+      ))
+    XCTAssertNil(
+      NativeWorkspace.requirementCreationHierarchy(
+        project: empty, parentRequirementId: nil, createProjectRoot: false
+      ))
+    let rooted = try NativeWorkspace.decodeSemanticProject([
+      "project": [
+        "projectId": "PROJECT-a", "displayName": "Project", "status": "active", "revision": 2,
+        "rootRequirementId": "REQ-root", "placements": [], "requirementCount": 1,
+      ]
+    ])
     XCTAssertEqual(rooted.rootRequirementId, "REQ-root")
     let implicitChild = NativeWorkspace.requirementCreationHierarchy(
       project: rooted, parentRequirementId: nil, createProjectRoot: nil
@@ -2116,15 +2124,18 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(implicitChild?["parentRequirementId"] as? String, "REQ-root")
     XCTAssertEqual(implicitChild?["expectedRootRequirementId"] as? String, "REQ-root")
     XCTAssertEqual(implicitChild?["isProjectRoot"] as? Bool, false)
-    XCTAssertEqual(NativeWorkspace.requirementCreationHierarchy(
-      project: rooted, parentRequirementId: "REQ-parent", createProjectRoot: false
-    )?["parentRequirementId"] as? String, "REQ-parent")
-    XCTAssertNil(NativeWorkspace.requirementCreationHierarchy(
-      project: rooted, parentRequirementId: nil, createProjectRoot: true
-    ))
-    XCTAssertNil(NativeWorkspace.requirementCreationHierarchy(
-      project: rooted, parentRequirementId: "  ", createProjectRoot: false
-    ))
+    XCTAssertEqual(
+      NativeWorkspace.requirementCreationHierarchy(
+        project: rooted, parentRequirementId: "REQ-parent", createProjectRoot: false
+      )?["parentRequirementId"] as? String, "REQ-parent")
+    XCTAssertNil(
+      NativeWorkspace.requirementCreationHierarchy(
+        project: rooted, parentRequirementId: nil, createProjectRoot: true
+      ))
+    XCTAssertNil(
+      NativeWorkspace.requirementCreationHierarchy(
+        project: rooted, parentRequirementId: "  ", createProjectRoot: false
+      ))
   }
 
   func testProjectTaskPlacementCanBeBrowsedWithoutLocalCheckout() {

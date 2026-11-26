@@ -443,3 +443,104 @@ test('ensureExact replaces a tab only after a complete native inventory proves t
     rmSync(controllerHome, { recursive: true, force: true });
   }
 });
+
+test('ensureExact reuses an existing user-owned Surface before native inventory convergence', async () => {
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-exact-native-user-owned-'));
+  const authority = runtimeComputerInteractionTargetAuthority();
+  const conversationId = 'dddddddd-2222-3333-4444-555555555555';
+  const canonicalUrl = `https://chatgpt.com/c/${conversationId}`;
+  const identity = { namespace: 'chatgpt.conversation' as const, conversationId, canonicalUrl };
+  const stableIdentity = {
+    surfaceType: 'browser-tab' as const,
+    ownership: 'user_owned' as const,
+    resource: { namespace: 'chatgpt.conversation', key: conversationId },
+  };
+  const port = new MacOsChatgptConversationTargetPort(controllerHome, authority, 1_000);
+  try {
+    authority.upsertSurface(controllerHome, {
+      stableIdentity,
+      visibility: 'controller',
+      reactivate: true,
+    });
+    const page: TestPage = {
+      evaluate: async <T>(expression: string | ((...args: unknown[]) => unknown)) =>
+        (String(expression).includes('String(window.name')
+          ? ''
+          : {
+              url: canonicalUrl,
+              title: 'Existing user tab',
+              latestUserText: '',
+              latestAssistantResponse: '',
+              providerActivityText: '',
+              composerText: '',
+              isGenerating: false,
+            }) as T,
+      foregroundState: async () => ({ frontmost: true, active: true }),
+      bringToFront: async () => undefined,
+      tabRef: () => ({ browserProduct: 'vivaldi', windowId: 'user-window', tabId: 'user-tab' }),
+    };
+    const testable = port as unknown as TestablePort;
+    testable.listTabs = async () => ({
+      entries: [{ browserProduct: 'vivaldi', windowId: 'user-window', tabId: 'user-tab', url: canonicalUrl, title: 'Existing user tab', active: true, frontmost: true }],
+      unavailableProviders: [],
+    });
+    testable.reattach = async () => page;
+    testable.create = async () => { throw new Error('existing exact user tab must not be replaced'); };
+
+    const result = await port.ensureExact(identity, { createIfMissing: false });
+    expect(result.state).toBe('ready');
+    expect(authority.findSurfaceByStableIdentity(controllerHome, stableIdentity)).toMatchObject({
+      stableIdentity: { ownership: 'user_owned' },
+      providerBinding: { providerId: 'browser.macos-apple-events', windowId: 'user-window', tabId: 'user-tab' },
+    });
+  } finally {
+    await port.close();
+    rmSync(controllerHome, { recursive: true, force: true });
+  }
+});
+
+test('ensureExact preserves an absent user-owned Surface instead of transferring ownership', async () => {
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-exact-native-user-owned-absent-'));
+  const authority = runtimeComputerInteractionTargetAuthority();
+  const conversationId = 'eeeeeeee-2222-3333-4444-555555555555';
+  const canonicalUrl = `https://chatgpt.com/c/${conversationId}`;
+  const identity = { namespace: 'chatgpt.conversation' as const, conversationId, canonicalUrl };
+  const userIdentity = {
+    surfaceType: 'browser-tab' as const,
+    ownership: 'user_owned' as const,
+    resource: { namespace: 'chatgpt.conversation', key: conversationId },
+  };
+  const original = authority.upsertSurface(controllerHome, {
+    stableIdentity: userIdentity,
+    visibility: 'controller',
+    reactivate: true,
+  }).target;
+  const port = new MacOsChatgptConversationTargetPort(controllerHome, authority, 1_000);
+  try {
+    let createCalls = 0;
+    const testable = port as unknown as TestablePort;
+    testable.listTabs = async () => ({ entries: [], unavailableProviders: [] });
+    testable.create = async () => {
+      createCalls += 1;
+      throw new Error('user-owned absence must not mint a provider-owned replacement');
+    };
+
+    const result = await port.ensureExact(identity);
+    expect(result.state).toBe('unavailable');
+    if (result.state === 'unavailable') {
+      expect(result.failure).toMatchObject({
+        code: 'COMPUTER_CHATGPT_USER_TARGET_MISSING',
+        retryable: true,
+        phase: 'pre_mutation',
+      });
+    }
+    expect(createCalls).toBe(0);
+    expect(authority.findSurfaceByStableIdentity(controllerHome, userIdentity)).toMatchObject({
+      targetId: original.targetId,
+      stableIdentity: { ownership: 'user_owned' },
+    });
+  } finally {
+    await port.close();
+    rmSync(controllerHome, { recursive: true, force: true });
+  }
+});

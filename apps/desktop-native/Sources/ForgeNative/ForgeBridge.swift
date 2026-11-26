@@ -127,7 +127,7 @@ enum ForgeBridge {
     "read_user_requests", "control_user_request",
     "read_requirement_detail", "read_plan_detail", "create_requirement", "create_plan",
     "revise_requirement", "revise_plan", "autopilot_control",
-    "read_project_knowledge", "record_user_knowledge", "read_recovery_status",
+    "read_project_knowledge", "record_user_knowledge", "record_knowledge_feedback", "read_recovery_status",
     "verify_recovery_runtime",
     "read_connection_status", "configure_initial_connection", "repair_connection",
     "read_plugin_management", "read_tool_surface", "install_official_plugin",

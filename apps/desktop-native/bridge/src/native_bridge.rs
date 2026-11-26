@@ -20,6 +20,20 @@ fn required(arguments: &Value, field: &str) -> Result<String, String> {
     required_bounded(arguments, field, 4096)
 }
 
+fn knowledge_memory_address(
+    scope_kind: &str,
+    scope_id: &str,
+    memory_id: &str,
+) -> Result<String, String> {
+    if !matches!(scope_kind, "project" | "workspace")
+        || scope_id.trim().is_empty()
+        || memory_id.trim().is_empty()
+    {
+        return Err("FORGE_NATIVE_KNOWLEDGE_FEEDBACK_INPUT_INVALID".to_string());
+    }
+    Ok(json!([scope_kind, scope_id, memory_id]).to_string())
+}
+
 const PLUGIN_AUTHORIZATION_RESULT_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 fn project_plugin_authorizations(payload: &Value, plugin_id: &str) -> Result<Value, String> {
@@ -610,6 +624,45 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 return Err("FORGE_NATIVE_KNOWLEDGE_WRITE_UNCONFIRMED".to_string());
             }
             Ok(json!({"storedMemoryIds": ids}))
+        }
+        "record_knowledge_feedback" => {
+            let repo_id = required_bounded(args, "repoId", 256)?;
+            let checkout_id = required_bounded(args, "checkoutId", 256)?;
+            let request = required_bounded(args, "requestId", 160)?;
+            let scope_kind = required_bounded(args, "scopeKind", 16)?;
+            let scope_id = required_bounded(args, "scopeId", 512)?;
+            let memory_id = required_bounded(args, "memoryId", 512)?;
+            let memory_address = knowledge_memory_address(&scope_kind, &scope_id, &memory_id)?;
+            if !resolve_repository_effect_access(Some(&repo_id), Some(&checkout_id)).await? {
+                return Err("FORGE_NATIVE_KNOWLEDGE_WRITE_REQUIRES_FULL_ACCESS".to_string());
+            }
+            let response = call_runtime_tool(
+                "rh_project",
+                json!({
+                    "repo_id": repo_id,
+                    "checkout_id": checkout_id,
+                    "operation": "learning_feedback",
+                    "request_id": request,
+                    "learning_feedback": [{
+                        "memory_address": memory_address,
+                        "decision": "rejected",
+                        "reason": "User marked this memory stale in Forge Client.",
+                        "rejection_kind": "stale"
+                    }]
+                }),
+            )
+            .await?;
+            let observation_ids = response
+                .pointer("/data/observationIds")
+                .and_then(Value::as_array)
+                .filter(|ids| !ids.is_empty())
+                .ok_or_else(|| "FORGE_NATIVE_KNOWLEDGE_FEEDBACK_UNCONFIRMED".to_string())?;
+            if response.get("status").and_then(Value::as_str) != Some("ok")
+                || response.pointer("/data/recorded").and_then(Value::as_bool) != Some(true)
+            {
+                return Err("FORGE_NATIVE_KNOWLEDGE_FEEDBACK_UNCONFIRMED".to_string());
+            }
+            Ok(json!({"recorded": true, "observationIds": observation_ids}))
         }
         "read_project_knowledge" => {
             read_project_knowledge(
@@ -1831,6 +1884,19 @@ mod tests {
             tauri::async_runtime::block_on(dispatch("record_user_knowledge", &missing_checkout))
                 .unwrap_err(),
             "FORGE_NATIVE_BRIDGE_checkoutId_REQUIRED"
+        );
+    }
+
+    #[test]
+    fn knowledge_feedback_address_is_exact_and_scope_bounded() {
+        assert_eq!(
+            knowledge_memory_address("workspace", "workspace-personal", "learning:direct:abc")
+                .unwrap(),
+            r#"["workspace","workspace-personal","learning:direct:abc"]"#
+        );
+        assert_eq!(
+            knowledge_memory_address("global", "workspace-personal", "memory").unwrap_err(),
+            "FORGE_NATIVE_KNOWLEDGE_FEEDBACK_INPUT_INVALID"
         );
     }
 

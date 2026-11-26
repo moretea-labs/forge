@@ -129,6 +129,9 @@ export function renderIndependentHostRescueSystemdUnit(config: IndependentHostRe
     '[Unit]',
     'Description=Forge independent Windows/WSL host rescue',
     'After=network-online.target',
+    // A transient bad network/tunnel epoch must never exhaust systemd's
+    // default start-rate limiter and permanently disable the rescue owner.
+    'StartLimitIntervalSec=0',
     '',
     '[Service]',
     'Type=simple',
