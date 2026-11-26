@@ -447,7 +447,7 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(model.thread?.messages.count, messageCount)
     XCTAssertTrue(model.draft.contains("Continue the current task."))
     XCTAssertTrue(model.draft.contains(memory.canonicalText))
-    XCTAssertTrue(model.draft.contains("请参考这条 Forge 项目知识继续当前任务"))
+    XCTAssertTrue(model.draft.contains("请参考这条 Forge 记忆继续当前任务"))
 
     model.useKnowledgeInCurrentConversation(memory)
     XCTAssertEqual(
@@ -558,7 +558,7 @@ final class NativeWorkspaceTests: XCTestCase {
     model.useKnowledgeInCurrentConversation(memory, expectedThreadId: priorThreadId)
     XCTAssertEqual(model.draft, "Current thread draft")
     XCTAssertFalse(model.draft.contains(memory.canonicalText))
-    XCTAssertEqual(model.error, "当前会话已切换，请重新选择知识。")
+    XCTAssertEqual(model.error, "当前会话已切换，请重新选择记忆。")
     model.useKnowledgeInCurrentConversation(memory, expectedThreadId: model.selectedThreadId)
     XCTAssertTrue(model.draft.contains(memory.canonicalText))
   }
