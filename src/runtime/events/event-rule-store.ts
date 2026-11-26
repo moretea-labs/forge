@@ -15,6 +15,8 @@ import {
 
 const NAMESPACE = 'event_rule';
 const SCOPE = 'global';
+// Event execution must never silently ignore rules beyond the configuration-list page.
+const MAX_EVALUATED_EVENT_RULES = 1_000;
 
 export function createEventRule(controllerHome: string, input: unknown): ControlPlaneRecord<EventRuleV1> {
   const rule = validateEventRuleV1(input);
@@ -42,7 +44,7 @@ export function listEventRules(controllerHome: string, limit = 256): ControlPlan
   return listControlPlaneRecords<unknown>(controllerHome, {
     namespace: NAMESPACE,
     scope: SCOPE,
-    limit: Math.max(1, Math.min(Math.trunc(limit), 1_000)),
+    limit: Math.max(1, Math.min(Math.trunc(limit), MAX_EVALUATED_EVENT_RULES + 1)),
   }).map((record) => {
     const value = validateEventRuleV1(record.value);
     if (value.ruleId !== record.key) throw new Error('EVENT_RULE_KEY_MISMATCH');
@@ -85,8 +87,12 @@ export function evaluatePersistedEventRules(
   envelope: EventEnvelopeV1,
   context: EventRuleEvaluationContext,
 ): EventRuleMatch[] {
+  // Fetch one beyond the execution cap. A truncated subset could silently
+  // skip a matching rule, so refuse evaluation rather than act on partial policy.
+  const records = listEventRules(controllerHome, MAX_EVALUATED_EVENT_RULES + 1);
+  if (records.length > MAX_EVALUATED_EVENT_RULES) throw new Error('EVENT_RULE_EVALUATION_CAPACITY_EXCEEDED');
   const matches: EventRuleMatch[] = [];
-  for (const record of listEventRules(controllerHome)) {
+  for (const record of records) {
     const evaluation = evaluateEventRule(record.value, envelope, context);
     if (!evaluation.matched || evaluation.actions.length === 0) continue;
     matches.push({ ruleId: record.value.ruleId, recordRevision: record.revision, evaluation });

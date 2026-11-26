@@ -4,6 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createEventEnvelope, type EventRuleV1 } from '../../packages/kernel/events';
 import {
+  withControlPlaneTransaction,
+  writeControlPlaneRecordWithinTransaction,
+} from '../../src/runtime/control-plane/persistence/sqlite-store';
+import {
   createEventRule,
   evaluatePersistedEventRules,
   listEventRules,
@@ -39,6 +43,25 @@ function rule(ruleId: string, overrides: Partial<EventRuleV1> = {}): EventRuleV1
     ...overrides,
   };
 }
+// Seed fixture rows in one SQLite transaction so the >1,000-rule boundary
+// regression does not spend seconds reopening the database for each rule.
+function seedRules(h: string, prefix: string, count: number, lastOverride: Partial<EventRuleV1> = {}) {
+  withControlPlaneTransaction(h, (database) => {
+    for (let index = 0; index < count; index++) {
+      const ruleId = prefix + String(index).padStart(4, '0');
+      writeControlPlaneRecordWithinTransaction(database, {
+        namespace: 'event_rule',
+        scope: 'global',
+        key: ruleId,
+        schemaVersion: 1,
+        value: rule(ruleId, index === count - 1 ? lastOverride : {}),
+        action: 'event_rule_created',
+        expectedRevision: null,
+      });
+    }
+  });
+}
+
 const event = createEventEnvelope({
   eventId: 'mail:1',
   source: 'agentmail.watch',
@@ -84,6 +107,28 @@ describe('Event Rule persistence', () => {
       updateEventRule(h, 'asc-mail', 1, (current) => ({ ...current, revision: 2, ruleId: 'renamed' })),
     ).toThrow('EVENT_RULE_ID_IMMUTABLE');
   });
+  test('evaluates the rule after the default 256-item configuration page', () => {
+    const h = home();
+    seedRules(h, 'bulk-', 257, {
+      condition: { kind: 'fact', key: 'mail.sender_domain', operator: 'equals', value: 'example.com' },
+    });
+    expect(listEventRules(h)).toHaveLength(256);
+    const matches = evaluatePersistedEventRules(h, event, {
+      facts: { 'mail.sender_domain': 'example.com', 'mail.subject': 'Matched after page one' },
+    });
+    expect(matches.map((match) => match.ruleId)).toEqual(['bulk-0256']);
+  });
+
+  test('fails closed rather than silently dropping rules beyond the execution capacity', () => {
+    const h = home();
+    seedRules(h, 'overflow-', 1_001);
+    expect(() =>
+      evaluatePersistedEventRules(h, event, {
+        facts: { 'mail.sender_domain': 'apple.com', 'mail.subject': 'Never dispatch partial policy' },
+      }),
+    ).toThrow('EVENT_RULE_EVALUATION_CAPACITY_EXCEEDED');
+  });
+
   test('evaluates persisted configuration and returns resolved actions without dispatch', () => {
     const h = home();
     createEventRule(h, rule('asc-mail'));
