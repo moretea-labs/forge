@@ -27,7 +27,6 @@ import { assertWorkflowPackageExecutableTarget } from './package-content-guard';
 import { assertNoActiveWorkflowPackageDependents } from './package-dependencies';
 import { preflightWorkflowPackageImport } from './package-import';
 import { assertWorkflowPackageLocationMatchesScope } from './package-location';
-import { assertNoNonterminalWorkflowRuns } from './package-run-safety';
 import { recordWorkflowPackageInstallation } from './package-installation-store';
 
 export interface WorkflowPackageUpdateAuthorization {
@@ -100,7 +99,6 @@ function validateUpdateIdentity(
     throw new Error('WORKFLOW_PACKAGE_UPDATE_VERSION_CONTENT_CONFLICT');
   }
   assertNoActiveWorkflowPackageDependents(input.controllerHome, input.scope, existing.value);
-  assertNoNonterminalWorkflowRuns(input.controllerHome, existing.value, 'WORKFLOW_PACKAGE_UPDATE_NONTERMINAL_RUNS');
   return existing;
 }
 
@@ -179,10 +177,10 @@ function persistUpdate(
 }
 
 /**
- * Switches the installed Workflow identity to a new package version. Until
- * run-level asset/binding snapshots are self-contained, any nonterminal run of
- * the current identity blocks the update. The new identity is always installed
- * (not active) and capability bindings are reset.
+ * Switches the installed Workflow identity to a new package version. Existing
+ * Runs are insulated by immutable execution snapshots and keep their exact old
+ * content/bindings; versioned content is retained. The new identity is always
+ * installed (not active) and capability bindings are reset.
  */
 export function updateWorkflowPackage(input: WorkflowPackageUpdateInput): WorkflowPackageUpdateResultV1 {
   if (!input.authorization.canUpdateWorkflows) throw new Error('WORKFLOW_PACKAGE_UPDATE_NOT_AUTHORIZED');

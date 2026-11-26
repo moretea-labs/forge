@@ -32,6 +32,8 @@ export interface WorkflowRunRecord {
   version: string;
   contentDigest: string;
   inputDigest: string;
+  /** New sequence-v1 Runs pin executable content and local capability bindings; historical records may omit this. */
+  execution?: WorkflowRunExecutionSnapshot;
   evidenceRef: string;
   status: WorkflowCheckpoint['status'];
   nextStepIndex: number;
@@ -87,6 +89,7 @@ function validRecord(value: WorkflowRunRecord): WorkflowRunRecord {
   bounded(value.version, 'WORKFLOW_RUN_VERSION_INVALID');
   bounded(value.contentDigest, 'WORKFLOW_RUN_CONTENT_DIGEST_INVALID');
   bounded(value.inputDigest, 'WORKFLOW_RUN_INPUT_DIGEST_INVALID');
+  if (value.execution !== undefined) validWorkflowRunExecutionSnapshot(value.execution);
   bounded(value.evidenceRef, 'WORKFLOW_RUN_EVIDENCE_REF_INVALID');
   if (workflowRunEvidenceRef(value) !== value.evidenceRef) throw new Error('WORKFLOW_RUN_EVIDENCE_REF_MISMATCH');
   if (!['running', 'reconcile_required', 'failed', 'succeeded'].includes(value.status))
@@ -120,6 +123,7 @@ export function writeWorkflowRunCheckpoint(input: {
   controllerHome: string;
   checkpoint: WorkflowCheckpoint;
   inputs?: Record<string, WorkflowJsonValue>;
+  execution?: WorkflowRunExecutionSnapshot;
   expectedRevision?: number | null;
   now?: Date;
 }): ControlPlaneRecord<WorkflowRunRecord> {
@@ -132,6 +136,7 @@ export function writeWorkflowRunCheckpoint(input: {
     version: input.checkpoint.version,
     contentDigest: input.checkpoint.contentDigest,
     inputDigest: workflowInputDigest(input.inputs),
+    ...(input.execution === undefined ? {} : { execution: structuredClone(input.execution) }),
     status: input.checkpoint.status,
     nextStepIndex: input.checkpoint.nextStepIndex,
     receipts: input.checkpoint.receipts.map((receipt) => ({ ...receipt })),

@@ -50,7 +50,12 @@ function waitingNodeMatches(
 }
 
 function pinnedEventWaitAsset(run: WorkflowGraphRunRecord) {
-  const asset = readWorkflowExecutableContentFile(run.execution.contentLocation.path);
+  let asset: ReturnType<typeof readWorkflowExecutableContentFile>;
+  try {
+    asset = readWorkflowExecutableContentFile(run.execution.contentLocation.path);
+  } catch {
+    throw new Error('WORKFLOW_RUN_EXECUTION_SNAPSHOT_CONTENT_UNAVAILABLE');
+  }
   if (asset.schemaVersion !== 2) throw new Error('WORKFLOW_EVENT_WAIT_GRAPH_REQUIRED');
   if (
     asset.workflowId !== run.workflowId ||

@@ -19,12 +19,15 @@ import { readWorkflowAssetContentFile } from '../control-plane/persistence/workf
 import {
   readWorkflowRegistryEntry,
   type WorkflowCapabilityBinding,
+  type WorkflowRegistryEntry,
   type WorkflowRegistryScope,
 } from '../control-plane/persistence/workflow-registry-store';
 import {
   readWorkflowRun,
   workflowInputDigest,
   writeWorkflowRunCheckpoint,
+  type WorkflowRunExecutionSnapshot,
+  type WorkflowRunRecord,
 } from '../control-plane/persistence/workflow-run-store';
 import {
   submitAssistantPluginAction,
@@ -34,7 +37,6 @@ import {
 } from '../plugins/store';
 import { isAssistantPluginError } from '../plugins/errors';
 import { listControlPlaneRecords } from '../control-plane/persistence/sqlite-store';
-import type { WorkflowRunRecord } from '../control-plane/persistence/workflow-run-store';
 import {
   executeRepositoryCommandViaProcessRuntime,
   waitRepositoryCommandProcess,
@@ -118,6 +120,81 @@ function capabilityBinding(bindings: WorkflowCapabilityBinding[], capabilityId: 
   if (!binding.pluginId || !binding.actionId)
     throw new Error(`WORKFLOW_CAPABILITY_BINDING_EXECUTION_TARGET_REQUIRED: ${capabilityId}`);
   return binding;
+}
+
+function sameWorkflowRegistryScope(left: WorkflowRegistryScope, right: WorkflowRegistryScope): boolean {
+  return (
+    left.kind === right.kind &&
+    (left.kind === 'controller' || left.projectId === (right as { kind: 'project'; projectId: string }).projectId)
+  );
+}
+
+function sequenceExecutionSnapshot(
+  input: ExecuteRegisteredWorkflowInput,
+  registry: WorkflowRegistryEntry,
+): WorkflowRunExecutionSnapshot {
+  return {
+    repositoryId: input.repository.repoId,
+    checkoutId: input.executionIdentity.checkoutId,
+    registryScope: structuredClone(input.registryScope),
+    contentLocation: structuredClone(registry.contentLocation),
+    bindings: structuredClone(registry.bindings),
+    capabilityGrantRefs: [...registry.capabilityGrantRefs],
+    ...(input.approvalContext ? { approvalContext: structuredClone(input.approvalContext) } : {}),
+  };
+}
+
+function assertSequenceExecutionSnapshot(
+  input: ExecuteRegisteredWorkflowInput,
+  execution: WorkflowRunExecutionSnapshot,
+): void {
+  if (
+    execution.repositoryId !== input.repository.repoId ||
+    execution.checkoutId !== input.executionIdentity.checkoutId ||
+    !sameWorkflowRegistryScope(execution.registryScope, input.registryScope)
+  ) {
+    throw new Error('WORKFLOW_RUN_EXECUTION_SNAPSHOT_IDENTITY_MISMATCH');
+  }
+}
+
+function readPinnedSequenceAsset(
+  execution: WorkflowRunExecutionSnapshot,
+  identity: Pick<WorkflowRunRecord, 'workflowId' | 'version' | 'contentDigest'>,
+) {
+  let asset: ReturnType<typeof readWorkflowAssetContentFile>;
+  try {
+    asset = readWorkflowAssetContentFile(execution.contentLocation.path);
+  } catch {
+    throw new Error('WORKFLOW_RUN_EXECUTION_SNAPSHOT_CONTENT_UNAVAILABLE');
+  }
+  const observed = workflowContentIdentity(asset);
+  if (
+    observed.workflowId !== identity.workflowId ||
+    observed.version !== identity.version ||
+    observed.contentDigest !== identity.contentDigest
+  ) {
+    throw new Error('WORKFLOW_RUN_EXECUTION_SNAPSHOT_CONTENT_IDENTITY_MISMATCH');
+  }
+  return asset;
+}
+
+function requireSequenceRunSnapshot(
+  input: ExecuteRegisteredWorkflowInput,
+  run: WorkflowRunRecord,
+): {
+  execution: WorkflowRunExecutionSnapshot;
+  inputs: Record<string, WorkflowJsonValue>;
+  asset: ReturnType<typeof readWorkflowAssetContentFile>;
+} {
+  if (!run.execution) throw new Error('WORKFLOW_RUN_EXECUTION_SNAPSHOT_REQUIRED');
+  assertSequenceExecutionSnapshot(input, run.execution);
+  const inputs = structuredClone(input.inputs ?? {});
+  if (workflowInputDigest(inputs) !== run.inputDigest) throw new Error('WORKFLOW_RUN_IDENTITY_CONFLICT');
+  return {
+    execution: run.execution,
+    inputs,
+    asset: readPinnedSequenceAsset(run.execution, run),
+  };
 }
 
 /** submitAssistantPluginAction returns its canonical plugin/action/result envelope; Workflow outputs are the nested provider payload. */
@@ -259,21 +336,34 @@ async function executeRegisteredWorkflowLocked(
   if (!input.scopeId.trim()) throw new Error('WORKFLOW_RUNTIME_SCOPE_ID_REQUIRED');
   if (!input.runId.trim()) throw new Error('WORKFLOW_RUNTIME_RUN_ID_REQUIRED');
   assertWorkflowExecutionScope(input);
-  const registry = readWorkflowRegistryEntry(input.controllerHome, input.registryScope, input.workflowId);
-  if (!registry) throw new Error(`WORKFLOW_REGISTRY_ENTRY_REQUIRED: ${input.workflowId}`);
-  if (registry.value.status !== 'active') throw new Error(`WORKFLOW_REGISTRY_ENTRY_NOT_ACTIVE: ${input.workflowId}`);
-  const asset = readWorkflowAssetContentFile(registry.value.contentLocation.path);
-  const identity = workflowContentIdentity(asset);
-  if (
-    identity.workflowId !== registry.value.workflowId ||
-    identity.version !== registry.value.version ||
-    identity.contentDigest !== registry.value.contentDigest
-  ) {
-    throw new Error(`WORKFLOW_REGISTRY_CONTENT_IDENTITY_MISMATCH: ${input.workflowId}`);
-  }
-
   const existing = readWorkflowRun(input.controllerHome, input.scopeId, input.runId);
-  validateWorkflowRunInputs(asset, input.inputs);
+  let execution: WorkflowRunExecutionSnapshot;
+  let asset: ReturnType<typeof readWorkflowAssetContentFile>;
+  let effectiveInputs: Record<string, WorkflowJsonValue>;
+  if (existing) {
+    const snapshot = requireSequenceRunSnapshot(input, existing.value);
+    execution = snapshot.execution;
+    asset = snapshot.asset;
+    effectiveInputs = snapshot.inputs;
+  } else {
+    const registry = readWorkflowRegistryEntry(input.controllerHome, input.registryScope, input.workflowId);
+    if (!registry) throw new Error('WORKFLOW_REGISTRY_ENTRY_REQUIRED: ' + input.workflowId);
+    if (registry.value.status !== 'active') throw new Error('WORKFLOW_REGISTRY_ENTRY_NOT_ACTIVE: ' + input.workflowId);
+    const candidate = readWorkflowAssetContentFile(registry.value.contentLocation.path);
+    const candidateIdentity = workflowContentIdentity(candidate);
+    if (
+      candidateIdentity.workflowId !== registry.value.workflowId ||
+      candidateIdentity.version !== registry.value.version ||
+      candidateIdentity.contentDigest !== registry.value.contentDigest
+    ) {
+      throw new Error('WORKFLOW_REGISTRY_CONTENT_IDENTITY_MISMATCH: ' + input.workflowId);
+    }
+    execution = sequenceExecutionSnapshot(input, registry.value);
+    asset = candidate;
+    effectiveInputs = structuredClone(input.inputs ?? {});
+  }
+  const identity = workflowContentIdentity(asset);
+  validateWorkflowRunInputs(asset, effectiveInputs);
   // Run ids are not a way to evade an unresolved effect in the same workflow scope.
   const relatedRuns = listControlPlaneRecords<WorkflowRunRecord>(input.controllerHome, {
     namespace: 'workflow_run',
@@ -287,7 +377,7 @@ async function executeRegisteredWorkflowLocked(
     )
   )
     throw new Error('WORKFLOW_SCOPE_RECONCILIATION_REQUIRED');
-  const inputDigest = workflowInputDigest(input.inputs);
+  const inputDigest = workflowInputDigest(effectiveInputs);
   if (existing) {
     if (
       existing.value.workflowId !== identity.workflowId ||
@@ -298,9 +388,9 @@ async function executeRegisteredWorkflowLocked(
       throw new Error('WORKFLOW_RUN_IDENTITY_CONFLICT');
     }
     if (existing.value.status === 'reconcile_required')
-      throw new Error(`WORKFLOW_RUN_RECONCILIATION_REQUIRED: ${existing.value.reconcileStepId ?? 'unknown'}`);
+      throw new Error('WORKFLOW_RUN_RECONCILIATION_REQUIRED: ' + (existing.value.reconcileStepId ?? 'unknown'));
     if (existing.value.inFlightStepId)
-      throw new Error(`WORKFLOW_RUN_RECONCILIATION_REQUIRED: ${existing.value.inFlightStepId}`);
+      throw new Error('WORKFLOW_RUN_RECONCILIATION_REQUIRED: ' + existing.value.inFlightStepId);
     if (existing.value.status === 'succeeded') throw new Error('WORKFLOW_RUN_ALREADY_SUCCEEDED');
     if (existing.value.status === 'failed') throw new Error('WORKFLOW_RUN_FAILED_RESTART_REQUIRES_NEW_RUN_ID');
   }
@@ -362,7 +452,7 @@ async function executeRegisteredWorkflowLocked(
           throw new Error(`WORKFLOW_RETAINED_OUTPUT_MISMATCH: ${step.stepId}`);
         return;
       }
-      const binding = capabilityBinding(registry.value.bindings, step.capabilityId);
+      const binding = capabilityBinding(execution.bindings, step.capabilityId);
       const canonical = findPluginActionReceipt(input.controllerHome, receiptRef);
       if (
         !canonical ||
@@ -399,7 +489,7 @@ async function executeRegisteredWorkflowLocked(
           executionIdentity: input.executionIdentity,
           runId: input.runId,
           timeoutMs: input.timeoutMs,
-          registry: registry.value,
+          registry: execution,
         },
         capabilityId: step.capabilityId,
         arguments: args,
@@ -417,7 +507,7 @@ async function executeRegisteredWorkflowLocked(
           executionIdentity: input.executionIdentity,
           runId: input.runId,
           timeoutMs: input.timeoutMs,
-          registry: registry.value,
+          registry: execution,
         },
         script,
         arguments: args,
@@ -429,7 +519,8 @@ async function executeRegisteredWorkflowLocked(
       const stored = writeWorkflowRunCheckpoint({
         controllerHome: input.controllerHome,
         checkpoint,
-        inputs: input.inputs,
+        inputs: effectiveInputs,
+        execution,
         expectedRevision: checkpointRevision ?? null,
       });
       checkpointRevision = stored.revision;
@@ -440,7 +531,7 @@ async function executeRegisteredWorkflowLocked(
     {
       asset,
       binding: { scopeId: input.scopeId, runId: input.runId },
-      inputs: input.inputs,
+      inputs: effectiveInputs,
       startStepIndex: existing?.value.nextStepIndex,
       retainedReceipts: existing?.value.receipts,
       retainedOutputs: existing?.value.outputs,
@@ -473,23 +564,10 @@ async function reconcileRegisteredWorkflowLocked(
   const stored = readWorkflowRun(input.controllerHome, input.scopeId, input.runId);
   if (!stored || !(stored.value.inFlightStepId || stored.value.status === 'reconcile_required'))
     throw new Error('WORKFLOW_RECONCILIATION_NOT_REQUIRED');
-  const registry = readWorkflowRegistryEntry(input.controllerHome, input.registryScope, input.workflowId);
-  if (!registry || registry.value.status !== 'active') throw new Error('WORKFLOW_REGISTRY_ENTRY_REQUIRED');
-  const asset = readWorkflowAssetContentFile(registry.value.contentLocation.path);
-  if (
-    asset.workflowId !== stored.value.workflowId ||
-    asset.version !== stored.value.version ||
-    asset.contentDigest !== stored.value.contentDigest ||
-    workflowInputDigest(input.inputs) !== stored.value.inputDigest
-  )
-    throw new Error('WORKFLOW_RUN_IDENTITY_CONFLICT');
-  const registeredIdentity = workflowContentIdentity(asset);
-  if (
-    registeredIdentity.contentDigest !== registry.value.contentDigest ||
-    registeredIdentity.version !== registry.value.version ||
-    registeredIdentity.workflowId !== registry.value.workflowId
-  )
-    throw new Error('WORKFLOW_REGISTRY_CONTENT_IDENTITY_MISMATCH');
+  const snapshot = requireSequenceRunSnapshot(input, stored.value);
+  const execution = snapshot.execution;
+  const effectiveInputs = snapshot.inputs;
+  const asset = snapshot.asset;
   const step = asset.steps[stored.value.nextStepIndex];
   if (!step) throw new Error('WORKFLOW_RECONCILIATION_STEP_REQUIRED');
   const originalRequestId = requestId(input, step.stepId, asset.contentDigest);
@@ -532,7 +610,8 @@ async function reconcileRegisteredWorkflowLocked(
       if (process.status === 'failed' && process.error?.message.includes('PROCESS_PRESPAWN_ABANDONED:')) {
         return writeWorkflowRunCheckpoint({
           controllerHome: input.controllerHome,
-          inputs: input.inputs,
+          inputs: effectiveInputs,
+          execution,
           expectedRevision: stored.revision,
           checkpoint: {
             schemaVersion: 1,
@@ -573,7 +652,8 @@ async function reconcileRegisteredWorkflowLocked(
     const outputs = { ...stored.value.outputs, [step.stepId]: retainWorkflowOutput(step, output) };
     return writeWorkflowRunCheckpoint({
       controllerHome: input.controllerHome,
-      inputs: input.inputs,
+      inputs: effectiveInputs,
+      execution,
       expectedRevision: stored.revision,
       checkpoint: {
         schemaVersion: 1,
@@ -605,7 +685,7 @@ async function reconcileRegisteredWorkflowLocked(
     throw new Error('WORKFLOW_RECONCILIATION_EVIDENCE_REQUIRED');
   }
   const binding = capabilityBinding(
-    registry.value.bindings,
+    execution.bindings,
     input.reconciliationRequestId ? (step.reconcileWithCapabilityId ?? '') : step.capabilityId,
   );
   if (receipt.pluginId !== binding.pluginId || receipt.actionId !== binding.actionId)
@@ -621,7 +701,8 @@ async function reconcileRegisteredWorkflowLocked(
       releaseExecutionLeases(input.controllerHome, input.repository.repoId, `plugin:${originalRequestId}`);
       return writeWorkflowRunCheckpoint({
         controllerHome: input.controllerHome,
-        inputs: input.inputs,
+        inputs: effectiveInputs,
+        execution,
         expectedRevision: stored.revision,
         checkpoint: {
           schemaVersion: 1,
@@ -652,7 +733,7 @@ async function reconcileRegisteredWorkflowLocked(
   const outputs = { ...stored.value.outputs, [step.stepId]: retainWorkflowOutput(step, output) };
   return writeWorkflowRunCheckpoint({
     controllerHome: input.controllerHome,
-    inputs: input.inputs,
+    inputs: effectiveInputs,
     expectedRevision: stored.revision,
     checkpoint: {
       schemaVersion: 1,
@@ -715,29 +796,23 @@ export async function observeAndReconcileRegisteredWorkflow(
       const stored = readWorkflowRun(input.controllerHome, input.scopeId, input.runId);
       if (!stored || !(stored.value.inFlightStepId || stored.value.status === 'reconcile_required'))
         throw new Error('WORKFLOW_RECONCILIATION_NOT_REQUIRED');
-      const registry = readWorkflowRegistryEntry(input.controllerHome, input.registryScope, input.workflowId);
-      if (!registry || registry.value.status !== 'active') throw new Error('WORKFLOW_REGISTRY_ENTRY_REQUIRED');
-      const asset = readWorkflowAssetContentFile(registry.value.contentLocation.path);
-      if (
-        asset.workflowId !== stored.value.workflowId ||
-        asset.version !== stored.value.version ||
-        asset.contentDigest !== stored.value.contentDigest ||
-        workflowInputDigest(input.inputs) !== stored.value.inputDigest
-      )
-        throw new Error('WORKFLOW_RUN_IDENTITY_CONFLICT');
+      const snapshot = requireSequenceRunSnapshot(input, stored.value);
+      const execution = snapshot.execution;
+      const effectiveInputs = snapshot.inputs;
+      const asset = snapshot.asset;
       const step = asset.steps[stored.value.nextStepIndex];
       if (!step || step.kind === 'script' || !step.reconcileWithCapabilityId)
         throw new Error('WORKFLOW_RECONCILIATION_CAPABILITY_REQUIRED');
       const originalRequestId = requestId(input, step.stepId, asset.contentDigest);
-      const binding = capabilityBinding(registry.value.bindings, step.reconcileWithCapabilityId);
+      const binding = capabilityBinding(execution.bindings, step.reconcileWithCapabilityId);
       const submitPluginAction = dependencies.submitPluginAction ?? submitAssistantPluginAction;
       const observed = await submitPluginAction(input.controllerHome, input.repository, {
         pluginId: binding.pluginId!,
         actionId: binding.actionId!,
         requestId: input.reconciliationRequestId,
-        args: reconciliationArguments(asset, input.inputs, step, stored.value.outputs, originalRequestId),
+        args: reconciliationArguments(asset, effectiveInputs, step, stored.value.outputs, originalRequestId),
         timeoutMs: input.timeoutMs,
-        authorizationGrantRefs: registry.value.capabilityGrantRefs,
+        authorizationGrantRefs: execution.capabilityGrantRefs,
         origin: { surface: 'system', actor: 'workflow-runtime-reconciliation', correlationId: input.runId },
       });
       if (observed.receipt.status !== 'succeeded') throw new Error('WORKFLOW_RECONCILIATION_OBSERVATION_FAILED');

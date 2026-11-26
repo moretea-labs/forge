@@ -184,6 +184,8 @@ describe('registered Workflow Graph runtime', () => {
       principalId: 'principal-1',
       humanSummary: 'Send?',
     });
+    install(h, { ...draft, version: '2' }, [{ capabilityId: 'mail.send', pluginId: 'mail', actionId: 'send-v2' }]);
+    expect(readWorkflowGraphRun(h, base.scopeId, 'run-1')?.value.version).toBe('1');
     resolveAuthorizationRequest({
       controllerHome: h,
       repositoryId: 'repo-1',
@@ -193,10 +195,10 @@ describe('registered Workflow Graph runtime', () => {
       permissionSnapshotVersion: 1,
       confirm: true,
     });
-    let calls = 0;
+    const actions: string[] = [];
     const result = await executeRegisteredWorkflowGraph(base, {
       submitPluginAction: async (_home, _repo, request) => {
-        calls += 1;
+        actions.push(request.actionId);
         return {
           receipt: {
             receiptId: 'sent-1',
@@ -216,8 +218,9 @@ describe('registered Workflow Graph runtime', () => {
       },
       now: () => new Date('2026-11-26T00:00:10.000Z'),
     });
-    expect(calls).toBe(1);
+    expect(actions).toEqual(['send']);
     expect(result.status).toBe('succeeded');
+    expect(readWorkflowGraphRun(h, base.scopeId, 'run-1')?.value.version).toBe('1');
   });
 
   test('approval fails closed without authenticated approval context', async () => {

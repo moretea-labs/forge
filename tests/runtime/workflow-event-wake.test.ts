@@ -175,6 +175,16 @@ describe('Workflow Graph durable event wake', () => {
     await waiting(h);
     expect(findWorkflowGraphEventWaits(h, { ...signal, occurredAt: '2026-11-26T00:01:01.000Z' })).toEqual([]);
   });
+  test('fails closed when pinned graph content is missing instead of falling back to the upgraded Registry', async () => {
+    const h = home();
+    const { scopeId } = await waiting(h);
+    const oldRun = readWorkflowGraphRun(h, scopeId, 'run-1')!;
+    const oldPath = oldRun.value.execution.contentLocation.path;
+    installVersion(h, '2', 'done-v2', 2);
+    rmSync(oldPath, { force: true });
+    expect(() => findWorkflowGraphEventWaits(h, signal)).toThrow('WORKFLOW_RUN_EXECUTION_SNAPSHOT_CONTENT_UNAVAILABLE');
+  });
+
   test('pins exact graph content and capability bindings across Registry upgrade', async () => {
     const h = home();
     const { repository, scopeId } = await waiting(h);

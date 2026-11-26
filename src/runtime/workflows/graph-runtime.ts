@@ -97,7 +97,12 @@ function readPinnedGraphAsset(
   snapshot: WorkflowRunExecutionSnapshot,
   identity: { workflowId: string; version: string; contentDigest: string },
 ): Extract<ReturnType<typeof readWorkflowExecutableContentFile>, { schemaVersion: 2 }> {
-  const asset = readWorkflowExecutableContentFile(snapshot.contentLocation.path);
+  let asset: ReturnType<typeof readWorkflowExecutableContentFile>;
+  try {
+    asset = readWorkflowExecutableContentFile(snapshot.contentLocation.path);
+  } catch {
+    throw new Error('WORKFLOW_RUN_EXECUTION_SNAPSHOT_CONTENT_UNAVAILABLE');
+  }
   if (asset.schemaVersion !== 2) throw new Error('WORKFLOW_GRAPH_CONTENT_REQUIRED');
   if (
     asset.workflowId !== identity.workflowId ||

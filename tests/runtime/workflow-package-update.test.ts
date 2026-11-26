@@ -10,7 +10,10 @@ import {
   setWorkflowRegistryStatus,
 } from '../../src/runtime/control-plane/persistence/workflow-registry-store';
 import { workflowAssetContentPath } from '../../src/runtime/control-plane/persistence/workflow-content-store';
-import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
+import {
+  readWorkflowRun,
+  writeWorkflowRunCheckpoint,
+} from '../../src/runtime/control-plane/persistence/workflow-run-store';
 import { installWorkflowPackage } from '../../src/runtime/workflows/package-install';
 import { updateWorkflowPackage } from '../../src/runtime/workflows/package-update';
 
@@ -189,12 +192,21 @@ describe('Workflow Package update service', () => {
       }),
     ).toThrow('WORKFLOW_PACKAGE_UPDATE_WORKFLOW_ID_MISMATCH');
   });
-  test('blocks identity switch while the current version has a nonterminal run', () => {
+  test('allows identity switch while a nonterminal run remains pinned to the old immutable content and bindings', () => {
     const h = home();
     const { active } = installV1(h);
+    const execution = {
+      repositoryId: 'r',
+      checkoutId: 'c',
+      registryScope: scope,
+      contentLocation: structuredClone(active.value.contentLocation),
+      bindings: structuredClone(active.value.bindings),
+      capabilityGrantRefs: [...active.value.capabilityGrantRefs],
+    };
     writeWorkflowRunCheckpoint({
       controllerHome: h,
       inputs: {},
+      execution,
       checkpoint: {
         schemaVersion: 1,
         binding: { scopeId: 'repository:r:checkout:c:workflow:upgrade.demo', runId: 'run-live' },
@@ -207,22 +219,30 @@ describe('Workflow Package update service', () => {
         outputs: {},
       },
     });
-    expect(() =>
-      updateWorkflowPackage({
-        controllerHome: h,
-        scope,
-        location: { kind: 'controller', controllerHome: h },
-        workflowId: 'upgrade.demo',
-        bundle: bundle('2'),
-        runtimeVersion: '1.8.2',
-        expectedRegistryRevision: active.revision,
-        authorization: { canUpdateWorkflows: true },
-      }),
-    ).toThrow(/WORKFLOW_PACKAGE_UPDATE_NONTERMINAL_RUNS:1:.*run-live:running/);
-    expect(readWorkflowRegistryEntry(h, scope, 'upgrade.demo')?.value).toMatchObject({
-      version: '1',
-      status: 'active',
+    const pinnedBefore = readWorkflowRun(h, 'repository:r:checkout:c:workflow:upgrade.demo', 'run-live')!;
+    const oldPath = pinnedBefore.value.execution!.contentLocation.path;
+    const result = updateWorkflowPackage({
+      controllerHome: h,
+      scope,
+      location: { kind: 'controller', controllerHome: h },
+      workflowId: 'upgrade.demo',
+      bundle: bundle('2'),
+      runtimeVersion: '1.8.2',
+      expectedRegistryRevision: active.revision,
+      authorization: { canUpdateWorkflows: true },
     });
+    expect(result.version).toBe('2');
+    expect(existsSync(oldPath)).toBe(true);
+    expect(readWorkflowRegistryEntry(h, scope, 'upgrade.demo')?.value).toMatchObject({
+      version: '2',
+      status: 'installed',
+      bindings: [],
+    });
+    const pinnedAfter = readWorkflowRun(h, 'repository:r:checkout:c:workflow:upgrade.demo', 'run-live')!;
+    expect(pinnedAfter.value.status).toBe('running');
+    expect(pinnedAfter.value.version).toBe('1');
+    expect(pinnedAfter.value.execution).toEqual(execution);
+    expect(pinnedAfter.value.execution?.contentLocation.path).toBe(oldPath);
   });
 
   test('terminal runs do not block a later package identity switch', () => {

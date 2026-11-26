@@ -54,7 +54,12 @@ async function resumeOne(
     .map((node) => node.nodeId);
   if (dueNodeIds.length === 0) return undefined;
   try {
-    const asset = readWorkflowExecutableContentFile(run.execution.contentLocation.path);
+    let asset: ReturnType<typeof readWorkflowExecutableContentFile>;
+    try {
+      asset = readWorkflowExecutableContentFile(run.execution.contentLocation.path);
+    } catch {
+      throw new Error('WORKFLOW_RUN_EXECUTION_SNAPSHOT_CONTENT_UNAVAILABLE');
+    }
     if (asset.schemaVersion !== 2) throw new Error('WORKFLOW_DUE_RESUME_GRAPH_REQUIRED');
     if (
       asset.workflowId !== run.workflowId ||
