@@ -157,9 +157,18 @@ final class ForgeClientLayoutTests: XCTestCase {
       contentsOf: packageRoot.appendingPathComponent("Sources/ForgeNative/ForgeClientDesign.swift"),
       encoding: .utf8
     )
+    let agentSource = try String(
+      contentsOf: packageRoot.appendingPathComponent("Sources/ForgeNative/AgentWorkbenchViews.swift"),
+      encoding: .utf8
+    )
     XCTAssertTrue(appSource.contains(".preferredColorScheme(.dark)"))
     XCTAssertTrue(appSource.contains(".forgeTransparentWindowContainer()"))
     XCTAssertTrue(designSource.contains("containerBackground(.clear, for: .window)"))
+    XCTAssertTrue(
+      agentSource.contains(
+        ".scrollIndicators(.automatic)\n                .scrollContentBackground(.hidden)\n                .background {"
+      )
+    )
     XCTAssertTrue(designSource.contains("static let windowTint = Color.black.opacity(0.18)"))
     XCTAssertTrue(designSource.contains("static let sidePanel = Color.black.opacity(0.10)"))
     XCTAssertTrue(designSource.contains("window.appearance = NSAppearance(named: .darkAqua)"))

@@ -864,6 +864,7 @@ struct AgentPane: View {
                     }
                 }
                 .scrollIndicators(.automatic)
+                .scrollContentBackground(.hidden)
                 .background {
                     GeometryReader { viewport in
                         Color.clear
