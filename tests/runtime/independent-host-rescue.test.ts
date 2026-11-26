@@ -76,6 +76,7 @@ describe('independent Windows/WSL host rescue', () => {
 
   test('binds the loopback Connector to Secure Tunnel authorization', () => {
     const migration = readFileSync(resolve(import.meta.dir, '../../scripts/migrate-windows-wsl-controller-home.ts'), 'utf8');
+    const installer = readFileSync(resolve(import.meta.dir, '../../scripts/install-independent-windows-wsl-recovery.ts'), 'utf8');
     const rescue = readFileSync(resolve(import.meta.dir, '../../assets/recovery/forge-wsl-rescue'), 'utf8');
     expect(migration).toContain("'--auth', 'none'");
     expect(migration).toContain("externalAuthorization: 'openai-secure-tunnel'");
@@ -87,5 +88,7 @@ describe('independent Windows/WSL host rescue', () => {
     expect(rescue).toContain('TUNNEL_RECONNECT_COOLDOWN_SECONDS=180');
     expect(rescue).toContain('elif ! tunnel_control_plane_ready; then');
     expect(rescue).toContain('reconnect_stale_tunnel_if_due || status=1');
+    expect(installer).toContain("!stageOnly && !process.argv.includes('--skip-windows-logon-task')");
+    expect(installer).toContain("'task_install'");
   });
 });
