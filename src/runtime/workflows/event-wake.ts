@@ -1,3 +1,9 @@
+import { createHash } from 'crypto';
+import {
+  eventEnvelopeDeduplicationKey,
+  validateEventEnvelopeV1,
+  type EventEnvelopeV1,
+} from '../../../packages/kernel/events';
 import type { WorkflowJsonValue } from '../../../packages/workflow-runtime/api/index';
 import { resolveWorkflowGraphWait } from '../../../packages/workflow-runtime/api/index';
 import { executionIdentityForRepository } from '../control-plane/execution/execution-identity';
@@ -19,7 +25,35 @@ export interface WorkflowGraphEventSignal {
   correlationKey: string;
   occurredAt?: string;
   receivedAt: string;
+  provider?: string;
+  causationId?: string;
+  idempotencyKey?: string;
+  receiptRef?: string;
+  scope?: EventEnvelopeV1['scope'];
+  subject?: EventEnvelopeV1['subject'];
+  payloadRef?: EventEnvelopeV1['payloadRef'];
   payload?: Record<string, WorkflowJsonValue>;
+}
+
+export function workflowGraphEventSignalFromEnvelope(envelope: EventEnvelopeV1): WorkflowGraphEventSignal {
+  const valid = validateEventEnvelopeV1(envelope);
+  if (!valid.correlationId) throw new Error('WORKFLOW_EVENT_ENVELOPE_CORRELATION_REQUIRED');
+  const dedupe = eventEnvelopeDeduplicationKey(valid);
+  return {
+    eventId: valid.eventId,
+    source: valid.source,
+    eventType: valid.eventType,
+    correlationKey: valid.correlationId,
+    occurredAt: valid.occurredAt,
+    receivedAt: valid.receivedAt,
+    provider: valid.provider,
+    ...(valid.causationId ? { causationId: valid.causationId } : {}),
+    idempotencyKey: valid.idempotencyKey,
+    receiptRef: `event-envelope-${createHash('sha256').update(dedupe).digest('hex')}`,
+    scope: structuredClone(valid.scope),
+    subject: structuredClone(valid.subject),
+    payloadRef: structuredClone(valid.payloadRef),
+  };
 }
 
 export interface WorkflowGraphEventWaitMatch {
@@ -133,8 +167,7 @@ export async function resumeWorkflowGraphEventWait(
   const state = run.value.nodes.find((node) => node.nodeId === match.nodeId);
   const definition = asset.nodes.find((node) => node.nodeId === match.nodeId);
   if (
-    !state ||
-    state.status !== 'waiting' ||
+    state?.status !== 'waiting' ||
     state.wait?.kind !== 'event' ||
     state.wait.correlationKey !== signal.correlationKey ||
     !definition ||
@@ -165,9 +198,15 @@ export async function resumeWorkflowGraphEventWait(
         correlationKey: signal.correlationKey,
         receivedAt: signal.receivedAt,
         ...(signal.occurredAt ? { occurredAt: signal.occurredAt } : {}),
+        ...(signal.provider ? { provider: signal.provider } : {}),
+        ...(signal.causationId ? { causationId: signal.causationId } : {}),
+        ...(signal.idempotencyKey ? { idempotencyKey: signal.idempotencyKey } : {}),
+        ...(signal.scope ? { scope: structuredClone(signal.scope) } : {}),
+        ...(signal.subject ? { subject: structuredClone(signal.subject) } : {}),
+        ...(signal.payloadRef ? { payloadRef: structuredClone(signal.payloadRef) } : {}),
         ...(signal.payload ? { payload: structuredClone(signal.payload) } : {}),
       },
-      receiptRef: signal.eventId,
+      receiptRef: signal.receiptRef ?? signal.eventId,
       recordedAt: signal.receivedAt,
     },
     run.value.inputs,

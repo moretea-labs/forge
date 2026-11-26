@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createEventEnvelope } from '../../packages/kernel/events';
 import type { WorkflowGraphAssetDraft } from '../../packages/workflow-runtime/api/index';
 import { writeWorkflowGraphAssetContent } from '../../src/runtime/control-plane/persistence/workflow-content-store';
 import {
@@ -13,7 +14,11 @@ import { readWorkflowGraphRun } from '../../src/runtime/control-plane/persistenc
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { executeRegisteredWorkflowGraph } from '../../src/runtime/workflows/graph-runtime';
-import { findWorkflowGraphEventWaits, resumeWorkflowGraphEventWait } from '../../src/runtime/workflows/event-wake';
+import {
+  findWorkflowGraphEventWaits,
+  resumeWorkflowGraphEventWait,
+  workflowGraphEventSignalFromEnvelope,
+} from '../../src/runtime/workflows/event-wake';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -97,6 +102,47 @@ const signal = {
 };
 
 describe('Workflow Graph durable event wake', () => {
+  test('adapts the unified Event Envelope into correlation/causation/idempotent wait identity', () => {
+    const envelope = createEventEnvelope({
+      eventId: 'reply-delivery-1',
+      source: 'agentmail.watch',
+      provider: 'agentmail',
+      eventType: 'mail.reply',
+      occurredAt: '2026-11-26T00:00:10.000Z',
+      receivedAt: '2026-11-26T00:00:11.000Z',
+      scope: { kind: 'account', id: 'mailbox-1' },
+      subject: { kind: 'mail.message', id: 'case-1' },
+      correlationId: 'case-1',
+      causationId: 'mail:original:1',
+      idempotencyKey: 'reply-provider-id-1',
+      payloadRef: {
+        store: 'provider',
+        key: 'agentmail://reply/1',
+        mediaType: 'application/json',
+        schemaVersion: 1,
+        digest: { algorithm: 'sha256', value: 'b'.repeat(64), bytes: 12 },
+      },
+    });
+    const mapped = workflowGraphEventSignalFromEnvelope(envelope);
+    expect(mapped).toMatchObject({
+      eventId: 'reply-delivery-1',
+      source: 'agentmail.watch',
+      eventType: 'mail.reply',
+      correlationKey: 'case-1',
+      provider: 'agentmail',
+      causationId: 'mail:original:1',
+      idempotencyKey: 'reply-provider-id-1',
+      scope: { kind: 'account', id: 'mailbox-1' },
+      subject: { kind: 'mail.message', id: 'case-1' },
+    });
+    expect(mapped.receiptRef).toMatch(/^event-envelope-[a-f0-9]{64}$/);
+    expect(workflowGraphEventSignalFromEnvelope({ ...envelope, eventId: 'reply-delivery-retry' }).receiptRef).toBe(
+      mapped.receiptRef,
+    );
+    expect(() => workflowGraphEventSignalFromEnvelope({ ...envelope, correlationId: undefined })).toThrow(
+      'WORKFLOW_EVENT_ENVELOPE_CORRELATION_REQUIRED',
+    );
+  });
   test('discovers matching waits directly from workflow_run without a second subscription ledger', async () => {
     const h = home();
     await waiting(h);

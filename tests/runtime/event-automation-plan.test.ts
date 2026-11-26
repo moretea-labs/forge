@@ -23,7 +23,11 @@ import {
   readAuthorizationRequest,
   resolveAuthorizationRequest,
 } from '../../src/runtime/control-plane/governance/authorization';
-import { findWorkflowGraphEventWaits, resumeWorkflowGraphEventWait } from '../../src/runtime/workflows/event-wake';
+import {
+  findWorkflowGraphEventWaits,
+  resumeWorkflowGraphEventWait,
+  workflowGraphEventSignalFromEnvelope,
+} from '../../src/runtime/workflows/event-wake';
 import type { WorkflowGraphRuntimeDependencies } from '../../src/runtime/workflows/graph-runtime';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { createModelProfile } from '../../src/runtime/models/model-profile-store';
@@ -327,18 +331,34 @@ describe('Event Automation Plan', () => {
     });
 
     now = '2026-11-25T10:00:20.000Z';
-    const replySignal = {
+    const replyEnvelope = createEventEnvelope({
       eventId: 'mail:reply:1',
       source: 'agentmail.watch',
+      provider: 'agentmail',
       eventType: 'mail.reply',
-      correlationKey: 'm1',
       occurredAt: '2026-11-25T10:00:19.000Z',
       receivedAt: now,
-    };
+      scope: { kind: 'account', id: 'a1' },
+      subject: { kind: 'mail.message', id: 'm1' },
+      correlationId: 'm1',
+      causationId: event.eventId,
+      idempotencyKey: 'mail-reply-1',
+      payloadRef: {
+        store: 'provider',
+        key: 'agentmail://reply-events/1',
+        mediaType: 'application/json',
+        schemaVersion: 1,
+        digest: { algorithm: 'sha256', value: 'c'.repeat(64), bytes: 12 },
+      },
+    });
+    const replySignal = workflowGraphEventSignalFromEnvelope(replyEnvelope);
     const [waitMatch] = findWorkflowGraphEventWaits(h, replySignal);
     expect(waitMatch).toMatchObject({ runId: started.runId, nodeId: 'reply' });
     const approvalWaiting = await resumeWorkflowGraphEventWait(h, waitMatch!, replySignal, graphDependencies);
     expect(approvalWaiting.status).toBe('waiting');
+    expect(approvalWaiting.nodes.find((node) => node.nodeId === 'reply')?.receipts.at(-1)?.receiptRef).toBe(
+      replySignal.receiptRef,
+    );
     const approvalState = approvalWaiting.nodes.find((node) => node.nodeId === 'approve');
     const requestRef = approvalState?.wait?.kind === 'approval' ? approvalState.wait.requestRef : undefined;
     expect(requestRef).toBeDefined();
