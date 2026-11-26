@@ -2607,8 +2607,17 @@ final class NativeWorkspaceTests: XCTestCase {
             "concepts": ["authority"], "facets": ["architecture"], "confidence": 0.9,
             "scope": ["kind": "project", "id": "repo-a"],
             "provenance": ["sourceKind": "learning", "recordedAt": "2026-11-07T00:00:00Z"],
-          ]
-        ]
+          ],
+          "activation": ["score": 0.4],
+        ],
+        [
+          "memory": [
+            "id": "mem-b", "revision": 1, "canonicalText": "Prefer the relevant memory",
+            "concepts": ["relevance"], "facets": ["search"], "confidence": 1.0,
+            "scope": ["kind": "workspace", "id": "workspace-personal"],
+          ],
+          "activation": ["score": 2.5],
+        ],
       ],
       "inspected": 4, "truncated": false, "gaps": [],
     ])
@@ -2617,6 +2626,9 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(result?.inspected, 4)
     XCTAssertEqual(result?.items.first?.memory.canonicalText, "Keep one authority")
     XCTAssertEqual(result?.items.first?.memory.scope.kind, "project")
+    XCTAssertEqual(result?.items.first?.activation?.score, 0.4)
+    XCTAssertEqual(result?.rankedItems(query: "").first?.memory.id, "mem-a")
+    XCTAssertEqual(result?.rankedItems(query: "App Store Connect").first?.memory.id, "mem-b")
   }
 
   func testSavedApiProfileProjectionAndBridgeBoundary() {

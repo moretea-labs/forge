@@ -111,9 +111,10 @@ struct ForgeSemanticProjectDetail: Decodable, Equatable {
       var stack: [(ForgeProjectRequirementSummary, Int)] = [(root, 0)]
       while let (task, depth) = stack.popLast() {
         guard visited.insert(task.id).inserted else { continue }
-        rows.append(ForgeProjectTaskTreeRow(
-          task: task, depth: depth, parentUnavailable: depth == 0 && parentUnavailable
-        ))
+        rows.append(
+          ForgeProjectTaskTreeRow(
+            task: task, depth: depth, parentUnavailable: depth == 0 && parentUnavailable
+          ))
         for child in (children[task.id] ?? []).reversed() {
           stack.append((child, depth + 1))
         }
@@ -128,7 +129,6 @@ struct ForgeSemanticProjectDetail: Decodable, Equatable {
     }
     return rows
   }
-
 
   func appending(_ page: ForgeSemanticProjectDetail) -> ForgeSemanticProjectDetail {
     var seen = Set(requirements.map(\.requirementId))
@@ -873,9 +873,14 @@ struct KnowledgeMemoryDetail: Codable, Identifiable {
   let provenance: KnowledgeProvenanceDetail?
 }
 
+struct KnowledgeActivationDetail: Codable {
+  let score: Double
+}
+
 struct KnowledgeItemDetail: Codable {
   let memory: KnowledgeMemoryDetail
   let recentUsage: KnowledgeRecallUsageDetail?
+  let activation: KnowledgeActivationDetail?
 }
 
 struct KnowledgeAuditDetail: Codable {
@@ -886,6 +891,16 @@ struct KnowledgeAuditDetail: Codable {
   let inspected: Int
   let truncated: Bool
   let gaps: [String]
+
+  func rankedItems(query: String) -> [KnowledgeItemDetail] {
+    guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return items }
+    return items.enumerated().sorted { left, right in
+      let leftScore = left.element.activation?.score ?? -Double.greatestFiniteMagnitude
+      let rightScore = right.element.activation?.score ?? -Double.greatestFiniteMagnitude
+      if leftScore == rightScore { return left.offset < right.offset }
+      return leftScore > rightScore
+    }.map(\.element)
+  }
 }
 
 struct KnowledgeRecallItemDetail: Codable {
@@ -5249,16 +5264,19 @@ final class NativeWorkspace: ObservableObject {
     do {
       // Read canonical hierarchy immediately before mutation. The store owns
       // the atomic root CAS; a stale Client must not silently create a sibling.
-      let fresh = try Self.decodeSemanticProject(await ForgeBridge.request(
-        "project_get", ["projectId": projectId, "detailLevel": "summary"]
-      ))
+      let fresh = try Self.decodeSemanticProject(
+        await ForgeBridge.request(
+          "project_get", ["projectId": projectId, "detailLevel": "summary"]
+        ))
       guard self.selectedProjectId == projectId, self.projectRepositoryId == targetRepoId,
-        self.projectContextGeneration == targetContextGeneration, self.checkoutId == targetCheckoutId
+        self.projectContextGeneration == targetContextGeneration,
+        self.checkoutId == targetCheckoutId
       else { return nil }
       guard fresh.projectId == projectId,
         Self.projectDetailRequirementScopeIsValid(project: fresh, repositoryId: targetRepoId),
         let hierarchy = Self.requirementCreationHierarchy(
-          project: fresh, parentRequirementId: parentRequirementId, createProjectRoot: createProjectRoot
+          project: fresh, parentRequirementId: parentRequirementId,
+          createProjectRoot: createProjectRoot
         )
       else {
         error = "项目根任务或上级任务状态已变化，请刷新项目后重试。"

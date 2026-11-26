@@ -2999,7 +2999,7 @@ struct KnowledgePane: View {
     }
 
     private var knowledgeItems:[KnowledgeItemDetail] {
-        model.knowledgeResult?.items ?? []
+        model.knowledgeResult?.rankedItems(query:model.knowledgeQuery) ?? []
     }
 
     private var memories:[KnowledgeMemoryDetail] {
