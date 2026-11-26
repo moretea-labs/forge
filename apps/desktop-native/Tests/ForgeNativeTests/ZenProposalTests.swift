@@ -363,7 +363,7 @@ final class ZenProposalTests: XCTestCase {
         XCTAssertNil(providerUnavailablePending.nextExecutionOperation())
         let activeProcessPending=try status("running",active:true,pendingProcessId:"proc-active")
         XCTAssertEqual(activeProcessPending.nextExecutionOperation(),"pause")
-        XCTAssertEqual(ZenWorkspacePane.executionLabel(operation:"resume",runStatus:"running"),"恢复执行")
+        XCTAssertEqual(ZenWorkspacePane.executionLabel(operation:"resume",runStatus:"running"),"恢复推进")
         XCTAssertEqual(ZenWorkspacePane.executionOperation(status:try status("running",active:true),outcomeUnknown:false),"pause")
         XCTAssertEqual(ZenWorkspacePane.executionOperation(status:try status("paused"),outcomeUnknown:false),"resume")
         XCTAssertEqual(ZenWorkspacePane.executionOperation(status:try status("failed"),outcomeUnknown:false),"resume")
@@ -391,6 +391,44 @@ final class ZenProposalTests: XCTestCase {
         XCTAssertEqual(stale.nextExecutionOperation(),"authorize")
         XCTAssertNil(ZenWorkspacePane.executionOperation(status:detached,outcomeUnknown:true))
         XCTAssertNil(ZenWorkspacePane.executionOperation(status:nil,outcomeUnknown:false))
+
+        let live = try XCTUnwrap(NativeWorkspace.autopilotStatusDetail(["data":[
+            "run":[
+                "status":"running",
+                "usage":["turns":3,"toolCalls":8,"totalTokens":12400]
+            ],
+            "policy":["maxTurns":12,"maxToolCalls":32,"maxTotalTokens":50000],
+            "runtimeActive":true,
+            "providerReady":true,
+            "grant":["grantId":"grant-live"]
+        ]]))
+        XCTAssertEqual(ZenWorkspacePane.executionStageLabel(live),"独立 Agent Loop 推进中")
+        XCTAssertEqual(
+            ZenWorkspacePane.executionLoopSummary(live),
+            "轮次 3/12 · 工具 8/32 · Token 12400/50000"
+        )
+        XCTAssertEqual(
+            ZenWorkspacePane.executionLabel(operation:"authorize",runStatus:nil),
+            "批准并开始推进"
+        )
+        XCTAssertEqual(
+            ZenWorkspacePane.executionLabel(operation:"pause",runStatus:"running"),
+            "暂停推进"
+        )
+        XCTAssertEqual(
+            ZenWorkspacePane.executionLabel(operation:"resume",runStatus:"paused"),
+            "继续推进"
+        )
+
+        let completed = try status("completed",reason:"complete")
+        XCTAssertEqual(ZenWorkspacePane.executionStageLabel(completed),"本轮实现完成")
+        XCTAssertNil(ZenWorkspacePane.executionStopReasonLabel(completed))
+        let checkpoint = try status("paused",reason:"human_checkpoint:PLAN-a")
+        XCTAssertEqual(ZenWorkspacePane.executionStageLabel(checkpoint),"等待检查点验收")
+        XCTAssertEqual(
+            ZenWorkspacePane.executionStopReasonLabel(checkpoint),
+            "已到达人工检查点，验收后会在同一个 Run 中继续。"
+        )
     }
 
     @MainActor

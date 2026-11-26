@@ -381,11 +381,70 @@ struct ZenWorkspacePane: View {
     ) -> String {
         if operation == "resume" && hasPendingProcessRecovery { return "核对并恢复" }
         switch operation {
-        case "authorize": return needsBudgetRenewal ? "续期预算" : "批准执行"
+        case "authorize": return needsBudgetRenewal ? "续期预算" : "批准并开始推进"
         case "accept_checkpoint": return "验收检查点"
-        case "pause": return "暂停执行"
-        case "resume": return runStatus == "running" ? "恢复执行" : "继续执行"
-        default: return "开始执行"
+        case "pause": return "暂停推进"
+        case "resume": return runStatus == "running" ? "恢复推进" : "继续推进"
+        default: return "开始推进"
+        }
+    }
+
+    static func executionStageLabel(_ status:AutopilotStatusDetail) -> String {
+        if status.hasPendingProcessRecovery { return "等待原命令回执" }
+        if status.requiresReapproval { return "Requirement 已修订 · 等待重新批准" }
+        if status.checkpointPlanId != nil { return "等待检查点验收" }
+        switch status.runStatus {
+        case "running":
+            return status.runtimeActive ? "独立 Agent Loop 推进中" : "运行未激活 · 等待恢复"
+        case "paused":
+            return status.needsBudgetRenewal ? "本轮预算已用完" : "已暂停"
+        case "blocked": return "推进受阻"
+        case "failed": return "推进失败"
+        case "completed": return "本轮实现完成"
+        case "cancelled": return "推进已取消"
+        default:
+            return status.authorized ? "已批准 · 等待开始" : "只读精化 · 等待批准推进"
+        }
+    }
+
+    static func executionLoopSummary(_ status:AutopilotStatusDetail) -> String? {
+        var parts:[String] = []
+        if let maximum=status.maxTurns {
+            parts.append("轮次 \(status.turns)/\(maximum)")
+        } else if status.turns > 0 {
+            parts.append("轮次 \(status.turns)")
+        }
+        if let maximum=status.maxToolCalls {
+            parts.append("工具 \(status.toolCalls)/\(maximum)")
+        } else if status.toolCalls > 0 {
+            parts.append("工具 \(status.toolCalls)")
+        }
+        if let maximum=status.maxTotalTokens {
+            parts.append("Token \(status.totalTokens)/\(maximum)")
+        } else if status.totalTokens > 0 {
+            parts.append("Token \(status.totalTokens)")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator:" · ")
+    }
+
+    static func executionStopReasonLabel(_ status:AutopilotStatusDetail) -> String? {
+        guard let reason=status.stopReason,!reason.isEmpty else { return nil }
+        if reason.hasPrefix("human_checkpoint:") {
+            return "已到达人工检查点，验收后会在同一个 Run 中继续。"
+        }
+        if reason.hasPrefix("requirement_revision_changed:") {
+            return "Requirement 已发生修订，需要按最新 revision 重新批准。"
+        }
+        switch reason {
+        case "max_total_tokens_reached": return "已达到本轮 Token 预算，续期后可继续推进。"
+        case "max_turns_reached": return "已达到本轮 Agent 轮次预算，续期后可继续推进。"
+        case "max_tool_calls_reached": return "已达到本轮工具调用预算，续期后可继续推进。"
+        case "paused_by_user": return "已由你暂停；Runtime 保留当前 Run，可继续推进。"
+        case "authorization_invalid": return "执行授权已失效，需要重新批准。"
+        case "requirement_missing": return "Requirement 已不可用，推进已停止。"
+        case "complete": return nil
+        case "blocked": return "Agent 判断当前工作受阻，请查看上方摘要和证据。"
+        default: return reason
         }
     }
 
@@ -1940,8 +1999,13 @@ struct ZenWorkspacePane: View {
     private func zenExecutionSection(_ item:ForgeRecord) -> some View {
         Divider()
         VStack(alignment:.leading,spacing:10) {
-            HStack {
-                Text("自主执行").font(.system(size:12,weight:.semibold))
+            HStack(alignment:.firstTextBaseline) {
+                VStack(alignment:.leading,spacing:2) {
+                    Text("需求推进").font(.system(size:12,weight:.semibold))
+                    Text("Forge Autopilot · 独立 Agent Loop")
+                        .font(.system(size:10))
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 if model.autopilotLoading { ProgressView().controlSize(.small) }
             }
@@ -1950,20 +2014,31 @@ struct ZenWorkspacePane: View {
                     Circle()
                         .fill(status.runtimeActive ? Color.accentColor : Color.secondary.opacity(0.55))
                         .frame(width:6,height:6)
-                    Text(status.runStatus == "running" && !status.runtimeActive
-                         ? "运行未激活" : (status.runStatus ?? "未开始")).font(.system(size:11))
+                    Text(Self.executionStageLabel(status))
+                        .font(.system(size:11,weight:.medium))
+                        .foregroundStyle(status.runStatus == "failed" ? Color.red : Color.secondary)
+                }
+                if let loopSummary=Self.executionLoopSummary(status) {
+                    Text(loopSummary)
+                        .font(.system(size:10,design:.monospaced))
                         .foregroundStyle(.secondary)
-                    if status.requiresReapproval {
-                        Text("需求已修订，需重新批准").font(.system(size:10))
-                            .foregroundStyle(.orange)
-                    }
+                        .accessibilityIdentifier("zen.execution.loop-metrics")
+                }
+                if status.runStatus == "completed" {
+                    Label("本轮实现已完成；Requirement 仍需按验收标准与证据确认后才能完成。",
+                          systemImage:"checkmark.circle")
+                        .font(.system(size:10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal:false,vertical:true)
+                        .accessibilityIdentifier("zen.execution.requirement-still-open")
                 }
                 if let summary=status.lastSummary,!summary.isEmpty {
                     Text(summary).font(.system(size:11)).textSelection(.enabled)
                 }
-                if let reason=status.stopReason,!reason.isEmpty {
+                if let reason=Self.executionStopReasonLabel(status) {
                     Text(reason).font(.system(size:10))
                         .foregroundStyle(.secondary).textSelection(.enabled)
+                        .help(status.stopReason ?? reason)
                 }
                 if let processId=status.pendingProcessId {
                     Label("等待 Process 终态回执",systemImage:"hourglass")
@@ -1986,12 +2061,14 @@ struct ZenWorkspacePane: View {
                         .foregroundStyle(.secondary)
                 }
                 if !status.hasPendingProcessRecovery && (!status.authorized || status.requiresReapproval) {
-                    Label("需要批准执行",systemImage:"lock")
+                    Label("需要明确批准后才能进入独立推进",systemImage:"lock")
                         .font(.system(size:10)).foregroundStyle(.secondary)
                 }
             } else {
-                Text("尚未读取到执行状态。").font(.system(size:11))
+                Text("先在 Zen 中只读精化 Requirement / Plan；明确批准后，Runtime 会以独立 Agent Loop 持续推进，关闭 Client 也不会把当前 Run 当作完成或重新执行。")
+                    .font(.system(size:10))
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal:false,vertical:true)
             }
             if model.autopilotOutcomeUnknown(for:item.recordId) {
                 Text("操作结果未确认。请先刷新执行状态，不要重复提交。")
