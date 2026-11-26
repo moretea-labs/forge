@@ -81,5 +81,11 @@ describe('independent Windows/WSL host rescue', () => {
     expect(migration).toContain("externalAuthorization: 'openai-secure-tunnel'");
     expect(migration).toContain('Description=Forge ChatGPT Secure Tunnel Gateway');
     expect(rescue).toContain('"method":"initialize"');
+    expect(rescue).toContain('health --json');
+    expect(rescue).toContain('--require-control-plane-poll');
+    expect(rescue).toContain('timeout --kill-after=2s 8s');
+    expect(rescue).toContain('TUNNEL_RECONNECT_COOLDOWN_SECONDS=180');
+    expect(rescue).toContain('elif ! tunnel_control_plane_ready; then');
+    expect(rescue).toContain('reconnect_stale_tunnel_if_due || status=1');
   });
 });
