@@ -142,6 +142,26 @@ function productionTypeScriptFiles() {
   ].sort();
 }
 
+// #483 terminal invariant: retired semantic Work APIs cannot return anywhere
+// in production TypeScript. Historical field names remain temporarily readable
+// only inside the explicit one-time offline retirement transformer; once the
+// production migration is accepted, deleting that transformer makes this
+// inventory naturally converge to zero.
+for (const path of productionTypeScriptFiles()) {
+  forbid(
+    path,
+    /\b(?:WorkHandle|WorkContract|rh_work)\b/,
+    'retired Work/WorkHandle/WorkContract API vocabulary must not return in production source (#483)',
+  );
+  if (path !== 'src/runtime/control-plane/persistence/work-reference-retirement.ts') {
+    forbid(
+      path,
+      /\b(?:activeWorkId|sourceWorkId|originWorkId|predecessorWorkId|successorWorkId|workHandleId|workContractId)\b/,
+      'retired Work identity fields may exist only in the one-time offline retirement transformer (#483)',
+    );
+  }
+}
+
 let typeScriptCompiler;
 let typeScriptCompilerLoadAttempted = false;
 function loadTypeScriptCompiler() {
@@ -902,7 +922,6 @@ const required = [
   'src/runtime/evidence/event-ledger.ts',
   'src/runtime/evidence/artifact-store.ts',
   'src/runtime/projections/materialized-view.ts',
-  'src/runtime/projections/task-ledger-types.ts',
   'src/runtime/projections/git-status-sampler.ts',
   'src/runtime/projections/controller-context.ts',
   'src/runtime/projections/invalidation.ts',
@@ -1782,8 +1801,7 @@ requireText(
   'src/runtime/projections/materialized-view.ts',
   'currentOwner.runtimeInstanceId !== owner.runtimeInstanceId',
 );
-requireText('src/runtime/projections/task-ledger-types.ts', 'export interface TaskLedgerProjection');
-requireText('src/runtime/projections/task-ledger-types.ts', 'TASK_LEDGER_SCHEMA_VERSION');
+requireMissing('src/runtime/projections/task-ledger-types.ts');
 requireText('src/core/repository-command/normalization.ts', 'export interface CanonicalRepositoryCommand');
 requireText('src/core/repository-command/normalization.ts', 'export function normalizeRepositoryCommand');
 requireMissing('src/cli/repositories/command-normalization.ts');
@@ -2894,16 +2912,7 @@ forbid(
   /scheduleOwnsWork|\bworkId\b/,
   'current Scheduler domain must not expose Work ownership in ScheduleResourceClaim or helper APIs',
 );
-forbid(
-  'src/cli/controller/task-ledger.ts',
-  /active_work|Work in progress/,
-  'current TaskLedger schema must use Run terminology, not first-class Work terminology',
-);
-forbid(
-  'src/cli/controller/task-ledger.ts',
-  /export interface TaskLedgerProjection|export type TaskLedgerStatusKind/,
-  'TaskLedger projection schema must be owned by Runtime projections, not the CLI builder',
-);
+requireMissing('src/cli/controller/task-ledger.ts');
 forbid(
   'src/runtime/evidence/result-store.ts',
   /writeControllerResult\([\s\S]{0,500}\bworkId\??:|readControllerResult\([\s\S]{0,500}\bworkId\??:|searchControllerResult\([\s\S]{0,500}\bworkId\??:/,

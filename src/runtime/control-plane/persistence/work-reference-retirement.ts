@@ -1,4 +1,12 @@
-import type { SqliteDatabase } from './sqlite-store';
+interface RetirementStatement {
+  all(...parameters: unknown[]): unknown[];
+  run(...parameters: unknown[]): unknown;
+  finalize?(): void;
+}
+
+interface RetirementDatabase {
+  prepare(sql: string): RetirementStatement;
+}
 
 // #483: only these historically observed namespace/schema/path combinations
 // are retired. Native session, Plan, Process and effect facts stay in their
@@ -38,7 +46,7 @@ interface Candidate {
   path: string;
 }
 
-function candidates(database: SqliteDatabase): Candidate[] {
+function candidates(database: RetirementDatabase): Candidate[] {
   const statement = database.prepare(CANDIDATE_SQL);
   try {
     return statement.all() as Candidate[];
@@ -48,7 +56,7 @@ function candidates(database: SqliteDatabase): Candidate[] {
 }
 
 /** Only called on an exclusive, disposable backup copy inside its transaction. */
-export function removeRetiredWorkReferences(database: SqliteDatabase): { recordCount: number; fieldCount: number } {
+export function removeRetiredWorkReferences(database: RetirementDatabase): { recordCount: number; fieldCount: number } {
   const found = candidates(database);
   const pathsByRow = new Map<number, string[]>();
   // Validate the entire inventory before modifying even one record.

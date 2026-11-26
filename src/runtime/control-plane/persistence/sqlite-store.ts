@@ -146,8 +146,8 @@ export const REBUILDABLE_RECORD_AUDIT_NAMESPACES = [
 
 /**
  * Global namespaces removed from the current Forge runtime. They are not
- * compatibility authorities: keeping their rows would preserve the retired
- * Work/WorkHandle ledger that #483 explicitly removed.
+ * compatibility authorities: keeping their rows would preserve a retired
+ * semantic execution ledger that #483 explicitly removed.
  */
 export const RETIRED_CONTROL_PLANE_NAMESPACES = [
   'execution_work_handle',
