@@ -47,7 +47,10 @@ import {
 } from '../../../src/runtime/control-plane/facade';
 import { readForgeInstanceIdentity, type ScopeRef } from '../../../packages/kernel/identity/api/index';
 import { memoryAddressKey } from '../../../packages/kernel/cognition/api/index';
-import { resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
+import {
+  DEFAULT_PERSONAL_WORKSPACE_ID,
+  resolveProjectForRepositoryPlacement,
+} from '../../../src/runtime/control-plane/workspace/workspace-store';
 import {
   activateCognitiveMemory,
   auditCognitiveMemory,
@@ -97,7 +100,12 @@ function rhContextKnowledgeScopes(
     repositoryId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
   });
-  if (!project) return { scopes: [], gaps: ['project_placement_unavailable'] };
+  if (!project) {
+    return {
+      scopes: [{ schemaVersion: 1, kind: 'workspace', id: DEFAULT_PERSONAL_WORKSPACE_ID }],
+      gaps: ['project_placement_unavailable'],
+    };
+  }
   return {
     projectId: project.projectId,
     scopes: [

@@ -4,7 +4,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { WorkflowPublicationReceipt } from '../../packages/workflow-runtime/api/index';
-import { memoryAddressKey } from '../../packages/kernel/cognition/api/index';
+import {
+  memoryAddressKey,
+  recordCognitiveMemory,
+  type CognitiveWriteAuthorityPort,
+} from '../../packages/kernel/cognition/api/index';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { ensureControllerHome } from '../../src/effects/controller-home';
@@ -20,10 +24,11 @@ import {
   schedulePublicationOutcomeCollection,
 } from '../../src/runtime/root/assistant-learning-loop';
 import { parseControllerLearningSignalDrafts } from '../../src/runtime/context/automatic-learning';
-import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
+import { cognitionMemoryStore, cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import {
+  DEFAULT_PERSONAL_WORKSPACE_ID,
   writeProjectIdentity,
   writeProjectPlacement,
   writeWorkspaceIdentity,
@@ -145,6 +150,99 @@ function verificationRecord(
 }
 
 describe('connected assistant learning loops', () => {
+  test('recalls portable personal-workspace memory without requiring Project placement', async () => {
+    const fx = fixture('unplaced-portable-recall');
+    const unplacedRoot = join(fx.controllerHome, '..', 'unplaced-repo');
+    mkdirSync(unplacedRoot, { recursive: true });
+    writeFileSync(join(unplacedRoot, 'README.md'), 'unplaced portable recall fixture\n');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: unplacedRoot });
+    execFileSync('git', ['config', 'user.email', 'learning-loop@example.test'], { cwd: unplacedRoot });
+    execFileSync('git', ['config', 'user.name', 'Learning Loop Test'], { cwd: unplacedRoot });
+    execFileSync('git', ['add', '.'], { cwd: unplacedRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: unplacedRoot });
+    const unplacedRepository = registerRepository({
+      path: unplacedRoot,
+      controllerHome: fx.controllerHome,
+      displayName: 'Unplaced Portable Recall',
+    });
+    writeWorkspaceIdentity({
+      controllerHome: fx.controllerHome,
+      value: { workspaceId: DEFAULT_PERSONAL_WORKSPACE_ID, title: 'Personal workspace' },
+    });
+    const scope = {
+      schemaVersion: 1 as const,
+      kind: 'workspace' as const,
+      id: DEFAULT_PERSONAL_WORKSPACE_ID,
+    };
+    const authority: CognitiveWriteAuthorityPort = {
+      assertMemoryWrite: () => undefined,
+      assertEdgeWrite: () => undefined,
+      evidenceAvailable: () => true,
+    };
+    recordCognitiveMemory(cognitionMemoryStore(fx.controllerHome), authority, {
+      id: 'portable:asc-mail-source',
+      scope,
+      facets: ['mail-source', 'portable-guidance', 'portability.portable'],
+      canonicalText:
+        'For App Store Connect notifications and case emails, consider QQ Mail as a relevant user-provided mail source without assuming any account connection, address, sync state, or message contents.',
+      concepts: ['app-store-connect', 'qq-mail', 'apple-email-source'],
+      provenance: {
+        sourceKind: 'external',
+        sourceId: 'explicit-human:portable-mail-source',
+        recordedAt: time(0),
+        evidenceRefs: [],
+      },
+      confidence: 1,
+      utility: 0.95,
+      tier: 'warm',
+      validFrom: time(0),
+      counterEvidenceRefs: [],
+    });
+
+    const ctx = {
+      controllerHome: fx.controllerHome,
+      repoRoot: unplacedRoot,
+      explicitRepository: unplacedRepository,
+      repositoryAccess: { list: listRepositories, resolve: resolveRepositorySelection },
+      repoId: unplacedRepository.repoId,
+      checkoutId: unplacedRepository.activeCheckoutId,
+      principalId: 'chatgpt-unplaced-recall',
+      sessionId: 'session-unplaced-recall',
+      controllerInstanceId: 'instance-unplaced-recall',
+      controllerType: 'chatgpt' as const,
+      policy: getToolPolicy('controller', { repoRoot: unplacedRoot }),
+      toolset: 'full',
+    } as unknown as MultiRepositoryMcpToolContext;
+
+    const recalled = await callRuntimeTool(ctx, 'rh_context', {
+      repo_id: unplacedRepository.repoId,
+      operation: 'get',
+      query:
+        'Which previously known mail source should be considered when investigating an App Store Connect notification or case email?',
+      detail_level: 'summary',
+    });
+    expect(recalled?.isError).not.toBe(true);
+    const payload = recalled?.structuredContent as {
+      data: {
+        learningRecall: {
+          scopes: Array<{ schemaVersion: 1; kind: string; id: string }>;
+          gaps: string[];
+          items: Array<{ text: string; concepts: string[] }>;
+        };
+      };
+    };
+    expect(payload.data.learningRecall.scopes).toEqual([scope]);
+    expect(payload.data.learningRecall.gaps).toContain('project_placement_unavailable');
+    expect(payload.data.learningRecall.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.stringContaining('QQ Mail'),
+          concepts: expect.arrayContaining(['app-store-connect', 'qq-mail']),
+        }),
+      ]),
+    );
+  });
+
   test('records explicit correction with direct-read evidence and recalls it through explicit repository context', async () => {
     const fx = fixture('direct-learning');
     const ctx = {
