@@ -2,6 +2,23 @@ import AVFoundation
 import Foundation
 import Speech
 
+private final class VoiceAuthorizationWaiter<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value?, Never>?
+
+    init(_ continuation: CheckedContinuation<Value?, Never>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ value: Value?) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: value)
+    }
+}
+
 // Draft-only voice input. Speech never sends a message or executes a tool.
 @MainActor
 final class AgentVoiceDictation: ObservableObject {
@@ -22,6 +39,20 @@ final class AgentVoiceDictation: ObservableObject {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var sessionID = UUID()
+    private static let authorizationTimeout: TimeInterval = 15
+
+    nonisolated static func awaitAuthorization<Value>(
+        timeout: TimeInterval,
+        request: (@escaping (Value) -> Void) -> Void
+    ) async -> Value? {
+        await withCheckedContinuation { continuation in
+            let waiter = VoiceAuthorizationWaiter<Value>(continuation)
+            request { value in waiter.resolve(value) }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + max(timeout, 0)) {
+                waiter.resolve(nil)
+            }
+        }
+    }
 
     nonisolated static func mergedDraft(_ existing: String, transcript: String) -> String {
         let words = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -67,18 +98,26 @@ final class AgentVoiceDictation: ObservableObject {
             return
         }
 
-        let speechPermission = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { value in continuation.resume(returning: value) }
+        let speechPermission = await Self.awaitAuthorization(timeout: Self.authorizationTimeout) { completion in
+            SFSpeechRecognizer.requestAuthorization(completion)
         }
         guard sessionID == attemptID else { return }
+        guard let speechPermission else {
+            error = "语音识别授权请求未响应，请检查系统设置后重试。"
+            return
+        }
         guard speechPermission == .authorized else {
             error = "需要在系统设置中允许 Forge 使用语音识别。"
             return
         }
-        let microphoneAllowed = await withCheckedContinuation { continuation in
-            AVCaptureDevice.requestAccess(for: .audio) { value in continuation.resume(returning: value) }
+        let microphoneAllowed = await Self.awaitAuthorization(timeout: Self.authorizationTimeout) { completion in
+            AVCaptureDevice.requestAccess(for: .audio, completionHandler: completion)
         }
         guard sessionID == attemptID else { return }
+        guard let microphoneAllowed else {
+            error = "麦克风授权请求未响应，请检查系统设置后重试。"
+            return
+        }
         guard microphoneAllowed else {
             error = "需要在系统设置中允许 Forge 使用麦克风。"
             return
