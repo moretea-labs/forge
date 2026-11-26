@@ -10,19 +10,40 @@ const TEST_LINUX_HOME = '/home' + '/forge-test';
 
 describe('Windows host Recovery plugin registration', () => {
   test('exposes native Windows startup verification as typed status, not only a successful shell result', () => {
-    expect(parseTaskStatus(JSON.stringify({ installed: true, method: 'hkcu_run', identityMatches: true })))
-      .toEqual({ installed: true, method: 'hkcu_run', identityMatches: true });
-    expect(parseTaskStatus(JSON.stringify({ installed: false, method: 'none', identityMatches: false })))
-      .toEqual({ installed: false, method: 'none', identityMatches: false });
-    expect(parseTaskStatus(JSON.stringify({ installed: true, method: 'scheduled_task', identityMatches: true, watchdog: true, state: 'Running' })))
-      .toEqual({ installed: true, method: 'scheduled_task', identityMatches: true });
+    expect(parseTaskStatus(JSON.stringify({ installed: true, method: 'hkcu_run', identityMatches: true }))).toEqual({
+      installed: true,
+      method: 'hkcu_run',
+      identityMatches: true,
+    });
+    expect(parseTaskStatus(JSON.stringify({ installed: false, method: 'none', identityMatches: false }))).toEqual({
+      installed: false,
+      method: 'none',
+      identityMatches: false,
+    });
+    expect(
+      parseTaskStatus(
+        JSON.stringify({
+          installed: true,
+          method: 'scheduled_task',
+          identityMatches: true,
+          watchdog: true,
+          state: 'Running',
+        }),
+      ),
+    ).toEqual({ installed: true, method: 'scheduled_task', identityMatches: true });
   });
 
   test('rejects malformed or inconsistent task receipts instead of inferring installation from exit code 0', () => {
-    for (const output of ['not json', '{}', '[]', '{"installed":"true","method":"hkcu_run"}',
-      '{"installed":true,"method":"none"}', '{"installed":true,"method":"hkcu_run","identityMatches":false}',
+    for (const output of [
+      'not json',
+      '{}',
+      '[]',
+      '{"installed":"true","method":"hkcu_run"}',
+      '{"installed":true,"method":"none"}',
+      '{"installed":true,"method":"hkcu_run","identityMatches":false}',
       '{"installed":true,"method":"scheduled_task","identityMatches":false}',
-      '{"installed":true,"method":"scheduled_task"}']) {
+      '{"installed":true,"method":"scheduled_task"}',
+    ]) {
       expect(() => parseTaskStatus(output)).toThrow('Windows Recovery task_status');
     }
   });
@@ -96,14 +117,15 @@ describe('Windows host Recovery plugin registration', () => {
   });
 
   test('managed helper protocol uses real newline-delimited JSON records', async () => {
-    const helper = await Bun.file(new URL('../../scripts/forge-windows-host-recovery-helper.mjs', import.meta.url)).text();
-    expect(helper).toContain("})}\\n`);");
-    expect(helper).not.toContain("})}\\\\n`);");
+    const helper = await Bun.file(
+      new URL('../../scripts/forge-windows-host-recovery-helper.mjs', import.meta.url),
+    ).text();
+    expect(helper).toContain('})}\\n`');
+    expect(helper).not.toContain('})}\\\\n`');
     expect(helper).toContain("state: 'ready'");
     expect(helper).toContain('config.deployment.powershellHostPath');
     expect(helper).toContain('config.deployment.recoveryScriptWindowsPath');
     expect(helper).not.toContain('C:\\ProgramData\\ForgeRecovery');
     expect(helper).not.toContain('/mnt/c/ProgramData/ForgeRecovery');
   });
-
 });

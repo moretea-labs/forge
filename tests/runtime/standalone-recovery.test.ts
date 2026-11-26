@@ -696,9 +696,7 @@ test('Recovery OpenAI reachability refreshes Linux proxy from the current system
   expect(result.ok).toBe(true);
   expect(result.configuredProxy.ok).toBe(true);
   expect(commands).toContainEqual(['systemctl', ['--user', 'show-environment']]);
-  expect(observedEnvironments.some((environment) => environment.HTTPS_PROXY === 'http://127.0.0.1:7890')).toBe(
-    true,
-  );
+  expect(observedEnvironments.some((environment) => environment.HTTPS_PROXY === 'http://127.0.0.1:7890')).toBe(true);
 });
 
 test('standalone Recovery retries one transport-only active gateway failure within the strict verification budget', async () => {

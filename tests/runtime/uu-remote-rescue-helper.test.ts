@@ -318,9 +318,7 @@ describe('UU Remote rescue helper', () => {
     expect(statusIndex).toBeGreaterThanOrEqual(0);
     expect(connectIndex).toBeGreaterThan(statusIndex);
     expect(terminalIndex).toBeGreaterThan(connectIndex);
-    expect(
-      fx.cliCalls.filter((args) => args[0] === 'device' && args[1] === 'status').length,
-    ).toBeGreaterThanOrEqual(2);
+    expect(fx.cliCalls.filter((args) => args[0] === 'device' && args[1] === 'status').length).toBeGreaterThanOrEqual(2);
   });
 
   test('does not reconnect when the exact controlling UU connection already exists', async () => {
