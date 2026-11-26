@@ -101,6 +101,8 @@ export interface RuntimeHealthObservations {
   projection: ProjectionObservation;
   localBridge: LocalBridgeObservation;
   runtimeStorage: RuntimeStorageObservation;
+  /** Optional: host/LAN/DNS/proxy/overlay reachability. Absent => not evaluated. */
+  network?: GradedObservation;
   /** Optional: public Stable Connector reachability. Absent => not evaluated. */
   externalReachability?: GradedObservation;
   /** Preferred name for public Stable Connector reachability. */
@@ -123,6 +125,7 @@ export interface RuntimeHealthEvaluation {
     projection: ComponentHealth;
     localBridge: ComponentHealth;
     runtimeStorage: ComponentHealth;
+    network: ComponentHealth;
     externalReachability: ComponentHealth;
     mcpHandshake: ComponentHealth;
     sessionContinuity: ComponentHealth;
@@ -170,6 +173,80 @@ export function classifyRuntimeReadinessSemantics(
       releaseReady: releaseBlockers,
     },
   };
+}
+
+export type RuntimeExecutionDisposition = 'READY' | 'DEGRADED' | 'WAITING_TRANSPORT' | 'BLOCKED';
+export type RuntimeHealthLayerId = 'L1_MACHINE' | 'L2_NETWORK' | 'L3_TRANSPORT' | 'L4_APPLICATION';
+
+export interface RuntimeHealthLayerView {
+  id: RuntimeHealthLayerId;
+  state: RuntimeComponentState;
+  blocking: boolean;
+  activeBlockers: HealthReason[];
+  warnings: HealthReason[];
+}
+
+export interface RuntimeLayeredHealthView {
+  disposition: RuntimeExecutionDisposition;
+  layers: {
+    machine: RuntimeHealthLayerView;
+    network: RuntimeHealthLayerView;
+    transport: RuntimeHealthLayerView;
+    application: RuntimeHealthLayerView;
+  };
+}
+
+function layeredState(components: readonly ComponentHealth[]): RuntimeComponentState {
+  if (components.some((item) => item.state === 'unavailable')) return 'unavailable';
+  if (components.some((item) => item.state === 'degraded')) return 'degraded';
+  if (components.some((item) => item.state === 'warning')) return 'warning';
+  if (components.length > 0 && components.every((item) => item.state === 'disabled')) return 'disabled';
+  return 'healthy';
+}
+
+function healthLayer(id: RuntimeHealthLayerId, components: readonly ComponentHealth[]): RuntimeHealthLayerView {
+  const activeBlockers = components.flatMap((item) => item.activeBlockers);
+  const warnings = components.flatMap((item) => item.warnings);
+  return {
+    id,
+    state: layeredState(components),
+    blocking: activeBlockers.length > 0,
+    activeBlockers,
+    warnings,
+  };
+}
+
+/**
+ * Supervisor-facing disposition. External/network transport failures pause only
+ * work that requires that transport while preserving local execution readiness.
+ * Runtime/storage/projection failures remain hard blockers.
+ */
+export function buildRuntimeLayeredHealth(health: RuntimeHealthEvaluation): RuntimeLayeredHealthView {
+  const layers = {
+    machine: healthLayer('L1_MACHINE', [health.components.daemon, health.components.runtimeStorage]),
+    network: healthLayer('L2_NETWORK', [health.components.network]),
+    transport: healthLayer('L3_TRANSPORT', [
+      health.components.externalReachability,
+      health.components.mcpHandshake,
+      health.components.sessionContinuity,
+    ]),
+    application: healthLayer('L4_APPLICATION', [
+      health.components.scheduler,
+      health.components.workers,
+      health.components.projection,
+      health.components.localBridge,
+    ]),
+  };
+  const semantics = classifyRuntimeReadinessSemantics(health);
+  const transportBlocked = layers.network.blocking || layers.transport.blocking;
+  const disposition: RuntimeExecutionDisposition = !semantics.executionReady
+    ? 'BLOCKED'
+    : transportBlocked
+      ? 'WAITING_TRANSPORT'
+      : health.state === 'healthy'
+        ? 'READY'
+        : 'DEGRADED';
+  return { disposition, layers };
 }
 
 export const RUNTIME_HEALTH_THRESHOLDS = {
@@ -488,7 +565,7 @@ function evaluateRuntimeStorage(observation: RuntimeStorageObservation): Compone
 }
 
 function evaluateGradedObservation(
-  componentName: 'externalReachability' | 'mcpHandshake' | 'sessionContinuity',
+  componentName: 'network' | 'externalReachability' | 'mcpHandshake' | 'sessionContinuity',
   observation: GradedObservation | undefined,
   label: string,
 ): ComponentHealth {
@@ -501,7 +578,9 @@ function evaluateGradedObservation(
   const prefix =
     componentName === 'externalReachability'
       ? 'EXTERNAL_ENDPOINT'
-      : componentName.replace(/[A-Z]/g, (value) => `_${value}`).toUpperCase();
+      : componentName === 'network'
+        ? 'NETWORK'
+        : componentName.replace(/[A-Z]/g, (value) => `_${value}`).toUpperCase();
   if (observation.status === 'healthy') return component('healthy');
   if (observation.status === 'unknown') {
     return component(
@@ -521,6 +600,7 @@ export function evaluateRuntimeHealth(observations: RuntimeHealthObservations): 
     projection: evaluateProjection(observations.projection),
     localBridge: evaluateLocalBridge(observations.localBridge),
     runtimeStorage: evaluateRuntimeStorage(observations.runtimeStorage),
+    network: evaluateGradedObservation('network', observations.network, 'Network path'),
     externalReachability: evaluateGradedObservation(
       'externalReachability',
       observations.externalEndpoint ?? observations.externalReachability,

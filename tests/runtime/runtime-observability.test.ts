@@ -6,6 +6,7 @@ import { tmpdir } from 'os';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { classifyFailure } from '../../src/runtime/recovery/classifier';
 import {
+  buildRuntimeLayeredHealth,
   classifyRuntimeReadinessSemantics,
   evaluateRuntimeHealth,
   type RuntimeHealthObservations,
@@ -1076,6 +1077,71 @@ describe('runtime observability', () => {
       args: [PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG],
     });
     expect(command.executable).not.toBe(process.execPath);
+  });
+
+  describe('layered runtime health and execution disposition', () => {
+    test('maps an external transport outage to WAITING_TRANSPORT without blocking local execution', () => {
+      const health = evaluateRuntimeHealth({
+        ...observations(),
+        externalEndpoint: { status: 'unhealthy', detail: 'OpenAI tunnel control plane EOF' },
+      });
+      const layered = buildRuntimeLayeredHealth(health);
+
+      expect(classifyRuntimeReadinessSemantics(health).executionReady).toBe(true);
+      expect(layered.disposition).toBe('WAITING_TRANSPORT');
+      expect(layered.layers.transport).toMatchObject({
+        id: 'L3_TRANSPORT',
+        state: 'degraded',
+        blocking: true,
+      });
+      expect(layered.layers.machine.blocking).toBe(false);
+    });
+
+    test('maps a network outage to L2 WAITING_TRANSPORT', () => {
+      const health = evaluateRuntimeHealth({
+        ...observations(),
+        network: { status: 'unhealthy', detail: 'proxy/DNS path unavailable' },
+      });
+      const layered = buildRuntimeLayeredHealth(health);
+
+      expect(classifyRuntimeReadinessSemantics(health).executionReady).toBe(true);
+      expect(layered.disposition).toBe('WAITING_TRANSPORT');
+      expect(layered.layers.network).toMatchObject({
+        id: 'L2_NETWORK',
+        state: 'degraded',
+        blocking: true,
+      });
+    });
+
+    test('maps a runtime failure to BLOCKED at the machine layer', () => {
+      const health = evaluateRuntimeHealth({
+        ...observations(),
+        daemon: { status: 'not_ready', error: 'runtime down' },
+      });
+      const layered = buildRuntimeLayeredHealth(health);
+
+      expect(layered.disposition).toBe('BLOCKED');
+      expect(layered.layers.machine).toMatchObject({
+        id: 'L1_MACHINE',
+        state: 'degraded',
+        blocking: true,
+      });
+    });
+
+    test('keeps nonblocking application degradation as DEGRADED', () => {
+      const health = evaluateRuntimeHealth({
+        ...observations(),
+        scheduler: { status: 'degraded', heartbeatAgeMs: 100 },
+      });
+      const layered = buildRuntimeLayeredHealth(health);
+
+      expect(layered.disposition).toBe('DEGRADED');
+      expect(layered.layers.application).toMatchObject({
+        id: 'L4_APPLICATION',
+        state: 'warning',
+        blocking: false,
+      });
+    });
   });
 
   describe('executionReady / maintenanceHealthy / releaseReady semantics', () => {

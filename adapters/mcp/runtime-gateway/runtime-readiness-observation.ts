@@ -11,6 +11,7 @@ import {
   readRepositoryProjectionSnapshot,
 } from '../../../src/runtime/projections/materialized-view';
 import {
+  buildRuntimeLayeredHealth,
   classifyRuntimeReadinessSemantics,
   evaluateRuntimeHealth,
   RUNTIME_HEALTH_THRESHOLDS,
@@ -168,6 +169,7 @@ export async function controllerReadinessEvidence(
       : { readable: true, ready: true },
     ...signals,
   });
+  const layeredHealth = buildRuntimeLayeredHealth(runtimeHealth);
   const reasons: Array<{ code: string; message: string }> = runtimeHealth.activeBlockers.map((item) => ({
     code:
       item.code === 'SCHEDULER_NOT_PROGRESSING'
@@ -233,6 +235,8 @@ export async function controllerReadinessEvidence(
       : undefined,
     projection,
     projectionSnapshot,
+    executionDisposition: layeredHealth.disposition,
+    healthLayers: layeredHealth.layers,
     semantics: classifyRuntimeReadinessSemantics(runtimeHealth),
   };
 }
