@@ -103,12 +103,10 @@ export interface RepositoryToolCallerContext {
   controllerInstanceId?: string;
 }
 
-function resolveRepositorySelectionWithoutWorkAuthority(
+function resolveRepositorySelectionForTool(
   controllerHome: string,
   args: Record<string, unknown>,
   repoIdValue: string,
-  _caller?: RepositoryToolCallerContext,
-  allowCheckoutMutation = true,
 ): ReturnType<typeof resolveRepositorySelection> {
   const checkoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
   return resolveRepositorySelection({
@@ -138,7 +136,6 @@ function resolveRepositoryCommandTarget(
   controllerHome: string,
   args: Record<string, unknown>,
   repoIdValue: string,
-  caller?: RepositoryToolCallerContext,
 ): {
   /** Present only for a repository target; absent for an arbitrary workspace. */
   repository?: ReturnType<typeof resolveRepositorySelection>;
@@ -168,22 +165,7 @@ function resolveRepositoryCommandTarget(
       workspace: { workspaceId: target.workspaceId, root: target.canonicalRoot, registered: false },
     };
   }
-  const selectedRepository = resolveRepositorySelection({
-    repoId: repoIdValue || undefined,
-    checkoutId: checkoutId || undefined,
-    controllerHome,
-    allowSoleRepository: true,
-  });
-  // Observation must not reconstruct a checkout or re-arm mutation authority.
-  const readonly =
-    classifyRepositoryCommand(args.command as string | string[], selectedRepository.defaultBranch).risk === 'readonly';
-  const repository = resolveRepositorySelectionWithoutWorkAuthority(
-    controllerHome,
-    args,
-    repoIdValue,
-    caller,
-    !readonly,
-  );
+  const repository = resolveRepositorySelectionForTool(controllerHome, args, repoIdValue);
   return {
     repository,
     commandTarget: repository,
@@ -813,7 +795,7 @@ export async function callRepositoryTool(
       }
       case 'repository_safe_patch_apply': {
         const startedAt = performance.now();
-        const repository = resolveRepositorySelectionWithoutWorkAuthority(controllerHome, args, repoIdValue, caller);
+        const repository = resolveRepositorySelectionForTool(controllerHome, args, repoIdValue);
         const patchPaths = extractPatchPaths(args.operations);
         const explicitLegacyValidation = Boolean(
           args.validation_only === true ||
@@ -892,7 +874,7 @@ export async function callRepositoryTool(
           throw new Error('COMMAND_SCOPE_INVALID: shell_command requires scope=host');
         if (args.command === undefined) throw new Error('COMMAND_REQUIRED: repository commands require command');
         if (args.dry_run === true) {
-          const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
+          const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue);
           const { commandTarget } = target;
           const execution = withControllerLock(
             controllerHome,
@@ -918,7 +900,7 @@ export async function callRepositoryTool(
             ...(target.workspace ? { workspace: target.workspace } : {}),
           });
         }
-        const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
+        const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue);
         const { repository, commandTarget, executionIdentity } = target;
         // Repository targets keep their established identity fields. An arbitrary
         // workspace target reports a workspace scope id and never a repository id.
