@@ -291,6 +291,8 @@ describe('runtime command surface', () => {
     expect(snapshotBlock).toContain('inspectProjectGovernance(repoRoot, requirementBoard)');
     expect(snapshotSource).toContain('listActiveExecutionJobs(controllerHome, repository.repoId)');
     expect(snapshotSource).toContain('listExecutionJobs(controllerHome, repository.repoId, 12)');
+    expect(snapshotSource).not.toContain("kind: 'work'");
+    expect(snapshotSource).toContain("kind: 'execution-job'");
     expect(snapshotSource).not.toContain('listExecutionJobs(controllerHome, repository.repoId, 30)');
     expect(httpObservation).not.toContain('buildControllerTaskLedgerProjection');
     expect(runtimeReadinessObservation).not.toContain('buildControllerTaskLedgerProjection');

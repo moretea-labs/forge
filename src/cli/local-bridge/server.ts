@@ -394,7 +394,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
       ...executionJobs
         .filter((job) => ['human_attention_required', 'failed', 'orphaned', 'stale'].includes(job.status))
         .map((job) => ({
-          kind: 'work',
+          kind: 'execution-job',
           id: job.jobId,
           title: String(job.payload.operation ?? job.type),
           status: job.status,
@@ -424,7 +424,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
           ].includes(job.status),
         )
         .map((job) => ({
-          kind: 'work',
+          kind: 'execution-job',
           id: job.jobId,
           title: String(job.payload.operation ?? job.type),
           status: job.status,
@@ -445,7 +445,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
       ...activeExecutionJobs
         .filter((job) => job.status === 'human_attention_required')
         .map((job) => ({
-          kind: 'work',
+          kind: 'execution-job',
           id: job.jobId,
           title: String(job.payload.operation ?? job.type),
           status: job.status,
@@ -465,7 +465,7 @@ export function buildLocalControllerSnapshot(repoRoot: string) {
       ...recentExecutionJobs
         .filter((job) => ['succeeded', 'cancelled', 'timed_out'].includes(job.status))
         .map((job) => ({
-          kind: 'work',
+          kind: 'execution-job',
           id: job.jobId,
           title: String(job.payload.operation ?? job.type),
           status: job.status,
