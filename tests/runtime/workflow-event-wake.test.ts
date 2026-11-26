@@ -9,6 +9,7 @@ import {
   recordWorkflowBindings,
   registerWorkflowFeatureAsset,
 } from '../../src/runtime/control-plane/persistence/workflow-registry-store';
+import { readWorkflowGraphRun } from '../../src/runtime/control-plane/persistence/workflow-run-store';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { executeRegisteredWorkflowGraph } from '../../src/runtime/workflows/graph-runtime';
@@ -23,11 +24,11 @@ function home() {
   roots.push(v);
   return v;
 }
-function install(h: string) {
+function installVersion(h: string, version = '1', actionId = 'done', expectedRevision?: number) {
   const draft: WorkflowGraphAssetDraft = {
     schemaVersion: 2,
     workflowId: 'wake.demo',
-    version: '1',
+    version,
     inputContract: { case_id: { type: 'string', required: true } },
     entryNodeId: 'wait',
     nodes: [
@@ -50,12 +51,14 @@ function install(h: string) {
     asset: written.asset,
     contentLocation: { kind: 'controller', path: written.path },
     status: 'active',
+    ...(expectedRevision !== undefined ? { expectedRevision } : {}),
   });
   return recordWorkflowBindings({
     controllerHome: h,
     scope: { kind: 'controller' },
     expectedIdentity: registered.value,
-    bindings: [{ capabilityId: 'case.done', pluginId: 'case', actionId: 'done' }],
+    bindings: [{ capabilityId: 'case.done', pluginId: 'case', actionId }],
+    expectedRevision: registered.revision,
   });
 }
 function repo(h: string) {
@@ -65,7 +68,7 @@ function repo(h: string) {
   return registerRepository({ controllerHome: h, path: root, displayName: 'Wake Repo' });
 }
 async function waiting(h: string) {
-  install(h);
+  installVersion(h);
   const repository = repo(h);
   const scopeId = `repository:${repository.repoId}:checkout:${repository.activeCheckoutId}:workflow:wake.demo`;
   await executeRegisteredWorkflowGraph(
@@ -171,5 +174,99 @@ describe('Workflow Graph durable event wake', () => {
     const h = home();
     await waiting(h);
     expect(findWorkflowGraphEventWaits(h, { ...signal, occurredAt: '2026-11-26T00:01:01.000Z' })).toEqual([]);
+  });
+  test('pins exact graph content and capability bindings across Registry upgrade', async () => {
+    const h = home();
+    const { repository, scopeId } = await waiting(h);
+    const oldRun = readWorkflowGraphRun(h, scopeId, 'run-1');
+    expect(oldRun?.value.execution.bindings).toEqual([
+      { capabilityId: 'case.done', pluginId: 'case', actionId: 'done' },
+    ]);
+    const oldContentPath = oldRun?.value.execution.contentLocation.path;
+    expect(oldContentPath).toBeTruthy();
+
+    const currentRegistry = installVersion(h, '2', 'done-v2', 2);
+    expect(currentRegistry.value.version).toBe('2');
+    expect(currentRegistry.value.bindings).toEqual([
+      { capabilityId: 'case.done', pluginId: 'case', actionId: 'done-v2' },
+    ]);
+    expect(currentRegistry.value.contentLocation.path).not.toBe(oldContentPath);
+
+    const [oldMatch] = findWorkflowGraphEventWaits(h, signal);
+    expect(oldMatch?.runId).toBe('run-1');
+    const oldActions: string[] = [];
+    const oldResult = await resumeWorkflowGraphEventWait(h, oldMatch!, signal, {
+      submitPluginAction: async (_home, _repo, request) => {
+        oldActions.push(request.actionId);
+        return {
+          receipt: {
+            receiptId: 'done-old',
+            requestId: request.requestId,
+            pluginId: 'case',
+            actionId: request.actionId,
+            status: 'succeeded',
+            createdAt: signal.receivedAt,
+          } as never,
+          result: {
+            schemaVersion: 1,
+            plugin: { pluginId: 'case' },
+            action: { actionId: request.actionId, requestId: request.requestId },
+            result: { ok: true },
+          },
+        } as never;
+      },
+      now: () => new Date(signal.receivedAt),
+    });
+    expect(oldResult.status).toBe('succeeded');
+    expect(oldActions).toEqual(['done']);
+    expect(readWorkflowGraphRun(h, scopeId, 'run-1')?.value.execution.contentLocation.path).toBe(oldContentPath);
+
+    await executeRegisteredWorkflowGraph(
+      {
+        controllerHome: h,
+        repository,
+        executionIdentity: executionIdentityForRepository(repository),
+        scopeId,
+        runId: 'run-2',
+        registryScope: { kind: 'controller' },
+        workflowId: 'wake.demo',
+        inputs: { case_id: 'case-2' },
+      },
+      { now: () => new Date('2026-11-26T00:00:20.000Z') },
+    );
+    const signal2 = {
+      ...signal,
+      eventId: 'event-2',
+      correlationKey: 'case-2',
+      occurredAt: '2026-11-26T00:00:30.000Z',
+      receivedAt: '2026-11-26T00:00:31.000Z',
+    };
+    const [newMatch] = findWorkflowGraphEventWaits(h, signal2);
+    expect(newMatch?.runId).toBe('run-2');
+    const newActions: string[] = [];
+    const newResult = await resumeWorkflowGraphEventWait(h, newMatch!, signal2, {
+      submitPluginAction: async (_home, _repo, request) => {
+        newActions.push(request.actionId);
+        return {
+          receipt: {
+            receiptId: 'done-new',
+            requestId: request.requestId,
+            pluginId: 'case',
+            actionId: request.actionId,
+            status: 'succeeded',
+            createdAt: signal2.receivedAt,
+          } as never,
+          result: {
+            schemaVersion: 1,
+            plugin: { pluginId: 'case' },
+            action: { actionId: request.actionId, requestId: request.requestId },
+            result: { ok: true },
+          },
+        } as never;
+      },
+      now: () => new Date(signal2.receivedAt),
+    });
+    expect(newResult.status).toBe('succeeded');
+    expect(newActions).toEqual(['done-v2']);
   });
 });

@@ -14,11 +14,16 @@ import {
 } from '../../../packages/workflow-runtime/api/index';
 import { readAuthorizationRequest, requestExplicitAuthorization } from '../control-plane/governance/authorization';
 import { readWorkflowExecutableContentFile } from '../control-plane/persistence/workflow-content-store';
-import { readWorkflowRegistryEntry } from '../control-plane/persistence/workflow-registry-store';
+import {
+  readWorkflowRegistryEntry,
+  type WorkflowRegistryEntry,
+  type WorkflowRegistryScope,
+} from '../control-plane/persistence/workflow-registry-store';
 import {
   readWorkflowGraphRun,
   workflowInputDigest,
   writeWorkflowGraphRunCheckpoint,
+  type WorkflowRunExecutionSnapshot,
 } from '../control-plane/persistence/workflow-run-store';
 import {
   executeWorkflowCapabilityEffect,
@@ -53,6 +58,57 @@ function childOutput(result: WorkflowGraphRuntimeChildResult): Record<string, un
   return structuredClone(result) as Record<string, unknown>;
 }
 
+function sameRegistryScope(left: WorkflowRegistryScope, right: WorkflowRegistryScope): boolean {
+  return (
+    left.kind === right.kind &&
+    (left.kind === 'controller' || left.projectId === (right as { kind: 'project'; projectId: string }).projectId)
+  );
+}
+
+function graphExecutionSnapshot(
+  input: ExecuteRegisteredWorkflowInput,
+  registry: WorkflowRegistryEntry,
+): WorkflowRunExecutionSnapshot {
+  return {
+    repositoryId: input.repository.repoId,
+    checkoutId: input.repository.activeCheckoutId,
+    registryScope: structuredClone(input.registryScope),
+    contentLocation: structuredClone(registry.contentLocation),
+    bindings: structuredClone(registry.bindings),
+    capabilityGrantRefs: [...registry.capabilityGrantRefs],
+    ...(input.approvalContext ? { approvalContext: structuredClone(input.approvalContext) } : {}),
+  };
+}
+
+function assertGraphExecutionSnapshot(
+  input: ExecuteRegisteredWorkflowInput,
+  snapshot: WorkflowRunExecutionSnapshot,
+): void {
+  if (
+    snapshot.repositoryId !== input.repository.repoId ||
+    snapshot.checkoutId !== input.executionIdentity.checkoutId ||
+    !sameRegistryScope(snapshot.registryScope, input.registryScope)
+  ) {
+    throw new Error('WORKFLOW_RUN_EXECUTION_SNAPSHOT_IDENTITY_MISMATCH');
+  }
+}
+
+function readPinnedGraphAsset(
+  snapshot: WorkflowRunExecutionSnapshot,
+  identity: { workflowId: string; version: string; contentDigest: string },
+): Extract<ReturnType<typeof readWorkflowExecutableContentFile>, { schemaVersion: 2 }> {
+  const asset = readWorkflowExecutableContentFile(snapshot.contentLocation.path);
+  if (asset.schemaVersion !== 2) throw new Error('WORKFLOW_GRAPH_CONTENT_REQUIRED');
+  if (
+    asset.workflowId !== identity.workflowId ||
+    asset.version !== identity.version ||
+    asset.contentDigest !== identity.contentDigest
+  ) {
+    throw new Error('WORKFLOW_RUN_EXECUTION_SNAPSHOT_CONTENT_IDENTITY_MISMATCH');
+  }
+  return asset;
+}
+
 export async function executeRegisteredWorkflowGraph(
   input: ExecuteRegisteredWorkflowInput,
   dependencies: WorkflowGraphRuntimeDependencies = {},
@@ -63,21 +119,37 @@ export async function executeRegisteredWorkflowGraph(
     { scope: 'task', repoId: input.repository.repoId, taskId: `workflow:${input.scopeId}` },
     `workflow-graph:${input.runId}`,
     async () => {
-      const registry = readWorkflowRegistryEntry(input.controllerHome, input.registryScope, input.workflowId);
-      if (!registry) throw new Error(`WORKFLOW_REGISTRY_ENTRY_REQUIRED: ${input.workflowId}`);
-      if (registry.value.status !== 'active')
-        throw new Error(`WORKFLOW_REGISTRY_ENTRY_NOT_ACTIVE: ${input.workflowId}`);
-      if ((registry.value.engine ?? 'sequence_v1') !== 'graph_v2') throw new Error('WORKFLOW_GRAPH_ENGINE_REQUIRED');
-      const asset = readWorkflowExecutableContentFile(registry.value.contentLocation.path);
-      if (asset.schemaVersion !== 2) throw new Error('WORKFLOW_GRAPH_CONTENT_REQUIRED');
-      if (
-        asset.workflowId !== registry.value.workflowId ||
-        asset.version !== registry.value.version ||
-        asset.contentDigest !== registry.value.contentDigest
-      ) {
-        throw new Error('WORKFLOW_REGISTRY_CONTENT_IDENTITY_MISMATCH:' + input.workflowId);
-      }
       const existing = readWorkflowGraphRun(input.controllerHome, input.scopeId, input.runId);
+      let execution: WorkflowRunExecutionSnapshot;
+      let asset: Extract<ReturnType<typeof readWorkflowExecutableContentFile>, { schemaVersion: 2 }>;
+      if (existing) {
+        execution = existing.value.execution;
+        assertGraphExecutionSnapshot(input, execution);
+        asset = readPinnedGraphAsset(execution, existing.value);
+      } else {
+        const registry = readWorkflowRegistryEntry(input.controllerHome, input.registryScope, input.workflowId);
+        if (!registry) throw new Error(`WORKFLOW_REGISTRY_ENTRY_REQUIRED: ${input.workflowId}`);
+        if (registry.value.status !== 'active')
+          throw new Error(`WORKFLOW_REGISTRY_ENTRY_NOT_ACTIVE: ${input.workflowId}`);
+        if ((registry.value.engine ?? 'sequence_v1') !== 'graph_v2') throw new Error('WORKFLOW_GRAPH_ENGINE_REQUIRED');
+        const candidate = readWorkflowExecutableContentFile(registry.value.contentLocation.path);
+        if (candidate.schemaVersion !== 2) throw new Error('WORKFLOW_GRAPH_CONTENT_REQUIRED');
+        if (
+          candidate.workflowId !== registry.value.workflowId ||
+          candidate.version !== registry.value.version ||
+          candidate.contentDigest !== registry.value.contentDigest
+        ) {
+          throw new Error('WORKFLOW_REGISTRY_CONTENT_IDENTITY_MISMATCH:' + input.workflowId);
+        }
+        asset = candidate;
+        execution = graphExecutionSnapshot(input, registry.value);
+      }
+      const effectiveInput: ExecuteRegisteredWorkflowInput = existing
+        ? {
+            ...input,
+            approvalContext: execution.approvalContext ? structuredClone(execution.approvalContext) : undefined,
+          }
+        : input;
       const inputDigest = workflowInputDigest(input.inputs);
       if (existing) {
         if (
@@ -111,17 +183,13 @@ export async function executeRegisteredWorkflowGraph(
           }
         : undefined;
       if (resumedCheckpoint?.status === 'waiting') {
-        const resolved = resolveApprovedWorkflowWaits(input, asset, resumedCheckpoint);
+        const resolved = resolveApprovedWorkflowWaits(effectiveInput, asset, resumedCheckpoint);
         if (resolved !== resumedCheckpoint) {
           const stored = writeWorkflowGraphRunCheckpoint({
             controllerHome: input.controllerHome,
             checkpoint: resolved,
             inputs: input.inputs,
-            execution: {
-              repositoryId: input.repository.repoId,
-              checkoutId: input.repository.activeCheckoutId,
-              registryScope: input.registryScope,
-            },
+            execution,
             expectedRevision: revision ?? null,
             ...(dependencies.now ? { now: dependencies.now() } : {}),
           });
@@ -135,7 +203,7 @@ export async function executeRegisteredWorkflowGraph(
         executionIdentity: input.executionIdentity,
         runId: input.runId,
         timeoutMs: input.timeoutMs,
-        registry: registry.value,
+        registry: execution,
       };
       return executeWorkflowGraph(
         {
@@ -151,12 +219,7 @@ export async function executeRegisteredWorkflowGraph(
               controllerHome: input.controllerHome,
               checkpoint,
               inputs: input.inputs,
-              execution: {
-                repositoryId: input.repository.repoId,
-                checkoutId: input.repository.activeCheckoutId,
-                registryScope: input.registryScope,
-                ...(input.approvalContext ? { approvalContext: input.approvalContext } : {}),
-              },
+              execution,
               expectedRevision: revision ?? null,
               ...(dependencies.now ? { now: dependencies.now() } : {}),
             });
@@ -184,12 +247,12 @@ export async function executeRegisteredWorkflowGraph(
                 dependencies,
               });
             }
-            return executeChildWorkflow(input, plan, dependencies);
+            return executeChildWorkflow(effectiveInput, plan, dependencies);
           },
           executeCompensation: async ({ plan, requestId }) =>
-            executeGraphCompensation(input, asset, plan, requestId, context, dependencies),
+            executeGraphCompensation(effectiveInput, asset, plan, requestId, context, dependencies),
           registerWait: async ({ plan, requestId }) =>
-            registerGraphWait(input, asset, plan, requestId, dependencies.now?.() ?? new Date()),
+            registerGraphWait(effectiveInput, asset, plan, requestId, dependencies.now?.() ?? new Date()),
         },
       );
     },
@@ -400,13 +463,11 @@ export async function observeAndReconcileRegisteredWorkflowGraph(
   dependencies: WorkflowGraphRuntimeDependencies = {},
 ): Promise<WorkflowGraphCheckpoint> {
   assertWorkflowExecutionScope(input);
-  const registry = readWorkflowRegistryEntry(input.controllerHome, input.registryScope, input.workflowId);
-  if (!registry || registry.value.status !== 'active')
-    throw new Error('WORKFLOW_REGISTRY_ENTRY_NOT_ACTIVE:' + input.workflowId);
-  const asset = readWorkflowExecutableContentFile(registry.value.contentLocation.path);
-  if (asset.schemaVersion !== 2) throw new Error('WORKFLOW_GRAPH_CONTENT_REQUIRED');
   const stored = readWorkflowGraphRun(input.controllerHome, input.scopeId, input.runId);
   if (!stored || stored.value.status !== 'reconcile_required') throw new Error('WORKFLOW_RUN_RECONCILIATION_REQUIRED');
+  const execution = stored.value.execution;
+  assertGraphExecutionSnapshot(input, execution);
+  const asset = readPinnedGraphAsset(execution, stored.value);
   if (
     stored.value.workflowId !== asset.workflowId ||
     stored.value.version !== asset.version ||
@@ -467,7 +528,7 @@ export async function observeAndReconcileRegisteredWorkflowGraph(
     executionIdentity: input.executionIdentity,
     runId: input.runId,
     timeoutMs: input.timeoutMs,
-    registry: registry.value,
+    registry: execution,
   };
   const observed = await executeWorkflowCapabilityEffect({
     context,

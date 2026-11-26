@@ -42,7 +42,10 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // 2026-11-25 #483: physically retire the final work_result_summary and
 // work_status_digest compatibility tools. The complete registry contracts by exactly
 // those two names; preferred controller names remain unchanged.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '875decb924eae936';
+// 2026-11-26 #483: retire the final controller worklog tools
+// get_worklog_timeline/export_worklog and the inert taskLedger status selector.
+// This is a deliberate contraction; keep the frozen registry assertion exact.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = '6c0583ca2ba8fd03';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a
@@ -137,7 +140,9 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = '531c8020345c2029';
 // 2026-11-24 #714: repository.git gained the exact bounded diff contract behind
 // capability_execute while the preferred tool-name set itself remains unchanged.
 // 2026-11-25 #714-H retires rh_context source-search fields and Context Pack; Shell/Read owns source discovery while optional Cognitive/LSP reads remain.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'b61ddb054ea3e5c9';
+// 2026-11-26 #483 removes TaskLedger/worklog observation compatibility from the
+// preferred schemas; refresh the exact schema fence so stale Connector snapshots invalidate.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'fef238555a5b1f07';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

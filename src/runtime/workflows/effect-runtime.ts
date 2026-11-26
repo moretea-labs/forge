@@ -19,7 +19,7 @@ export interface WorkflowEffectRuntimeContext {
   executionIdentity: ResolvedExecutionIdentity;
   runId: string;
   timeoutMs?: number;
-  registry: WorkflowRegistryEntry;
+  registry: Pick<WorkflowRegistryEntry, 'bindings' | 'capabilityGrantRefs'>;
 }
 
 export interface WorkflowEffectRuntimeDependencies {

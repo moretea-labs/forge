@@ -27,6 +27,9 @@ const graphExecution = {
   repositoryId: 'repo-1',
   checkoutId: 'checkout-1',
   registryScope: { kind: 'controller' as const },
+  contentLocation: { kind: 'controller' as const, path: '/immutable/workflow/mail.graph/v1/workflow.json' },
+  bindings: [{ capabilityId: 'mail.inspect', pluginId: 'mail', actionId: 'inspect' }],
+  capabilityGrantRefs: ['grant:mail.inspect'],
 };
 
 function asset() {

@@ -2,7 +2,6 @@ import { expireWorkflowGraphWait, type WorkflowGraphCheckpoint } from '../../../
 import { invalidateAuthorizationRequest, readAuthorizationRequest } from '../control-plane/governance/authorization';
 import { executionIdentityForRepository } from '../control-plane/execution/execution-identity';
 import { readWorkflowExecutableContentFile } from '../control-plane/persistence/workflow-content-store';
-import { readWorkflowRegistryEntry } from '../control-plane/persistence/workflow-registry-store';
 import {
   listWorkflowGraphRuns,
   readWorkflowGraphRun,
@@ -55,12 +54,14 @@ async function resumeOne(
     .map((node) => node.nodeId);
   if (dueNodeIds.length === 0) return undefined;
   try {
-    const registry = readWorkflowRegistryEntry(controllerHome, run.execution.registryScope, run.workflowId);
-    if (!registry || registry.value.status !== 'active') throw new Error('WORKFLOW_DUE_RESUME_REGISTRY_NOT_ACTIVE');
-    if (registry.value.version !== run.version || registry.value.contentDigest !== run.contentDigest)
-      throw new Error('WORKFLOW_DUE_RESUME_CONTENT_IDENTITY_MISMATCH');
-    const asset = readWorkflowExecutableContentFile(registry.value.contentLocation.path);
+    const asset = readWorkflowExecutableContentFile(run.execution.contentLocation.path);
     if (asset.schemaVersion !== 2) throw new Error('WORKFLOW_DUE_RESUME_GRAPH_REQUIRED');
+    if (
+      asset.workflowId !== run.workflowId ||
+      asset.version !== run.version ||
+      asset.contentDigest !== run.contentDigest
+    )
+      throw new Error('WORKFLOW_DUE_RESUME_PINNED_CONTENT_IDENTITY_MISMATCH');
     const repository = getRepository(run.execution.repositoryId, controllerHome);
     if (repository.activeCheckoutId !== run.execution.checkoutId) throw new Error('WORKFLOW_DUE_RESUME_CHECKOUT_DRIFT');
     let checkpoint = reconstruct(run);

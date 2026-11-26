@@ -14,7 +14,11 @@ import {
   type ControlPlaneRecord,
 } from './sqlite-store';
 import { assertControlPlaneMetadataPayload } from './metadata-payload-policy';
-import type { WorkflowRegistryScope } from './workflow-registry-store';
+import type {
+  WorkflowCapabilityBinding,
+  WorkflowRegistryEntry,
+  WorkflowRegistryScope,
+} from './workflow-registry-store';
 
 export const WORKFLOW_RUN_NAMESPACE = 'workflow_run';
 const SCHEMA_VERSION = 1 as const;
@@ -151,6 +155,61 @@ export function writeWorkflowRunCheckpoint(input: {
   });
 }
 
+export interface WorkflowRunExecutionSnapshot {
+  repositoryId: string;
+  checkoutId: string;
+  registryScope: WorkflowRegistryScope;
+  contentLocation: WorkflowRegistryEntry['contentLocation'];
+  bindings: WorkflowCapabilityBinding[];
+  capabilityGrantRefs: string[];
+  approvalContext?: {
+    sessionId: string;
+    principalId: string;
+    permissionSnapshotVersion: number;
+  };
+}
+
+function validWorkflowRunExecutionSnapshot(value: WorkflowRunExecutionSnapshot): WorkflowRunExecutionSnapshot {
+  bounded(value.repositoryId, 'WORKFLOW_RUN_REPOSITORY_ID_INVALID');
+  bounded(value.checkoutId, 'WORKFLOW_RUN_CHECKOUT_ID_INVALID');
+  if (value.registryScope.kind === 'project') bounded(value.registryScope.projectId, 'WORKFLOW_RUN_PROJECT_ID_INVALID');
+  else if (value.registryScope.kind !== 'controller') throw new Error('WORKFLOW_RUN_REGISTRY_SCOPE_INVALID');
+  if (value.contentLocation.kind !== 'controller' && value.contentLocation.kind !== 'project')
+    throw new Error('WORKFLOW_RUN_CONTENT_LOCATION_KIND_INVALID');
+  bounded(value.contentLocation.path, 'WORKFLOW_RUN_CONTENT_LOCATION_INVALID');
+  if (value.contentLocation.kind === 'project')
+    bounded(value.contentLocation.projectId ?? '', 'WORKFLOW_RUN_CONTENT_LOCATION_PROJECT_ID_INVALID');
+  if (!Array.isArray(value.bindings) || value.bindings.length > 256) throw new Error('WORKFLOW_RUN_BINDINGS_INVALID');
+  const seenCapabilities = new Set<string>();
+  for (const binding of value.bindings) {
+    const capabilityId = bounded(binding.capabilityId, 'WORKFLOW_RUN_BINDING_CAPABILITY_ID_INVALID');
+    if (seenCapabilities.has(capabilityId)) throw new Error('WORKFLOW_RUN_BINDING_CAPABILITY_DUPLICATE');
+    seenCapabilities.add(capabilityId);
+    if (binding.providerId !== undefined) bounded(binding.providerId, 'WORKFLOW_RUN_BINDING_PROVIDER_ID_INVALID');
+    if (binding.integrationId !== undefined)
+      bounded(binding.integrationId, 'WORKFLOW_RUN_BINDING_INTEGRATION_ID_INVALID');
+    if (binding.pluginId !== undefined) bounded(binding.pluginId, 'WORKFLOW_RUN_BINDING_PLUGIN_ID_INVALID');
+    if (binding.actionId !== undefined) bounded(binding.actionId, 'WORKFLOW_RUN_BINDING_ACTION_ID_INVALID');
+    if (binding.providerId && binding.integrationId)
+      throw new Error('WORKFLOW_RUN_BINDING_PROVIDER_INTEGRATION_CONFLICT');
+    if (Boolean(binding.pluginId) !== Boolean(binding.actionId))
+      throw new Error('WORKFLOW_RUN_BINDING_PLUGIN_ACTION_PAIR_REQUIRED');
+  }
+  if (!Array.isArray(value.capabilityGrantRefs) || value.capabilityGrantRefs.length > 256)
+    throw new Error('WORKFLOW_RUN_GRANT_REFS_INVALID');
+  for (const ref of value.capabilityGrantRefs) bounded(ref, 'WORKFLOW_RUN_GRANT_REF_INVALID');
+  if (value.approvalContext) {
+    bounded(value.approvalContext.sessionId, 'WORKFLOW_RUN_APPROVAL_SESSION_INVALID');
+    bounded(value.approvalContext.principalId, 'WORKFLOW_RUN_APPROVAL_PRINCIPAL_INVALID');
+    if (
+      !Number.isSafeInteger(value.approvalContext.permissionSnapshotVersion) ||
+      value.approvalContext.permissionSnapshotVersion < 0
+    )
+      throw new Error('WORKFLOW_RUN_APPROVAL_PERMISSION_SNAPSHOT_INVALID');
+  }
+  return value;
+}
+
 export interface WorkflowGraphRunRecord {
   schemaVersion: 2;
   scopeId: string;
@@ -160,16 +219,7 @@ export interface WorkflowGraphRunRecord {
   contentDigest: string;
   inputDigest: string;
   inputs: Record<string, WorkflowJsonValue>;
-  execution: {
-    repositoryId: string;
-    checkoutId: string;
-    registryScope: WorkflowRegistryScope;
-    approvalContext?: {
-      sessionId: string;
-      principalId: string;
-      permissionSnapshotVersion: number;
-    };
-  };
+  execution: WorkflowRunExecutionSnapshot;
   evidenceRef: string;
   status: WorkflowGraphRunStatus;
   nodes: WorkflowGraphCheckpoint['nodes'];
@@ -195,21 +245,7 @@ function validGraphRecord(value: WorkflowGraphRunRecord): WorkflowGraphRunRecord
   bounded(value.inputDigest, 'WORKFLOW_RUN_INPUT_DIGEST_INVALID');
   if (!value.inputs || typeof value.inputs !== 'object' || Array.isArray(value.inputs))
     throw new Error('WORKFLOW_GRAPH_RUN_INPUTS_INVALID');
-  bounded(value.execution.repositoryId, 'WORKFLOW_GRAPH_RUN_REPOSITORY_ID_INVALID');
-  bounded(value.execution.checkoutId, 'WORKFLOW_GRAPH_RUN_CHECKOUT_ID_INVALID');
-  if (value.execution.registryScope.kind === 'project')
-    bounded(value.execution.registryScope.projectId, 'WORKFLOW_GRAPH_RUN_PROJECT_ID_INVALID');
-  else if (value.execution.registryScope.kind !== 'controller')
-    throw new Error('WORKFLOW_GRAPH_RUN_REGISTRY_SCOPE_INVALID');
-  if (value.execution.approvalContext) {
-    bounded(value.execution.approvalContext.sessionId, 'WORKFLOW_GRAPH_RUN_APPROVAL_SESSION_INVALID');
-    bounded(value.execution.approvalContext.principalId, 'WORKFLOW_GRAPH_RUN_APPROVAL_PRINCIPAL_INVALID');
-    if (
-      !Number.isSafeInteger(value.execution.approvalContext.permissionSnapshotVersion) ||
-      value.execution.approvalContext.permissionSnapshotVersion < 0
-    )
-      throw new Error('WORKFLOW_GRAPH_RUN_APPROVAL_PERMISSION_SNAPSHOT_INVALID');
-  }
+  validWorkflowRunExecutionSnapshot(value.execution);
   bounded(value.evidenceRef, 'WORKFLOW_RUN_EVIDENCE_REF_INVALID');
   if (workflowGraphRunEvidenceRef(value) !== value.evidenceRef) throw new Error('WORKFLOW_RUN_EVIDENCE_REF_MISMATCH');
   if (

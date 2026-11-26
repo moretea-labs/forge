@@ -2,14 +2,12 @@ import type { WorkflowJsonValue } from '../../../packages/workflow-runtime/api/i
 import { resolveWorkflowGraphWait } from '../../../packages/workflow-runtime/api/index';
 import { executionIdentityForRepository } from '../control-plane/execution/execution-identity';
 import { readWorkflowExecutableContentFile } from '../control-plane/persistence/workflow-content-store';
-import {
-  readWorkflowRegistryEntry,
-  type WorkflowRegistryScope,
-} from '../control-plane/persistence/workflow-registry-store';
+import type { WorkflowRegistryScope } from '../control-plane/persistence/workflow-registry-store';
 import {
   listWorkflowGraphRuns,
   readWorkflowGraphRun,
   writeWorkflowGraphRunCheckpoint,
+  type WorkflowGraphRunRecord,
 } from '../control-plane/persistence/workflow-run-store';
 import { getRepository } from '../repositories/registry';
 import { executeRegisteredWorkflowGraph, type WorkflowGraphRuntimeDependencies } from './graph-runtime';
@@ -51,6 +49,19 @@ function waitingNodeMatches(
   return !node.eventTypes || node.eventTypes.includes(signal.eventType);
 }
 
+function pinnedEventWaitAsset(run: WorkflowGraphRunRecord) {
+  const asset = readWorkflowExecutableContentFile(run.execution.contentLocation.path);
+  if (asset.schemaVersion !== 2) throw new Error('WORKFLOW_EVENT_WAIT_GRAPH_REQUIRED');
+  if (
+    asset.workflowId !== run.workflowId ||
+    asset.version !== run.version ||
+    asset.contentDigest !== run.contentDigest
+  ) {
+    throw new Error('WORKFLOW_EVENT_WAIT_PINNED_CONTENT_IDENTITY_MISMATCH');
+  }
+  return asset;
+}
+
 export function findWorkflowGraphEventWaits(
   controllerHome: string,
   signal: WorkflowGraphEventSignal,
@@ -59,17 +70,7 @@ export function findWorkflowGraphEventWaits(
   const at = signalTime(signal);
   const matches: WorkflowGraphEventWaitMatch[] = [];
   for (const run of listWorkflowGraphRuns(controllerHome, { status: 'waiting', limit })) {
-    const registry = readWorkflowRegistryEntry(controllerHome, run.value.execution.registryScope, run.value.workflowId);
-    if (!registry) continue;
-    if (
-      registry.value.version !== run.value.version ||
-      registry.value.contentDigest !== run.value.contentDigest ||
-      (registry.value.engine ?? 'sequence_v1') !== 'graph_v2'
-    ) {
-      continue;
-    }
-    const asset = readWorkflowExecutableContentFile(registry.value.contentLocation.path);
-    if (asset.schemaVersion !== 2) continue;
+    const asset = pinnedEventWaitAsset(run.value);
     for (const state of run.value.nodes) {
       if (state.status !== 'waiting' || state.wait?.kind !== 'event') continue;
       if (state.wait.correlationKey !== signal.correlationKey) continue;
@@ -123,12 +124,7 @@ export async function resumeWorkflowGraphEventWait(
   }
   const repository = getRepository(match.repositoryId, controllerHome);
   if (repository.activeCheckoutId !== match.checkoutId) throw new Error('WORKFLOW_EVENT_WAIT_CHECKOUT_DRIFT');
-  const registry = readWorkflowRegistryEntry(controllerHome, match.registryScope, match.workflowId);
-  if (!registry || registry.value.status !== 'active') throw new Error('WORKFLOW_EVENT_WAIT_REGISTRY_NOT_ACTIVE');
-  if (registry.value.version !== run.value.version || registry.value.contentDigest !== run.value.contentDigest)
-    throw new Error('WORKFLOW_EVENT_WAIT_CONTENT_IDENTITY_MISMATCH');
-  const asset = readWorkflowExecutableContentFile(registry.value.contentLocation.path);
-  if (asset.schemaVersion !== 2) throw new Error('WORKFLOW_EVENT_WAIT_GRAPH_REQUIRED');
+  const asset = pinnedEventWaitAsset(run.value);
   const state = run.value.nodes.find((node) => node.nodeId === match.nodeId);
   const definition = asset.nodes.find((node) => node.nodeId === match.nodeId);
   if (
