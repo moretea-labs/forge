@@ -90,7 +90,7 @@ export const COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION = 'console_unlock_recover';
 export const COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION = 'console_unlock_revoke';
 const DEFAULT_CONSOLE_UNLOCK_TIMEOUT_MS = 15_000;
 const MAX_CONSOLE_UNLOCK_TIMEOUT_MS = 30_000;
-const CONSOLE_CREDENTIAL_HANDLE_PATTERN = [REDACTED]}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CONSOLE_CREDENTIAL_HANDLE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const COMPUTER_ELEMENT_SEMANTIC_ACTIONS = [
   'invoke',
   'click',
@@ -159,7 +159,7 @@ export interface ProtectedConsoleUnlockPreparationInput {
 }
 
 export interface ProtectedConsoleUnlockInvocationInput {
-  credentialHandle: [REDACTED]
+  credentialHandle: string;
   confirmAuthorization: boolean;
   timeoutMs?: number;
 }
@@ -194,7 +194,7 @@ export async function executeProtectedConsoleUnlockPreparation(
     controllerHome,
   );
   const credentialHandle =
-    [REDACTED] providerResult.credential_handle === 'string' ? providerResult.credential_handle : [REDACTED]
+    typeof providerResult.credential_handle === 'string' ? providerResult.credential_handle : undefined;
   if (!credentialHandle || !CONSOLE_CREDENTIAL_HANDLE_PATTERN.test(credentialHandle)) {
     throw new Error(
       'COMPUTER_CONSOLE_UNLOCK_PREPARATION_INVALID: provider did not return a valid opaque credential handle.',
@@ -217,14 +217,14 @@ export async function executeProtectedConsoleUnlockInvocation(
   requireConsoleUnlockAuthorization(input.confirmAuthorization);
   if (!CONSOLE_CREDENTIAL_HANDLE_PATTERN.test(input.credentialHandle)) {
     throw new Error(
-      'COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_HANDLE_REQUIRED: [REDACTED] provider-local opaque credential handle is required.',
+      'COMPUTER_CONSOLE_UNLOCK_CREDENTIAL_HANDLE_REQUIRED: a provider-local opaque credential handle is required.',
     );
   }
   const invocationId = randomUUID();
   const request: ComputerConsoleUnlockRequest = {
     capability: COMPUTER_CONSOLE_UNLOCK_CAPABILITY,
     action: 'unlock_console',
-    credentialHandle: [REDACTED],
+    credentialHandle: input.credentialHandle,
   };
   const providerResult = await executeRuntimeComputerConsoleUnlock(
     request,
@@ -756,7 +756,7 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: {
         type: 'object',
         properties: {
-          credential_handle: [REDACTED]
+          credential_handle: {
             type: 'string',
             minLength: 36,
             maxLength: 64,
@@ -2528,7 +2528,7 @@ export const computerPluginAdapter: AssistantPluginAdapter = {
     if (input.actionId === COMPUTER_CONSOLE_UNLOCK_ACTION) {
       return executeProtectedConsoleUnlockInvocation(
         {
-          credentialHandle: [REDACTED] input.args.credential_handle === 'string' ? input.args.credential_handle : [REDACTED],
+          credentialHandle: typeof input.args.credential_handle === 'string' ? input.args.credential_handle : '',
           confirmAuthorization: input.confirmAuthorization === true,
           timeoutMs: input.timeoutMs,
         },

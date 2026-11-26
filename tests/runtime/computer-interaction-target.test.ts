@@ -417,19 +417,19 @@ async function providerFixture(): Promise<ProviderFixture> {
         } else if (actionId === 'prepare_unlock_console') {
           state.consolePrepareCount += 1;
           state.lastConsoleAuthorization =
-            params.authorization && typeof params.authorization =[REDACTED] 'object'
+            params.authorization && typeof params.authorization === 'object'
               ? (params.authorization as Record<string, unknown>)
               : undefined;
           result = {
             prepared: true,
-            credential_handle: [REDACTED],
+            credential_handle: '11111111-1111-4111-8111-111111111111',
             expires_in_ms: 120_000,
           };
         } else if (actionId === 'unlock_console') {
           state.consoleUnlockCount += 1;
-          state.lastConsoleHandle = typeof params.credential_handle === 'string' ? params.credential_handle : [REDACTED]
+          state.lastConsoleHandle = typeof params.credential_handle === 'string' ? params.credential_handle : undefined;
           state.lastConsoleAuthorization =
-            params.authorization && typeof params.authorization =[REDACTED] 'object'
+            params.authorization && typeof params.authorization === 'object'
               ? (params.authorization as Record<string, unknown>)
               : undefined;
           result = { unlocked: true, verified: true, postcondition: 'console_unlocked' };
@@ -1198,7 +1198,7 @@ describe('Computer durable InteractionTarget authority', () => {
           browserProduct: 'chrome',
           windowId: '7',
           tabId: '9',
-          ownerToken: [REDACTED],
+          ownerToken: 'forge-browser-owned:legacy-session-a',
         },
       });
 
@@ -1226,7 +1226,7 @@ describe('Computer durable InteractionTarget authority', () => {
           browserProduct: 'chrome',
           windowId: '99',
           tabId: '9',
-          ownerToken: [REDACTED],
+          ownerToken: 'forge-browser-owned:legacy-session-a',
         });
       });
 
@@ -1271,7 +1271,7 @@ describe('Computer durable InteractionTarget authority', () => {
           browserProduct: 'chrome',
           windowId: '111',
           tabId: '9',
-          ownerToken: [REDACTED],
+          ownerToken: 'forge-browser-owned:legacy-session-a',
         },
       });
       expect(converged.created).toBe(false);
@@ -1424,7 +1424,7 @@ describe('Computer durable InteractionTarget authority', () => {
   test('native plugin-owned browser tabs reject a different session owner token', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-surface-owner-token-'));
     const stableIdentity = { surfaceType: 'browser-tab' as const, ownership: 'plugin_owned' as const };
-    const binding = (ownerToken: [REDACTED] => ({
+    const binding = (ownerToken: string) => ({
       providerId: 'macos-apple-events',
       browserProduct: 'chrome',
       windowId: '17',
@@ -1471,7 +1471,7 @@ describe('Computer durable InteractionTarget authority', () => {
         targetAuthority.upsertSurface(controllerHome, {
           stableIdentity,
           compatibilityAliases: ['session-without-token'],
-          providerBinding: { ...binding(''), ownerToken: [REDACTED] },
+          providerBinding: { ...binding(''), ownerToken: undefined },
         }),
       ).toThrow('COMPUTER_SURFACE_NATIVE_OWNER_TOKEN_REQUIRED');
     } finally {
@@ -2127,14 +2127,14 @@ describe('protected Computer console unlock composition', () => {
       capability: 'computer.console.unlock.v1',
       action: 'prepare_unlock_console',
       prepared: true,
-      credentialHandle: [REDACTED],
+      credentialHandle: '11111111-1111-4111-8111-111111111111',
     });
     expect(typeof prepared.invocationId).toBe('string');
     expect(fixture.state.consolePrepareCount).toBe(1);
 
     const result = await executeProtectedConsoleUnlockInvocation(
       {
-        credentialHandle: [REDACTED],
+        credentialHandle: String(prepared.credentialHandle),
         confirmAuthorization: true,
         timeoutMs: 5_000,
       },
@@ -2177,14 +2177,14 @@ describe('protected Computer console unlock composition', () => {
 
     await expect(
       computerPluginAdapter.executeAction({
-        ...actionInput(fixture.controllerHome, 'console_unlock', { credential: [REDACTED] }, 'console-raw-credential'),
+        ...actionInput(fixture.controllerHome, 'console_unlock', { credential: 'secret' }, 'console-raw-credential'),
         confirmAuthorization: true,
         timeoutMs: 5_000,
       }),
     ).rejects.toThrow();
 
     const unlocked = await computerPluginAdapter.executeAction({
-      ...actionInput(fixture.controllerHome, 'console_unlock', { credential_handle: [REDACTED] }, 'console-unlock-plugin'),
+      ...actionInput(fixture.controllerHome, 'console_unlock', { credential_handle: handle }, 'console-unlock-plugin'),
       confirmAuthorization: true,
       timeoutMs: 5_000,
     });
@@ -2223,7 +2223,7 @@ describe('protected Computer console unlock composition', () => {
     const request = {
       capability: 'computer.console.unlock.v1' as const,
       action: 'unlock_console' as const,
-      credentialHandle: [REDACTED],
+      credentialHandle: '11111111-1111-4111-8111-111111111111',
     };
     await expect(
       executeRuntimeComputerConsoleUnlock(
