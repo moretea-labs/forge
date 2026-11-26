@@ -1630,9 +1630,9 @@ struct AgentPane: View {
                 model.selectThreadProvider("codex")
             } label: {
                 if model.selectedProvider == "codex" {
-                    Label("Codex",systemImage:"checkmark")
+                    Label("Codex（兼容）",systemImage:"checkmark")
                 } else {
-                    Text("Codex")
+                    Text("Codex（兼容）")
                 }
             }
             .disabled(model.thread?.readOnly == true || (!model.localProviderReady && model.selectedProvider != "codex"))
@@ -1817,7 +1817,7 @@ struct AgentPane: View {
     }
 
     private var quickProviderLabel: String {
-        if model.selectedProvider == "codex" { return "Codex" }
+        if model.selectedProvider == "codex" { return "Codex（兼容）" }
         if model.selectedProvider == "joycode" { return "JoyCode" }
         return model.localApiSettings?.profiles.first(where: { $0.providerId == model.selectedProvider })?.label ?? "API"
     }
