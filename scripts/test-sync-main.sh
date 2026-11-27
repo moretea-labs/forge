@@ -149,19 +149,42 @@ cp "$ROOT/scripts/sync-main.sh" "$LINKED_MAIN/scripts/sync-main.sh"
 chmod +x "$LINKED_MAIN/scripts/sync-main.sh"
 (cd "$LINKED_MAIN" && bash scripts/sync-main.sh --dry-run >/dev/null)
 
-# Divergent histories are refused without rewriting either side.
+# Divergent but non-conflicting histories are reconciled with a merge commit.
+# Dirty paths are never stashed or discarded; automatic merge waits until clean.
+git restore -- unrelated.txt owned.txt
+rm -f scratch.txt
 printf 'local commit\n' >local-only.txt
 git add local-only.txt
 git commit -m 'test: local divergent commit' >/dev/null
-LOCAL_BEFORE="$(git rev-parse HEAD)"
 cd "$OTHER"
 printf 'remote divergent\n' >remote-only.txt
 git add remote-only.txt
 git commit -m 'test: remote divergent commit' >/dev/null
 git push origin main >/dev/null 2>&1
 cd "$WORK"
-expect_failure 'diverged main' 'have diverged' bash scripts/sync-main.sh
-[[ "$(git rev-parse HEAD)" == "$LOCAL_BEFORE" ]] || fail "divergence handling rewrote local main"
+bash scripts/sync-main.sh --check-command true >/dev/null
+[[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || fail "divergent histories did not converge"
+[[ "$(git rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')" == 3 ]] || fail "divergence reconciliation did not preserve both parents"
+[[ "$(git show main:local-only.txt)" == 'local commit' ]] || fail "local divergent commit was lost"
+[[ "$(git show main:remote-only.txt)" == 'remote divergent' ]] || fail "remote divergent commit was lost"
+
+# Conflicting histories remain untouched and are reported for manual resolution.
+printf 'local conflict\n' >conflict.txt
+git add conflict.txt
+git commit -m 'test: local conflicting commit' >/dev/null
+LOCAL_BEFORE="$(git rev-parse HEAD)"
+cd "$OTHER"
+git fetch origin main >/dev/null 2>&1
+git merge --ff-only origin/main >/dev/null
+printf 'remote conflict\n' >conflict.txt
+git add conflict.txt
+git commit -m 'test: remote conflicting commit' >/dev/null
+git push origin main >/dev/null 2>&1
+REMOTE_BEFORE="$(git --git-dir="$BARE" rev-parse main)"
+cd "$WORK"
+expect_failure 'conflicting divergence' 'with merge conflicts' bash scripts/sync-main.sh
+[[ "$(git rev-parse HEAD)" == "$LOCAL_BEFORE" ]] || fail "conflicting divergence rewrote local main"
+[[ "$(git rev-parse origin/main)" == "$REMOTE_BEFORE" ]] || fail "conflicting divergence changed the remote tracking ref"
 
 # Non-main source branches and pre-staged indexes are rejected.
 git switch -c forbidden-feature >/dev/null

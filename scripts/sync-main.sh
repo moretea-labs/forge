@@ -98,6 +98,25 @@ done < <(git worktree list --porcelain | awk '$1 == "worktree" { path = $2 } $1 
 [[ "$MAIN_WORKTREE_PATH" == "$CURRENT_WORKTREE" ]] || fail "run from the canonical main checkout at $MAIN_WORKTREE_PATH"
 git remote get-url "$REMOTE" >/dev/null 2>&1 || fail "remote '$REMOTE' is not configured"
 
+# A launchd interval and a manual invocation must never mutate the same Git
+# refs concurrently. The lock lives in this checkout's Git metadata, not the
+# working tree, and is always released on normal exit/signals.
+LOCK_DIR="$(git rev-parse --git-path forge-sync-main.lock)"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  LOCK_PID="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  if [[ "$LOCK_PID" =~ ^[0-9]+$ ]] && kill -0 "$LOCK_PID" 2>/dev/null; then
+    fail "another sync-main process is active (pid=$LOCK_PID); the next interval will retry"
+  fi
+  [[ -n "$LOCK_PID" ]] || fail "sync-main lock is being initialized; the next interval will retry"
+  rm -f "$LOCK_DIR/pid"
+  rmdir "$LOCK_DIR" 2>/dev/null || fail "stale sync-main lock changed during recovery; retry next interval"
+  mkdir "$LOCK_DIR" 2>/dev/null || fail "another sync-main process acquired the lock; retry next interval"
+fi
+printf '%s\n' "$$" >"$LOCK_DIR/pid"
+trap 'rm -f "$LOCK_DIR/pid"; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 if [[ "$COMMIT" -eq 1 ]]; then
   [[ -n "$MESSAGE" ]] || fail "--commit requires --message"
   [[ "${#PATHS[@]}" -gt 0 ]] || fail "--commit requires one or more explicit --path values"
@@ -110,12 +129,33 @@ elif [[ "${#PATHS[@]}" -gt 0 || -n "$MESSAGE" ]]; then
   fail "--path and --message require --commit"
 fi
 
+reconcile_divergence() {
+  local counts ahead behind merge_preview
+  counts="$(git rev-list --left-right --count "$BRANCH...$REMOTE/$BRANCH")"
+  read -r ahead behind <<<"$counts"
+  [[ "$ahead" -gt 0 && "$behind" -gt 0 ]] || return 0
+
+  # Never auto-stash, reset, or merge through an in-progress Writer. A clean
+  # index and worktree are required before creating a reconciliation commit.
+  [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] ||
+    fail "local main and origin/main diverged (ahead=$ahead behind=$behind) while the checkout is dirty; preserve Writer changes and retry after they commit: $(git status --short)"
+  if ! merge_preview="$(git merge-tree --write-tree "$BRANCH" "$REMOTE/$BRANCH" 2>&1)"; then
+    fail "local main and origin/main diverged (ahead=$ahead behind=$behind) with merge conflicts; automatic reconciliation was refused: $merge_preview"
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[sync-main] would create a merge commit preserving $ahead local and $behind remote commit(s)" >&2
+    return 0
+  fi
+  echo "[sync-main] reconciling $ahead local and $behind remote commit(s) with a reviewed clean merge" >&2
+  git merge --no-edit --no-ff "$REMOTE/$BRANCH" >&2
+}
+
 sync_refs() {
   local counts ahead behind
   counts="$(git rev-list --left-right --count "$BRANCH...$REMOTE/$BRANCH")"
   read -r ahead behind <<<"$counts"
   if [[ "$ahead" -gt 0 && "$behind" -gt 0 ]]; then
-    fail "local main and origin/main have diverged (ahead=$ahead behind=$behind); preserve both histories and reconcile explicitly"
+    fail "local main and origin/main remain divergent (ahead=$ahead behind=$behind) after reconciliation"
   fi
   if [[ "$behind" -gt 0 ]]; then
     if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -137,6 +177,13 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[sync-main] dry-run did not fetch or mutate refs; run without --dry-run for exact reconciliation"
     exit 0
   fi
+  reconcile_divergence
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    read -r ahead behind <<<"$(git rev-list --left-right --count "$BRANCH...$REMOTE/$BRANCH")"
+    [[ "$ahead" -gt 0 && "$behind" -gt 0 ]] || read -r ahead behind < <(sync_refs)
+    echo "[sync-main] dry-run complete (ahead=$ahead behind=$behind)"
+    exit 0
+  fi
   read -r ahead behind < <(sync_refs)
   if [[ "$COMMIT" -eq 1 ]]; then
     echo "[sync-main] would run check: $CHECK_COMMAND"
@@ -151,6 +198,7 @@ fi
 
 echo "[sync-main] fetching $REMOTE/$BRANCH"
 git fetch "$REMOTE" "$BRANCH"
+reconcile_divergence
 read -r ahead behind < <(sync_refs)
 
 # Validate the complete candidate against the remote branch, not only HEAD.

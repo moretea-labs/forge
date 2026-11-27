@@ -18,12 +18,13 @@ extension ForgeClientDesign.Shell {
     inspectorVisible: Bool,
     isZenWorkbench: Bool = false
   ) -> Bool {
-    isZenWorkbench || shouldShowShellBackAction(
-      canNavigateBack: canNavigateBack,
-      isAgentPage: isAgentPage,
-      inspectorVisible: inspectorVisible,
-      isZenWorkbench: isZenWorkbench
-    )
+    isZenWorkbench
+      || shouldShowShellBackAction(
+        canNavigateBack: canNavigateBack,
+        isAgentPage: isAgentPage,
+        inspectorVisible: inspectorVisible,
+        isZenWorkbench: isZenWorkbench
+      )
   }
 
   static func shouldShowShellBackAction(

@@ -146,6 +146,8 @@
     "plugin:install-desktop-operator": "bun scripts/install-desktop-operator-registration.ts",
     "sync:main": "bash scripts/sync-main.sh",
     "sync:main:watch": "bash scripts/sync-main-watch.sh",
+    "sync:main:install": "bash scripts/install-sync-main-launch-agent.sh",
+    "sync:main:uninstall": "bash scripts/install-sync-main-launch-agent.sh uninstall",
     "sync:brain-docs": "bun src/cli/index.ts run sync-brain-docs --all",
     "check:forge-runtime": "bash scripts/verify-forge-runtime.sh",
     "repo:registry": "bun src/cli/v81-entry.ts repo",
