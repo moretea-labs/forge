@@ -21,6 +21,9 @@ test('Mac ChatGPT exact-target path stays native while Linux selects its existin
   expect(target).toContain("process.platform === 'linux'");
   expect(target).toContain('linuxExtension.runtimeComputerChatgptInventory');
   expect(target).toContain('linuxExtension.runtimeComputerChatgptAction');
+  expect(target).toContain("action.kind === 'promote'");
+  expect(registration).toContain("chatgpt_target_promote");
+  expect(registration).toContain("{ kind: 'promote', targetId: bootstrap.targetId, identity }");
   expect(target).toContain('linuxExtension.closeRuntimeComputerChatgptExtension');
 });
 

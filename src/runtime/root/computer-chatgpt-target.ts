@@ -13,6 +13,7 @@ export type RuntimeComputerChatgptActionInput =
   | { kind: 'ensure'; identity: ComputerChatgptTargetIdentity }
   | { kind: 'observe'; identity: ComputerChatgptConversationIdentity }
   | { kind: 'refresh'; identity: ComputerChatgptConversationIdentity }
+  | { kind: 'promote'; targetId: string; identity: ComputerChatgptConversationIdentity }
   | { kind: 'find_marker'; marker: string; bootstrapKey: string }
   | {
       kind: 'prepare' | 'dispatch';
@@ -39,6 +40,23 @@ async function executeRuntimeAction(
   port: ComputerChatgptConversationTargetPort,
   action: RuntimeComputerChatgptActionInput,
 ): Promise<Record<string, unknown>> {
+  if (action.kind === 'promote') {
+    const promoted = await port.promoteBootstrap(action.targetId, action.identity);
+    if (promoted.state !== 'ready') {
+      return {
+        state: promoted.state,
+        failure: promoted.failure,
+        ...(promoted.observation ? { observation: promoted.observation } : {}),
+      };
+    }
+    return {
+      state: 'ready',
+      targetId: promoted.target.targetId,
+      identity: action.identity,
+      ...(promoted.observation ? { observation: promoted.observation } : {}),
+    };
+  }
+
   if (action.kind === 'find_marker') {
     const results = await port.findBySubmittedMarker(action.marker, action.bootstrapKey);
     const matches: Array<Record<string, unknown>> = [];

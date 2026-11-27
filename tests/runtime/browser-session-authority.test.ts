@@ -3396,6 +3396,15 @@ test('Computer reuses exact-target actions for ChatGPT Project bootstrap and kee
   expect(action('chatgpt_target_ensure').argumentsSchema.oneOf).toHaveLength(2);
   expect(action('chatgpt_target_observe').argumentsSchema).toMatchObject({ required: ['canonical_url'] });
   expect(action('chatgpt_target_refresh').argumentsSchema).toMatchObject({ required: ['canonical_url'] });
+  expect(action('chatgpt_target_promote')).toMatchObject({
+    readOnly: false,
+    risk: 'workspace_write',
+    confirmation: 'none',
+    idempotent: true,
+  });
+  expect(action('chatgpt_target_promote').argumentsSchema).toMatchObject({
+    required: ['canonical_url', 'bootstrap_key'],
+  });
   for (const id of ['chatgpt_target_prepare', 'chatgpt_target_dispatch']) {
     expect(action(id).argumentsSchema).toMatchObject({ required: ['prompt'] });
     expect(action(id).argumentsSchema.oneOf).toHaveLength(2);

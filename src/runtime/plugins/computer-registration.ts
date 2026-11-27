@@ -62,6 +62,7 @@ const COMPUTER_CHATGPT_TARGET_INVENTORY_ACTION = 'chatgpt_target_inventory';
 const COMPUTER_CHATGPT_TARGET_ENSURE_ACTION = 'chatgpt_target_ensure';
 const COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION = 'chatgpt_target_observe';
 const COMPUTER_CHATGPT_TARGET_REFRESH_ACTION = 'chatgpt_target_refresh';
+const COMPUTER_CHATGPT_TARGET_PROMOTE_ACTION = 'chatgpt_target_promote';
 const COMPUTER_CHATGPT_TARGET_FIND_MARKER_ACTION = 'chatgpt_target_find_marker';
 const COMPUTER_CHATGPT_TARGET_PREPARE_ACTION = 'chatgpt_target_prepare';
 const COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION = 'chatgpt_target_dispatch';
@@ -70,6 +71,7 @@ const COMPUTER_CHATGPT_TARGET_ACTION_IDS = new Set([
   COMPUTER_CHATGPT_TARGET_ENSURE_ACTION,
   COMPUTER_CHATGPT_TARGET_OBSERVE_ACTION,
   COMPUTER_CHATGPT_TARGET_REFRESH_ACTION,
+  COMPUTER_CHATGPT_TARGET_PROMOTE_ACTION,
   COMPUTER_CHATGPT_TARGET_FIND_MARKER_ACTION,
   COMPUTER_CHATGPT_TARGET_PREPARE_ACTION,
   COMPUTER_CHATGPT_TARGET_DISPATCH_ACTION,
@@ -384,6 +386,33 @@ function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
       },
     },
     {
+      actionId: COMPUTER_CHATGPT_TARGET_PROMOTE_ACTION,
+      title: 'Promote ChatGPT bootstrap target',
+      description:
+        'Atomically transfer one exact Computer-owned bootstrap Surface binding to its proven canonical ChatGPT conversation without sending or changing the composer.',
+      readOnly: false,
+      risk: 'workspace_write',
+      confirmation: 'none',
+      defaultTimeoutMs: 15_000,
+      cancellable: true,
+      idempotent: true,
+      foregroundEffect: 'possible',
+      scopes: ['browser.read', 'browser.profile'],
+      resourceClaims: [
+        { resource: 'provider-state', mode: 'write' },
+        { resource: 'remote', mode: 'read' },
+      ],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          ...conversationIdentitySchema,
+          bootstrap_key: bootstrapIdentitySchema.bootstrap_key,
+        },
+        required: ['canonical_url', 'bootstrap_key'],
+        additionalProperties: false,
+      },
+    },
+    {
       actionId: COMPUTER_CHATGPT_TARGET_FIND_MARKER_ACTION,
       title: 'Find submitted ChatGPT marker',
       description:
@@ -606,6 +635,27 @@ async function executeComputerChatgptTargetAction(
     const identity = computerChatgptConversationIdentity(input.args);
     return await runtimeComputerChatgptAction(input.controllerHome, { kind: 'observe', identity }, input.timeoutMs);
   }
+  if (input.actionId === COMPUTER_CHATGPT_TARGET_PROMOTE_ACTION) {
+    const identity = computerChatgptConversationIdentity(input.args);
+    const bootstrapKey = computerChatgptBootstrapKey(input.args);
+    const bootstrap = computerTargetAuthority.findSurfaceByStableIdentity(input.controllerHome, {
+      surfaceType: 'browser-tab',
+      ownership: 'provider_owned',
+      resource: { namespace: 'chatgpt.bootstrap', key: bootstrapKey },
+    });
+    if (!bootstrap) {
+      return await runtimeComputerChatgptAction(
+        input.controllerHome,
+        { kind: 'observe', identity },
+        input.timeoutMs,
+      );
+    }
+    return await runtimeComputerChatgptAction(
+      input.controllerHome,
+      { kind: 'promote', targetId: bootstrap.targetId, identity },
+      input.timeoutMs,
+    );
+  }
   if (input.actionId === COMPUTER_CHATGPT_TARGET_REFRESH_ACTION) {
     const identity = computerChatgptConversationIdentity(input.args);
     return await runtimeComputerChatgptAction(input.controllerHome, { kind: 'refresh', identity }, input.timeoutMs);
@@ -644,6 +694,10 @@ function resolveComputerChatgptAuthorizationContext(
     input.actionId === COMPUTER_CHATGPT_TARGET_FIND_MARKER_ACTION
   )
     return undefined;
+  if (input.actionId === COMPUTER_CHATGPT_TARGET_PROMOTE_ACTION) {
+    const identity = computerChatgptConversationIdentity(input.args);
+    return { target: { kind: 'chatgpt-conversation', id: identity.conversationId } };
+  }
   const identity = computerChatgptTargetIdentity(input.args);
   if (identity.namespace === 'chatgpt.conversation') {
     return { target: { kind: 'chatgpt-conversation', id: identity.conversationId } };

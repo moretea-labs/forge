@@ -39,6 +39,7 @@ export type RuntimeComputerChatgptActionInput =
   | { kind: 'ensure'; identity: ComputerChatgptTargetIdentity }
   | { kind: 'observe'; identity: ComputerChatgptConversationIdentity }
   | { kind: 'refresh'; identity: ComputerChatgptConversationIdentity }
+  | { kind: 'promote'; targetId: string; identity: ComputerChatgptConversationIdentity }
   | { kind: 'find_marker'; marker: string; bootstrapKey: string }
   | {
       kind: 'prepare' | 'dispatch';
@@ -147,6 +148,13 @@ function runtimeActionInput(value: unknown): RuntimeComputerChatgptActionInput {
     return { kind, marker, bootstrapKey };
   }
   if (kind === 'ensure') return { kind, identity: runtimeTargetIdentity(record.identity) };
+  if (kind === 'promote') {
+    const targetId = typeof record.targetId === 'string' ? record.targetId.trim() : '';
+    if (!/^computer_target_[a-f0-9]{32}$/.test(targetId)) {
+      throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_TARGET_ID_INVALID');
+    }
+    return { kind, targetId, identity: runtimeConversationIdentity(record.identity) };
+  }
   if (kind === 'observe' || kind === 'refresh') return { kind, identity: runtimeConversationIdentity(record.identity) };
   if (kind !== 'prepare' && kind !== 'dispatch') throw new Error('COMPUTER_CHATGPT_RUNTIME_ACTION_INVALID');
   const prompt = typeof record.prompt === 'string' ? record.prompt : '';
@@ -159,6 +167,23 @@ async function executeRuntimeAction(
   port: ComputerChatgptConversationTargetPort,
   action: RuntimeComputerChatgptActionInput,
 ): Promise<Record<string, unknown>> {
+  if (action.kind === 'promote') {
+    const promoted = await port.promoteBootstrap(action.targetId, action.identity);
+    if (promoted.state !== 'ready') {
+      return {
+        state: promoted.state,
+        failure: promoted.failure,
+        ...(promoted.observation ? { observation: promoted.observation } : {}),
+      };
+    }
+    return {
+      state: 'ready',
+      targetId: promoted.target.targetId,
+      identity: action.identity,
+      ...(promoted.observation ? { observation: promoted.observation } : {}),
+    };
+  }
+
   if (action.kind === 'find_marker') {
     const results = await port.findBySubmittedMarker(action.marker, action.bootstrapKey);
     const matches: Array<Record<string, unknown>> = [];

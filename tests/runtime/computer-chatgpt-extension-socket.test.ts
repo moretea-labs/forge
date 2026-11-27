@@ -14,6 +14,7 @@ import {
   closeRuntimeComputerChatgptTarget,
   runtimeComputerChatgptInventory as productionInventory,
 } from '../../src/runtime/root/computer-chatgpt-target';
+import { runtimeComputerInteractionTargetAuthority } from '../../src/runtime/root/computer-target-composition';
 
 const homes: string[] = [];
 afterEach(async () => {
@@ -750,10 +751,13 @@ test('canonical Computer socket opens one Project bootstrap and reconciles its s
       },
     },
   });
-  expect(await ensurePromise).toMatchObject({
+  const ensured = await ensurePromise;
+  expect(ensured).toMatchObject({
     state: 'ready',
     identity: { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl },
   });
+  const bootstrapTargetId = String(ensured.targetId ?? '');
+  expect(bootstrapTargetId).toMatch(/^computer_target_[a-f0-9]{32}$/);
 
   const marker = '[forge-supervisor project=forge-source-wsl run=test]';
   const findPromise = runtimeComputerChatgptAction(
@@ -797,9 +801,46 @@ test('canonical Computer socket opens one Project bootstrap and reconciles its s
     matches: [
       {
         state: 'ready',
+        targetId: bootstrapTargetId,
         identity: { namespace: 'chatgpt.conversation', conversationId: 'successor-123', canonicalUrl },
       },
     ],
+  });
+
+  const promoted = await runtimeComputerChatgptAction(
+    controllerHome,
+    {
+      kind: 'promote',
+      targetId: bootstrapTargetId,
+      identity: { namespace: 'chatgpt.conversation', conversationId: 'successor-123', canonicalUrl },
+    },
+    3_000,
+  );
+  expect(promoted).toMatchObject({
+    state: 'ready',
+    identity: { namespace: 'chatgpt.conversation', conversationId: 'successor-123', canonicalUrl },
+  });
+  expect(promoted.targetId).not.toBe(bootstrapTargetId);
+  const authority = runtimeComputerInteractionTargetAuthority();
+  expect(
+    authority.findSurfaceByStableIdentity(controllerHome, {
+      surfaceType: 'browser-tab',
+      ownership: 'provider_owned',
+      resource: { namespace: 'chatgpt.bootstrap', key: bootstrapKey },
+    }),
+  ).toBeUndefined();
+  expect(
+    authority.findSurfaceByStableIdentity(controllerHome, {
+      surfaceType: 'browser-tab',
+      ownership: 'provider_owned',
+      resource: { namespace: 'chatgpt.conversation', key: 'successor-123' },
+    })?.providerBinding,
+  ).toMatchObject({
+    providerId: 'browser.chrome-extension',
+    providerSessionId: provider,
+    browserProduct: 'chrome',
+    windowId: '31',
+    tabId: '41',
   });
 });
 
