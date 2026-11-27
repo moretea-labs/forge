@@ -35,14 +35,15 @@ enum ForgePalette {
   static let composer = wash(dark: 0.025, light: 0.018)
   static let hairline = wash(dark: 0.065, light: 0.055)
   static let primaryHairlineFocused = wash(dark: 0.20, light: 0.16)
-  // Keep the reading surface neutral and distinguish navigation by tone,
-  // rather than stacking multiple equally gray translucent layers.
-  static let windowTint = Color.clear
-  static let railTint = Color.clear
-  static let listTint = Color.clear
-  static let sidePanel = Color.clear
-  static let floatingTint = wash(dark: 0.022, light: 0.012)
-  static let floatingStroke = wash(dark: 0.032, light: 0.024)
+  // The desktop should remain visible through the shell, but the reading plane
+  // needs a contrast floor. A low-opacity neutral scrim stabilizes text and hit
+  // targets without turning the glass back into an opaque gray canvas.
+  static let windowTint = Color.black.opacity(0.18)
+  static let railTint = Color.black.opacity(0.035)
+  static let listTint = Color.black.opacity(0.055)
+  static let sidePanel = Color.black.opacity(0.10)
+  static let floatingTint = wash(dark: 0.040, light: 0.020)
+  static let floatingStroke = wash(dark: 0.055, light: 0.040)
 }
 
 extension ForgeClientDesign {
@@ -130,6 +131,17 @@ extension View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
           .strokeBorder(ForgePalette.floatingStroke, lineWidth: 0.5)
       }
+  }
+
+  /// SwiftUI WindowGroup paints its own container background on modern macOS.
+  /// Remove that system fill so native behind-window material can sample the desktop.
+  @ViewBuilder
+  func forgeTransparentWindowContainer() -> some View {
+    if #available(macOS 15.0, *) {
+      self.containerBackground(.clear, for: .window)
+    } else {
+      self
+    }
   }
 
   /// Shared behind-window material for the whole application shell.
@@ -229,21 +241,30 @@ struct ForgeVisualEffectView: NSViewRepresentable {
 struct ForgeWindowConfigurator: NSViewRepresentable {
   func makeNSView(context: Context) -> NSView {
     let view = NSView(frame: .zero)
-    DispatchQueue.main.async { configure(view.window) }
+    DispatchQueue.main.async { Self.configure(view.window) }
     return view
   }
 
   func updateNSView(_ nsView: NSView, context: Context) {
-    DispatchQueue.main.async { configure(nsView.window) }
+    DispatchQueue.main.async { Self.configure(nsView.window) }
   }
 
-  private func configure(_ window: NSWindow?) {
+  static func configure(_ window: NSWindow?) {
     guard let window else { return }
     // Keep Forge's glass surfaces Dark regardless of the macOS global appearance.
     window.appearance = NSAppearance(named: .darkAqua)
     window.isOpaque = false
     window.backgroundColor = .clear
     window.titlebarAppearsTransparent = true
+
+    // SwiftUI's WindowGroup hosts the root view in an AppKit content surface.
+    // Clearing only NSWindow is insufficient: an opaque hosting backing layer
+    // can still completely cover behind-window NSVisualEffectView material.
+    if let contentView = window.contentView {
+      contentView.wantsLayer = true
+      contentView.layer?.backgroundColor = NSColor.clear.cgColor
+      contentView.layer?.isOpaque = false
+    }
   }
 }
 

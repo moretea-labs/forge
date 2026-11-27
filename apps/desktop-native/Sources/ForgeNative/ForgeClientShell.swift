@@ -180,13 +180,19 @@ struct ForgeWorkspaceView: View {
         ForgeClientDesign.Shell.shouldShowWindowToolbar(
             canNavigateBack:model.canNavigateBack,
             isAgentPage:model.page == .agent,
-            inspectorVisible:workSurfaceVisible
+            inspectorVisible:workSurfaceVisible,
+            isZenWorkbench:model.zenMode && [.requirement,.plan].contains(model.page)
         )
     }
 
     @ViewBuilder
     private var unifiedWindowToolbarActions: some View {
-        if showsWindowToolbar {
+        if ForgeClientDesign.Shell.shouldShowShellBackAction(
+            canNavigateBack:model.canNavigateBack,
+            isAgentPage:model.page == .agent,
+            inspectorVisible:workSurfaceVisible,
+            isZenWorkbench:model.zenMode && [.requirement,.plan].contains(model.page)
+        ) {
             Button { model.goBack() } label: {
                 ForgeGlyph(.back)
                     .forgeChromeSurface(cornerRadius:8)

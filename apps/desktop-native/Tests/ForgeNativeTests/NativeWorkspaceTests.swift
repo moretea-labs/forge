@@ -117,44 +117,6 @@ final class NativeWorkspaceTests: XCTestCase {
   }
 
   @MainActor
-  func testDuplicateAgentThreadCreatesIndependentConversationAndClearsProviderSession() throws {
-    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    let store = folder.appendingPathComponent("conversations.json")
-    defer { try? FileManager.default.removeItem(at: folder) }
-    let model = NativeWorkspace(store: store)
-    let sourceId = model.threads[0].id
-    model.threads[0].title = "Release review"
-    model.threads[0].repoId = "repo-a"
-    model.threads[0].checkoutId = "checkout-a"
-    model.threads[0].provider = "codex"
-    model.threads[0].providerSessionId = "session-original"
-    model.threads[0].messages = [ChatMessage(role: "user", text: "Review this change")]
-    model.threads[0].pendingDraft = "Continue with edge cases"
-    model.threads[0].pendingContextPaths = ["Sources/App.swift"]
-    model.persist()
-
-    let duplicateId = try XCTUnwrap(model.duplicateThread(sourceId))
-    XCTAssertNotEqual(duplicateId, sourceId)
-    XCTAssertEqual(model.selectedThreadId, duplicateId)
-    XCTAssertEqual(model.threads.first?.title, "Release review（副本）")
-    XCTAssertTrue(model.threads.first?.title.hasSuffix("（副本）") == true)
-    XCTAssertLessThanOrEqual(model.threads.first?.title.count ?? 0, 80)
-    XCTAssertEqual(model.thread?.providerSessionId, nil)
-    XCTAssertEqual(model.thread?.provider, "codex")
-    XCTAssertEqual(model.thread?.repoId, "repo-a")
-    XCTAssertEqual(model.thread?.messages.map(\.text), ["Review this change"])
-    XCTAssertEqual(model.thread?.pendingDraft, "Continue with edge cases")
-    XCTAssertEqual(model.thread?.pendingContextPaths, ["Sources/App.swift"])
-    XCTAssertEqual(
-      model.threads.first(where: { $0.id == sourceId })?.providerSessionId, "session-original")
-
-    let restored = NativeWorkspace(store: store)
-    XCTAssertEqual(restored.threads.count, 2)
-    XCTAssertNotEqual(restored.threads[0].id, restored.threads[1].id)
-    XCTAssertNil(restored.threads[0].providerSessionId)
-  }
-
-  @MainActor
   func testDuplicateLongAgentTitleKeepsCopyMarkerWithinTitleLimit() throws {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }
@@ -199,12 +161,13 @@ final class NativeWorkspaceTests: XCTestCase {
   }
 
   func testBridgeAllowlistExcludesGenericCommandsAndRecoveryMutations() {
-    XCTAssertTrue(ForgeBridge.allowed.contains("send_local_conversation"))
-    XCTAssertTrue(ForgeBridge.allowed.contains("read_local_provider_models"))
+    XCTAssertFalse(ForgeBridge.allowed.contains("send_local_conversation"))
+    XCTAssertFalse(ForgeBridge.allowed.contains("read_local_provider_models"))
+    XCTAssertFalse(ForgeBridge.allowed.contains("read_local_provider_status"))
     XCTAssertTrue(ForgeBridge.allowed.contains("read_agent_git_diff"))
     XCTAssertTrue(ForgeBridge.allowed.contains("commit_agent_git_files"))
     XCTAssertTrue(ForgeBridge.allowed.contains("restore_agent_git_files"))
-    XCTAssertTrue(ForgeBridge.allowed.contains("read_local_conversation_activity"))
+    XCTAssertFalse(ForgeBridge.allowed.contains("read_local_conversation_activity"))
     XCTAssertTrue(ForgeBridge.allowed.contains("verify_recovery_runtime"))
     XCTAssertTrue(ForgeBridge.allowed.contains("repair_connection"))
     XCTAssertTrue(ForgeBridge.allowed.contains("read_tool_surface"))
@@ -358,7 +321,6 @@ final class NativeWorkspaceTests: XCTestCase {
     let original = model.threads.first!.id
     model.newThread()
     model.threads[0].model = "gpt-6.1-sol"
-    model.threads[0].reasoningEffort = "high"
     model.persist()
     XCTAssertEqual(model.threads.count, 2)
     let restored = NativeWorkspace(store: store)
@@ -366,7 +328,6 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertNotEqual(restored.threads.first?.id, original)
     XCTAssertNil(restored.threads.first?.checkoutId)
     XCTAssertEqual(restored.threads.first?.model, "gpt-6.1-sol")
-    XCTAssertEqual(restored.threads.first?.reasoningEffort, "high")
     XCTAssertNil(restored.threads.first?.requirementId)
     XCTAssertNil(restored.threads.first?.planId)
     let persisted = try String(contentsOf: store, encoding: .utf8)
@@ -465,15 +426,16 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(
       NativeWorkspace.initialAgentActivityText(
         provider: "api:openai", requiresKnowledgeRecall: false),
-      "正在连接 API Provider"
+      "正在连接模型服务"
     )
     XCTAssertEqual(
       NativeWorkspace.initialAgentActivityText(provider: "joycode", requiresKnowledgeRecall: false),
       "正在连接 JoyCode"
     )
     XCTAssertEqual(
-      NativeWorkspace.initialAgentActivityText(provider: "codex", requiresKnowledgeRecall: false),
-      "正在启动 Codex"
+      NativeWorkspace.initialAgentActivityText(
+        provider: "api:openai", requiresKnowledgeRecall: false),
+      "正在连接模型服务"
     )
   }
 
@@ -588,10 +550,13 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(model.selectedProvider, "api:legacy-api")
     model.selectThreadProvider("api:legacy-api")
     XCTAssertEqual(model.thread?.provider, "api:legacy-api")
+    let pendingImage = FileManager.default.temporaryDirectory.appendingPathComponent("retained.png")
+    model.pendingImageURLs = [pendingImage]
     model.threads[0].messages.append(ChatMessage(role: "user", text: "hello"))
 
     model.selectThreadProvider("codex")
-    XCTAssertEqual(model.thread?.provider, "codex")
+    XCTAssertEqual(model.pendingImageURLs, [pendingImage])
+    XCTAssertEqual(model.thread?.provider, "api:legacy-api")
     model.selectThreadProvider("api:legacy-api")
     XCTAssertEqual(model.thread?.provider, "api:legacy-api")
 
@@ -601,7 +566,7 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(restored.selectedProvider, "api:legacy-api")
 
     restored.threads[0].provider = nil
-    XCTAssertEqual(restored.selectedProvider, "codex")
+    XCTAssertEqual(restored.selectedProvider, "api")
   }
 
   @MainActor
@@ -673,7 +638,6 @@ final class NativeWorkspaceTests: XCTestCase {
 
     restored.selectThreadProvider("codex")
     XCTAssertEqual(restored.thread?.provider, "api:legacy-api")
-    XCTAssertEqual(restored.error, "只读分析会话只能使用 API Provider。")
 
     var codexThread = ChatThread()
     codexThread.repoId = "repo_a"
@@ -684,7 +648,9 @@ final class NativeWorkspaceTests: XCTestCase {
     codexThread.provider = "codex"
     restored.threads = [codexThread]
     restored.selectedThreadId = codexThread.id
-    XCTAssertEqual(restored.agentSendBlockReason, "只读分析会话需要可用的 API Provider。")
+    XCTAssertEqual(restored.selectedProvider, "api")
+    XCTAssertFalse(restored.selectedProviderReady)
+    XCTAssertNotNil(restored.agentSendBlockReason)
   }
 
   func testReadOnlyAnalysisProviderFallsBackFromCodex() {
@@ -993,7 +959,7 @@ final class NativeWorkspaceTests: XCTestCase {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }
     let model = NativeWorkspace(store: folder.appendingPathComponent("conversations.json"))
-    XCTAssertEqual(model.agentSendBlockReason, "Codex 未就绪，请刷新 Provider 状态。")
+    XCTAssertEqual(model.agentSendBlockReason, "API Provider 未就绪，请检查 Profile、Endpoint、Key 和模型。")
 
     model.threads[0].repoId = "repo-test"
     model.repoId = "repo-test"
@@ -1040,9 +1006,9 @@ final class NativeWorkspaceTests: XCTestCase {
     let original = NativeWorkspace(store: store)
     let first = try XCTUnwrap(original.selectedThreadId)
     original.checkoutRoot = checkout
-    original.imageInputAvailable = true
     original.draft = "Review the attached plan and screenshot"
-    original.addPendingImages([image])
+    original.pendingImageURLs = [image]
+    original.persist()
     original.addPendingContextFiles([source])
     XCTAssertEqual(original.pendingContextPaths, ["Sources/Plan.swift"])
     XCTAssertEqual(original.pendingImageURLs, [image])
@@ -1051,11 +1017,10 @@ final class NativeWorkspaceTests: XCTestCase {
     let restored = NativeWorkspace(store: store)
     restored.selectThread(first)
     restored.checkoutRoot = checkout
-    restored.imageInputAvailable = true
     XCTAssertEqual(restored.draft, "Review the attached plan and screenshot")
     XCTAssertEqual(restored.pendingContextPaths, ["Sources/Plan.swift"])
     XCTAssertEqual(restored.pendingImageURLs, [image])
-    XCTAssertEqual(restored.agentSendBlockReason, "Codex 未就绪，请刷新 Provider 状态。")
+    XCTAssertEqual(restored.agentSendBlockReason, "API Provider 未就绪，请检查 Profile、Endpoint、Key 和模型。")
 
     try FileManager.default.removeItem(at: image)
     let imageIssue = try XCTUnwrap(restored.agentSendBlockReason)
@@ -1079,7 +1044,7 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertTrue(restored.thread?.messages.isEmpty == true)
 
     restored.removePendingContextPath("Sources/Plan.swift")
-    XCTAssertEqual(restored.agentSendBlockReason, "Codex 未就绪，请刷新 Provider 状态。")
+    XCTAssertEqual(restored.agentSendBlockReason, "API Provider 未就绪，请检查 Profile、Endpoint、Key 和模型。")
   }
 
   func testInterruptedLightweightProcessCarriesCanonicalHandleIntoRecovery() {
@@ -2408,18 +2373,6 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertNil(rows.last?.requirementId)
   }
 
-  func testLocalProviderReadinessUsesCanonicalStatusField() {
-    XCTAssertTrue(
-      NativeWorkspace.localProviderStatusReady([
-        "status": "ready", "label": "localized provider label",
-      ]))
-    XCTAssertFalse(
-      NativeWorkspace.localProviderStatusReady([
-        "status": "unavailable", "label": "Codex 已连接",
-      ]))
-    XCTAssertFalse(NativeWorkspace.localProviderStatusReady([:]))
-  }
-
   func testMcpShellPathQuotingPreservesSpacesAndEmbeddedQuotes() {
     XCTAssertEqual(
       shellQuotedMcpPath("/DEMO_HOME/Dev Projects/forge"),
@@ -2607,17 +2560,8 @@ final class NativeWorkspaceTests: XCTestCase {
             "concepts": ["authority"], "facets": ["architecture"], "confidence": 0.9,
             "scope": ["kind": "project", "id": "repo-a"],
             "provenance": ["sourceKind": "learning", "recordedAt": "2026-11-07T00:00:00Z"],
-          ],
-          "activation": ["score": 0.4],
-        ],
-        [
-          "memory": [
-            "id": "mem-b", "revision": 1, "canonicalText": "Prefer the relevant memory",
-            "concepts": ["relevance"], "facets": ["search"], "confidence": 1.0,
-            "scope": ["kind": "workspace", "id": "workspace-personal"],
-          ],
-          "activation": ["score": 2.5],
-        ],
+          ]
+        ]
       ],
       "inspected": 4, "truncated": false, "gaps": [],
     ])
@@ -2626,9 +2570,6 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(result?.inspected, 4)
     XCTAssertEqual(result?.items.first?.memory.canonicalText, "Keep one authority")
     XCTAssertEqual(result?.items.first?.memory.scope.kind, "project")
-    XCTAssertEqual(result?.items.first?.activation?.score, 0.4)
-    XCTAssertEqual(result?.rankedItems(query: "").first?.memory.id, "mem-a")
-    XCTAssertEqual(result?.rankedItems(query: "App Store Connect").first?.memory.id, "mem-b")
   }
 
   func testSavedApiProfileProjectionAndBridgeBoundary() {
@@ -2748,7 +2689,7 @@ final class NativeWorkspaceTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: folder) }
     let model = NativeWorkspace(store: folder.appendingPathComponent("conversations.json"))
     model.localApiSettings = LocalApiSettingsDetail(
-      provider: "codex", endpoint: "https://api.example.com/v1",
+      provider: "api", endpoint: "https://api.example.com/v1",
       model: "", apiProtocol: "openai", hasKey: true, endpointReady: true
     )
     model.threads[0].provider = "api"
@@ -2757,7 +2698,7 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertTrue(model.selectedProviderReady)
 
     model.localApiSettings = LocalApiSettingsDetail(
-      provider: "codex", endpoint: "",
+      provider: "api", endpoint: "",
       model: "", apiProtocol: "openai", hasKey: true, endpointReady: false
     )
     XCTAssertFalse(model.selectedProviderReady)
@@ -2934,45 +2875,14 @@ final class NativeWorkspaceTests: XCTestCase {
     let id = model.threads[0].id
     model.threads[0].repoId = "repo_a"
     model.threads[0].checkoutId = "checkout_a"
-    model.threads[0].providerSessionId = "session_a"
 
     model.renameThread(id, to: "  Agent lifecycle polish  ")
 
     XCTAssertEqual(model.threads[0].title, "Agent lifecycle polish")
     XCTAssertEqual(model.threads[0].repoId, "repo_a")
     XCTAssertEqual(model.threads[0].checkoutId, "checkout_a")
-    XCTAssertEqual(model.threads[0].providerSessionId, "session_a")
     let restored = NativeWorkspace(store: store)
     XCTAssertEqual(restored.threads.first?.title, "Agent lifecycle polish")
-    XCTAssertEqual(restored.threads.first?.providerSessionId, "session_a")
-  }
-
-  @MainActor
-  func testCompletedActivityEventsDecodeFromRuntimeResponseShape() {
-    let events = NativeWorkspace.decodeActivityEvents([
-      [
-        "phase": "tool",
-        "label": "正在执行命令",
-        "detail": "git status --short",
-        "status": "completed",
-        "startedAt": "2026-11-07T00:00:00.000Z",
-        "completedAt": "2026-11-07T00:00:01.000Z",
-      ]
-    ])
-    XCTAssertEqual(events?.count, 1)
-    XCTAssertEqual(events?.first?.phase, "tool")
-    XCTAssertEqual(events?.first?.detail, "git status --short")
-    XCTAssertEqual(events?.first?.status, "completed")
-    let legacy = NativeWorkspace.decodeActivityEvents([
-      [
-        "phase": "tool",
-        "label": "正在使用 forge · rh_status",
-        "status": "completed",
-        "startedAt": "2026-11-07T00:00:00.000Z",
-      ]
-    ])
-    XCTAssertNil(legacy?.first?.detail)
-    XCTAssertNil(NativeWorkspace.decodeActivityEvents([]))
   }
 
   @MainActor
@@ -3903,7 +3813,6 @@ final class NativeWorkspaceTests: XCTestCase {
     let first = model.selectedThreadId!
     model.threads[0].repoId = "repo_a"
     model.threads[0].checkoutId = "checkout_a"
-    model.threads[0].providerSessionId = "session_a"
     model.newThread()
     let selected = model.selectedThreadId!
     model.threads[0].repoId = "repo_b"
@@ -4351,15 +4260,9 @@ final class NativeWorkspaceTests: XCTestCase {
       attachmentNames: ["screen.png"], attachmentPaths: [image.path]
     )
 
-    model.imageInputAvailable = false
     model.reeditMessage(message)
     XCTAssertEqual(model.pendingImageURLs, [image])
-    XCTAssertTrue(model.error?.contains("不支持图片输入") == true)
-
-    model.imageInputAvailable = true
-    model.reeditMessage(message)
-    XCTAssertEqual(model.pendingImageURLs, [image])
-    XCTAssertNil(model.error)
+    XCTAssertTrue(model.error?.contains("Forge Native Agent 暂不支持图片输入") == true)
   }
 
   @MainActor
@@ -4368,7 +4271,6 @@ final class NativeWorkspaceTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: folder) }
     let missing = folder.appendingPathComponent("missing.png")
     let model = NativeWorkspace(store: folder.appendingPathComponent("conversations.json"))
-    model.imageInputAvailable = true
     model.reeditMessage(
       ChatMessage(
         role: "user", text: "inspect this image",
@@ -4379,7 +4281,7 @@ final class NativeWorkspaceTests: XCTestCase {
   }
 
   @MainActor
-  func testAttachmentSelectionAppendsDedupesAndDroppedFilesReuseExistingPaths() throws {
+  func testAttachmentSelectionRejectsUnsupportedImagesAndAcceptsCheckoutFiles() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let nested = root.appendingPathComponent("Sources")
     let first = nested.appendingPathComponent("First.swift")
@@ -4391,21 +4293,22 @@ final class NativeWorkspaceTests: XCTestCase {
 
     let model = NativeWorkspace(store: root.appendingPathComponent("conversations.json"))
     model.checkoutRoot = root
-    model.imageInputAvailable = true
     let image1 = URL(fileURLWithPath: "/tmp/drop-one.png")
     let image2 = URL(fileURLWithPath: "/tmp/drop-two.jpg")
 
     model.addPendingImages([image1])
     model.addPendingImages([image1, image2])
-    XCTAssertEqual(model.pendingImageURLs, [image1, image2])
+    XCTAssertTrue(model.pendingImageURLs.isEmpty)
+    XCTAssertTrue(model.error?.contains("Forge Native Agent 暂不支持图片输入") == true)
 
     model.addPendingContextFiles([first])
     model.addPendingContextFiles([first, second])
     XCTAssertEqual(model.pendingContextPaths, ["Sources/First.swift", "Sources/Second.swift"])
 
     model.addDroppedAttachments([image2, second])
-    XCTAssertEqual(model.pendingImageURLs, [image1, image2])
+    XCTAssertTrue(model.pendingImageURLs.isEmpty)
     XCTAssertEqual(model.pendingContextPaths, ["Sources/First.swift", "Sources/Second.swift"])
+    XCTAssertTrue(model.error?.contains("Forge Native Agent 暂不支持图片输入") == true)
   }
 
   @MainActor
@@ -5172,20 +5075,16 @@ extension NativeWorkspaceTests {
 
 extension NativeWorkspaceTests {
   @MainActor
-  func testPendingImageDraftIsCapabilityGatedBoundedAndNotPersistedAsPaths() {
+  func testPendingImageDraftIsRejectedWithoutLosingExistingConversationHistory() {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let store = folder.appendingPathComponent("conversations.json")
     defer { try? FileManager.default.removeItem(at: folder) }
     let model = NativeWorkspace(store: store)
 
     let images = (0..<5).map { URL(fileURLWithPath: "/tmp/image-\($0).png") }
-    model.imageInputAvailable = false
     model.addPendingImages(images)
     XCTAssertTrue(model.pendingImageURLs.isEmpty)
-
-    model.imageInputAvailable = true
-    model.addPendingImages(images)
-    XCTAssertEqual(model.pendingImageURLs.count, 4)
+    XCTAssertTrue(model.error?.contains("Forge Native Agent 暂不支持图片输入") == true)
     XCTAssertTrue(model.threads[0].messages.isEmpty)
   }
 }

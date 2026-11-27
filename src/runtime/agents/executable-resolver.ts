@@ -166,17 +166,17 @@ export function resolveAgentExecutable(
 }
 
 export function assertAgentExecutableReady(identity: AgentExecutableIdentity): void {
-  if (identity.agent !== 'codex') return;
+  const label = identity.agent === 'codex' ? 'Codex' : 'Claude Code';
   if (identity.authenticationReadiness === 'required') {
     throw new AgentExecutableError(
       'AGENT_AUTHENTICATION_REQUIRED',
-      'Local codex authentication is required before dispatch. Run the normal Codex login flow, then retry readiness.',
+      'Local ' + label + ' authentication is required before dispatch. Complete the provider\'s normal login flow, then retry readiness.',
     );
   }
   if (identity.authenticationReadiness !== 'ready') {
     throw new AgentExecutableError(
       'AGENT_AUTHENTICATION_UNVERIFIED',
-      'Local codex authentication readiness could not be verified; dispatch is blocked rather than guessing.',
+      'Local ' + label + ' authentication readiness could not be verified; dispatch is blocked rather than guessing.',
     );
   }
 }

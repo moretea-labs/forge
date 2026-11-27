@@ -864,6 +864,7 @@ struct AgentPane: View {
                     }
                 }
                 .scrollIndicators(.automatic)
+                .scrollContentBackground(.hidden)
                 .background {
                     GeometryReader { viewport in
                         Color.clear
@@ -1145,12 +1146,8 @@ struct AgentPane: View {
                             .help(reason)
                         Spacer(minLength:6)
                         if !model.selectedProviderReady {
-                            Button(model.selectedProvider == "codex" ? "刷新状态" : "打开设置") {
-                                if model.selectedProvider == "codex" {
-                                    Task { await model.refresh() }
-                                } else {
-                                    model.show(.settings)
-                                }
+                            Button("打开设置") {
+                                model.show(.settings)
                             }
                             .buttonStyle(.plain)
                             .fontWeight(.semibold)
@@ -1589,10 +1586,7 @@ struct AgentPane: View {
         if showsQuickProviderPicker {
             quickProviderMenu
         }
-        quickModelMenu
-        if model.selectedProvider == "codex" && !model.selectedReasoningOptions.isEmpty {
-            quickReasoningMenu
-        }
+        quickModelControl
         if model.thread?.readOnly != true,
            model.checkoutId != nil,
            NativeWorkspace.matchesExternalProvider(model.selectedProvider) {
@@ -1606,15 +1600,13 @@ struct AgentPane: View {
 
     private var quickProviderCount: Int {
         let profiles = model.localApiSettings?.profiles ?? []
-        var count = model.localProviderReady ? 1 : 0
-        count += profiles.filter(\.endpointReady).count
+        var count = profiles.filter(\.endpointReady).count
         if model.joyCodeProfileReady { count += 1 }
-        // Preserve the currently bound provider even if its profile is temporarily unavailable.
-        if model.selectedProvider == "codex" && !model.localProviderReady { count += 1 }
         if model.selectedProvider == "joycode" && !model.joyCodeProfileReady { count += 1 }
-        if let selectedProfile = profiles.first(where: { $0.providerId == model.selectedProvider }) {
-            if !selectedProfile.endpointReady { count += 1 }
-        } else if model.selectedProvider != "codex" && model.selectedProvider != "joycode" {
+        if let selectedProfile = profiles.first(where: { $0.providerId == model.selectedProvider }),
+           !selectedProfile.endpointReady {
+            count += 1
+        } else if model.selectedProvider == "api" {
             count += 1
         }
         return count
@@ -1626,17 +1618,6 @@ struct AgentPane: View {
 
     private var quickProviderMenu: some View {
         Menu {
-            Button {
-                model.selectThreadProvider("codex")
-            } label: {
-                if model.selectedProvider == "codex" {
-                    Label("Codex（兼容）",systemImage:"checkmark")
-                } else {
-                    Text("Codex（兼容）")
-                }
-            }
-            .disabled(model.thread?.readOnly == true || (!model.localProviderReady && model.selectedProvider != "codex"))
-
             if let profiles = model.localApiSettings?.profiles {
                 ForEach(profiles) { profile in
                     Button {
@@ -1681,70 +1662,20 @@ struct AgentPane: View {
         .accessibilityIdentifier("agent.provider.quick")
     }
 
-    private var quickModelMenu: some View {
-        Menu {
-            if model.selectedProvider == "codex" {
-                ForEach(model.agentModels) { option in
-                    Button {
-                        model.selectAgentModel(option.slug)
-                    } label: {
-                        if model.selectedAgentModel?.slug == option.slug {
-                            Label(option.displayName,systemImage:"checkmark")
-                        } else {
-                            Text(option.displayName)
-                        }
-                    }
-                    .disabled(model.busy)
-                }
-            } else {
-                let label = model.selectedApiModel.isEmpty ? "未配置模型" : model.selectedApiModel
-                Button(label) {}
-                    .disabled(true)
-                Divider()
-                Button("前往模型服务设置…") {
-                    model.show(.settings)
-                }
-                .disabled(model.busy)
-            }
+    private var quickModelControl: some View {
+        Button {
+            model.show(.settings)
         } label: {
-            quickControlLabel(quickModelLabel,systemImage:"cube")
+            quickControlLabel(quickModelLabel, systemImage: "cube")
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden)
-        .tint(ForgePalette.secondary)
-        .fixedSize()
-        .disabled(model.busy || (model.selectedProvider == "codex" && model.agentModels.isEmpty))
-        .help(model.selectedProvider == "codex" ? "切换模型" : "当前模型由外部服务提供；配置可在设置中管理")
-        .accessibilityLabel("模型")
-        .accessibilityValue(quickModelLabel)
-        .accessibilityIdentifier("agent.model.quick")
-    }
-
-    private var quickReasoningMenu: some View {
-        Menu {
-            ForEach(model.selectedReasoningOptions) { option in
-                Button {
-                    model.selectReasoningEffort(option.effort)
-                } label: {
-                    let label = reasoningLabel(option.effort)
-                    if model.selectedReasoningEffort == option.effort {
-                        Label(label,systemImage:"checkmark")
-                    } else {
-                        Text(label)
-                    }
-                }
-                .disabled(model.busy)
-            }
-        } label: {
-            quickControlLabel(reasoningLabel(model.selectedReasoningEffort),systemImage:"brain.head.profile")
-        }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .buttonStyle(.plain)
         .tint(ForgePalette.secondary)
         .fixedSize()
         .disabled(model.busy)
-        .help("切换当前模型的推理强度")
-        .accessibilityLabel("推理强度")
-        .accessibilityValue(reasoningLabel(model.selectedReasoningEffort))
-        .accessibilityIdentifier("agent.reasoning.quick")
+        .help("打开设置管理当前模型服务")
+        .accessibilityLabel("模型")
+        .accessibilityValue(quickModelLabel)
+        .accessibilityIdentifier("agent.model.quick")
     }
 
     private var quickRepositoryAccessMenu: some View {
@@ -1817,16 +1748,12 @@ struct AgentPane: View {
     }
 
     private var quickProviderLabel: String {
-        if model.selectedProvider == "codex" { return "Codex（兼容）" }
         if model.selectedProvider == "joycode" { return "JoyCode" }
-        return model.localApiSettings?.profiles.first(where: { $0.providerId == model.selectedProvider })?.label ?? "API"
+        return model.localApiSettings?.profiles.first(where: { $0.providerId == model.selectedProvider })?.label ?? "选择服务"
     }
 
     private var quickModelLabel: String {
-        if model.selectedProvider == "codex" {
-            return model.selectedAgentModel?.displayName ?? "模型"
-        }
-        return model.selectedApiModel.isEmpty ? "模型" : model.selectedApiModel
+        model.selectedApiModel.isEmpty ? "模型" : model.selectedApiModel
     }
 
     private func activityIcon(_ phase: String) -> String {
@@ -1858,18 +1785,7 @@ struct AgentPane: View {
                     in:RoundedRectangle(cornerRadius:8,style:.continuous))
     }
 
-    private func reasoningLabel(_ effort: String) -> String {
-        switch effort.lowercased() {
-        case "low": return "Low"
-        case "medium": return "Medium"
-        case "high": return "High"
-        case "xhigh": return "XHigh"
-        case "max": return "Max"
-        case "ultra": return "Ultra"
-        case "": return "Reasoning"
-        default: return effort
-        }
-    }
+
 }
 
 @MainActor

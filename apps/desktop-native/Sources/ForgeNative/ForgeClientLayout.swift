@@ -10,12 +10,29 @@ extension ForgeClientDesign.Shell {
   static let composerControlInset: CGFloat = 13
   static let composerControlHeight: CGFloat = 30
 
+  /// Zen owns its contextual native toolbar; the shell only keeps the window toolbar visible.
+  /// The shell must never add a second Back action to a Zen surface.
   static func shouldShowWindowToolbar(
     canNavigateBack: Bool,
     isAgentPage: Bool,
-    inspectorVisible: Bool
+    inspectorVisible: Bool,
+    isZenWorkbench: Bool = false
   ) -> Bool {
-    canNavigateBack && !(isAgentPage && inspectorVisible)
+    isZenWorkbench || shouldShowShellBackAction(
+      canNavigateBack: canNavigateBack,
+      isAgentPage: isAgentPage,
+      inspectorVisible: inspectorVisible,
+      isZenWorkbench: isZenWorkbench
+    )
+  }
+
+  static func shouldShowShellBackAction(
+    canNavigateBack: Bool,
+    isAgentPage: Bool,
+    inspectorVisible: Bool,
+    isZenWorkbench: Bool
+  ) -> Bool {
+    canNavigateBack && !isZenWorkbench && !(isAgentPage && inspectorVisible)
   }
 
   // The reading cap and gutters determine the actual Composer width.

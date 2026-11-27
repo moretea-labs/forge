@@ -42,6 +42,7 @@ export const CAPABILITY_DOMAINS = [
   'plugin',
   'controller',
   'workflow',
+  'event',
   'evidence',
   'maintenance',
 ] as const;
@@ -56,6 +57,7 @@ export const CAPABILITY_GROUPS = [
   'ios',
   'plugin',
   'workflow',
+  'event',
   'evidence',
   'runtime-maintenance',
 ] as const;

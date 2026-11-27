@@ -717,20 +717,6 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             )
             .await
         }
-        "read_local_provider_status" => read_local_provider_status().await,
-        "read_local_provider_models" => read_local_provider_models().await,
-        "read_local_conversation_activity" => {
-            call_runtime_tool(
-                "capability_execute",
-                json!({
-                    "capability_id": "controller.local_conversation",
-                    "action": "activity",
-                    "arguments": { "conversation_id": required(args, "conversationId")? },
-                    "request_id": request_id("native-local-conversation-activity")
-                }),
-            )
-            .await
-        }
         "read_agent_git_diff" => {
             let repo_id = required(args, "repoId")?;
             let checkout_id = required(args, "checkoutId")?;
@@ -792,30 +778,6 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("confirmAuthorization").and_then(Value::as_bool),
             )
             .await
-        }
-        "send_local_conversation" => {
-            send_local_conversation(
-                required(args, "conversationId")?,
-                args.get("providerSessionId")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                required(args, "prompt")?,
-                args.get("model").and_then(Value::as_str).map(str::to_owned),
-                args.get("reasoningEffort")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                args.get("repoId")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                args.get("checkoutId")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                optional_strings(args, "imagePaths", 4)?,
-            )
-            .await
-        }
-        "cancel_local_conversation" => {
-            cancel_local_conversation(required(args, "conversationId")?).await
         }
         _ => Err("FORGE_NATIVE_BRIDGE_OPERATION_UNSUPPORTED".into()),
     }

@@ -132,11 +132,9 @@ enum ForgeBridge {
     "read_connection_status", "configure_initial_connection", "repair_connection",
     "read_plugin_management", "read_tool_surface", "install_official_plugin",
     "read_plugin_authorizations", "revoke_plugin_authorization",
-    "read_local_provider_status", "read_local_provider_models", "read_local_conversation_activity",
     "read_agent_git_diff", "commit_agent_git_files", "restore_agent_git_files",
     "read_local_api_settings", "save_local_api_settings", "managed_api_credential_control",
     "runtime_cleanup_preview", "runtime_cleanup_apply", "runtime_process_wait",
-    "send_local_conversation", "cancel_local_conversation",
   ]
 
   static func startApiTurn(_ arguments: [String: Any]) throws -> ForgeApiTurn {

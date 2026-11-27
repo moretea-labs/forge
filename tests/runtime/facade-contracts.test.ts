@@ -880,6 +880,7 @@ describe('handoff and facade contracts', () => {
     expect(capabilities.some((entry) => entry.exposedVia === 'plugin_action_execute')).toBe(true);
     expect([...new Set(capabilities.map((entry) => entry.group))].sort()).toEqual([
       'controller',
+      'event',
       'evidence',
       'git',
       'ios',
@@ -901,6 +902,12 @@ describe('handoff and facade contracts', () => {
     expect(groups.find((entry) => entry.group === 'workflow')).toMatchObject({
       capabilityCount: 1,
       domains: ['workflow'],
+      executionSurfaces: ['capability_execute'],
+      facadeTools: ['capability_execute'],
+    });
+    expect(groups.find((entry) => entry.group === 'event')).toMatchObject({
+      capabilityCount: 1,
+      domains: ['event'],
       executionSurfaces: ['capability_execute'],
       facadeTools: ['capability_execute'],
     });

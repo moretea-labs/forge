@@ -2,6 +2,16 @@ import XCTest
 @testable import ForgeNative
 
 final class AgentVoiceDictationTests: XCTestCase {
+    func testAuthorizationWaitReturnsFirstCallbackAndFailsClosedWhenProviderHangs() async {
+        let accepted: Bool? = await AgentVoiceDictation.awaitAuthorization(timeout: 0.5) { completion in
+            completion(true)
+        }
+        XCTAssertEqual(accepted, true)
+
+        let timedOut: Bool? = await AgentVoiceDictation.awaitAuthorization(timeout: 0.05) { _ in }
+        XCTAssertNil(timedOut)
+    }
+
     @MainActor
     func testCancelledVoiceStartCanRestartWithoutStaleCompletionClearingIt() throws {
         let dictation = AgentVoiceDictation()

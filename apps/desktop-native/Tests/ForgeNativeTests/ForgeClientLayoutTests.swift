@@ -120,6 +120,28 @@ final class ForgeClientLayoutTests: XCTestCase {
     XCTAssertEqual(ForgeClientDesign.Shell.composerControlHeight, 30)
   }
 
+  func testWindowConfiguratorKeepsHostingSurfaceTransparentForBehindWindowGlass() {
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+      styleMask: [.titled],
+      backing: .buffered,
+      defer: false
+    )
+    let contentView = NSView(frame: window.contentView?.bounds ?? .zero)
+    contentView.wantsLayer = true
+    contentView.layer?.backgroundColor = NSColor.red.cgColor
+    contentView.layer?.isOpaque = true
+    window.contentView = contentView
+
+    ForgeWindowConfigurator.configure(window)
+
+    XCTAssertFalse(window.isOpaque)
+    XCTAssertEqual(window.backgroundColor.alphaComponent, 0, accuracy: 0.001)
+    XCTAssertTrue(contentView.wantsLayer)
+    XCTAssertFalse(contentView.layer?.isOpaque ?? true)
+    XCTAssertEqual(contentView.layer?.backgroundColor?.alpha ?? 1, 0, accuracy: 0.001)
+  }
+
   func testClientOwnsDarkGlassAppearanceIndependentOfSystemTheme() throws {
     let testFile = URL(fileURLWithPath: #filePath)
     let packageRoot =
@@ -135,7 +157,23 @@ final class ForgeClientLayoutTests: XCTestCase {
       contentsOf: packageRoot.appendingPathComponent("Sources/ForgeNative/ForgeClientDesign.swift"),
       encoding: .utf8
     )
+    let agentSource = try String(
+      contentsOf: packageRoot.appendingPathComponent(
+        "Sources/ForgeNative/AgentWorkbenchViews.swift"
+      ),
+      encoding: .utf8
+    )
     XCTAssertTrue(appSource.contains(".preferredColorScheme(.dark)"))
+    XCTAssertTrue(appSource.contains(".forgeTransparentWindowContainer()"))
+    XCTAssertTrue(designSource.contains("containerBackground(.clear, for: .window)"))
+    let transcriptGlassContract = [
+      ".scrollIndicators(.automatic)",
+      "                .scrollContentBackground(.hidden)",
+      "                .background {",
+    ].joined(separator: "\n")
+    XCTAssertTrue(agentSource.contains(transcriptGlassContract))
+    XCTAssertTrue(designSource.contains("static let windowTint = Color.black.opacity(0.18)"))
+    XCTAssertTrue(designSource.contains("static let sidePanel = Color.black.opacity(0.10)"))
     XCTAssertTrue(designSource.contains("window.appearance = NSAppearance(named: .darkAqua)"))
     XCTAssertFalse(designSource.contains("window.appearance = nil"))
   }
