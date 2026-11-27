@@ -166,7 +166,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'repository_workbench',
-    'Return Workbench state or invoke one bounded Thin Harness operation without adding top-level MCP tools. Prefer execute_command plus exact read_repository_file calls for model-directed source discovery; use batch_execute only when the model explicitly selects a coherent multi-step operation with known scope, not as a source-search router.',
+    'Return Workbench state or invoke one bounded Thin Harness operation without adding top-level MCP tools. Prefer direct execute_command/read_repository_file for one or two model-directed reads. When three or more independent read/search/status/diff operations are already known on the same checkout, prefer lanes_execute so one MCP round trip fans them out concurrently inside Forge. Use batch_execute only for a coherent multi-step operation with known scope; neither lanes nor batch is a broad source-search router.',
     {
       repo_id: repoId,
       checkout_id: {
@@ -179,12 +179,12 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
         type: 'string',
         enum: ['summary', 'batch_execute', 'lanes_execute', 'lanes_integrate', 'execution_route'],
         description:
-          'Defaults to summary. Use batch_execute for multi-step repository capability execution and lanes_execute for limited parallel reads. Workflow/mode selection belongs to the model/user, not Workbench.',
+          'Defaults to summary. Use batch_execute for coherent multi-step repository capability execution. Prefer lanes_execute for three or more already-known independent reads/searches/status/diff operations on one checkout so Forge can run them concurrently behind one MCP round trip. Workflow/mode selection belongs to the model/user, not Workbench.',
       },
       payload: {
         type: 'object',
         description:
-          'Operation-specific bounded arguments. Batch write operations should include request_id. For batch_execute: { steps:[{id?, kind, input}], stop_on_error?, allowed_paths?, timeout_ms?, request_id?, purpose? }.',
+          'Operation-specific bounded arguments. Batch write operations should include request_id. For batch_execute: { steps:[{id?, kind, input}], stop_on_error?, allowed_paths?, timeout_ms?, request_id?, purpose? }. For lanes_execute: { read_lanes:[{id?, kind: search|read_file|git_status|git_diff|run_short_command, input}], fail_fast?, max_concurrency?, include_latency_breakdown? }.',
         additionalProperties: true,
       },
     },

@@ -23,6 +23,7 @@ import {
   isRhProjectAcceptedOperation,
 } from '../../src/runtime/control-plane/facade/rh-project-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
+import { repositoryToolDefinitions } from '../../adapters/mcp/tool-mapping/repository-tools';
 import { callRhProjectAdapter } from '../../adapters/mcp/runtime-gateway/rh-project-adapter';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
@@ -60,6 +61,14 @@ describe('handoff and facade contracts', () => {
     expect(guidance).toContain('Do not mandatorily preflight rh_status/plan_list/context lists/Writer inventory');
     expect(guidance).toContain('rh_context is limited to bounded repository/runtime status');
     expect(guidance).toContain('Requirement/Plan are optional semantic snapshots');
+    expect(guidance).toContain('three or more independent repository reads/searches/status/diff operations');
+    expect(guidance).toContain('repository_workbench lanes_execute');
+    const workbench = repositoryToolDefinitions.find((tool) => tool.name === 'repository_workbench');
+    expect(workbench?.description).toContain('three or more independent');
+    const workbenchProperties = workbench?.inputSchema.properties as Record<string, { description?: string }> | undefined;
+    expect(workbenchProperties?.operation?.description).toContain('one MCP round trip');
+    expect(workbenchProperties?.payload?.description).toContain('read_lanes');
+    expect(workbenchProperties?.payload?.description).toContain('max_concurrency');
     const repositoryGuidance = readFileSync(join(import.meta.dir, '../../AGENTS.md'), 'utf8');
     expect(repositoryGuidance).toContain('then end the ChatGPT response rather than holding the turn in');
     expect(repositoryGuidance).toContain('Small-fix light path is the default');
