@@ -259,6 +259,41 @@ function shellWords(segment: string): string[] {
   return segment.match(/"(?:\\.|[^"])*"|'[^']*'|[^\s<>]+/g)?.map((word) => word.replace(/^['"]|['"]$/g, '')) ?? [];
 }
 
+function countNullDeviceOutputRedirections(command: string): number {
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  let count = 0;
+  const nullDevice = '/dev/null';
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\' && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character !== '>' || command[index - 1] === '=') continue;
+
+    let targetIndex = index + 1;
+    if (command[targetIndex] === '>') targetIndex += 1;
+    while (/\s/.test(command[targetIndex] ?? '')) targetIndex += 1;
+    if (!command.startsWith(nullDevice, targetIndex)) continue;
+    const next = command[targetIndex + nullDevice.length];
+    if (!next || /[\s;&|]/.test(next)) count += 1;
+  }
+  return count;
+}
+
 function stripTrailingPunctuation(token: string): string {
   return token.replace(/[,*?]+$/g, '');
 }
@@ -869,8 +904,9 @@ export function assertCommandPathOperandsStayInRepository(
         ? shellSegments(command.shellCommand!).map((segment) => ({ raw: segment, words: shellWords(segment) }))
         : [{ raw: '', words: [command.executable!, ...(command.args ?? [])] }];
   for (const { raw: segment, words } of segments) {
+    let remainingNullDeviceRedirections = countNullDeviceOutputRedirections(segment);
     const redirectionTarget = segment.match(/(?:^|\s)(?:\d?>?>)\s*(\/[^\s]+)/)?.[1];
-    if (redirectionTarget && !redirectionTarget.startsWith('/dev/null')) {
+    if (redirectionTarget && redirectionTarget !== '/dev/null') {
       throw new Error(
         `COMMAND_SCOPE_DENIED: external writes are not allowed from repository commands: ${redirectionTarget}`,
       );
@@ -879,6 +915,10 @@ export function assertCommandPathOperandsStayInRepository(
     if (program === 'echo' || program === 'printf') continue;
     for (let index = 0; index < words.length; index += 1) {
       const token = words[index]!;
+      if (token === '/dev/null' && remainingNullDeviceRedirections > 0) {
+        remainingNullDeviceRedirections -= 1;
+        continue;
+      }
       if (!token || token.startsWith('-') || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(token) || isRegexLiteralToken(token))
         continue;
       if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;

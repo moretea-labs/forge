@@ -125,7 +125,11 @@ function hasRepositoryOutputRedirection(command: string): boolean {
     if (command[targetIndex] === '>') targetIndex += 1;
     while (/\s/.test(command[targetIndex] ?? '')) targetIndex += 1;
     if (command[targetIndex] === '&' && /\d/.test(command[targetIndex + 1] ?? '')) continue;
-    if (command.slice(targetIndex).startsWith('/dev/null')) continue;
+    const nullDevice = '/dev/null';
+    if (command.startsWith(nullDevice, targetIndex)) {
+      const next = command[targetIndex + nullDevice.length];
+      if (!next || /[\s;&|]/.test(next)) continue;
+    }
     return true;
   }
   return false;

@@ -104,6 +104,52 @@ describe('repository command stable macOS host identity', () => {
     }
   });
 
+  test('allows only exact null-device output redirection without weakening external path fences', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-command-null-device-'));
+    try {
+      const canonicalRoot = realpathSync(root);
+      symlinkSync('/dev/null', join(root, 'null-link'));
+
+      for (const command of [
+        'ls -d .codegraph .agent 2>/dev/null',
+        'ls -d .codegraph .agent 2> /dev/null',
+        'pwd && git status --short && ls -d .codegraph .agent 2>/dev/null; cat AGENTS.md',
+      ]) {
+        expect(() =>
+          assertCommandPathOperandsStayInRepository(
+            assertRepositoryCommandInputAllowed(command),
+            canonicalRoot,
+            canonicalRoot,
+          ),
+        ).not.toThrow();
+      }
+
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(
+          assertRepositoryCommandInputAllowed('cat /dev/null'),
+          canonicalRoot,
+          canonicalRoot,
+        ),
+      ).toThrow(/EXTERNAL_FILESYSTEM_GRANT_REQUIRED/);
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(
+          assertRepositoryCommandInputAllowed('ls -d .codegraph 2>/dev/null-shadow'),
+          canonicalRoot,
+          canonicalRoot,
+        ),
+      ).toThrow(/COMMAND_SCOPE_DENIED: external writes are not allowed/);
+      expect(() =>
+        assertCommandPathOperandsStayInRepository(
+          assertRepositoryCommandInputAllowed('cat null-link'),
+          canonicalRoot,
+          canonicalRoot,
+        ),
+      ).toThrow(/COMMAND_SCOPE_DENIED: command operand escapes repository root/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('does not classify regex source data as an external path and still denies real external paths', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-command-regex-source-'));
     try {
