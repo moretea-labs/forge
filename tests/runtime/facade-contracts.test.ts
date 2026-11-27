@@ -65,7 +65,9 @@ describe('handoff and facade contracts', () => {
     expect(guidance).toContain('repository_workbench lanes_execute');
     const workbench = repositoryToolDefinitions.find((tool) => tool.name === 'repository_workbench');
     expect(workbench?.description).toContain('three or more independent');
-    const workbenchProperties = workbench?.inputSchema.properties as Record<string, { description?: string }> | undefined;
+    const workbenchProperties = workbench?.inputSchema.properties as
+      | Record<string, { description?: string }>
+      | undefined;
     expect(workbenchProperties?.operation?.description).toContain('one MCP round trip');
     expect(workbenchProperties?.payload?.description).toContain('read_lanes');
     expect(workbenchProperties?.payload?.description).toContain('max_concurrency');
