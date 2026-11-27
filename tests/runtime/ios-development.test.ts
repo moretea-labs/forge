@@ -69,7 +69,9 @@ function repository() {
   return {
     root,
     appPath,
-    record: { repoId: 'repo-test', canonicalRoot: root, activeCheckoutId: 'active' } as any,
+    record: { repoId: 'repo-test', canonicalRoot: root, activeCheckoutId: 'active' } as unknown as Parameters<
+      typeof iosAppBuild
+    >[0],
   };
 }
 
@@ -119,7 +121,9 @@ describe('iOS development simulator reliability', () => {
     });
 
     const manifest = buildIosPluginManifest(0, undefined, repo.root);
-    const previewCapability = manifest.capabilities.find((capability) => capability.capabilityId === 'ios-smoke-review');
+    const previewCapability = manifest.capabilities.find(
+      (capability) => capability.capabilityId === 'ios-smoke-review',
+    );
     const testingCapability = manifest.capabilities.find((capability) => capability.capabilityId === 'ios-testing');
     expect(previewCapability?.actions).not.toContain('xcode_test');
     expect(testingCapability?.actions).toContain('xcode_test');
@@ -137,7 +141,9 @@ describe('iOS development simulator reliability', () => {
 
     expect(review.udid).toBe('D');
     expect(review.overallStatus).toBe('failed');
-    expect((review.stages as Array<{ stage: string; status: string }>).find((stage) => stage.stage === 'screenshot')?.status).toBe('failed');
+    expect(
+      (review.stages as Array<{ stage: string; status: string }>).find((stage) => stage.stage === 'screenshot')?.status,
+    ).toBe('failed');
     expect(commands.some((argv) => argv[0] === 'xcodebuild' && argv[1] === 'test')).toBe(false);
   });
 
@@ -203,13 +209,14 @@ describe('iOS development simulator reliability', () => {
         const heartbeat = setInterval(() => {
           ticks += 1;
         }, 10);
-        let built;
+        let built: Awaited<ReturnType<typeof iosAppBuild>> | undefined;
         try {
           built = await iosAppBuild(repo.record, { scheme: 'App', timeoutMs: 1_000 });
         } finally {
           clearInterval(heartbeat);
         }
-        if (ticks === 0) throw new Error('build did not reach supervised execution: ' + JSON.stringify(built));
+        if (ticks === 0 || !built)
+          throw new Error('build did not reach supervised execution: ' + JSON.stringify(built));
         expect(ticks).toBeGreaterThan(0);
         expect(built.ready).toBe(false);
         if (!('stderr' in built)) throw new Error('missing failure evidence');

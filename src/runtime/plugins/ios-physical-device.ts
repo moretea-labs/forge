@@ -561,9 +561,8 @@ async function selectDevice(
       { retryable: false, details: { path: workflow.path } },
     );
   }
-  const configuredPhysicalDevice = workflow.config.preview?.target === 'physical_device'
-    ? workflow.config.preview.physicalDevice
-    : undefined;
+  const configuredPhysicalDevice =
+    workflow.config.preview?.target === 'physical_device' ? workflow.config.preview.physicalDevice : undefined;
   const configuredSelector = configuredPhysicalDevice?.selector ?? configuredPhysicalDevice?.udid;
   const selector = requireString(selectorValue ?? configuredSelector, 'device');
   const inventory = await physicalDevices(input);
@@ -599,11 +598,7 @@ async function selectDevice(
   }
   const selected = matches[0]!;
   const expectedUdid = configuredPhysicalDevice?.udid;
-  if (
-    expectedUdid &&
-    selected.identifier !== expectedUdid &&
-    selected.udid !== expectedUdid
-  ) {
+  if (expectedUdid && selected.identifier !== expectedUdid && selected.udid !== expectedUdid) {
     throw new AssistantPluginError(
       'IOS_DEVICE_CONFIG_TARGET_MISMATCH',
       'The configured physical-device selector resolved to a different iPhone than preview.physicalDevice.udid.',
@@ -1473,7 +1468,7 @@ export async function resolveIosPhysicalDeviceAuthorizationContext(
   input: AssistantPluginActionExecutionInput,
 ): Promise<AssistantPluginAuthorizationContext | undefined> {
   const action = iosPhysicalDeviceActions().find((entry) => entry.actionId === input.actionId);
-  if (!action || action.confirmation !== 'authorization') return undefined;
+  if (action?.confirmation !== 'authorization') return undefined;
 
   if (input.actionId === 'physical_device_open' || input.actionId === 'physical_device_install') {
     const selected = await selectDevice(input, input.args.device);

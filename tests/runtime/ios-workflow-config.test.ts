@@ -85,7 +85,10 @@ describe('Forge shared iOS workflow config', () => {
 
   test('requires an exact UDID for physical-device build targets', () => {
     const root = repository();
-    writeConfig(root, { schemaVersion: 1, preview: { target: 'physical_device', physicalDevice: { selector: 'greyson' } } });
+    writeConfig(root, {
+      schemaVersion: 1,
+      preview: { target: 'physical_device', physicalDevice: { selector: 'greyson' } },
+    });
     const missingUdid = readIosWorkflowConfig(root);
     expect(missingUdid.ready).toBe(false);
     if (missingUdid.ready) throw new Error('expected physical-device UDID requirement');

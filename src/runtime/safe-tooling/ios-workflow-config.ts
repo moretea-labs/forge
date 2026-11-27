@@ -78,7 +78,8 @@ function parseConfig(value: unknown): IosWorkflowConfig {
   if (value.schemaVersion !== 1) throw new Error('schemaVersion must be 1');
 
   const projectRaw = optionalObject(value.project, 'project');
-  if (projectRaw) assertAllowedKeys(projectRaw, ['workspace', 'project', 'scheme', 'configuration', 'bundleId'], 'project');
+  if (projectRaw)
+    assertAllowedKeys(projectRaw, ['workspace', 'project', 'scheme', 'configuration', 'bundleId'], 'project');
   const project = projectRaw
     ? {
         workspace: optionalRelativePath(projectRaw.workspace, 'project.workspace'),
@@ -90,11 +91,12 @@ function parseConfig(value: unknown): IosWorkflowConfig {
     : undefined;
 
   const previewRaw = optionalObject(value.preview, 'preview');
-  if (previewRaw) assertAllowedKeys(
-    previewRaw,
-    ['target', 'simulator', 'physicalDevice', 'cleanupPolicy', 'launchWaitMs', 'screenshotLabel'],
-    'preview',
-  );
+  if (previewRaw)
+    assertAllowedKeys(
+      previewRaw,
+      ['target', 'simulator', 'physicalDevice', 'cleanupPolicy', 'launchWaitMs', 'screenshotLabel'],
+      'preview',
+    );
   const target = previewRaw?.target;
   if (target !== undefined && target !== 'simulator' && target !== 'physical_device') {
     throw new Error('preview.target must be simulator or physical_device');
@@ -137,11 +139,12 @@ function parseConfig(value: unknown): IosWorkflowConfig {
     : undefined;
 
   const testsRaw = optionalObject(value.tests, 'tests');
-  if (testsRaw) assertAllowedKeys(
-    testsRaw,
-    ['scheme', 'configuration', 'simulator', 'onlyTesting', 'parallelTesting', 'maxParallelTestingWorkers'],
-    'tests',
-  );
+  if (testsRaw)
+    assertAllowedKeys(
+      testsRaw,
+      ['scheme', 'configuration', 'simulator', 'onlyTesting', 'parallelTesting', 'maxParallelTestingWorkers'],
+      'tests',
+    );
   const onlyTesting = testsRaw?.onlyTesting;
   if (
     onlyTesting !== undefined &&
