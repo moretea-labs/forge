@@ -178,152 +178,225 @@ env PATH="$TMP/git-wrapper:$PATH" FORGE_TEST_HTTP2_PUSH_FAILURE=1 \
 [[ "$(git rev-parse HEAD)" == "$(git --git-dir="$BARE" rev-parse main)" ]] ||
   fail "HTTP/1.1 fallback did not publish the exact validated candidate"
 
-# GitHub only accepts commit statuses for commits it can resolve. The first
-# POST must therefore defer on an unknown SHA; the same status is published
-# and read back after the exact validated commit reaches the bare remote.
-printf 'status candidate\n' >pending-status.ts
-git add pending-status.ts
-git commit -m 'test: publish Main gate status after remote commit exists' >/dev/null
+# The exact candidate must receive a real GitHub Actions workflow_dispatch
+# check on its temporary tag before the protected main ref can move.
+grep -Fq '  workflow_dispatch:' "$ROOT/.github/workflows/ci.yml" ||
+  fail "CI workflow must expose workflow_dispatch for pre-push Main gate validation"
+printf 'workflow candidate\n' >pending-workflow.ts
+git add pending-workflow.ts
+git commit -m 'test: validate main candidate through GitHub Actions before push' >/dev/null
 cat >"$TMP/fake-gh" <<'GH_WRAPPER'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FORGE_TEST_GH_MARKER"
-case "$2" in
-  repos/*/statuses/*)
-    sha="${2##*/}"
-    if ! git --git-dir="$FORGE_TEST_BARE_GIT_DIR" show-ref --verify --quiet "refs/tags/forge-validation/$sha"; then
-      printf '{"message":"No commit found for SHA: %s"}\n' "$sha" >&2
-      exit 1
-    fi
-    mkdir -p "$FORGE_TEST_GH_SUCCESS_DIR"
-    touch "$FORGE_TEST_GH_SUCCESS_DIR/$sha"
-    printf '{"state":"success","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
+case "$1" in
+  workflow)
+    [[ "$2" == run ]] || exit 2
+    ref=""
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == "--ref" ]]; then
+        shift
+        ref="$1"
+      fi
+      shift
+    done
+    [[ "$ref" == "$FORGE_TEST_GH_CANDIDATE_TAG" ]] || {
+      echo "workflow dispatched for unexpected ref: $ref" >&2
+      exit 2
+    }
+    sha="$(git --git-dir="$FORGE_TEST_BARE_GIT_DIR" rev-parse "refs/tags/$ref")"
+    [[ "$sha" == "$FORGE_TEST_GH_CANDIDATE_SHA" ]] || exit 2
+    remote_sha="$(git --git-dir="$FORGE_TEST_BARE_GIT_DIR" rev-parse main)"
+    [[ "$remote_sha" == "$FORGE_TEST_REMOTE_MAIN_BEFORE_GATE" ]] || {
+      echo "main moved before GitHub Actions validation completed" >&2
+      exit 2
+    }
+    run_count="$(cat "$FORGE_TEST_GH_RUN_COUNT_FILE" 2>/dev/null || printf '0')"
+    printf '%s\n' "$((run_count + 1))" >"$FORGE_TEST_GH_RUN_COUNT_FILE"
+    printf 'dispatched %s %s\n' "$ref" "$sha" >>"$FORGE_TEST_GH_DISPATCH_MARKER"
+    printf 'Created workflow_dispatch for %s\n' "$ref"
     ;;
-  repos/*/commits/*/status)
-    sha="${2%/status}"
-    sha="${sha##*/}"
-    if [[ -f "$FORGE_TEST_GH_SUCCESS_DIR/$sha" ]]; then
-      printf '{"statuses":[{"state":"success","context":"%s"}]}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
-    else
-      printf '{"statuses":[]}\n'
-    fi
+  api)
+    endpoint="$2"
+    case "$endpoint" in
+      *actions/workflows/ci.yml/runs*)
+        run_count="$(cat "$FORGE_TEST_GH_RUN_COUNT_FILE" 2>/dev/null || printf '0')"
+        if [[ "$run_count" -eq 0 ]]; then
+          printf '{"workflow_runs":[]}\n'
+          exit 0
+        fi
+        poll_count="$(cat "$FORGE_TEST_GH_POLL_COUNT_FILE" 2>/dev/null || printf '0')"
+        poll_count=$((poll_count + 1))
+        printf '%s\n' "$poll_count" >"$FORGE_TEST_GH_POLL_COUNT_FILE"
+        run_status=completed
+        run_conclusion="$FORGE_TEST_GH_CONCLUSION"
+        if [[ "$FORGE_TEST_GH_PENDING_FIRST" == 1 && "$poll_count" -eq 1 ]]; then
+          run_status=in_progress
+          run_conclusion=""
+        fi
+        suite_id=$((1000 + run_count))
+        if [[ -n "$run_conclusion" ]]; then
+          conclusion_json="\"$run_conclusion\""
+        else
+          conclusion_json=null
+        fi
+        printf '{"workflow_runs":[{"id":%s,"run_number":%s,"head_sha":"%s","head_branch":"%s","event":"workflow_dispatch","status":"%s","conclusion":%s,"check_suite_id":%s}]}\n' \
+          "$run_count" "$run_count" "$FORGE_TEST_GH_CANDIDATE_SHA" "$FORGE_TEST_GH_CANDIDATE_TAG" "$run_status" "$conclusion_json" "$suite_id"
+        ;;
+      *check-suites/*/check-runs*)
+        suite_id="$(printf '%s' "$endpoint" | sed -E 's#.*check-suites/([0-9]+)/check-runs.*#\1#')"
+        run_number=$((suite_id - 1000))
+        [[ "$run_number" -gt 0 ]] || exit 2
+        printf '{"check_runs":[{"name":"Main gate","status":"completed","conclusion":"%s","app":{"id":%s,"slug":"github-actions"}}]}\n' \
+          "$FORGE_TEST_GH_CONCLUSION" "$FORGE_TEST_GH_APP_ID"
+        ;;
+      *statuses*)
+        echo "custom commit statuses are forbidden" >&2
+        exit 2
+        ;;
+      *)
+        echo "unexpected GitHub API path: $endpoint" >&2
+        exit 2
+        ;;
+    esac
     ;;
   *)
-    echo "unexpected GitHub API path: $2" >&2
+    echo "unexpected GitHub CLI command: $*" >&2
     exit 2
     ;;
 esac
 GH_WRAPPER
 chmod +x "$TMP/fake-gh"
-rm -f "$TMP/github-status-marker"
+GATE_SUCCESS_SHA="$(git rev-parse HEAD)"
+GATE_SUCCESS_TAG="forge-validation/$GATE_SUCCESS_SHA"
+GATE_SUCCESS_REMOTE_BASE="$(git --git-dir="$BARE" rev-parse main)"
+rm -f "$TMP/github-actions-marker" "$TMP/github-actions-dispatches" "$TMP/github-actions-run-count" "$TMP/github-actions-poll-count"
 # shellcheck disable=SC2016
 env FORGE_GH_BIN="$TMP/fake-gh" \
   FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
-  FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
+  FORGE_MAIN_GATE_CHECK_NAME='Fake gate' \
+  FORGE_MAIN_GATE_APP_ID=99999 \
+  FORGE_MAIN_GATE_TIMEOUT_SECONDS=5 \
+  FORGE_MAIN_GATE_POLL_SECONDS=0 \
   FORGE_TEST_BARE_GIT_DIR="$BARE" \
-  FORGE_TEST_GH_SUCCESS_DIR="$TMP/github-status-success" \
-  FORGE_TEST_GH_MARKER="$TMP/github-status-marker" \
+  FORGE_TEST_GH_CANDIDATE_SHA="$GATE_SUCCESS_SHA" \
+  FORGE_TEST_GH_CANDIDATE_TAG="$GATE_SUCCESS_TAG" \
+  FORGE_TEST_REMOTE_MAIN_BEFORE_GATE="$GATE_SUCCESS_REMOTE_BASE" \
+  FORGE_TEST_GH_CONCLUSION=success \
+  FORGE_TEST_GH_APP_ID=15368 \
+  FORGE_TEST_GH_PENDING_FIRST=1 \
+  FORGE_TEST_GH_MARKER="$TMP/github-actions-marker" \
+  FORGE_TEST_GH_DISPATCH_MARKER="$TMP/github-actions-dispatches" \
+  FORGE_TEST_GH_RUN_COUNT_FILE="$TMP/github-actions-run-count" \
+  FORGE_TEST_GH_POLL_COUNT_FILE="$TMP/github-actions-poll-count" \
   bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed' >/dev/null
 [[ "$(git --git-dir="$BARE" rev-parse main)" == "$(git rev-parse HEAD)" ]] ||
-  fail "candidate was not pushed before GitHub status publication"
-[[ "$(grep -Fc 'repos/moretea-labs/forge/statuses/' "$TMP/github-status-marker")" -eq 2 ]] ||
-  fail "unknown commit status was not retried after the remote push"
-grep -Fq 'repos/moretea-labs/forge/commits/' "$TMP/github-status-marker" ||
-  fail "required Main gate status was not read back"
-STATUS_SUCCESS_SHA="$(git rev-parse HEAD)"
-if git --git-dir="$BARE" show-ref --verify --quiet "refs/tags/forge-validation/$STATUS_SUCCESS_SHA"; then
+  fail "candidate was pushed without first completing GitHub Actions Main gate"
+[[ "$(cat "$TMP/github-actions-poll-count")" -ge 2 ]] ||
+  fail "sync-main did not wait for the in-progress GitHub Actions run"
+grep -Fq "workflow run ci.yml --repo moretea-labs/forge --ref $GATE_SUCCESS_TAG" "$TMP/github-actions-marker" ||
+  fail "exact candidate tag was not dispatched to the CI workflow"
+grep -Fq 'check-suites/' "$TMP/github-actions-marker" ||
+  fail "GitHub Actions check suite was not read back"
+if grep -Fq '/statuses/' "$TMP/github-actions-marker"; then
+  fail "sync-main attempted to publish a synthetic commit status"
+fi
+if git --git-dir="$BARE" show-ref --verify --quiet "refs/tags/$GATE_SUCCESS_TAG"; then
   fail "temporary validation tag remained after successful main publication"
 fi
 
-# A real status failure after validation-ref publication must still stop the main push.
-printf 'status failure candidate\n' >pending-status-failure.ts
-git add pending-status-failure.ts
-git commit -m 'test: block publication without required Main gate status' >/dev/null
-cat >"$TMP/fake-gh-failure" <<'GH_FAILURE'
-#!/usr/bin/env bash
-set -euo pipefail
-case "$2" in
-  repos/*/statuses/*)
-    sha="${2##*/}"
-    if ! git --git-dir="$FORGE_TEST_BARE_GIT_DIR" show-ref --verify --quiet "refs/tags/forge-validation/$sha"; then
-      printf '{"message":"No commit found for SHA: %s"}\n' "$sha" >&2
-      exit 1
-    fi
-    printf '{"state":"failure","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
-    ;;
-  repos/*/commits/*/status)
-    printf '{"statuses":[]}\n'
-    ;;
-  *)
-    echo "unexpected GitHub API path: $2" >&2
-    exit 2
-    ;;
-esac
-GH_FAILURE
-chmod +x "$TMP/fake-gh-failure"
-REMOTE_BEFORE_STATUS_FAILURE="$(git --git-dir="$BARE" rev-parse main)"
+# A failed GitHub Actions run blocks main and preserves its exact validation tag.
+printf 'workflow failure candidate\n' >pending-workflow-failure.ts
+git add pending-workflow-failure.ts
+git commit -m 'test: block main publication when GitHub Actions fails' >/dev/null
+FAILED_GATE_SHA="$(git rev-parse HEAD)"
+FAILED_GATE_TAG="forge-validation/$FAILED_GATE_SHA"
+REMOTE_BEFORE_GATE_FAILURE="$(git --git-dir="$BARE" rev-parse main)"
+rm -f "$TMP/github-actions-failure-run-count" "$TMP/github-actions-failure-poll-count"
 # shellcheck disable=SC2016
-expect_failure 'failed required Main gate status' 'did not confirm success' \
-  env FORGE_GH_BIN="$TMP/fake-gh-failure" \
+expect_failure 'failed GitHub Actions Main gate' 'conclusion=failure' \
+  env FORGE_GH_BIN="$TMP/fake-gh" \
   FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
-  FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
+  FORGE_MAIN_GATE_CHECK_NAME='Main gate' \
+  FORGE_MAIN_GATE_APP_ID=15368 \
+  FORGE_MAIN_GATE_TIMEOUT_SECONDS=5 \
+  FORGE_MAIN_GATE_POLL_SECONDS=0 \
   FORGE_TEST_BARE_GIT_DIR="$BARE" \
+  FORGE_TEST_GH_CANDIDATE_SHA="$FAILED_GATE_SHA" \
+  FORGE_TEST_GH_CANDIDATE_TAG="$FAILED_GATE_TAG" \
+  FORGE_TEST_REMOTE_MAIN_BEFORE_GATE="$REMOTE_BEFORE_GATE_FAILURE" \
+  FORGE_TEST_GH_CONCLUSION=failure \
+  FORGE_TEST_GH_APP_ID=15368 \
+  FORGE_TEST_GH_PENDING_FIRST=0 \
+  FORGE_TEST_GH_MARKER="$TMP/github-actions-failure-marker" \
+  FORGE_TEST_GH_DISPATCH_MARKER="$TMP/github-actions-failure-dispatches" \
+  FORGE_TEST_GH_RUN_COUNT_FILE="$TMP/github-actions-failure-run-count" \
+  FORGE_TEST_GH_POLL_COUNT_FILE="$TMP/github-actions-failure-poll-count" \
   bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed'
-[[ "$(git --git-dir="$BARE" rev-parse main)" == "$REMOTE_BEFORE_STATUS_FAILURE" ]] ||
-  fail "main push occurred despite a failed required Main gate status"
-FAILED_STATUS_SHA="$(git rev-parse HEAD)"
-FAILED_STATUS_REF="refs/tags/forge-validation/$FAILED_STATUS_SHA"
-[[ "$(git --git-dir="$BARE" rev-parse "$FAILED_STATUS_REF")" == "$FAILED_STATUS_SHA" ]] ||
-  fail "failed status publication did not preserve its temporary validation tag"
-PENDING_STATUS_PATH="$(git rev-parse --git-path forge-main-gate-status-pending)"
-[[ -f "$PENDING_STATUS_PATH" ]] || fail "failed status publication did not leave a retry marker"
-# Retry the failed status against the existing validation tag. The next
-# run must publish the status first, then push main and delete the tag.
-cat >"$TMP/fake-gh-recovery" <<'GH_RECOVERY'
-#!/usr/bin/env bash
-set -euo pipefail
-case "$2" in
-  repos/*/statuses/*)
-    sha="${2##*/}"
-    if ! git --git-dir="$FORGE_TEST_BARE_GIT_DIR" show-ref --verify --quiet "refs/tags/forge-validation/$sha"; then
-      printf '{"message":"No commit found for SHA: %s"}\n' "$sha" >&2
-      exit 1
-    fi
-    mkdir -p "$FORGE_TEST_GH_SUCCESS_DIR"
-    touch "$FORGE_TEST_GH_SUCCESS_DIR/$sha"
-    printf '{"state":"success","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
-    ;;
-  repos/*/commits/*/status)
-    sha="${2%/status}"
-    sha="${sha##*/}"
-    if [[ -f "$FORGE_TEST_GH_SUCCESS_DIR/$sha" ]]; then
-      printf '{"statuses":[{"state":"success","context":"%s"}]}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
-    else
-      printf '{"statuses":[]}\n'
-    fi
-    ;;
-  *)
-    echo "unexpected GitHub API path: $2" >&2
-    exit 2
-    ;;
-esac
-GH_RECOVERY
-chmod +x "$TMP/fake-gh-recovery"
-# The committed candidate is revalidated normally after the pending status is
-# restored; no branch protection rule is skipped.
+[[ "$(git --git-dir="$BARE" rev-parse main)" == "$REMOTE_BEFORE_GATE_FAILURE" ]] ||
+  fail "main moved despite a failed GitHub Actions Main gate"
+[[ "$(git --git-dir="$BARE" rev-parse "refs/tags/$FAILED_GATE_TAG")" == "$FAILED_GATE_SHA" ]] ||
+  fail "failed GitHub Actions run did not preserve its validation tag"
+
+# A successful workflow run from the wrong GitHub App is not a required check.
+WRONG_APP_SHA="$FAILED_GATE_SHA"
+WRONG_APP_TAG="$FAILED_GATE_TAG"
+REMOTE_BEFORE_WRONG_APP="$REMOTE_BEFORE_GATE_FAILURE"
+rm -f "$TMP/github-actions-wrong-app-run-count" "$TMP/github-actions-wrong-app-poll-count"
 # shellcheck disable=SC2016
-env FORGE_GH_BIN="$TMP/fake-gh-recovery" \
+expect_failure 'wrong GitHub App identity' 'from GitHub Actions app 15368' \
+  env FORGE_GH_BIN="$TMP/fake-gh" \
   FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
-  FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
+  FORGE_MAIN_GATE_CHECK_NAME='Main gate' \
+  FORGE_MAIN_GATE_APP_ID=15368 \
+  FORGE_MAIN_GATE_TIMEOUT_SECONDS=5 \
+  FORGE_MAIN_GATE_POLL_SECONDS=0 \
   FORGE_TEST_BARE_GIT_DIR="$BARE" \
-  FORGE_TEST_GH_SUCCESS_DIR="$TMP/github-status-retry" \
+  FORGE_TEST_GH_CANDIDATE_SHA="$WRONG_APP_SHA" \
+  FORGE_TEST_GH_CANDIDATE_TAG="$WRONG_APP_TAG" \
+  FORGE_TEST_REMOTE_MAIN_BEFORE_GATE="$REMOTE_BEFORE_WRONG_APP" \
+  FORGE_TEST_GH_CONCLUSION=success \
+  FORGE_TEST_GH_APP_ID=99999 \
+  FORGE_TEST_GH_PENDING_FIRST=0 \
+  FORGE_TEST_GH_MARKER="$TMP/github-actions-wrong-app-marker" \
+  FORGE_TEST_GH_DISPATCH_MARKER="$TMP/github-actions-wrong-app-dispatches" \
+  FORGE_TEST_GH_RUN_COUNT_FILE="$TMP/github-actions-wrong-app-run-count" \
+  FORGE_TEST_GH_POLL_COUNT_FILE="$TMP/github-actions-wrong-app-poll-count" \
+  bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed'
+[[ "$(git --git-dir="$BARE" rev-parse main)" == "$REMOTE_BEFORE_WRONG_APP" ]] ||
+  fail "main moved despite a Main gate check from the wrong GitHub App"
+[[ "$(git --git-dir="$BARE" rev-parse "refs/tags/$WRONG_APP_TAG")" == "$WRONG_APP_SHA" ]] ||
+  fail "wrong-App Main gate failure did not preserve its validation tag"
+
+# Retrying a previously failed candidate dispatches a fresh run and publishes
+# only after the new run has succeeded under the required GitHub Actions app.
+rm -f "$TMP/github-actions-failure-poll-count"
+# shellcheck disable=SC2016
+env FORGE_GH_BIN="$TMP/fake-gh" \
+  FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
+  FORGE_MAIN_GATE_CHECK_NAME='Main gate' \
+  FORGE_MAIN_GATE_APP_ID=15368 \
+  FORGE_MAIN_GATE_TIMEOUT_SECONDS=5 \
+  FORGE_MAIN_GATE_POLL_SECONDS=0 \
+  FORGE_TEST_BARE_GIT_DIR="$BARE" \
+  FORGE_TEST_GH_CANDIDATE_SHA="$FAILED_GATE_SHA" \
+  FORGE_TEST_GH_CANDIDATE_TAG="$FAILED_GATE_TAG" \
+  FORGE_TEST_REMOTE_MAIN_BEFORE_GATE="$REMOTE_BEFORE_GATE_FAILURE" \
+  FORGE_TEST_GH_CONCLUSION=success \
+  FORGE_TEST_GH_APP_ID=15368 \
+  FORGE_TEST_GH_PENDING_FIRST=0 \
+  FORGE_TEST_GH_MARKER="$TMP/github-actions-retry-marker" \
+  FORGE_TEST_GH_DISPATCH_MARKER="$TMP/github-actions-retry-dispatches" \
+  FORGE_TEST_GH_RUN_COUNT_FILE="$TMP/github-actions-failure-run-count" \
+  FORGE_TEST_GH_POLL_COUNT_FILE="$TMP/github-actions-failure-poll-count" \
   bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed' >/dev/null
-[[ "$(git --git-dir="$BARE" rev-parse main)" == "$(git rev-parse HEAD)" ]] ||
-  fail "status retry did not publish the validated main commit"
-if git --git-dir="$BARE" show-ref --verify --quiet "$FAILED_STATUS_REF"; then
-  fail "temporary validation tag remained after successful status retry"
+[[ "$(git --git-dir="$BARE" rev-parse main)" == "$FAILED_GATE_SHA" ]] ||
+  fail "successful retry did not publish the previously failed candidate"
+if git --git-dir="$BARE" show-ref --verify --quiet "refs/tags/$FAILED_GATE_TAG"; then
+  fail "temporary validation tag remained after successful retry"
 fi
-[[ ! -f "$PENDING_STATUS_PATH" ]] || fail "successful status retry did not clear its marker"
+[[ "$(cat "$TMP/github-actions-failure-run-count")" -eq 2 ]] ||
+  fail "retry did not dispatch a fresh GitHub Actions workflow run"
 
 # A remote-only fast-forward is synchronized without touching unrelated dirt.
 git clone "$BARE" "$OTHER" >/dev/null 2>&1
