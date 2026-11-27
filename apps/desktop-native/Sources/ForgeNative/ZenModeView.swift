@@ -427,6 +427,15 @@ struct ZenWorkspacePane: View {
         return parts.isEmpty ? nil : parts.joined(separator:" · ")
     }
 
+    static func executionReadyForRequirementAcceptance(
+        _ status:AutopilotStatusDetail?,outcomeUnknown:Bool
+    ) -> Bool {
+        guard let status,!outcomeUnknown else { return false }
+        return status.runStatus == "completed"
+            && !status.hasPendingProcessRecovery
+            && !status.requiresReapproval
+    }
+
     static func executionStopReasonLabel(_ status:AutopilotStatusDetail) -> String? {
         guard let reason=status.stopReason,!reason.isEmpty else { return nil }
         if reason.hasPrefix("human_checkpoint:") {
@@ -2080,7 +2089,17 @@ struct ZenWorkspacePane: View {
             }
             if Self.requirementAllowsActions(item.state) {
                 HStack(spacing:9) {
-                    if let operation=Self.executionOperation(
+                    if Self.executionReadyForRequirementAcceptance(
+                        model.planningAutopilotStatuses[item.recordId],
+                        outcomeUnknown:model.autopilotOutcomeUnknown(for:item.recordId)
+                    ) {
+                        Button("进入 Requirement 验收") {
+                            handleNodeAction(item,.complete)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.autopilotLoading || model.autopilotControlPending)
+                        .accessibilityIdentifier("zen.execution.accept-requirement")
+                    } else if let operation=Self.executionOperation(
                         status:model.planningAutopilotStatuses[item.recordId],
                         outcomeUnknown:model.autopilotOutcomeUnknown(for:item.recordId)
                     ) {
