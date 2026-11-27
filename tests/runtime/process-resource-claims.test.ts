@@ -278,7 +278,7 @@ describe('Process Runtime fine-grained resource claims', () => {
           );
           expect(nested).toBe('beta-ok');
           expect(() => withRepositoryMutationExclusion(home, 'repo1', 'legacy-unknown', () => 'no')).toThrow(
-            'REPOSITORY_PROCESS_LEASE_HELD',
+            'MUTATION_RESOURCE_CLAIMS_REQUIRED',
           );
           const process = acquireExecutionLeases(home, 'repo1', 'managed-process', pathB, opts);
           expect(process.acquired).toBe(true);
@@ -434,10 +434,11 @@ describe('Process Runtime fine-grained resource claims', () => {
         ]),
       ).toThrow('REPOSITORY_PROCESS_LEASE_HELD');
 
-      // Legacy/unknown source mutation remains fail-closed.
+      // Unknown source mutation fails at the operation boundary; it does not
+      // acquire or wait on a repository-wide ControllerLock.
       expect(() =>
         withRepositoryMutationExclusion(controllerHome, 'repo1', 'unknown-edit', () => 'unreachable'),
-      ).toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+      ).toThrow('MUTATION_RESOURCE_CLAIMS_REQUIRED');
     } finally {
       releaseExecutionLeases(controllerHome, 'repo1', 'android-build', held.leases, {
         visibility: 'ephemeral',

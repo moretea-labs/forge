@@ -160,7 +160,7 @@ function withMcpRepositoryMutation<T>(
   ctx: McpToolContext,
   operation: string,
   mutate: (leaseOwnerJobId?: string) => T,
-  claims?: ResourceClaimSpec[],
+  claims: ResourceClaimSpec[],
 ): T {
   const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
   const repoId =

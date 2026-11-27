@@ -651,7 +651,7 @@ describe('repository command execution lifecycle', () => {
       ).rejects.toThrow('REPOSITORY_PROCESS_LEASE_HELD');
       await expect(
         withRepositoryMutationExclusionAsync(controllerHome, repository.repoId, 'legacy-async', async () => 'unsafe'),
-      ).rejects.toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+      ).rejects.toThrow('MUTATION_RESOURCE_CLAIMS_REQUIRED');
       await expect(
         withRepositoryMutationExclusionAsync(
           controllerHome,
@@ -661,7 +661,7 @@ describe('repository command execution lifecycle', () => {
           undefined,
           [{ resourceKey: 'path:README.md', mode: 'write' }],
         ),
-      ).rejects.toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+      ).rejects.toThrow('MUTATION_RESOURCE_CLAIMS_UNSUPPORTED');
       expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(1);
     } finally {
       releaseAlpha?.();

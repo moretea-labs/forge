@@ -263,53 +263,9 @@ export function listConflictingResourceLeases(controllerHome: string, resourceKe
   );
 }
 
-// Editor mutations and managed repository processes already have separate
-// historical lock transports. This is a compatibility bridge, not a third
-// authority: Process allocation checks the existing repository lock under its
-// existing global lease mutex, and editor allocation holds that repository lock
-// while observing current Process claims. Neither path can pass both checks
-// while the other has a physical writer in flight.
+/** Compatibility fence: Process admission still observes legacy repository source locks. */
 function repositorySourceResourceKey(resourceKey: string): boolean {
   return /^(?:path:|git-index:|git-head:|git-ref:|git-refs:|git-worktrees:|repo-content:)/.test(resourceKey);
-}
-
-/**
- * One existing ControllerLock protects each synchronous editing transaction.
- * Reject if an earlier managed Process owns overlapping repository source
- * resources. This check is inside the physical repository lock, so lease
- * admission below cannot slip a new writer in between check and mutation.
- * Source reads using the no-lease MCP path stay independently responsive.
- */
-function assertRepositoryProcessMutationAvailable(
-  controllerHome: string,
-  repoId: string,
-  owner: string,
-  mutationClaims?: ResourceClaimSpec[],
-): void {
-  // This existing global lease mutex also guards managed Process lease publication.
-  // Lock ordering is repository -> global; Process only observes the repository lock.
-  // Undefined claims preserve the historical fail-closed repository fence. An
-  // explicit empty claim set means the caller is not mutating repository source.
-  const blocker = withControllerLock(
-    controllerHome,
-    { scope: 'global', resource: 'execution-leases' },
-    'editor-lease-check:' + owner,
-    () =>
-      listActiveLeasesUnlocked(controllerHome, repoId).find(
-        (lease) =>
-          repositorySourceResourceKey(lease.resourceKey) &&
-          (mutationClaims === undefined || mutationClaims.some((claim) => claimsConflict(claim, lease))),
-      ),
-  );
-  if (blocker) {
-    throw new Error(
-      'REPOSITORY_PROCESS_LEASE_HELD: ' +
-        blocker.resourceKey +
-        ' owned by ' +
-        blocker.ownerJobId +
-        '; refusing concurrent source mutation',
-    );
-  }
 }
 
 export function withRepositoryMutationExclusion<T>(
@@ -320,22 +276,10 @@ export function withRepositoryMutationExclusion<T>(
   ttlMs?: number,
   mutationClaims?: ResourceClaimSpec[],
 ): T {
-  // Exact source paths already participate in Process Runtime's atomic lease
-  // authority. Holding an additional repository ControllerLock serializes
-  // unrelated Writers and reintroduces the checkout-wide gate (#713).
-  // Legacy callers without an explicit scope keep the old conservative path.
-  if (mutationClaims === undefined) {
-    return withControllerLock(
-      controllerHome,
-      { scope: 'repository', repoId },
-      owner,
-      () => {
-        assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner);
-        return mutate();
-      },
-      ttlMs,
-    );
-  }
+  // Every source mutation must declare claims from the canonical Resource
+  // Claim Authority. Unknown scope is an operation-level error, never a
+  // repository-wide lock or an implicit writer grant.
+  if (mutationClaims === undefined) throw new Error('MUTATION_RESOURCE_CLAIMS_REQUIRED');
   if (mutationClaims.length === 0) return mutate();
 
   const leaseOwner = `editor:${owner}:${randomUUID()}`;
@@ -391,7 +335,7 @@ export function withRepositoryMutationExclusion<T>(
   }
 }
 
-/** The same lock and lease handshake for awaited worker-backed edit mutations. */
+/** The same canonical resource lease authority for awaited worker-backed edit mutations. */
 export async function withRepositoryMutationExclusionAsync<T>(
   controllerHome: string,
   repoId: string,
@@ -400,100 +344,79 @@ export async function withRepositoryMutationExclusionAsync<T>(
   ttlMs?: number,
   mutationClaims?: ResourceClaimSpec[],
 ): Promise<T> {
-  // Only exact-path ownership can retire the repository ControllerLock for
-  // awaited work. Current Local Bridge workspace-wide edit verification and
-  // unknown source effects retain their original broad exclusion (#713).
-  const exactPaths =
-    mutationClaims &&
-    mutationClaims.length > 0 &&
-    mutationClaims.some((claim) => /^path:[^:/]+:.+/.test(claim.resourceKey)) &&
-    mutationClaims.every((claim) => {
-      if (!claim.resourceKey.startsWith('path:')) {
-        return /^(?:git-index:|git-head:|git-ref:|git-refs:)/.test(claim.resourceKey);
-      }
-      const path = /^path:([^:/]+):(.+)$/.exec(claim.resourceKey)?.[2];
-      return path !== undefined && normalizeClaimPath(path) !== null;
-    });
-  if (exactPaths) {
-    const leaseOwner = `editor:${owner}:${randomUUID()}`;
-    const effects = {
-      visibility: 'ephemeral' as const,
-      notifyScheduler: false,
-      invalidateProjection: false,
-      emitRuntimeEvent: false,
+  // Async and synchronous edits use the same Resource Claim Authority. Unknown
+  // scope is rejected at this operation; it never falls back to a repo lock.
+  if (mutationClaims === undefined) throw new Error('MUTATION_RESOURCE_CLAIMS_REQUIRED');
+  if (mutationClaims.length === 0) return await mutate();
+  const supportedClaims = mutationClaims.every((claim) => {
+    if (!claim.resourceKey.startsWith('path:')) {
+      return /^(?:git-index:|git-head:|git-ref:|git-refs:)/.test(claim.resourceKey);
+    }
+    const match = /^path:([^:/]+):(.+)$/.exec(claim.resourceKey);
+    return match !== null && normalizeClaimPath(match[2]!) !== null;
+  });
+  if (!supportedClaims) throw new Error('MUTATION_RESOURCE_CLAIMS_UNSUPPORTED');
+
+  const leaseOwner = `editor:${owner}:${randomUUID()}`;
+  const effects = {
+    visibility: 'ephemeral' as const,
+    notifyScheduler: false,
+    invalidateProjection: false,
+    emitRuntimeEvent: false,
+  };
+  const scopedClaims = mutationClaims.map((claim) => {
+    const checkoutFromKey = /^(?:path|git-index|git-head):([^:]+)/.exec(claim.resourceKey)?.[1];
+    if (claim.checkoutId && checkoutFromKey && claim.checkoutId !== checkoutFromKey) {
+      throw new Error('LEASE_CHECKOUT_SCOPE_MISMATCH');
+    }
+    return {
+      ...claim,
+      repoId: claim.repoId ?? repoId,
+      ...(claim.checkoutId || checkoutFromKey ? { checkoutId: claim.checkoutId ?? checkoutFromKey } : {}),
     };
-    const scopedClaims = mutationClaims.map((claim) => {
-      const checkoutFromKey = /^(?:path|git-index|git-head):([^:]+)/.exec(claim.resourceKey)?.[1];
-      if (claim.checkoutId && checkoutFromKey && claim.checkoutId !== checkoutFromKey) {
-        throw new Error('LEASE_CHECKOUT_SCOPE_MISMATCH');
-      }
-      return {
-        ...claim,
-        repoId: claim.repoId ?? repoId,
-        ...(claim.checkoutId || checkoutFromKey ? { checkoutId: claim.checkoutId ?? checkoutFromKey } : {}),
-      };
-    });
-    const leaseTtlMs = Math.max(15_000, ttlMs ?? 60_000);
-    const acquired = await acquireExecutionLeasesAsync(controllerHome, repoId, leaseOwner, scopedClaims, {
-      ...effects,
-      ttlMs: leaseTtlMs,
-    });
-    if (!acquired.acquired) {
-      const blocker = acquired.blockers[0];
-      throw new Error(
-        `REPOSITORY_PROCESS_LEASE_HELD: ${blocker?.resourceKey ?? 'unknown-resource'}` +
-          ` owned by ${blocker?.ownerJobId ?? 'unknown-owner'}; refusing overlapping source mutation`,
-      );
-    }
-    const expected = acquired.leases.map((lease) => ({
-      leaseId: lease.leaseId,
-      fencingToken: lease.fencingToken,
-      repoId: lease.repoId,
-      checkoutId: lease.checkoutId,
-      resourceKey: lease.resourceKey,
-      ownerIdentityDigest: lease.ownerIdentityDigest,
-    }));
-    let renewalFailure: unknown;
-    // Awaited workers can outlive their initial lease. Keep the existing
-    // fenced owner alive instead of silently expiring it mid-mutation.
-    const heartbeat = setInterval(
-      () => {
-        if (renewalFailure) return;
-        try {
-          renewExecutionLeases(controllerHome, repoId, leaseOwner, leaseTtlMs, expected);
-        } catch (error) {
-          // The lease mutex is deliberately non-waiting. A competing short
-          // critical section is retryable; only a real fencing/runtime/store
-          // failure should poison the long-running mutation.
-          if (!(error instanceof ControllerLockContentionError)) renewalFailure = error;
-        }
-      },
-      Math.max(1_000, Math.min(10_000, Math.trunc(leaseTtlMs / 3))),
+  });
+  const leaseTtlMs = Math.max(15_000, ttlMs ?? 60_000);
+  const acquired = await acquireExecutionLeasesAsync(controllerHome, repoId, leaseOwner, scopedClaims, {
+    ...effects,
+    ttlMs: leaseTtlMs,
+  });
+  if (!acquired.acquired) {
+    const blocker = acquired.blockers[0];
+    throw new Error(
+      `REPOSITORY_PROCESS_LEASE_HELD: ${blocker?.resourceKey ?? 'unknown-resource'}` +
+        ` owned by ${blocker?.ownerJobId ?? 'unknown-owner'}; refusing overlapping source mutation`,
     );
-    heartbeat.unref?.();
-    try {
-      const result = await mutate();
-      if (renewalFailure) throw renewalFailure;
-      // A long awaited task may outlive a runtime fence or a missed heartbeat.
-      // Accept its result only if we still own precisely the same lease tokens.
-      renewExecutionLeases(controllerHome, repoId, leaseOwner, leaseTtlMs, expected);
-      return result;
-    } finally {
-      clearInterval(heartbeat);
-      releaseExecutionLeases(controllerHome, repoId, leaseOwner, expected, effects);
-    }
   }
-  return withControllerLockAsync(
-    controllerHome,
-    { scope: 'repository', repoId },
-    owner,
-    async () => {
-      assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner, mutationClaims);
-      return await mutate();
+  const expected = acquired.leases.map((lease) => ({
+    leaseId: lease.leaseId,
+    fencingToken: lease.fencingToken,
+    repoId: lease.repoId,
+    checkoutId: lease.checkoutId,
+    resourceKey: lease.resourceKey,
+    ownerIdentityDigest: lease.ownerIdentityDigest,
+  }));
+  let renewalFailure: unknown;
+  const heartbeat = setInterval(
+    () => {
+      if (renewalFailure) return;
+      try {
+        renewExecutionLeases(controllerHome, repoId, leaseOwner, leaseTtlMs, expected);
+      } catch (error) {
+        if (!(error instanceof ControllerLockContentionError)) renewalFailure = error;
+      }
     },
-    ttlMs,
-    0,
+    Math.max(1_000, Math.min(10_000, Math.trunc(leaseTtlMs / 3))),
   );
+  heartbeat.unref?.();
+  try {
+    const result = await mutate();
+    if (renewalFailure) throw renewalFailure;
+    renewExecutionLeases(controllerHome, repoId, leaseOwner, leaseTtlMs, expected);
+    return result;
+  } finally {
+    clearInterval(heartbeat);
+    releaseExecutionLeases(controllerHome, repoId, leaseOwner, expected, effects);
+  }
 }
 
 export function acquireExecutionLeases(
