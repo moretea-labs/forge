@@ -11,6 +11,7 @@ import {
 import { listRepositories } from '../repositories/registry';
 import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
+import { claimGitRefsWithMode } from '../execution/process-runtime/resource-claims';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { redactSensitiveText, redactSensitiveValue } from '../evidence/sensitive-output';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
@@ -732,19 +733,22 @@ function claimsForPluginActionScope(
     pluginId === 'computer' || pluginId === 'desktop_operator'
       ? 'provider-state:desktop_operator'
       : `provider-state:${pluginId}`;
-  const claims = action.resourceClaims.map((claim) => ({
-    resourceKey:
-      claim.resource === 'provider-state'
-        ? providerStateResourceKey
-        : claim.resource === 'remote'
-          ? browserRemoteResourceKey(pluginId, args, requestId)
-          : scope.kind === 'controller'
-            ? `controller-system:${claim.resource}`
-            : claim.resource === 'git-refs'
-              ? `git-refs:${scope.scopeKey}`
+  const claims = action.resourceClaims.map((claim) => {
+    if (claim.resource === 'git-refs' && scope.kind !== 'controller') {
+      return claimGitRefsWithMode(scope.scopeKey, claim.mode);
+    }
+    return {
+      resourceKey:
+        claim.resource === 'provider-state'
+          ? providerStateResourceKey
+          : claim.resource === 'remote'
+            ? browserRemoteResourceKey(pluginId, args, requestId)
+            : scope.kind === 'controller'
+              ? `controller-system:${claim.resource}`
               : `repo-state:${scope.scopeKey}`,
-    mode: claim.mode,
-  }));
+      mode: claim.mode,
+    };
+  });
   if (pluginId === 'ios' && ['build', 'xcode_test', 'smoke_review', 'agent_device_prepare'].includes(action.actionId)) {
     claims.push({ resourceKey: 'host-service:ios-build', mode: 'write' });
   }

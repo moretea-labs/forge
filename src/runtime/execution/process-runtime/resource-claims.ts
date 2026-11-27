@@ -89,12 +89,16 @@ export function claimGitIndex(checkoutId?: string, repoId?: string): ResourceCla
   return { resourceKey: `git-index:${checkoutScope(checkoutId, repoId)}`, mode: 'exclusive' };
 }
 
+export function claimGitRefsWithMode(repoId: string, mode: ResourceClaimSpec['mode']): ResourceClaimSpec {
+  return { resourceKey: `git-refs:${repoId}`, mode };
+}
+
 export function claimGitRefsRead(repoId: string): ResourceClaimSpec {
-  return { resourceKey: `git-refs:${repoId}`, mode: 'read' };
+  return claimGitRefsWithMode(repoId, 'read');
 }
 
 export function claimGitRefs(repoId: string): ResourceClaimSpec {
-  return { resourceKey: `git-refs:${repoId}`, mode: 'exclusive' };
+  return claimGitRefsWithMode(repoId, 'exclusive');
 }
 
 export function claimGitWorktreesRead(repoId: string): ResourceClaimSpec {

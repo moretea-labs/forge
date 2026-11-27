@@ -4,6 +4,7 @@ import { setHostBuildCpuProbeForTest } from '../../src/runtime/resources/leases/
 import {
   claimsForCheck,
   claimsForRepositoryCommand,
+  claimGitRefsWithMode,
   claimGitWorktrees,
   claimGitWorktreesRead,
   claimRequiredPathWrites,
@@ -155,11 +156,7 @@ describe('Process Runtime fine-grained resource claims', () => {
   });
 
   test('MutationGate unknown or invalid source scopes do not create checkout-wide or implicit Git claims (#725)', () => {
-    for (const options of [
-      {},
-      { mutatesGitIndex: false },
-      { writePaths: [] as string[], mutatesGitIndex: false },
-    ]) {
+    for (const options of [{}, { mutatesGitIndex: false }, { writePaths: [] as string[], mutatesGitIndex: false }]) {
       const claims = buildMutationClaims('repo1', 'co1', options);
       expect(claims.some((claim) => claim.resourceKey.startsWith('workspace:'))).toBe(false);
       expect(claims.some((claim) => claim.resourceKey.startsWith('git-index:'))).toBe(false);
@@ -1380,6 +1377,38 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(
       claimsForRepositoryCommand(['xcodebuild', 'test', '-destination', `platform=iOS,id=${duo}`], 'r', 'c'),
     ).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+  });
+
+  test('plugin Git ref claims reuse the canonical repository ref resource vocabulary', () => {
+    const repository = { repoId: 'repo1', activeCheckoutId: 'co1' } as Parameters<
+      typeof claimsForAssistantPluginAction
+    >[1];
+    const action = (mode: 'read' | 'write' | 'exclusive'): AssistantPluginActionDescriptor => ({
+      actionId: `refs-${mode}`,
+      title: `refs-${mode}`,
+      description: '',
+      readOnly: mode === 'read',
+      risk: mode === 'read' ? 'readonly' : 'workspace_write',
+      confirmation: mode === 'read' ? 'none' : 'authorization',
+      defaultTimeoutMs: 30_000,
+      cancellable: true,
+      idempotent: true,
+      scopes: ['git.refs'],
+      resourceClaims: [{ resource: 'git-refs', mode }],
+      argumentsSchema: {},
+    });
+
+    for (const mode of ['read', 'write', 'exclusive'] as const) {
+      expect(claimsForAssistantPluginAction(action(mode), repository, 'external-provider')).toEqual([
+        claimGitRefsWithMode('repo1', mode),
+      ]);
+    }
+    const otherRepository = { repoId: 'repo2', activeCheckoutId: 'co2' } as Parameters<
+      typeof claimsForAssistantPluginAction
+    >[1];
+    expect(claimsForAssistantPluginAction(action('exclusive'), otherRepository, 'external-provider')).toEqual([
+      claimGitRefsWithMode('repo2', 'exclusive'),
+    ]);
   });
 
   test('iOS plugin exact UDIDs use the same host authority across repositories', () => {
