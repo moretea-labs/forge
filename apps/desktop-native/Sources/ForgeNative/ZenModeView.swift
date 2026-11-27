@@ -403,8 +403,23 @@ struct ZenWorkspacePane: View {
         case "completed": return "本轮实现完成"
         case "cancelled": return "推进已取消"
         default:
+            if !status.providerReady { return "模型服务未就绪 · 暂不可推进" }
             return status.authorized ? "已批准 · 等待开始" : "只读精化 · 等待批准推进"
         }
+    }
+
+    static func executionProviderHint(_ status:AutopilotStatusDetail) -> String? {
+        guard !status.providerReady else { return nil }
+        let provider = status.provider?.lowercased() == "deepseek" ? "DeepSeek"
+            : status.provider?.lowercased() == "joycode" ? "JoyCode"
+            : status.provider
+        let model = status.model?.trimmingCharacters(in:.whitespacesAndNewlines)
+        let identity = [provider,model].compactMap { value in
+            guard let value,!value.isEmpty else { return nil }
+            return value
+        }.joined(separator:" · ")
+        let suffix = identity.isEmpty ? "" : "（\(identity)）"
+        return "当前模型服务未就绪\(suffix)。请先配置 Provider 凭据；未就绪前不会批准或启动 Agent Loop。"
     }
 
     static func executionLoopSummary(_ status:AutopilotStatusDetail) -> String? {
@@ -425,6 +440,15 @@ struct ZenWorkspacePane: View {
             parts.append("Token \(status.totalTokens)")
         }
         return parts.isEmpty ? nil : parts.joined(separator:" · ")
+    }
+
+    static func executionReadyForRequirementAcceptance(
+        _ status:AutopilotStatusDetail?,outcomeUnknown:Bool
+    ) -> Bool {
+        guard let status,!outcomeUnknown else { return false }
+        return status.runStatus == "completed"
+            && !status.hasPendingProcessRecovery
+            && !status.requiresReapproval
     }
 
     static func executionStopReasonLabel(_ status:AutopilotStatusDetail) -> String? {
@@ -2015,6 +2039,13 @@ struct ZenWorkspacePane: View {
                         .font(.system(size:11,weight:.medium))
                         .foregroundStyle(status.runStatus == "failed" ? Color.red : Color.secondary)
                 }
+                if let providerHint=Self.executionProviderHint(status) {
+                    Label(providerHint,systemImage:"exclamationmark.triangle")
+                        .font(.system(size:10))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal:false,vertical:true)
+                        .accessibilityIdentifier("zen.execution.provider-unavailable")
+                }
                 if let loopSummary=Self.executionLoopSummary(status) {
                     Text(loopSummary)
                         .font(.system(size:10,design:.monospaced))
@@ -2080,7 +2111,17 @@ struct ZenWorkspacePane: View {
             }
             if Self.requirementAllowsActions(item.state) {
                 HStack(spacing:9) {
-                    if let operation=Self.executionOperation(
+                    if Self.executionReadyForRequirementAcceptance(
+                        model.planningAutopilotStatuses[item.recordId],
+                        outcomeUnknown:model.autopilotOutcomeUnknown(for:item.recordId)
+                    ) {
+                        Button("进入 Requirement 验收") {
+                            handleNodeAction(item,.complete)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.autopilotLoading || model.autopilotControlPending)
+                        .accessibilityIdentifier("zen.execution.accept-requirement")
+                    } else if let operation=Self.executionOperation(
                         status:model.planningAutopilotStatuses[item.recordId],
                         outcomeUnknown:model.autopilotOutcomeUnknown(for:item.recordId)
                     ) {

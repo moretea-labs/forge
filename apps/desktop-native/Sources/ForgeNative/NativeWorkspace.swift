@@ -704,10 +704,11 @@ struct AutopilotStatusDetail {
       else { return nil }
       return ["running", "paused", "blocked", "failed"].contains(runStatus ?? "") ? "resume" : nil
     }
+    if !providerReady && (!authorized || requiresReapproval || needsBudgetRenewal) { return nil }
     if !authorized || requiresReapproval || needsBudgetRenewal { return "authorize" }
     if runtimeActive { return "pause" }
-    guard providerReady else { return nil }
     if checkpointPlanId != nil { return "accept_checkpoint" }
+    guard providerReady else { return nil }
     return ["running", "paused", "blocked", "failed"].contains(runStatus ?? "") ? "resume" : "start"
   }
 }
