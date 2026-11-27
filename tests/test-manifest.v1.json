@@ -983,6 +983,10 @@
       "module": "process-runtime",
       "resource": "process-tree"
     },
+    "tests/runtime/runtime-status-async.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/runtime-write-fence.test.ts": {
       "module": "process-runtime",
       "resource": "controller-home-isolated"
