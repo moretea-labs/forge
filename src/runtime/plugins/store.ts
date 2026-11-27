@@ -2396,6 +2396,7 @@ async function submitPluginAction(
         timeoutMs: request.timeoutMs,
         signal: request.signal,
         authorizationGrantRefs: request.authorizationGrantRefs,
+        authorizedTarget: activeAuthorizationGrant?.target ?? authorizationContext?.target,
         executionPorts,
         deadlineAtMs:
           typeof request.timeoutMs === 'number' ? Date.now() + Math.max(1, Math.trunc(request.timeoutMs)) : undefined,

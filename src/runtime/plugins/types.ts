@@ -182,6 +182,8 @@ export interface AssistantPluginActionExecutionInput {
   signal?: AbortSignal;
   /** Exact reusable grants bound to the Workflow asset. Never accepts grant contents. */
   authorizationGrantRefs?: readonly string[];
+  /** Exact authorization target approved for this invocation after grant/host-policy resolution. */
+  authorizedTarget?: AssistantPluginAuthorizationTarget;
   /** Internal absolute request deadline; propagated only across nested adapter actions. */
   deadlineAtMs?: number;
   /** Internal proof that this exact adapter instance just built and validated the live provider manifest. */

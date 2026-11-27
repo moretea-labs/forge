@@ -586,6 +586,18 @@ describe('CoreDevice-first physical iPhone provider', () => {
         if (args[0] === 'devicectl' && args[1] === '--version') {
           return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
         }
+        if (command === 'codesign' && args[0] === '--verify') {
+          return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
+        }
+        if (command === 'codesign' && args[0] === '-d') {
+          return {
+            ok: true,
+            status: 0,
+            stdout: '',
+            stderr: `Identifier=com.example.app\nCDHash=${'a'.repeat(40)}\n`,
+            command: [command, ...args],
+          };
+        }
         const joined = args.join(' ');
         if (joined.includes('list devices')) {
           return {
@@ -623,6 +635,139 @@ describe('CoreDevice-first physical iPhone provider', () => {
     ).toBe(true);
     const computerManifest = getAssistantPluginManifest(value.controllerHome, repository, 'computer');
     expect(computerManifest.actions.some((action) => action.actionId === 'physical_device_install')).toBe(true);
+  });
+
+  it('binds production physical installs to the exact signed artifact before devicectl mutation', async () => {
+    const value = fixture();
+    spawnSync('git', ['init', '-b', 'main'], { cwd: value.repoRoot, stdio: 'ignore' });
+    const repository = registerRepository({ path: value.repoRoot, controllerHome: value.controllerHome });
+    value.repoId = repository.repoId;
+    mkdirSync(join(value.repoRoot, '.forge'), { recursive: true });
+    writeFileSync(
+      join(value.repoRoot, '.forge', 'ios-workflow.json'),
+      JSON.stringify({ schemaVersion: 1, project: { bundleId: 'com.example.production' } }),
+    );
+    const appPath = join(value.repoRoot, '.forge', 'ios', 'Products', 'Production.app');
+    mkdirSync(appPath, { recursive: true });
+    const commands: string[][] = [];
+    let cdHash = 'b'.repeat(40);
+
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === 'devicectl' && args[1] === '--version') {
+          return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        }
+        if (command === 'codesign' && args[0] === '--verify') {
+          return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
+        }
+        if (command === 'codesign' && args[0] === '-d') {
+          return {
+            ok: true,
+            status: 0,
+            stdout: '',
+            stderr: `Identifier=com.example.production\nCDHash=${cdHash}\n`,
+            command: [command, ...args],
+          };
+        }
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) {
+          return {
+            ok: true,
+            status: 0,
+            stdout: json({ devices: [deviceEntry()] }),
+            stderr: '',
+            command: [command, ...args],
+          };
+        }
+        if (joined.includes('device install app')) {
+          return {
+            ok: true,
+            status: 0,
+            stdout: json({ installedApplications: [{ bundleIdentifier: 'com.example.production' }] }),
+            stderr: '',
+            command: [command, ...args],
+          };
+        }
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    const args = { device: 'greyson', app_path: appPath };
+    const authorization = await resolveIosPhysicalDeviceAuthorizationContext(
+      input(value, 'physical_device_install', args),
+    );
+    expect(authorization?.target.kind).toBe('ios-physical-device-production-install');
+    expect(authorization?.target.id).toContain('com.example.production');
+    expect(authorization?.target.id).toContain(cdHash);
+
+    await expect(executeIosPhysicalDeviceAction(input(value, 'physical_device_install', args))).rejects.toMatchObject({
+      code: 'IOS_DEVICE_PRODUCTION_INSTALL_AUTHORIZATION_REQUIRED',
+    });
+    expect(commands.filter((command) => command.join(' ').includes('device install app'))).toHaveLength(0);
+
+    const authorizedInput = {
+      ...input(value, 'physical_device_install', args),
+      authorizedTarget: authorization!.target,
+    };
+    await expect(executeIosPhysicalDeviceAction(authorizedInput)).resolves.toMatchObject({ installed: true });
+    expect(commands.filter((command) => command.join(' ').includes('device install app'))).toHaveLength(1);
+
+    cdHash = 'c'.repeat(40);
+    await expect(executeIosPhysicalDeviceAction(authorizedInput)).rejects.toMatchObject({
+      code: 'IOS_DEVICE_PRODUCTION_INSTALL_AUTHORIZATION_REQUIRED',
+    });
+    expect(commands.filter((command) => command.join(' ').includes('device install app'))).toHaveLength(1);
+  });
+
+  it('fails closed when a physical install artifact has no complete signed identity', async () => {
+    const value = fixture();
+    const appPath = join(value.repoRoot, '.forge', 'ios', 'Products', 'Malformed.app');
+    mkdirSync(appPath, { recursive: true });
+    const commands: string[][] = [];
+    setIosPhysicalDeviceRuntimeHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (args[0] === 'devicectl' && args[1] === '--version') {
+          return { ok: true, status: 0, stdout: '636.3\n', stderr: '', command: [command, ...args] };
+        }
+        if (command === 'codesign' && args[0] === '--verify') {
+          return { ok: true, status: 0, stdout: '', stderr: '', command: [command, ...args] };
+        }
+        if (command === 'codesign' && args[0] === '-d') {
+          return {
+            ok: true,
+            status: 0,
+            stdout: '',
+            stderr: 'Identifier=com.example.malformed\n',
+            command: [command, ...args],
+          };
+        }
+        const joined = args.join(' ');
+        if (joined.includes('list devices')) {
+          return {
+            ok: true,
+            status: 0,
+            stdout: json({ devices: [deviceEntry()] }),
+            stderr: '',
+            command: [command, ...args],
+          };
+        }
+        if (joined.includes('device install app')) {
+          throw new Error('devicectl install must not be reached for malformed identity');
+        }
+        throw new Error(`unexpected command: ${[command, ...args].join(' ')}`);
+      },
+    });
+
+    await expect(
+      resolveIosPhysicalDeviceAuthorizationContext(
+        input(value, 'physical_device_install', { device: 'greyson', app_path: appPath }),
+      ),
+    ).rejects.toMatchObject({ code: 'IOS_DEVICE_APP_IDENTITY_INVALID' });
+    expect(commands.filter((command) => command.join(' ').includes('device install app'))).toHaveLength(0);
   });
 
   it('opens, types, and screenshots without probing or creating a semantic Runner session', async () => {

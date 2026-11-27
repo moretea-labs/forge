@@ -422,6 +422,77 @@ function requireBoundedPhysicalAppBundle(input: AssistantPluginActionExecutionIn
   return canonicalApp;
 }
 
+interface SignedPhysicalAppIdentity {
+  bundleId: string;
+  cdHash: string;
+}
+
+function signedPhysicalAppIdentity(
+  input: AssistantPluginActionExecutionInput,
+  appPath: string,
+): SignedPhysicalAppIdentity {
+  const verified = hooks.runCommand('codesign', ['--verify', '--deep', '--strict', appPath], {
+    cwd: input.repoRoot,
+    timeoutMs: 30_000,
+  });
+  if (!verified.ok) {
+    throw new AssistantPluginError(
+      'IOS_DEVICE_APP_SIGNATURE_INVALID',
+      'The physical-device install artifact must have a valid Apple code signature before installation.',
+      { retryable: false },
+    );
+  }
+  const described = hooks.runCommand('codesign', ['-d', '--verbose=4', appPath], {
+    cwd: input.repoRoot,
+    timeoutMs: 30_000,
+  });
+  if (!described.ok) {
+    throw new AssistantPluginError(
+      'IOS_DEVICE_APP_IDENTITY_INVALID',
+      'Forge could not read the signed app identity before physical-device installation.',
+      { retryable: false },
+    );
+  }
+  const details = `${described.stdout}\n${described.stderr}`;
+  const bundleId = details.match(/^Identifier=(.+)$/m)?.[1]?.trim();
+  const cdHash = details.match(/^CDHash=([0-9A-Fa-f]+)$/m)?.[1]?.toLowerCase();
+  if (
+    !bundleId ||
+    !/^[A-Za-z0-9][A-Za-z0-9.-]+$/.test(bundleId) ||
+    !bundleId.includes('.') ||
+    !cdHash ||
+    cdHash.length < 20
+  ) {
+    throw new AssistantPluginError(
+      'IOS_DEVICE_APP_IDENTITY_INVALID',
+      'The signed app identity is missing a valid Bundle ID or code-directory hash; installation is denied.',
+      { retryable: false },
+    );
+  }
+  return { bundleId, cdHash };
+}
+
+function repositoryProductionBundleId(input: AssistantPluginActionExecutionInput): string | undefined {
+  const workflow = readIosWorkflowConfig(input.repoRoot);
+  if (!workflow.ready) {
+    throw new AssistantPluginError(
+      'IOS_DEVICE_INSTALL_POLICY_INVALID',
+      `The repository iOS workflow policy is invalid: ${workflow.error.message}`,
+      { retryable: false },
+    );
+  }
+  const bundleId = workflow.config.project?.bundleId?.trim();
+  if (!bundleId) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9.-]+$/.test(bundleId) || !bundleId.includes('.')) {
+    throw new AssistantPluginError(
+      'IOS_DEVICE_INSTALL_POLICY_INVALID',
+      'project.bundleId must be a valid application Bundle ID before physical-device installation.',
+      { retryable: false },
+    );
+  }
+  return bundleId;
+}
+
 function commandFailure(result: CommandResult, code: string, fallback: string): never {
   throw new AssistantPluginError(code, result.stderr.trim() || result.stdout.trim() || fallback, {
     retryable: false,
@@ -1459,6 +1530,31 @@ function physicalDeviceAuthorizationTarget(device: PhysicalDevice): AssistantPlu
   };
 }
 
+function productionInstallAuthorizationTarget(
+  device: PhysicalDevice,
+  identity: SignedPhysicalAppIdentity,
+): AssistantPluginAuthorizationTarget {
+  return {
+    kind: 'ios-physical-device-production-install',
+    id: `${device.identifier}:${identity.bundleId}:${identity.cdHash}`,
+    identityFingerprint: createHash('sha256')
+      .update(`${device.identifier}\0${device.udid ?? ''}\0${identity.bundleId}\0${identity.cdHash}`)
+      .digest('hex'),
+  };
+}
+
+function authorizationTargetMatches(
+  left: AssistantPluginAuthorizationTarget | undefined,
+  right: AssistantPluginAuthorizationTarget,
+): boolean {
+  return Boolean(
+    left &&
+      left.kind === right.kind &&
+      left.id === right.id &&
+      (left.identityFingerprint ?? '') === (right.identityFingerprint ?? ''),
+  );
+}
+
 /**
  * Resolve authorization against the exact CoreDevice identity. Interaction ids are
  * intentionally never grant identities: follow-up input actions must recover and
@@ -1472,6 +1568,17 @@ export async function resolveIosPhysicalDeviceAuthorizationContext(
 
   if (input.actionId === 'physical_device_open' || input.actionId === 'physical_device_install') {
     const selected = await selectDevice(input, input.args.device);
+    if (input.actionId === 'physical_device_install') {
+      const appPath = requireBoundedPhysicalAppBundle(input, input.args.app_path);
+      const identity = signedPhysicalAppIdentity(input, appPath);
+      const productionBundleId = repositoryProductionBundleId(input);
+      if (productionBundleId && identity.bundleId === productionBundleId) {
+        return {
+          target: productionInstallAuthorizationTarget(selected, identity),
+          expiresInMinutes: 24 * 60,
+        };
+      }
+    }
     return {
       target: physicalDeviceAuthorizationTarget(selected),
       expiresInMinutes: 30 * 24 * 60,
@@ -1594,7 +1701,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       actionId: 'physical_device_install',
       title: 'Install app on physical iPhone',
       description:
-        'Install one repository-built .app under .forge/ios onto the exact paired iPhone through xcrun devicectl. No Xcode GUI or Simulator is started.',
+        'Install one signed repository-built .app under .forge/ios onto the exact paired iPhone through xcrun devicectl. The repository project.bundleId is production-protected and requires authorization bound to the signed Bundle ID and CDHash; isolated Beta Bundle IDs keep the ordinary device authorization path.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -1978,6 +2085,21 @@ export async function executeIosPhysicalDeviceAction(
       );
     }
     const appPath = requireBoundedPhysicalAppBundle(input, input.args.app_path);
+    const identity = signedPhysicalAppIdentity(input, appPath);
+    const productionBundleId = repositoryProductionBundleId(input);
+    if (productionBundleId && identity.bundleId === productionBundleId) {
+      const requiredTarget = productionInstallAuthorizationTarget(selected, identity);
+      if (!authorizationTargetMatches(input.authorizedTarget, requiredTarget)) {
+        throw new AssistantPluginError(
+          'IOS_DEVICE_PRODUCTION_INSTALL_AUTHORIZATION_REQUIRED',
+          'Replacing the repository production Bundle ID requires authorization bound to this exact signed app artifact.',
+          {
+            retryable: false,
+            details: { bundleId: identity.bundleId, cdHash: identity.cdHash },
+          },
+        );
+      }
+    }
     const installStartedAt = performance.now();
     const response = await runCoreJson(
       input,
