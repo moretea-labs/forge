@@ -644,11 +644,7 @@ async function executeComputerChatgptTargetAction(
       resource: { namespace: 'chatgpt.bootstrap', key: bootstrapKey },
     });
     if (!bootstrap) {
-      return await runtimeComputerChatgptAction(
-        input.controllerHome,
-        { kind: 'observe', identity },
-        input.timeoutMs,
-      );
+      return await runtimeComputerChatgptAction(input.controllerHome, { kind: 'observe', identity }, input.timeoutMs);
     }
     return await runtimeComputerChatgptAction(
       input.controllerHome,
