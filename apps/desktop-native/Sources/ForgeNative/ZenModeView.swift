@@ -403,8 +403,23 @@ struct ZenWorkspacePane: View {
         case "completed": return "本轮实现完成"
         case "cancelled": return "推进已取消"
         default:
+            if !status.providerReady { return "模型服务未就绪 · 暂不可推进" }
             return status.authorized ? "已批准 · 等待开始" : "只读精化 · 等待批准推进"
         }
+    }
+
+    static func executionProviderHint(_ status:AutopilotStatusDetail) -> String? {
+        guard !status.providerReady else { return nil }
+        let provider = status.provider?.lowercased() == "deepseek" ? "DeepSeek"
+            : status.provider?.lowercased() == "joycode" ? "JoyCode"
+            : status.provider
+        let model = status.model?.trimmingCharacters(in:.whitespacesAndNewlines)
+        let identity = [provider,model].compactMap { value in
+            guard let value,!value.isEmpty else { return nil }
+            return value
+        }.joined(separator:" · ")
+        let suffix = identity.isEmpty ? "" : "（\(identity)）"
+        return "当前模型服务未就绪\(suffix)。请先配置 Provider 凭据；未就绪前不会批准或启动 Agent Loop。"
     }
 
     static func executionLoopSummary(_ status:AutopilotStatusDetail) -> String? {
@@ -2023,6 +2038,13 @@ struct ZenWorkspacePane: View {
                     Text(Self.executionStageLabel(status))
                         .font(.system(size:11,weight:.medium))
                         .foregroundStyle(status.runStatus == "failed" ? Color.red : Color.secondary)
+                }
+                if let providerHint=Self.executionProviderHint(status) {
+                    Label(providerHint,systemImage:"exclamationmark.triangle")
+                        .font(.system(size:10))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal:false,vertical:true)
+                        .accessibilityIdentifier("zen.execution.provider-unavailable")
                 }
                 if let loopSummary=Self.executionLoopSummary(status) {
                     Text(loopSummary)

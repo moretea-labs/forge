@@ -511,6 +511,19 @@ final class ZenProposalTests: XCTestCase {
     XCTAssertNil(humanCheckpoint.nextExecutionOperation(outcomeUnknown: true))
     let stale = try status("paused", reason: "max_turns_reached", needsReapproval: true)
     XCTAssertEqual(stale.nextExecutionOperation(), "authorize")
+    let providerUnavailable = try status("idle", ready: false, authorized: false)
+    XCTAssertEqual(
+      ZenWorkspacePane.executionStageLabel(providerUnavailable),
+      "模型服务未就绪 · 暂不可推进"
+    )
+    XCTAssertEqual(
+      ZenWorkspacePane.executionProviderHint(providerUnavailable),
+      "当前模型服务未就绪（DeepSeek · deepseek-chat）。请先配置 Provider 凭据；未就绪前不会批准或启动 Agent Loop。"
+    )
+    XCTAssertNil(providerUnavailable.nextExecutionOperation())
+    let checkpointWithoutProvider = try status(
+      "paused", ready: false, reason: "human_checkpoint:PLAN-a")
+    XCTAssertEqual(checkpointWithoutProvider.nextExecutionOperation(), "accept_checkpoint")
     XCTAssertNil(ZenWorkspacePane.executionOperation(status: detached, outcomeUnknown: true))
     XCTAssertNil(ZenWorkspacePane.executionOperation(status: nil, outcomeUnknown: false))
 
@@ -528,6 +541,7 @@ final class ZenProposalTests: XCTestCase {
         ]
       ]))
     XCTAssertEqual(ZenWorkspacePane.executionStageLabel(live), "独立 Agent Loop 推进中")
+    XCTAssertNil(ZenWorkspacePane.executionProviderHint(live))
     XCTAssertEqual(
       ZenWorkspacePane.executionLoopSummary(live),
       "轮次 3/12 · 工具 8/32 · Token 12400/50000"
