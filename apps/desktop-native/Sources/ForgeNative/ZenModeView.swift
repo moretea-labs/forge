@@ -391,7 +391,7 @@ struct ZenWorkspacePane: View {
 
     static func executionStageLabel(_ status:AutopilotStatusDetail) -> String {
         if status.hasPendingProcessRecovery { return "等待原命令回执" }
-        if status.requiresReapproval { return "Requirement 已修订 · 等待重新批准" }
+        if status.requiresReapproval { return "授权范围已变化 · 等待重新批准" }
         if status.checkpointPlanId != nil { return "等待检查点验收" }
         switch status.runStatus {
         case "running":
@@ -606,28 +606,31 @@ struct ZenWorkspacePane: View {
 
     /// Workbench actions participate in the SAME native NSWindow toolbar.
     @ViewBuilder
-    private var zenWindowToolbarActions: some View {
-        if !showingProjectDirectory {
-                if screen == .canvas {
-                    Button {
-                        if let returnContext=model.restoreProjectDetailSource() {
-                            projectDirectoryRestoreContext=returnContext
-                            showingProjectDirectory=true
-                        } else {
-                            navigate(.board)
-                            focusedRequirementId = nil
-                            model.clearRecordSelection()
-                        }
-                    } label: {
-                        Image(systemName:"chevron.left")
-                            .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
-                    }
-                    .buttonStyle(.plain)
-                    .help(model.projectDetailReturnContext == nil ? "返回看板" : "返回项目详情")
-                    .accessibilityLabel(model.projectDetailReturnContext == nil ? "返回看板" : "返回项目详情")
-                    .accessibilityIdentifier(model.projectDetailReturnContext == nil
-                        ? "zen.canvas.back-to-board" : "zen.canvas.back-to-project-detail")
+    private var zenWindowToolbarNavigation: some View {
+        if !showingProjectDirectory && screen == .canvas {
+            Button {
+                if let returnContext=model.restoreProjectDetailSource() {
+                    projectDirectoryRestoreContext=returnContext
+                    showingProjectDirectory=true
+                } else {
+                    navigate(.board)
+                    focusedRequirementId = nil
+                    model.clearRecordSelection()
                 }
+            } label: {
+                Image(systemName:"chevron.left")
+                    .frame(width:ForgeClientDesign.Icon.hit,height:ForgeClientDesign.Icon.hit)
+            }
+            .buttonStyle(.plain)
+            .help(model.projectDetailReturnContext == nil ? "返回看板" : "返回项目详情")
+            .accessibilityLabel(model.projectDetailReturnContext == nil ? "返回看板" : "返回项目详情")
+            .accessibilityIdentifier(model.projectDetailReturnContext == nil
+                ? "zen.canvas.back-to-board" : "zen.canvas.back-to-project-detail")
+        }
+    }
+
+    private var zenWindowToolbarActions: some View {
+        if !showingProjectDirectory && screen == .board {
                 if screen == .board {
                     Button {
                         model.clearProjectDetailReturnContext()
@@ -760,8 +763,15 @@ struct ZenWorkspacePane: View {
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .background(Color.clear)
         .toolbar {
-            ToolbarItemGroup(placement:.automatic) {
-                zenWindowToolbarActions
+            if !showingProjectDirectory && screen == .canvas {
+                ToolbarItem(placement:.navigation) {
+                    zenWindowToolbarNavigation
+                }
+            }
+            if !showingProjectDirectory && screen == .board {
+                ToolbarItemGroup(placement:.primaryAction) {
+                    zenWindowToolbarActions
+                }
             }
         }
         .onChange(of:screen) { next in

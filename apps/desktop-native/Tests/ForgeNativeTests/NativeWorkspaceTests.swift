@@ -3418,6 +3418,183 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertTrue(model.workspaceRefreshRequestIsCurrent(currentRefresh))
   }
 
+  func testAutopilotStatusReadbackTreatsExplicitPreviousCheckoutAsReapproval() throws {
+    func payload(
+      runCheckoutId: String,
+      grantCheckoutId: String,
+      requiresReapproval: Bool,
+      runtimeActive: Bool
+    ) -> [String: Any] {
+      let policy: [String: Any] = [
+        "provider": "deepseek",
+        "model": "deepseek-v4.1-flash",
+        "maxTurns": 12,
+        "maxToolCalls": 32,
+        "checkpointPlanIds": [],
+      ]
+      let run: [String: Any] = [
+        "repoId": "repo-a",
+        "checkoutId": runCheckoutId,
+        "requirementId": "REQ-A",
+        "runId": "run-a",
+        "status": "paused",
+        "requirementRevision": 1,
+        "stopReason": "max_turns_reached",
+        "policy": policy,
+        "usage": ["turns": 12, "toolCalls": 4, "totalTokens": 900],
+        "evidenceRefs": [],
+      ]
+      let grant: [String: Any] = [
+        "grantId": "grant-a",
+        "constraints": ["checkoutId": grantCheckoutId] as [String: Any],
+      ]
+      return [
+        "data": [
+          "repoId": "repo-a",
+          "requirementId": "REQ-A",
+          "requirementRevision": 2,
+          "approvedRevision": 1,
+          "requiresReapproval": requiresReapproval,
+          "provider": "deepseek",
+          "providerReady": true,
+          "runtimeActive": runtimeActive,
+          "policy": policy,
+          "run": run,
+          "grant": grant,
+        ] as [String: Any]
+      ]
+    }
+
+    let previousCheckout = try XCTUnwrap(
+      NativeWorkspace.autopilotStatusReadbackDetail(
+        payload(
+          runCheckoutId: "checkout-old",
+          grantCheckoutId: "checkout-old",
+          requiresReapproval: true,
+          runtimeActive: true
+        ),
+        repoId: "repo-a",
+        checkoutId: "checkout-current",
+        requirementId: "REQ-A"
+      )
+    )
+    XCTAssertTrue(previousCheckout.requiresReapproval)
+    XCTAssertFalse(previousCheckout.authorized)
+    XCTAssertFalse(previousCheckout.runtimeActive)
+    XCTAssertEqual(previousCheckout.runStatus, "paused")
+    XCTAssertEqual(previousCheckout.runId, "run-a")
+    XCTAssertEqual(previousCheckout.nextExecutionOperation(), "authorize")
+
+    // The observed production response has a stale paused Run but no active Grant.
+    // Its previous-checkout liveness must still never leak into this checkout.
+    let previousCheckoutWithoutGrant = try XCTUnwrap(
+      NativeWorkspace.autopilotStatusReadbackDetail(
+        [
+          "data": [
+            "repoId": "repo-a",
+            "requirementId": "REQ-A",
+            "requirementRevision": 2,
+            "requiresReapproval": true,
+            "providerReady": true,
+            "runtimeActive": true,
+            "run": [
+              "repoId": "repo-a",
+              "checkoutId": "checkout-old",
+              "requirementId": "REQ-A",
+              "runId": "run-old",
+              "status": "paused",
+              "usage": ["turns": 12, "toolCalls": 4, "totalTokens": 900],
+              "evidenceRefs": [],
+            ],
+          ] as [String: Any]
+        ],
+        repoId: "repo-a",
+        checkoutId: "checkout-current",
+        requirementId: "REQ-A"
+      )
+    )
+    XCTAssertFalse(previousCheckoutWithoutGrant.authorized)
+    XCTAssertFalse(previousCheckoutWithoutGrant.runtimeActive)
+    XCTAssertTrue(previousCheckoutWithoutGrant.requiresReapproval)
+    XCTAssertEqual(previousCheckoutWithoutGrant.nextExecutionOperation(), "authorize")
+
+    let mismatchedGrant = try XCTUnwrap(
+      NativeWorkspace.autopilotStatusReadbackDetail(
+        payload(
+          runCheckoutId: "checkout-current",
+          grantCheckoutId: "checkout-old",
+          requiresReapproval: true,
+          runtimeActive: true
+        ),
+        repoId: "repo-a",
+        checkoutId: "checkout-current",
+        requirementId: "REQ-A"
+      )
+    )
+    XCTAssertFalse(mismatchedGrant.authorized)
+    XCTAssertFalse(mismatchedGrant.runtimeActive)
+    XCTAssertTrue(mismatchedGrant.requiresReapproval)
+
+    XCTAssertNil(
+      NativeWorkspace.autopilotStatusReadbackDetail(
+        payload(
+          runCheckoutId: "checkout-old",
+          grantCheckoutId: "checkout-old",
+          requiresReapproval: false,
+          runtimeActive: true
+        ),
+        repoId: "repo-a",
+        checkoutId: "checkout-current",
+        requirementId: "REQ-A"
+      )
+    )
+  }
+
+  func testAutopilotStatusReadbackPreservesCurrentCheckoutAuthority() throws {
+    let policy: [String: Any] = [
+      "provider": "deepseek",
+      "model": "deepseek-v4.1-flash",
+      "maxTurns": 12,
+      "maxToolCalls": 32,
+      "checkpointPlanIds": [],
+    ]
+    let value: [String: Any] = [
+      "data": [
+        "repoId": "repo-a",
+        "requirementId": "REQ-A",
+        "requirementRevision": 2,
+        "approvedRevision": 2,
+        "requiresReapproval": false,
+        "providerReady": true,
+        "runtimeActive": true,
+        "policy": policy,
+        "run": [
+          "repoId": "repo-a",
+          "checkoutId": "checkout-current",
+          "requirementId": "REQ-A",
+          "runId": "run-current",
+          "status": "running",
+          "policy": policy,
+          "usage": ["turns": 2, "toolCalls": 3, "totalTokens": 100],
+          "evidenceRefs": [],
+        ],
+        "grant": [
+          "grantId": "grant-current",
+          "constraints": ["checkoutId": "checkout-current"],
+        ],
+      ] as [String: Any]
+    ]
+    let status = try XCTUnwrap(
+      NativeWorkspace.autopilotStatusReadbackDetail(
+        value, repoId: "repo-a", checkoutId: "checkout-current", requirementId: "REQ-A"
+      )
+    )
+    XCTAssertTrue(status.authorized)
+    XCTAssertTrue(status.runtimeActive)
+    XCTAssertFalse(status.requiresReapproval)
+    XCTAssertEqual(status.nextExecutionOperation(), "pause")
+  }
+
   @MainActor
   func testAutopilotRequestsAreFencedByProjectCheckoutAndContextGeneration() {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

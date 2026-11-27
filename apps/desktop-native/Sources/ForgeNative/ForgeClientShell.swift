@@ -146,8 +146,18 @@ struct ForgeWorkspaceView: View {
         }
         .forgeWindowMaterial()
         .toolbar {
-            ToolbarItemGroup(placement:.automatic) {
-                unifiedWindowToolbarActions
+            if shouldShowShellBackAction {
+                ToolbarItem(placement:.navigation) {
+                    Button { model.goBack() } label: {
+                        ForgeGlyph(.back)
+                            .forgeChromeSurface(cornerRadius:8)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.busy)
+                    .help("返回 \(model.navigationBackLabel ?? "上一页")")
+                    .accessibilityLabel("返回上一页")
+                    .accessibilityIdentifier("forge.toolbar.back")
+                }
             }
         }
         // Hide the toolbar fill so traffic lights sit on the same surface as content.
@@ -185,24 +195,13 @@ struct ForgeWorkspaceView: View {
         )
     }
 
-    @ViewBuilder
-    private var unifiedWindowToolbarActions: some View {
-        if ForgeClientDesign.Shell.shouldShowShellBackAction(
+    private var shouldShowShellBackAction: Bool {
+        ForgeClientDesign.Shell.shouldShowShellBackAction(
             canNavigateBack:model.canNavigateBack,
             isAgentPage:model.page == .agent,
             inspectorVisible:workSurfaceVisible,
             isZenWorkbench:model.zenMode && [.requirement,.plan].contains(model.page)
-        ) {
-            Button { model.goBack() } label: {
-                ForgeGlyph(.back)
-                    .forgeChromeSurface(cornerRadius:8)
-            }
-            .buttonStyle(.plain)
-            .disabled(model.busy)
-            .help("返回 \(model.navigationBackLabel ?? "上一页")")
-            .accessibilityLabel("返回上一页")
-            .accessibilityIdentifier("forge.toolbar.back")
-        }
+        )
     }
 
     private var activeSidebarDestination: ForgeSidebarDestination {

@@ -512,6 +512,8 @@ final class ZenProposalTests: XCTestCase {
     XCTAssertNil(humanCheckpoint.nextExecutionOperation(outcomeUnknown: true))
     let stale = try status("paused", reason: "max_turns_reached", needsReapproval: true)
     XCTAssertEqual(stale.nextExecutionOperation(), "authorize")
+    XCTAssertEqual(
+      ZenWorkspacePane.executionStageLabel(stale), "授权范围已变化 · 等待重新批准")
     let providerUnavailable = try status("idle", ready: false, authorized: false)
     XCTAssertEqual(
       ZenWorkspacePane.executionStageLabel(providerUnavailable),
@@ -778,6 +780,21 @@ final class ZenProposalTests: XCTestCase {
     XCTAssertEqual(review.planTitle, "PLAN-a")
     XCTAssertEqual(review.summary, "Review exact plan")
     XCTAssertEqual(review.evidenceRefs, ["commit:abc"])
+    let staleStatus = try XCTUnwrap(
+      NativeWorkspace.autopilotStatusDetail([
+        "data": [
+          "grant": ["grantId": "grant-old"], "providerReady": true,
+          "requiresReapproval": true,
+          "run": [
+            "runId": "run-old", "status": "paused", "stopReason": "human_checkpoint:PLAN-a",
+            "currentPlanId": "PLAN-a", "lastSummary": "Previous checkout",
+            "evidenceRefs": ["commit:old"],
+          ],
+        ]
+      ]))
+    XCTAssertNil(
+      AutopilotCheckpointReview(model: model, requirementId: "REQ-one", status: staleStatus),
+      "A checkpoint from a previous authorization scope must not be accepted in this checkout")
     model.checkoutId = nil
     XCTAssertNil(AutopilotCheckpointReview(model: model, requirementId: "REQ-one", status: status))
   }

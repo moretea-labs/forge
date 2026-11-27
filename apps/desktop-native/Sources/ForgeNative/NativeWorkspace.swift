@@ -611,6 +611,17 @@ struct PlanRecordItem: Identifiable {
   let objective: String
 }
 
+enum NativeWorkspaceReadbackError: LocalizedError {
+  case invalidAutopilotStatusScope
+
+  var errorDescription: String? {
+    switch self {
+    case .invalidAutopilotStatusScope:
+      return "Autopilot 执行状态与当前 Repository、Checkout 或 Requirement 不匹配，已拒绝显示。"
+    }
+  }
+}
+
 struct AutopilotStatusDetail {
   let authorized: Bool
   let provider: String?
@@ -646,7 +657,7 @@ struct AutopilotStatusDetail {
   }
 
   var checkpointPlanId: String? {
-    guard runStatus == "paused", let stopReason,
+    guard !requiresReapproval, runStatus == "paused", let stopReason,
       stopReason.hasPrefix("human_checkpoint:")
     else { return nil }
     let planId = String(stopReason.dropFirst("human_checkpoint:".count))
@@ -4301,7 +4312,9 @@ final class NativeWorkspace: ObservableObject {
     )
   }
 
-  nonisolated static func autopilotStatusDetail(_ result: [String: Any]) -> AutopilotStatusDetail? {
+  nonisolated static func autopilotStatusDetail(
+    _ result: [String: Any], scopeMismatch: Bool = false
+  ) -> AutopilotStatusDetail? {
     let data = result["data"] as? [String: Any] ?? result
     if data["error"] != nil { return nil }
     let grant = data["grant"] as? [String: Any]
@@ -4310,12 +4323,14 @@ final class NativeWorkspace: ObservableObject {
     let policy =
       data["policy"] as? [String: Any] ?? run?["policy"] as? [String: Any] ?? grant?["constraints"]
       as? [String: Any] ?? [:]
+    let requiresReapproval = scopeMismatch || (data["requiresReapproval"] as? Bool ?? false)
+    let runtimeActive = scopeMismatch ? false : (data["runtimeActive"] as? Bool ?? false)
     return AutopilotStatusDetail(
-      authorized: grant != nil,
+      authorized: grant != nil && !scopeMismatch,
       provider: policy["provider"] as? String ?? data["provider"] as? String,
       providerReady: data["providerReady"] as? Bool ?? false,
-      runtimeActive: data["runtimeActive"] as? Bool ?? false,
-      requiresReapproval: data["requiresReapproval"] as? Bool ?? false,
+      runtimeActive: runtimeActive,
+      requiresReapproval: requiresReapproval,
       requirementRevision: data["requirementRevision"] as? Int,
       approvedRevision: data["approvedRevision"] as? Int,
       runStatus: run?["status"] as? String,
@@ -4346,26 +4361,44 @@ final class NativeWorkspace: ObservableObject {
     let data = result["data"] as? [String: Any] ?? result
     guard let revision = data["requirementRevision"] as? Int, revision > 0 else { return nil }
     if let returnedRepoId = data["repoId"] as? String, returnedRepoId != repoId { return nil }
-    if let returnedCheckoutId = data["checkoutId"] as? String, returnedCheckoutId != checkoutId {
-      return nil
-    }
     if let returnedRequirementId = data["requirementId"] as? String,
       returnedRequirementId != requirementId
     {
       return nil
     }
+
+    // The canonical adapter deliberately retains a previous-checkout Run so
+    // that the user can re-authorize its Requirement in the selected checkout.
+    // Accept that projection only when the authority explicitly marks it stale;
+    // never treat the old grant or runtime liveness as current-checkout authority.
+    let requiresReapproval = data["requiresReapproval"] as? Bool ?? false
+    var scopeMismatch = false
+    if let returnedCheckoutId = data["checkoutId"] as? String,
+      returnedCheckoutId != checkoutId
+    {
+      guard requiresReapproval else { return nil }
+      scopeMismatch = true
+    }
     if let run = data["run"] as? [String: Any] {
       guard run["repoId"] as? String == repoId,
-        run["checkoutId"] as? String == checkoutId,
-        run["requirementId"] as? String == requirementId
+        run["requirementId"] as? String == requirementId,
+        let returnedCheckoutId = run["checkoutId"] as? String
       else { return nil }
+      if returnedCheckoutId != checkoutId {
+        guard requiresReapproval else { return nil }
+        scopeMismatch = true
+      }
     }
     if let grant = data["grant"] as? [String: Any] {
       guard let constraints = grant["constraints"] as? [String: Any],
-        constraints["checkoutId"] as? String == checkoutId
+        let returnedCheckoutId = constraints["checkoutId"] as? String
       else { return nil }
+      if returnedCheckoutId != checkoutId {
+        guard requiresReapproval else { return nil }
+        scopeMismatch = true
+      }
     }
-    return autopilotStatusDetail(result)
+    return autopilotStatusDetail(result, scopeMismatch: scopeMismatch)
   }
 
   nonisolated static func autopilotStatusMap(_ result: [String: Any]) -> [String:
@@ -4619,7 +4652,7 @@ final class NativeWorkspace: ObservableObject {
         let parsed = Self.autopilotStatusReadbackDetail(
           value, repoId: repoId, checkoutId: checkoutId, requirementId: requirementId
         )
-      else { throw ForgeBridgeError.invalidResponse }
+      else { throw NativeWorkspaceReadbackError.invalidAutopilotStatusScope }
       resolveAutopilotOutcomeUnknown(
         projectId: projectId, repoId: repoId, checkoutId: checkoutId, requirementId: requirementId
       )

@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import ForgeNative
 
 final class ForgeClientToolbarOwnershipTests: XCTestCase {
@@ -40,9 +41,17 @@ final class ForgeClientToolbarOwnershipTests: XCTestCase {
     )
   }
 
-  func testAgentInspectorDoesNotCompeteWithWindowBackAction() {
+  func testAgentInspectorOwnsDismissalAndHidesTheWindowToolbar() {
     XCTAssertFalse(
       ForgeClientDesign.Shell.shouldShowShellBackAction(
+        canNavigateBack: true,
+        isAgentPage: true,
+        inspectorVisible: true,
+        isZenWorkbench: false
+      )
+    )
+    XCTAssertFalse(
+      ForgeClientDesign.Shell.shouldShowWindowToolbar(
         canNavigateBack: true,
         isAgentPage: true,
         inspectorVisible: true,
@@ -53,6 +62,22 @@ final class ForgeClientToolbarOwnershipTests: XCTestCase {
       ForgeClientDesign.Shell.shouldShowShellBackAction(
         canNavigateBack: true,
         isAgentPage: true,
+        inspectorVisible: false,
+        isZenWorkbench: false
+      )
+    )
+    XCTAssertTrue(
+      ForgeClientDesign.Shell.shouldShowWindowToolbar(
+        canNavigateBack: true,
+        isAgentPage: true,
+        inspectorVisible: false,
+        isZenWorkbench: false
+      )
+    )
+    XCTAssertFalse(
+      ForgeClientDesign.Shell.shouldShowWindowToolbar(
+        canNavigateBack: false,
+        isAgentPage: false,
         inspectorVisible: false,
         isZenWorkbench: false
       )
