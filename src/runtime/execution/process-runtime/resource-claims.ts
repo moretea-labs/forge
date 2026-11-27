@@ -113,9 +113,26 @@ export function claimRelease(_repoId: string): ResourceClaimSpec {
   return { resourceKey: 'release:runtime-authority', mode: 'exclusive' };
 }
 
-/** Exact source-path claims for every provable path; unprovable paths take none. */
+/** Exact source-path claims for every provable path; classifier-only unknowns take none. */
 export function claimPathWrites(paths: readonly string[], checkoutId?: string, repoId?: string): ResourceClaimSpec[] {
   return paths.flatMap((path) => claimPathWrite(path, checkoutId, repoId) ?? []);
+}
+
+/** Explicit source mutation paths must all be provable before the operation can proceed. */
+export function claimRequiredPathWrites(
+  paths: readonly string[],
+  checkoutId?: string,
+  repoId?: string,
+): ResourceClaimSpec[] {
+  const claims = new Map<string, ResourceClaimSpec>();
+  for (const rawPath of paths) {
+    const path = rawPath.trim();
+    if (!path) continue;
+    const claim = claimPathWrite(path, checkoutId, repoId);
+    if (!claim) throw new Error('RESOURCE_CLAIM_PATH_UNPROVABLE');
+    claims.set(claim.resourceKey, claim);
+  }
+  return [...claims.values()];
 }
 
 export function claimHeavyCheck(repoId: string): ResourceClaimSpec {

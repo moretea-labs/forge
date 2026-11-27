@@ -6,7 +6,7 @@ import { join } from 'path';
 import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/runtime/editing/edit-operation-contract';
 import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/leases/store';
 import type { ResourceClaimSpec } from '../../../src/runtime/execution/jobs/types';
-import { claimPathWrite } from '../../../src/runtime/execution/process-runtime/resource-claims';
+import { claimRequiredPathWrites } from '../../../src/runtime/execution/process-runtime/resource-claims';
 import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
 import {
   listCapabilityDescriptors,
@@ -144,16 +144,9 @@ export function buildMcpSourceClaims(ctx: McpToolContext, paths: Iterable<string
   // Do not fall back to a repository-wide writer lock when exact placement is
   // unknown. This MCP mutation requires a provable checkout and exact paths.
   if (!checkoutId) throw new Error('MCP_SOURCE_CHECKOUT_ID_REQUIRED');
-  const claimsByResource = new Map<string, ResourceClaimSpec>();
-  for (const rawPath of paths) {
-    const path = rawPath.trim();
-    if (!path) continue;
-    const claim = claimPathWrite(path, checkoutId, ctx.repoId);
-    if (!claim) throw new Error('MCP_SOURCE_PATH_UNPROVABLE');
-    claimsByResource.set(claim.resourceKey, claim);
-  }
-  if (claimsByResource.size === 0) throw new Error('MCP_SOURCE_PATHS_REQUIRED');
-  return [...claimsByResource.values()];
+  const claims = claimRequiredPathWrites([...paths], checkoutId, ctx.repoId);
+  if (claims.length === 0) throw new Error('MCP_SOURCE_PATHS_REQUIRED');
+  return claims;
 }
 
 function withMcpRepositoryMutation<T>(
