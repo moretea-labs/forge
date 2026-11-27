@@ -795,6 +795,10 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/mcp-runtime-http-timing.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/mcp-timing.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"

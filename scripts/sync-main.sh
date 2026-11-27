@@ -133,8 +133,10 @@ fi
 github_repository() {
   local repository remote_url
   repository="$(printenv FORGE_GITHUB_REPOSITORY || true)"
-  if [[ -z "$repository" ]]; then repository="$(printenv GITHUB_REPOSITORY || true)"; fi
   if [[ -z "$repository" ]]; then
+    # GITHUB_REPOSITORY describes the outer Actions job, not necessarily this
+    # checkout's remote (sync-main tests run against temporary bare remotes).
+    # Only a GitHub remote may opt into GitHub status publication.
     remote_url="$(git remote get-url "$REMOTE")"
     case "$remote_url" in
     https://github.com/* | git@github.com:* | ssh://git@github.com/*)

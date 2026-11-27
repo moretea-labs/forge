@@ -5,6 +5,9 @@ set -euo pipefail
 # fixture creates unrelated temporary Git histories; their check base must
 # come from each fixture's own origin/main, not the outer CI environment.
 unset TEST_BASE_REF
+# Reproduce the environment GitHub Actions injects. A local bare fixture must
+# never inherit the outer repository identity or attempt real GitHub API calls.
+export GITHUB_REPOSITORY=moretea-labs/forge
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
