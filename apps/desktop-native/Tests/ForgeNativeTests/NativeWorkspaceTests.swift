@@ -426,7 +426,7 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(
       NativeWorkspace.initialAgentActivityText(
         provider: "api:openai", requiresKnowledgeRecall: false),
-      "正在连接 API Provider"
+      "正在连接模型服务"
     )
     XCTAssertEqual(
       NativeWorkspace.initialAgentActivityText(provider: "joycode", requiresKnowledgeRecall: false),
@@ -549,7 +549,7 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(model.selectedProvider, "api:legacy-api")
     model.selectThreadProvider("api:legacy-api")
     XCTAssertEqual(model.thread?.provider, "api:legacy-api")
-    let pendingImage = URL(fileURLWithPath: "retained.png")
+    let pendingImage = FileManager.default.temporaryDirectory.appendingPathComponent("retained.png")
     model.pendingImageURLs = [pendingImage]
     model.threads[0].messages.append(ChatMessage(role: "user", text: "hello"))
 
