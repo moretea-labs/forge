@@ -946,8 +946,18 @@ describe('Forge Runtime service', () => {
     expect(launch.args.join(' ')).toContain('--port 8767');
     expect(launch.args.join(' ')).toContain('--auth oauth');
     expect(launch.environment.FORGE_CONTROLLER_LIFECYCLE_OWNER).toBe('1');
+    expect(launch.environment.FORGE_BUILD_VERSION).toBe('9.9.9-test');
+    const recoveryBindingLaunch = packageConnectorLaunchSpec({
+      release: { releaseId: release.releaseId, releaseRoot: release.releaseRoot, packageRoot: release.packageRoot },
+      controllerHome: fx.home,
+      endpoint: 'http://127.0.0.1:8767/mcp',
+      executable: '/usr/local/bin/node',
+    });
+    expect(recoveryBindingLaunch.environment.FORGE_BUILD_VERSION).toBe('9.9.9-test');
     const paths = packageConnectorServicePaths(fx.home, fx.root);
     const plist = renderPackageConnectorLaunchAgent({ paths, launch });
+    expect(plist).toContain('<key>FORGE_BUILD_VERSION</key>');
+    expect(plist).toContain('<string>9.9.9-test</string>');
     expect(plist).toContain('<key>RunAtLoad</key>');
     // 30s POST drain + 1s final error flush must precede launchd SIGKILL.
     const exitGrace = /<key>ExitTimeOut<\/key>\s*<integer>(\d+)<\/integer>/.exec(plist);
@@ -961,6 +971,7 @@ describe('Forge Runtime service', () => {
     expect(plist).toContain('<string>oauth</string>');
     const unit = renderPackageConnectorSystemdUserUnit({ launch });
     expect(unit).toContain('Restart=on-failure');
+    expect(unit).toContain('FORGE_BUILD_VERSION=9.9.9-test');
     expect(unit).toContain('8767');
   });
 

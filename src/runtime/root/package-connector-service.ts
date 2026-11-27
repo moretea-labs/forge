@@ -23,6 +23,7 @@ import {
   type SystemdUserUnitInput,
 } from '../platform/service-manager';
 import { forgeConnectorPersistentServiceLabel } from '../platform/service-inventory';
+import { FORGE_VERSION } from '../../version';
 
 export interface PackageConnectorServicePaths {
   label: string;
@@ -35,13 +36,11 @@ export interface PackageConnectorServicePaths {
   activeEntrypointPath: string;
 }
 
-export type PackageConnectorReleaseBinding = Pick<
-  PackageRuntimeRelease,
-  'releaseId' | 'releaseRoot' | 'packageRoot'
-> & {
-  connectorEntrypoint?: 'forge-mcp-gateway';
-  connectorArtifactIdentity?: string;
-};
+export type PackageConnectorReleaseBinding = Pick<PackageRuntimeRelease, 'releaseId' | 'releaseRoot' | 'packageRoot'> &
+  Partial<Pick<PackageRuntimeRelease, 'packageVersion'>> & {
+    connectorEntrypoint?: 'forge-mcp-gateway';
+    connectorArtifactIdentity?: string;
+  };
 
 export interface PackageConnectorServiceAuthority {
   schemaVersion: 1;
@@ -414,6 +413,18 @@ export function syncPackageConnectorActiveEntrypoint(input: {
   };
 }
 
+function readPackageConnectorBuildVersion(packageRoot: string): string {
+  try {
+    const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as { version?: unknown };
+    const version = typeof manifest.version === 'string' ? manifest.version.trim() : '';
+    if (version) return version;
+  } catch {
+    // Some attested compiled releases retain no package metadata beside the Connector artifact.
+  }
+  if (FORGE_VERSION && FORGE_VERSION !== '0.0.0-unknown') return FORGE_VERSION;
+  throw new Error('FORGE_PACKAGE_CONNECTOR_BUILD_VERSION_MISSING');
+}
+
 export function packageConnectorLaunchSpec(input: {
   release: PackageConnectorReleaseBinding;
   controllerHome: string;
@@ -491,6 +502,7 @@ export function packageConnectorLaunchSpec(input: {
     environment: {
       FORGE_CONTROLLER_HOME: resolve(input.controllerHome),
       FORGE_CONTROLLER_LIFECYCLE_OWNER: '1',
+      FORGE_BUILD_VERSION: input.release.packageVersion?.trim() || readPackageConnectorBuildVersion(packageRoot),
       ...(instanceId ? { FORGE_MCP_INSTANCE_ID: instanceId } : {}),
     },
     port,
