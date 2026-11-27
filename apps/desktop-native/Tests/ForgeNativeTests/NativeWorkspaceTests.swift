@@ -117,7 +117,6 @@ final class NativeWorkspaceTests: XCTestCase {
   }
 
   @MainActor
-  @MainActor
   func testDuplicateLongAgentTitleKeepsCopyMarkerWithinTitleLimit() throws {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }
@@ -2885,7 +2884,6 @@ final class NativeWorkspaceTests: XCTestCase {
     XCTAssertEqual(restored.threads.first?.title, "Agent lifecycle polish")
   }
 
-  @MainActor
   @MainActor
   func testBusyTurnBlocksConversationAndProjectRebinding() {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

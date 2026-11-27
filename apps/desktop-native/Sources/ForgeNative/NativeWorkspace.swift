@@ -7080,7 +7080,7 @@ final class NativeWorkspace: ObservableObject {
 
   func cancel() async {
     if zenRefinementActive { zenRefinementCancelRequested = true }
-    guard busy, let id = activeConversationId else { return }
+    guard busy, activeConversationId != nil else { return }
     if knowledgeRecallPending {
       cancelRequestedBeforeTurn = true
       activeKnowledgeRecall?.cancel()
