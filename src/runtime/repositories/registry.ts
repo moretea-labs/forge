@@ -176,8 +176,37 @@ function isPrimaryGitWorktree(root: string): boolean {
   return Boolean(directory && common && comparablePath(directory) === comparablePath(common));
 }
 
+function gitCommonDirectoryFromDisk(root: string): string | undefined {
+  if (process.env.GIT_DIR !== undefined || process.env.GIT_COMMON_DIR !== undefined) return undefined;
+  try {
+    let directory = join(root, '.git');
+    const marker = statSync(directory);
+    if (marker.isFile()) {
+      const link = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(readFileSync(directory, 'utf8'))?.[1];
+      if (!link || link !== link.trim()) return undefined;
+      directory = resolve(root, link);
+    } else if (!marker.isDirectory()) {
+      return undefined;
+    }
+    const commonFile = join(directory, 'commondir');
+    if (existsSync(commonFile)) {
+      const common = readFileSync(commonFile, 'utf8').replace(/\r?\n$/, '');
+      if (!common || common !== common.trim() || /[\r\n]/.test(common)) return undefined;
+      directory = resolve(directory, common);
+    }
+    return realpathSync(directory);
+  } catch {
+    return undefined;
+  }
+}
+
 export function repositoryCheckoutRootMatches(record: RepositoryRecord, root: string): boolean {
   if (!existsSync(root)) return false;
+  const repositoryCommonOnDisk = gitCommonDirectoryFromDisk(record.canonicalRoot);
+  const checkoutCommonOnDisk = gitCommonDirectoryFromDisk(root);
+  if (repositoryCommonOnDisk && checkoutCommonOnDisk) {
+    return comparablePath(repositoryCommonOnDisk) === comparablePath(checkoutCommonOnDisk);
+  }
   if (git(root, ['rev-parse', '--is-inside-work-tree']) !== 'true') return false;
   const checkoutTopLevel = gitTopLevel(root);
   if (!checkoutTopLevel || comparablePath(checkoutTopLevel) !== comparablePath(root)) return false;

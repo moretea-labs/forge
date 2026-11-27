@@ -522,10 +522,10 @@ export async function callRepositoryTool(
         // checkout lifecycle drift caused by worktrees being removed outside
         // Forge. Reuse the existing registry reconciler so stale worktrees are
         // not exposed as lifecycle=active to automation callers.
-        reconcileRepositoryCheckouts(repoIdValue, controllerHome);
-        const repository = getRepository(repoIdValue, controllerHome, {
-          includeRemoved: args.include_removed === true,
-        });
+        const { repository } = reconcileRepositoryCheckouts(repoIdValue, controllerHome);
+        if (repository.removedAt && args.include_removed !== true) {
+          throw new Error(`repository not found: ${repoIdValue}`);
+        }
         return result(summarizeRepositoryInspection(repository, args.detail_level === 'detail'));
       }
       case 'repository_validate': {

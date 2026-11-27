@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { spawnSync } from "child_process";
 import { tmpdir } from "os";
 import { join, relative, resolve } from "path";
-import { findRegisteredRepositoryByCheckoutRoot, getRepository, listRepositories, registerRepository } from "../../src/runtime/repositories/registry";
+import { findRegisteredRepositoryByCheckoutRoot, getRepository, listRepositories, registerRepository, repositoryCheckoutRootMatches } from "../../src/runtime/repositories/registry";
 
 function git(root: string, ...args: string[]): void {
   const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
@@ -36,6 +36,21 @@ test("linked worktree registered before primary keeps one canonical Repository",
     expect(record.activeCheckoutId).toBe(second.activeCheckoutId);
     expect(record.checkouts).toHaveLength(2);
     expect(record.checkouts.some((item) => item.checkoutId === first.activeCheckoutId && item.worktree)).toBe(true);
+
+    const reconciliationTrace = join(sandbox, "reconciliation.trace");
+    const previousGitTrace = process.env.GIT_TRACE;
+    process.env.GIT_TRACE = reconciliationTrace;
+    try {
+      expect(repositoryCheckoutRootMatches(record, linked)).toBe(true);
+    } finally {
+      if (previousGitTrace === undefined) delete process.env.GIT_TRACE;
+      else process.env.GIT_TRACE = previousGitTrace;
+    }
+    const reconciliationCommands = existsSync(reconciliationTrace)
+      ? readFileSync(reconciliationTrace, "utf8").split("\n").filter((line) => line.includes("built-in: git "))
+      : [];
+    expect(reconciliationCommands).toHaveLength(0);
+
     expect(registerRepository({ path: linked, controllerHome }).repoId).toBe(first.repoId);
     const unregisteredLinked = join(sandbox, "unregistered linked");
     git(primary, "worktree", "add", "--detach", unregisteredLinked, "HEAD");
