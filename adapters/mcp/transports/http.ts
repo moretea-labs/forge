@@ -528,13 +528,7 @@ function createMcpHttpHandler(
     handler,
     nodeHandler: (req, res, body) => {
       if (!(res instanceof ServerResponse)) return nodeHandler(req, res, body);
-      if (!mcpHttpRequestStarts.has(res)) {
-        mcpHttpRequestStarts.set(res, {
-          startedAtMs: performance.now(),
-          startedAt: new Date().toISOString(),
-          route: (req.url ?? '/mcp').split('?')[0] ?? '/mcp',
-        });
-      }
+      captureMcpHttpRequestStart(req, res, (req.url ?? '/mcp').split('?')[0] ?? '/mcp');
       return exchange.run({ response: res, body }, () => nodeHandler(req, res, body));
     },
   };
@@ -764,6 +758,13 @@ interface McpHttpRequestStart {
   startedAtMs: number;
   startedAt: string;
   route: string;
+  ingressRequestId: string;
+  upstreamRequestId?: string;
+  clientTraceId?: string;
+  cloudflareRay?: string;
+  clientStartedAt?: string;
+  clientStartObserved: boolean;
+  clientToGatewayMs?: number;
 }
 
 export interface McpToolCallTraceRequest {
@@ -773,6 +774,55 @@ export interface McpToolCallTraceRequest {
 }
 
 const mcpHttpRequestStarts = new WeakMap<ServerResponse, McpHttpRequestStart>();
+
+type McpHttpRequestLike = Pick<Parameters<NodeMcpRequestHandler>[0], 'headers' | 'url'>;
+
+function safeDiagnosticHeader(req: Pick<McpHttpRequestLike, 'headers'>, name: string): string | undefined {
+  const value = req.headers[name];
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 && normalized.length <= 128 ? normalized : undefined;
+}
+
+function captureMcpHttpRequestStart(req: McpHttpRequestLike, res: ServerResponse, route: string): McpHttpRequestStart {
+  const existing = mcpHttpRequestStarts.get(res);
+  if (existing) return existing;
+
+  const receivedAtMs = Date.now();
+  const clientStartedAtHeader = safeDiagnosticHeader(req, 'x-forge-client-started-at');
+  const clientStartedAtMs = clientStartedAtHeader ? Date.parse(clientStartedAtHeader) : Number.NaN;
+  const clientStartedAt = Number.isFinite(clientStartedAtMs) ? new Date(clientStartedAtMs).toISOString() : undefined;
+  // Client clocks are not authoritative. Record the timestamp for correlation,
+  // but only expose a latency estimate for non-negative deltas within 10 minutes.
+  const clientToGatewayMs =
+    Number.isFinite(clientStartedAtMs) &&
+    receivedAtMs >= clientStartedAtMs &&
+    receivedAtMs - clientStartedAtMs <= 10 * 60 * 1000
+      ? receivedAtMs - clientStartedAtMs
+      : undefined;
+  const traceparent = safeDiagnosticHeader(req, 'traceparent');
+  const traceparentId = traceparent && /^00-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$/i.exec(traceparent)?.[1];
+  const candidateClientTraceId = safeDiagnosticHeader(req, 'x-forge-client-trace-id') ?? traceparentId;
+  const upstreamRequestId = safeDiagnosticHeader(req, 'x-request-id');
+  const cloudflareRay = safeDiagnosticHeader(req, 'cf-ray');
+  const start: McpHttpRequestStart = {
+    startedAtMs: performance.now(),
+    startedAt: new Date(receivedAtMs).toISOString(),
+    route,
+    ingressRequestId: randomUUID(),
+    ...(upstreamRequestId && /^[A-Za-z0-9._:-]{1,128}$/.test(upstreamRequestId) ? { upstreamRequestId } : {}),
+    ...(candidateClientTraceId && /^[A-Za-z0-9._:-]{1,128}$/.test(candidateClientTraceId)
+      ? { clientTraceId: candidateClientTraceId }
+      : {}),
+    ...(cloudflareRay && /^[A-Za-z0-9-]{1,128}$/.test(cloudflareRay) ? { cloudflareRay } : {}),
+    ...(clientStartedAt ? { clientStartedAt } : {}),
+    clientStartObserved: Boolean(clientStartedAt),
+    ...(typeof clientToGatewayMs === 'number' ? { clientToGatewayMs } : {}),
+  };
+  mcpHttpRequestStarts.set(res, start);
+  res.setHeader('x-forge-ingress-request-id', start.ingressRequestId);
+  return start;
+}
 
 export function mcpToolCallTraceRequests(body: unknown): McpToolCallTraceRequest[] {
   const requests = Array.isArray(body) ? body : [body];
@@ -839,6 +889,13 @@ function observeMcpHttpToolCallResponse(res: ServerResponse, body: unknown, tool
       recordMcpHttpTransportSpan(controllerHome, {
         sessionId,
         layer,
+        ingressRequestId: started.ingressRequestId,
+        ...(started.upstreamRequestId ? { upstreamRequestId: started.upstreamRequestId } : {}),
+        ...(started.clientTraceId ? { clientTraceId: started.clientTraceId } : {}),
+        ...(started.cloudflareRay ? { cloudflareRay: started.cloudflareRay } : {}),
+        ...(started.clientStartedAt ? { clientStartedAt: started.clientStartedAt } : {}),
+        clientStartObserved: started.clientStartObserved,
+        ...(typeof started.clientToGatewayMs === 'number' ? { clientToGatewayMs: started.clientToGatewayMs } : {}),
         rpcId: request.rpcId,
         tool: request.tool,
         route: started.route,
@@ -1024,11 +1081,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   app.use((req, res, next) => {
     const isMcpRoute = ['/mcp', '/mcp-grok', '/mcp-bearer'].includes(req.path);
     if (req.method === 'POST' && isMcpRoute) {
-      mcpHttpRequestStarts.set(res, {
-        startedAtMs: performance.now(),
-        startedAt: new Date().toISOString(),
-        route: req.path,
-      });
+      captureMcpHttpRequestStart(req, res, req.path);
     }
     if (runtimeStats.draining && isMcpRoute) {
       sendMcpGatewayDraining(res);

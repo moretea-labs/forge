@@ -129,25 +129,96 @@ elif [[ "${#PATHS[@]}" -gt 0 || -n "$MESSAGE" ]]; then
   fail "--path and --message require --commit"
 fi
 
+publish_required_main_gate_status() {
+local sha="$1" repository remote_url status_context gh_bin post_response readback_response
+
+repository="$(printenv FORGE_GITHUB_REPOSITORY || true)"
+if [[ -z "$repository" ]]; then repository="$(printenv GITHUB_REPOSITORY || true)"; fi
+if [[ -z "$repository" ]]; then
+  remote_url="$(git remote get-url "$REMOTE")"
+  case "$remote_url" in
+    https://github.com/*|git@github.com:*|ssh://git@github.com/*)
+      repository="$(printf '%s' "$remote_url" | sed -E 's#^https://github.com/|^git@github.com:|^ssh://git@github.com/##; s#\.git$##')"
+      ;;
+    *) return 0 ;;
+  esac
+fi
+
+[[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+  fail "invalid GitHub repository identity for required Main gate status: $repository"
+
+status_context="$(printenv FORGE_MAIN_GATE_STATUS_CONTEXT || true)"
+[[ -n "$status_context" ]] || status_context="Main gate"
+
+gh_bin="$(printenv FORGE_GH_BIN || command -v gh || true)"
+if [[ -z "$gh_bin" && -x /opt/homebrew/bin/gh ]]; then gh_bin=/opt/homebrew/bin/gh; fi
+[[ -n "$gh_bin" && -x "$gh_bin" ]] ||
+  fail "GitHub CLI is unavailable; refusing to bypass the required '$status_context' status check"
+
+if ! post_response="$("$gh_bin" api "repos/$repository/statuses/$sha" \
+  -f state=success \
+  -f "context=$status_context" \
+  -f "description=Forge Main gate passed for $sha" 2>&1)"; then
+  fail "could not publish required GitHub status '$status_context' for $sha: $post_response"
+fi
+
+if ! node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const x=JSON.parse(s);process.exit(x.state==="success"&&x.context===process.argv[1]?0:1)}catch{process.exit(1)}})' \
+  "$status_context" <<<"$post_response"; then
+  fail "GitHub did not confirm success for required status '$status_context' on $sha"
+fi
+
+if ! readback_response="$("$gh_bin" api "repos/$repository/commits/$sha/status" 2>&1)"; then
+  fail "could not read back required GitHub status '$status_context' for $sha: $readback_response"
+fi
+if ! node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const x=JSON.parse(s);process.exit(Array.isArray(x.statuses)&&x.statuses.some(v=>v.context===process.argv[1]&&v.state==="success")?0:1)}catch{process.exit(1)}})' \
+  "$status_context" <<<"$readback_response"; then
+  fail "GitHub readback did not contain a successful '$status_context' status for $sha"
+fi
+
+echo "[sync-main] GitHub required status '$status_context' confirmed for $sha"
+}
+
+fetch_remote_main() {
+  # An explicit source-only refspec updates FETCH_HEAD, not reliably the
+  # remote-tracking ref consumed by sync_refs. Map the remote branch directly.
+  git fetch "$REMOTE" "refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH"
+}
+
 reconcile_divergence() {
-  local counts ahead behind merge_preview
+  local counts ahead behind merge_count dirty_status rebase_output
   counts="$(git rev-list --left-right --count "$BRANCH...$REMOTE/$BRANCH")"
   read -r ahead behind <<<"$counts"
-  [[ "$ahead" -gt 0 && "$behind" -gt 0 ]] || return 0
 
-  # Never auto-stash, reset, or merge through an in-progress Writer. A clean
-  # index and worktree are required before creating a reconciliation commit.
-  [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] ||
-    fail "local main and origin/main diverged (ahead=$ahead behind=$behind) while the checkout is dirty; preserve Writer changes and retry after they commit: $(git status --short)"
-  if ! merge_preview="$(git merge-tree --write-tree "$BRANCH" "$REMOTE/$BRANCH" 2>&1)"; then
-    fail "local main and origin/main diverged (ahead=$ahead behind=$behind) with merge conflicts; automatic reconciliation was refused: $merge_preview"
-  fi
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[sync-main] would create a merge commit preserving $ahead local and $behind remote commit(s)" >&2
+  # Rebase only when histories diverge, or an older sync left an unpublished
+  # merge commit behind. Never create a new merge commit.
+  if [[ "$ahead" -gt 0 && "$behind" -eq 0 ]]; then
+    merge_count="$(git rev-list --count --merges "$REMOTE/$BRANCH..$BRANCH")"
+    [[ "$merge_count" -gt 0 ]] || return 0
+  elif [[ "$ahead" -gt 0 && "$behind" -gt 0 ]]; then
+    :
+  else
     return 0
   fi
-  echo "[sync-main] reconciling $ahead local and $behind remote commit(s) with a reviewed clean merge" >&2
-  git merge --no-edit --no-ff "$REMOTE/$BRANCH" >&2
+
+  dirty_status="$(git status --porcelain=v1 --untracked-files=all)"
+  [[ -z "$dirty_status" ]] ||
+    fail "local main and origin/main require linear reconciliation (ahead=$ahead behind=$behind), but the checkout is dirty; preserve Writer changes and retry after the Writer finishes: $(git status --short)"
+
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[sync-main] would linearize $ahead local and $behind remote commit(s) with rebase; no merge commit will be created" >&2
+    return 0
+  fi
+
+  echo "[sync-main] linearizing $ahead local and $behind remote commit(s) onto $REMOTE/$BRANCH" >&2
+  if ! rebase_output="$(git -c rebase.autoStash=false rebase --no-rebase-merges "$REMOTE/$BRANCH" 2>&1)"; then
+    git rebase --abort >/dev/null 2>&1 || true
+    fail "linear rebase conflicted; rebase was aborted and the original checkout was preserved: $rebase_output"
+  fi
+
+  if [[ -n "$(git rev-list --merges "$REMOTE/$BRANCH..$BRANCH")" ]]; then
+    fail "linear reconciliation left unpublished merge commits; refusing publication"
+  fi
 }
 
 sync_refs() {
@@ -197,58 +268,108 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
 fi
 
 echo "[sync-main] fetching $REMOTE/$BRANCH"
-git fetch "$REMOTE" "$BRANCH"
+fetch_remote_main
 reconcile_divergence
 read -r ahead behind < <(sync_refs)
 
 # Validate the complete candidate against the remote branch, not only HEAD.
-# Without TEST_BASE_REF, source-quality/test selection can miss older pending
-# commits; GitHub Actions then rejects changes that were reported PASS locally.
-# Respect an explicit caller baseline; otherwise pin the freshly fetched ref.
+# If the remote moves during validation, reconcile and validate the new linear
+# candidate again. The bounded loop prevents remote churn from running forever.
 CHECK_BASE_REF="${TEST_BASE_REF:-$REMOTE/$BRANCH}"
-# Pin the candidate before the check. A concurrent Writer may add a successor
-# commit, but it must never be published under a check for the earlier HEAD.
-VALIDATED_HEAD="$(git rev-parse HEAD)"
-if [[ "$COMMIT" -eq 1 ]]; then
-  echo "[sync-main] running validation: $CHECK_COMMAND (base=$CHECK_BASE_REF)"
-  TEST_BASE_REF="$CHECK_BASE_REF" FORGE_CHECK_SOURCE_QUALITY_MODE=workspace FORGE_CHECK_CANDIDATE_SHA="$VALIDATED_HEAD" bash -lc "$CHECK_COMMAND"
-  [[ "$(git rev-parse HEAD)" == "$VALIDATED_HEAD" ]] || fail "HEAD changed during validation; keep successor commits and recheck the new candidate"
-  git diff --check -- "${PATHS[@]}"
-  git add -- "${PATHS[@]}"
-  git diff --cached --check -- "${PATHS[@]}"
-  git diff --cached --quiet && fail "the selected paths contain no staged changes"
-  echo "[sync-main] committing only the selected paths"
-  git commit -m "$MESSAGE"
-  VALIDATED_HEAD="$(git rev-parse HEAD)"
-elif [[ "$ahead" -gt 0 ]]; then
-  echo "[sync-main] validating already-committed changes before publication: $CHECK_COMMAND (base=$CHECK_BASE_REF)"
-  TEST_BASE_REF="$CHECK_BASE_REF" FORGE_CHECK_SOURCE_QUALITY_MODE=committed FORGE_CHECK_CANDIDATE_SHA="$VALIDATED_HEAD" bash -lc "$CHECK_COMMAND"
-  [[ "$(git rev-parse HEAD)" == "$VALIDATED_HEAD" ]] || fail "HEAD changed during validation; keep successor commits and recheck the new candidate"
-fi
+MAX_REVALIDATIONS=3
+REVALIDATION=0
+COMMITTED=0
+VALIDATED_HEAD=""
 
-# Re-fetch after validation/commit so a concurrent remote update cannot be
-# mistaken for a fast-forward push. A divergent result is preserved locally.
-echo "[sync-main] refreshing $REMOTE/$BRANCH before publication"
-git fetch "$REMOTE" "$BRANCH"
-read -r ahead behind < <(sync_refs)
+while true; do
+  read -r ahead behind < <(sync_refs)
+  VALIDATED_HEAD="$(git rev-parse HEAD)"
+
+  if [[ "$COMMIT" -eq 1 && "$COMMITTED" -eq 0 ]]; then
+    echo "[sync-main] running validation: $CHECK_COMMAND (base=$CHECK_BASE_REF)"
+    TEST_BASE_REF="$CHECK_BASE_REF" FORGE_CHECK_SOURCE_QUALITY_MODE=workspace FORGE_CHECK_CANDIDATE_SHA="$VALIDATED_HEAD" bash -lc "$CHECK_COMMAND"
+    [[ "$(git rev-parse HEAD)" == "$VALIDATED_HEAD" ]] || fail "HEAD changed during validation; keep successor commits and retry"
+    git diff --check -- "${PATHS[@]}"
+    git add -- "${PATHS[@]}"
+    git diff --cached --check -- "${PATHS[@]}"
+    git diff --cached --quiet && fail "the selected paths contain no staged changes"
+    echo "[sync-main] committing only the selected paths"
+    git commit -m "$MESSAGE"
+    COMMITTED=1
+    VALIDATED_HEAD="$(git rev-parse HEAD)"
+  elif [[ "$ahead" -gt 0 ]]; then
+    echo "[sync-main] validating already-committed changes before publication: $CHECK_COMMAND (base=$CHECK_BASE_REF)"
+    TEST_BASE_REF="$CHECK_BASE_REF" FORGE_CHECK_SOURCE_QUALITY_MODE=committed FORGE_CHECK_CANDIDATE_SHA="$VALIDATED_HEAD" bash -lc "$CHECK_COMMAND"
+    [[ "$(git rev-parse HEAD)" == "$VALIDATED_HEAD" ]] || fail "HEAD changed during validation; keep successor commits and retry"
+  fi
+
+  echo "[sync-main] refreshing $REMOTE/$BRANCH before publication"
+  fetch_remote_main
+  reconcile_divergence
+  read -r ahead behind < <(sync_refs)
+  CURRENT_HEAD="$(git rev-parse HEAD)"
+  if [[ "$CURRENT_HEAD" == "$VALIDATED_HEAD" ]]; then
+    break
+  fi
+
+  REVALIDATION=$((REVALIDATION + 1))
+  [[ "$REVALIDATION" -lt "$MAX_REVALIDATIONS" ]] ||
+    fail "main changed during validation $REVALIDATION times; the latest candidate is preserved and the next interval will retry"
+  echo "[sync-main] candidate changed during validation; revalidating merged HEAD $CURRENT_HEAD (attempt $((REVALIDATION + 1))/$MAX_REVALIDATIONS)"
+done
+
 if [[ "$ahead" -gt 0 ]]; then
   [[ "$(git rev-parse HEAD)" == "$VALIDATED_HEAD" ]] || fail "HEAD changed since validation; refusing to push unvalidated successor commits"
-  echo "[sync-main] pushing $ahead commit(s) to $REMOTE/$BRANCH (fast-forward only)"
+  [[ -z "$(git rev-list --merges "$REMOTE/$BRANCH..$VALIDATED_HEAD")" ]] ||
+    fail "validated candidate contains unpublished merge commits; refusing to bypass the linear-history rule"
+  publish_required_main_gate_status "$VALIDATED_HEAD"
+  echo "[sync-main] pushing $ahead linear commit(s) to $REMOTE/$BRANCH (fast-forward only)"
   # Push the exact validated commit object, not a moving local branch ref.
   # Another Writer can advance main after the last HEAD check but before
   # Git resolves push refs; that successor was never included in this Gate.
-  if push_output="$(git push "$REMOTE" "$VALIDATED_HEAD:refs/heads/$BRANCH" 2>&1)"; then
+  PUSH_REF="$VALIDATED_HEAD:refs/heads/$BRANCH"
+  if push_output="$(git push "$REMOTE" "$PUSH_REF" 2>&1)"; then
     printf '%s\n' "$push_output"
-    if grep -qi 'Bypassed rule violations' <<<"$push_output"; then
-      echo "[sync-main] WARNING: GitHub accepted the direct push by bypassing a required status check; the local Main gate passed, but remote branch protection still needs review" >&2
+  elif grep -Eqi 'HTTP/2 framing layer|HTTP/2 stream .*not closed cleanly|curl 92|stream error: INTERNAL_ERROR' <<<"$push_output"; then
+    echo "[sync-main] HTTP/2 transport failed during push; checking remote state before one HTTP/1.1 retry" >&2
+    printf '%s\n' "$push_output" >&2
+    # A transport error can happen after the server accepted the ref update.
+    # Never blindly replay a push: first read back the exact remote branch.
+    if ! fetch_remote_main >&2; then
+      fail "HTTP/2 push outcome is unknown and remote readback failed; no retry was attempted"
+    fi
+    REMOTE_AFTER_HTTP2="$(git rev-parse "$REMOTE/$BRANCH")"
+    if [[ "$REMOTE_AFTER_HTTP2" == "$VALIDATED_HEAD" ]]; then
+      echo "[sync-main] remote already contains the validated commit; treating the interrupted HTTP/2 response as successful" >&2
+    else
+      if ! git merge-base --is-ancestor "$REMOTE/$BRANCH" "$VALIDATED_HEAD"; then
+        fail "HTTP/2 push failed and remote advanced outside the validated candidate; refusing HTTP/1.1 retry"
+      fi
+      echo "[sync-main] retrying the same validated ref update once with HTTP/1.1" >&2
+      if push_output="$(git -c http.version=HTTP/1.1 push "$REMOTE" "$PUSH_REF" 2>&1)"; then
+        printf '%s\n' "$push_output"
+      else
+        printf '%s\n' "$push_output" >&2
+        # Resolve an ambiguous retry result without issuing another push.
+        if ! fetch_remote_main >&2; then
+          fail "HTTP/1.1 retry failed and remote readback failed; publication outcome remains unknown"
+        fi
+        REMOTE_AFTER_HTTP1="$(git rev-parse "$REMOTE/$BRANCH")"
+        [[ "$REMOTE_AFTER_HTTP1" == "$VALIDATED_HEAD" ]] ||
+          fail "HTTP/1.1 retry failed; remote remains at $REMOTE_AFTER_HTTP1 and no further retry was attempted"
+        echo "[sync-main] remote readback confirms the validated commit despite the HTTP/1.1 response error" >&2
+      fi
     fi
   else
     printf '%s\n' "$push_output" >&2
     exit 1
   fi
+  if grep -qi 'Bypassed rule violations' <<<"$push_output"; then
+    fail "GitHub accepted the push by bypassing a required branch rule; publication is not considered clean and the ruleset must be corrected"
+  fi
 fi
 
-git fetch "$REMOTE" "$BRANCH"
+fetch_remote_main
 LOCAL_SHA="$(git rev-parse "$BRANCH")"
 REMOTE_SHA="$(git rev-parse "$REMOTE/$BRANCH")"
 [[ "$LOCAL_SHA" == "$REMOTE_SHA" ]] || fail "main synchronization did not converge: local=$LOCAL_SHA remote=$REMOTE_SHA"

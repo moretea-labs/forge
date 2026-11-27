@@ -105,6 +105,14 @@ if [[ "${1:-}" == push && "${FORGE_TEST_PUSH_RACE:-}" == 1 && ! -e "${FORGE_TEST
   "$FORGE_TEST_REAL_GIT" -c user.name='Concurrent Writer' -c user.email=writer@example.invalid \
     commit --allow-empty -qm 'test: successor created inside git push'
 fi
+if [[ "${1:-}" == push && "${FORGE_TEST_HTTP2_PUSH_FAILURE:-}" == 1 && ! -e "${FORGE_TEST_HTTP2_PUSH_MARKER:-/dev/null}" ]]; then
+  printf '%s\n' "$*" >"$FORGE_TEST_HTTP2_PUSH_MARKER"
+  echo 'fatal: unable to access remote: HTTP/2 framing layer' >&2
+  exit 1
+fi
+if [[ "${1:-}" == -c && "${2:-}" == http.version=HTTP/1.1 && "${3:-}" == push ]]; then
+  printf '%s\n' "$*" >"${FORGE_TEST_HTTP1_PUSH_MARKER:?missing HTTP/1.1 marker}"
+fi
 exec "$FORGE_TEST_REAL_GIT" "$@"
 GIT_WRAPPER
 chmod +x "$TMP/git-wrapper/git"
@@ -120,6 +128,88 @@ expect_failure 'racing Writer at push dispatch' 'main synchronization did not co
   fail "push-race fixture did not advance local HEAD"
 # The next invocation validates that successor before allowing publication.
 bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed' >/dev/null
+
+# A transient HTTP/2 framing failure gets one safe HTTP/1.1 retry. The fixture
+# fails before updating the remote, then records the explicit fallback command.
+printf 'http2 fallback candidate\n' >pending-http2-fallback.ts
+git add pending-http2-fallback.ts
+git commit -m 'test: retry framing failure over HTTP/1.1' >/dev/null
+rm -f "$TMP/http2-push-marker" "$TMP/http1-push-marker"
+# shellcheck disable=SC2016
+env PATH="$TMP/git-wrapper:$PATH" FORGE_TEST_HTTP2_PUSH_FAILURE=1 \
+  FORGE_TEST_HTTP2_PUSH_MARKER="$TMP/http2-push-marker" \
+  FORGE_TEST_HTTP1_PUSH_MARKER="$TMP/http1-push-marker" \
+  FORGE_TEST_REAL_GIT="$(command -v git)" \
+  bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed' >/dev/null
+[[ -f "$TMP/http2-push-marker" ]] || fail "HTTP/2 failure was not injected"
+[[ -f "$TMP/http1-push-marker" ]] || fail "HTTP/1.1 fallback was not attempted"
+[[ "$(git rev-parse HEAD)" == "$(git --git-dir="$BARE" rev-parse main)" ]] ||
+  fail "HTTP/1.1 fallback did not publish the exact validated candidate"
+
+# GitHub repositories publish and read back the required Main gate status
+# before push. A local/bare remote does not require GitHub status.
+printf 'status candidate\n' >pending-status.ts
+git add pending-status.ts
+git commit -m 'test: require Main gate status before push' >/dev/null
+cat >"$TMP/fake-gh" <<'GH_WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FORGE_TEST_GH_MARKER"
+case "$2" in
+  repos/*/statuses/*)
+    printf '{"state":"success","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
+    ;;
+  repos/*/commits/*/status)
+    printf '{"statuses":[{"state":"success","context":"%s"}]}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
+    ;;
+  *)
+    echo "unexpected GitHub API path: $2" >&2
+    exit 2
+    ;;
+esac
+GH_WRAPPER
+chmod +x "$TMP/fake-gh"
+rm -f "$TMP/github-status-marker"
+# shellcheck disable=SC2016
+env FORGE_GH_BIN="$TMP/fake-gh" \
+  FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
+  FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
+  FORGE_TEST_GH_MARKER="$TMP/github-status-marker" \
+  bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed' >/dev/null
+grep -Fq 'repos/moretea-labs/forge/statuses/' "$TMP/github-status-marker" ||
+  fail "required Main gate status was not published"
+grep -Fq 'repos/moretea-labs/forge/commits/' "$TMP/github-status-marker" ||
+  fail "required Main gate status was not read back"
+
+# A missing/failed required status must stop before the Git push.
+printf 'status failure candidate\n' >pending-status-failure.ts
+git add pending-status-failure.ts
+git commit -m 'test: block publication without required Main gate status' >/dev/null
+cat >"$TMP/fake-gh-failure" <<'GH_FAILURE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '{"state":"failure","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
+GH_FAILURE
+chmod +x "$TMP/fake-gh-failure"
+REMOTE_BEFORE_STATUS_FAILURE="$(git --git-dir="$BARE" rev-parse main)"
+# shellcheck disable=SC2016
+expect_failure 'failed required Main gate status' 'did not confirm success' \
+  env FORGE_GH_BIN="$TMP/fake-gh-failure" \
+    FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
+    FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
+    bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed'
+[[ "$(git --git-dir="$BARE" rev-parse main)" == "$REMOTE_BEFORE_STATUS_FAILURE" ]] ||
+  fail "push occurred despite a failed required Main gate status"
+# The rejected candidate remains local; publish it only after a successful
+# required status so later remote-only fast-forward coverage starts in sync.
+# shellcheck disable=SC2016
+env FORGE_GH_BIN="$TMP/fake-gh" \
+  FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
+  FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
+  FORGE_TEST_GH_MARKER="$TMP/github-status-marker" \
+  bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed' >/dev/null
+[[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] ||
+  fail "candidate was not published after the required status recovered"
 
 # A remote-only fast-forward is synchronized without touching unrelated dirt.
 git clone "$BARE" "$OTHER" >/dev/null 2>&1
@@ -142,17 +232,19 @@ BARE_CLONE="$TMP/canonical.git"
 LINKED_MAIN="$TMP/linked-main"
 git clone --bare "$BARE" "$BARE_CLONE" >/dev/null 2>&1
 git --git-dir="$BARE_CLONE" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
-git --git-dir="$BARE_CLONE" fetch origin main >/dev/null 2>&1
+git --git-dir="$BARE_CLONE" fetch origin refs/heads/main:refs/remotes/origin/main >/dev/null 2>&1
 git --git-dir="$BARE_CLONE" worktree add "$LINKED_MAIN" main >/dev/null 2>&1
 mkdir -p "$LINKED_MAIN/scripts"
 cp "$ROOT/scripts/sync-main.sh" "$LINKED_MAIN/scripts/sync-main.sh"
 chmod +x "$LINKED_MAIN/scripts/sync-main.sh"
 (cd "$LINKED_MAIN" && bash scripts/sync-main.sh --dry-run >/dev/null)
 
-# Divergent but non-conflicting histories are reconciled with a merge commit.
-# Dirty paths are never stashed or discarded; automatic merge waits until clean.
+# Legacy sync Merge Commits are flattened by rebase. Dirty Writer changes
+# block reconciliation without stash/reset; after the Writer finishes, the
+# same candidate is rebased linearly and both sides' content is preserved.
 git restore -- unrelated.txt owned.txt
 rm -f scratch.txt
+printf 'writer-owned dirty\n' >writer-unrelated.txt
 printf 'local commit\n' >local-only.txt
 git add local-only.txt
 git commit -m 'test: local divergent commit' >/dev/null
@@ -162,9 +254,18 @@ git add remote-only.txt
 git commit -m 'test: remote divergent commit' >/dev/null
 git push origin main >/dev/null 2>&1
 cd "$WORK"
+git fetch origin refs/heads/main:refs/remotes/origin/main >/dev/null 2>&1
+git merge --no-edit --no-ff origin/main >/dev/null
+LOCAL_MERGED_HEAD="$(git rev-parse HEAD)"
+REMOTE_BEFORE_REBASE="$(git --git-dir="$BARE" rev-parse main)"
+expect_failure 'dirty divergent Writer' 'checkout is dirty' bash scripts/sync-main.sh --check-command true
+[[ "$(git rev-parse HEAD)" == "$LOCAL_MERGED_HEAD" ]] || fail "dirty divergence rewrote local main"
+[[ "$(git rev-parse origin/main)" == "$REMOTE_BEFORE_REBASE" ]] || fail "dirty divergence changed the remote tracking ref"
+[[ "$(cat writer-unrelated.txt)" == 'writer-owned dirty' ]] || fail "dirty Writer changes were lost during rejected reconciliation"
+rm -f writer-unrelated.txt
 bash scripts/sync-main.sh --check-command true >/dev/null
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || fail "divergent histories did not converge"
-[[ "$(git rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')" == 3 ]] || fail "divergence reconciliation did not preserve both parents"
+[[ -z "$(git rev-list --merges origin/main..main)" ]] || fail "linear reconciliation left a merge commit"
 [[ "$(git show main:local-only.txt)" == 'local commit' ]] || fail "local divergent commit was lost"
 [[ "$(git show main:remote-only.txt)" == 'remote divergent' ]] || fail "remote divergent commit was lost"
 
@@ -174,7 +275,7 @@ git add conflict.txt
 git commit -m 'test: local conflicting commit' >/dev/null
 LOCAL_BEFORE="$(git rev-parse HEAD)"
 cd "$OTHER"
-git fetch origin main >/dev/null 2>&1
+git fetch origin refs/heads/main:refs/remotes/origin/main >/dev/null 2>&1
 git merge --ff-only origin/main >/dev/null
 printf 'remote conflict\n' >conflict.txt
 git add conflict.txt
@@ -182,7 +283,7 @@ git commit -m 'test: remote conflicting commit' >/dev/null
 git push origin main >/dev/null 2>&1
 REMOTE_BEFORE="$(git --git-dir="$BARE" rev-parse main)"
 cd "$WORK"
-expect_failure 'conflicting divergence' 'with merge conflicts' bash scripts/sync-main.sh
+expect_failure 'conflicting divergence' 'rebase conflicted' bash scripts/sync-main.sh
 [[ "$(git rev-parse HEAD)" == "$LOCAL_BEFORE" ]] || fail "conflicting divergence rewrote local main"
 [[ "$(git rev-parse origin/main)" == "$REMOTE_BEFORE" ]] || fail "conflicting divergence changed the remote tracking ref"
 

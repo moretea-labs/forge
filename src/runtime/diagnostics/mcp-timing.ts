@@ -205,6 +205,16 @@ export interface McpHttpTransportSpanInput {
   statusCode: number;
   layer: NonNullable<McpTimingTrace['layer']>;
   outcome: 'finished' | 'closed';
+  /** Gateway-generated identity shared by every tool call in one inbound HTTP POST. */
+  ingressRequestId?: string;
+  /** Diagnostic-only upstream identifiers; never used for authorization or routing. */
+  upstreamRequestId?: string;
+  clientTraceId?: string;
+  cloudflareRay?: string;
+  /** Optional ISO-8601 client timestamp. Missing means the caller did not provide one. */
+  clientStartedAt?: string;
+  clientStartObserved?: boolean;
+  clientToGatewayMs?: number;
 }
 
 const MCP_HTTP_TRANSPORT_TRACE_TTL_MS = 60_000;
@@ -302,6 +312,15 @@ export function recordMcpHttpTransportSpan(controllerHome: string, span: McpHttp
       httpDurationMs: Number.isFinite(span.durationMs) ? Math.max(0, Math.round(span.durationMs * 100) / 100) : 0,
       httpStatusCode: span.statusCode,
       httpOutcome: span.outcome,
+      ...(span.ingressRequestId ? { ingressRequestId: span.ingressRequestId } : {}),
+      ...(span.upstreamRequestId ? { upstreamRequestId: span.upstreamRequestId } : {}),
+      ...(span.clientTraceId ? { clientTraceId: span.clientTraceId } : {}),
+      ...(span.cloudflareRay ? { cloudflareRay: span.cloudflareRay } : {}),
+      ...(span.clientStartedAt ? { clientStartedAt: span.clientStartedAt } : {}),
+      clientStartObserved: span.clientStartObserved ?? false,
+      ...(typeof span.clientToGatewayMs === 'number' && Number.isFinite(span.clientToGatewayMs)
+        ? { clientToGatewayMs: Math.round(span.clientToGatewayMs * 100) / 100 }
+        : {}),
     });
     return true;
   } catch {

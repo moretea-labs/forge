@@ -36,9 +36,29 @@ describe('MCP HTTP transport trace identity', () => {
       if (!listener.listening) await new Promise<void>((resolve) => listener.once('listening', resolve));
       const address = listener.address();
       if (!address || typeof address === 'string') throw new Error('test server did not bind');
+      const ingressByRpc = new Map<
+        number,
+        {
+          clientStartedAt?: string;
+          upstreamRequestId: string;
+          clientTraceId: string;
+          cloudflareRay: string;
+          ingressRequestId?: string;
+        }
+      >();
       await Promise.all(
-        [11, 12, 13, 14].map(async (id) => {
+        Array.from({ length: 32 }, (_, index) => index + 11).map(async (id) => {
           const version = id < 13 ? '2026-07-28' : '2025-11-25';
+          const clientStartedAt = id === 42 ? undefined : id === 41 ? '2099-01-01T00:00:00.000Z' : new Date().toISOString();
+          const upstreamRequestId = 'fixture-request-' + id;
+          const clientTraceId = id.toString(16).padStart(32, '0');
+          const cloudflareRay = 'fixture-' + id + '-NRT';
+          ingressByRpc.set(id, {
+            ...(clientStartedAt ? { clientStartedAt } : {}),
+            upstreamRequestId,
+            clientTraceId,
+            cloudflareRay,
+          });
           const response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
             method: 'POST',
             headers: {
@@ -47,6 +67,10 @@ describe('MCP HTTP transport trace identity', () => {
               'mcp-protocol-version': version,
               'mcp-method': 'tools/call',
               'mcp-name': 'rh_status',
+              ...(clientStartedAt ? { 'x-forge-client-started-at': clientStartedAt } : {}),
+              'x-forge-client-trace-id': clientTraceId,
+              'x-request-id': upstreamRequestId,
+              'cf-ray': cloudflareRay,
             },
             body: JSON.stringify({
               jsonrpc: '2.0',
@@ -67,6 +91,10 @@ describe('MCP HTTP transport trace identity', () => {
               },
             }),
           });
+          const ingressRequestId = response.headers.get('x-forge-ingress-request-id') ?? undefined;
+          expect(ingressRequestId).toMatch(/^[0-9a-f-]{36}$/i);
+          const ingress = ingressByRpc.get(id);
+          if (ingress) ingress.ingressRequestId = ingressRequestId;
           const text = await response.text();
           if (response.status !== 200) throw new Error(`HTTP ${response.status} (${version}): ${text}`);
           const result = response.headers.get('content-type')?.startsWith('text/event-stream')
@@ -81,21 +109,44 @@ describe('MCP HTTP transport trace identity', () => {
         .split('\n')
         .map((line) => JSON.parse(line) as Record<string, unknown>);
       const spans = records.filter((row) => row.spanKind === 'http_transport');
-      expect(spans).toHaveLength(4);
+      expect(spans).toHaveLength(32);
       for (const span of spans) {
         const tool = records.find((row) => row.tool === 'rh_status' && row.traceId === span.traceId);
         expect(tool).toBeDefined();
+        const ingress = ingressByRpc.get(Number(span.rpcId));
+        expect(ingress).toBeDefined();
         expect(span).toMatchObject({
           rpcId: tool?.rpcId,
           sessionId: tool?.sessionId,
           mcpTool: 'rh_status',
           httpStatusCode: 200,
           httpOutcome: 'finished',
+          ingressRequestId: ingress?.ingressRequestId,
+          upstreamRequestId: ingress?.upstreamRequestId,
+          clientTraceId: ingress?.clientTraceId,
+          cloudflareRay: ingress?.cloudflareRay,
+          clientStartObserved: Boolean(ingress?.clientStartedAt),
         });
         expect(Date.parse(String(span.httpStartedAt))).toBeLessThanOrEqual(Date.parse(String(tool?.startedAt)));
         expect(Date.parse(String(span.httpFinishedAt))).toBeGreaterThanOrEqual(Date.parse(String(tool?.at)));
       }
-      expect(new Set(spans.map((span) => span.sessionId)).size).toBe(4);
+      expect(new Set(spans.map((span) => span.sessionId)).size).toBe(32);
+      expect(new Set(spans.map((span) => span.ingressRequestId)).size).toBe(32);
+      for (const span of spans) {
+        const ingress = ingressByRpc.get(Number(span.rpcId));
+        if (ingress?.clientStartedAt) {
+          expect(span).toMatchObject({ clientStartedAt: ingress.clientStartedAt });
+          if (Date.parse(ingress.clientStartedAt) <= Date.now()) {
+            expect(span).toHaveProperty('clientToGatewayMs');
+            expect(Number(span.clientToGatewayMs)).toBeGreaterThanOrEqual(0);
+          } else {
+            expect(span).not.toHaveProperty('clientToGatewayMs');
+          }
+        } else {
+          expect(span).not.toHaveProperty('clientStartedAt');
+          expect(span).not.toHaveProperty('clientToGatewayMs');
+        }
+      }
     } finally {
       await handler.handler.close();
       await new Promise<void>((resolve, reject) => listener.close((error) => (error ? reject(error) : resolve())));
