@@ -30,10 +30,12 @@ describe('mcp policy and paths', () => {
         'get_edit_session',
         'list_edit_sessions',
         'get_edit_session_diff',
+        'apply_edit_operations',
         'create_edit_savepoint',
         'verify_edit_session',
         'rollback_edit_session',
         'finalize_edit_session',
+        'finish_edit_session',
       ]),
     );
     const applyPatch = definitions.find((tool) => tool.name === 'apply_patch');
