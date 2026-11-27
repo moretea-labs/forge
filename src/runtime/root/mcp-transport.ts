@@ -29,6 +29,7 @@ interface ActiveRuntimeMcpPost {
   startedAt: string;
   startedAtMs: number;
   httpSpansRecorded: boolean;
+  concurrentPostsAtStart: number;
   transport?: NodeStreamableHTTPServerTransport;
 }
 
@@ -356,6 +357,7 @@ export async function startRuntimeMcpTransport(
     const started = postStartedAt.get(res) ?? { startedAt: new Date().toISOString(), startedAtMs: performance.now() };
     const activePost: ActiveRuntimeMcpPost = {
       response: res,
+      concurrentPostsAtStart: activePosts.size + 1,
       requestIds: [],
       toolCalls: [],
       startedAt: started.startedAt,
@@ -382,6 +384,7 @@ export async function startRuntimeMcpTransport(
           durationMs,
           statusCode: res.statusCode,
           outcome,
+          concurrentPostsAtStart: activePost.concurrentPostsAtStart,
         });
       }
     };

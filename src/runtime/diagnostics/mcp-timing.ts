@@ -205,6 +205,8 @@ export interface McpHttpTransportSpanInput {
   statusCode: number;
   layer: NonNullable<McpTimingTrace['layer']>;
   outcome: 'finished' | 'closed';
+  /** Number of simultaneous canonical POSTs observed when this POST entered the route. */
+  concurrentPostsAtStart?: number;
   /** Gateway-generated identity shared by every tool call in one inbound HTTP POST. */
   ingressRequestId?: string;
   /** Diagnostic-only upstream identifiers; never used for authorization or routing. */
@@ -312,6 +314,9 @@ export function recordMcpHttpTransportSpan(controllerHome: string, span: McpHttp
       httpDurationMs: Number.isFinite(span.durationMs) ? Math.max(0, Math.round(span.durationMs * 100) / 100) : 0,
       httpStatusCode: span.statusCode,
       httpOutcome: span.outcome,
+      ...(typeof span.concurrentPostsAtStart === 'number' && Number.isFinite(span.concurrentPostsAtStart)
+        ? { concurrentPostsAtStart: Math.max(1, Math.trunc(span.concurrentPostsAtStart)) }
+        : {}),
       ...(span.ingressRequestId ? { ingressRequestId: span.ingressRequestId } : {}),
       ...(span.upstreamRequestId ? { upstreamRequestId: span.upstreamRequestId } : {}),
       ...(span.clientTraceId ? { clientTraceId: span.clientTraceId } : {}),
@@ -414,6 +419,8 @@ export interface McpToolTimingSummary {
   preHandlerDispatchMs?: McpTimingPercentiles;
   /** Tool handler completion to HTTP response finish; includes response encoding/flush. */
   responseTailMs?: McpTimingPercentiles;
+  /** Maximum number of concurrent canonical HTTP POSTs observed at ingress. */
+  maxConcurrentHttpPosts?: number;
   gatewayProxyCallMs?: McpTimingPercentiles;
   gatewayProxyLaneWaitMs?: McpTimingPercentiles;
   gatewayProxyCanonicalDispatchLagMs?: McpTimingPercentiles;
@@ -478,6 +485,7 @@ export function readRecentMcpTimingSummary(controllerHome: string, limit = 128):
     total: number[];
     preHandler: number[];
     responseTail: number[];
+    maxConcurrentHttpPosts: number;
     gatewayCall: number[];
     laneWait: number[];
     dispatchLag: number[];
@@ -497,6 +505,7 @@ export function readRecentMcpTimingSummary(controllerHome: string, limit = 128):
         total: [],
         preHandler: [],
         responseTail: [],
+        maxConcurrentHttpPosts: 0,
         gatewayCall: [],
         laneWait: [],
         dispatchLag: [],
@@ -512,6 +521,10 @@ export function readRecentMcpTimingSummary(controllerHome: string, limit = 128):
     const traceId = typeof row.traceId === 'string' ? row.traceId : undefined;
     const http = traceId ? httpByTrace.get(traceId) : undefined;
     if (http && http.layer === layer) {
+      const concurrentPostsAtStart = finiteTiming(http.concurrentPostsAtStart);
+      if (concurrentPostsAtStart !== undefined) {
+        bucket.maxConcurrentHttpPosts = Math.max(bucket.maxConcurrentHttpPosts, Math.trunc(concurrentPostsAtStart));
+      }
       const httpStart = timingTimestamp(http.httpStartedAt);
       const toolStart = timingTimestamp(row.startedAt);
       const httpFinish = timingTimestamp(http.httpFinishedAt);
@@ -543,6 +556,7 @@ export function readRecentMcpTimingSummary(controllerHome: string, limit = 128):
           ? { preHandlerDispatchMs: timingPercentiles(bucket.preHandler)! }
           : {}),
         ...(timingPercentiles(bucket.responseTail) ? { responseTailMs: timingPercentiles(bucket.responseTail)! } : {}),
+        ...(bucket.maxConcurrentHttpPosts > 0 ? { maxConcurrentHttpPosts: bucket.maxConcurrentHttpPosts } : {}),
         ...(timingPercentiles(bucket.gatewayCall)
           ? { gatewayProxyCallMs: timingPercentiles(bucket.gatewayCall)! }
           : {}),

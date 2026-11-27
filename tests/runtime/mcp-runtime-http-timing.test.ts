@@ -29,6 +29,13 @@ describe('Canonical Runtime HTTP timing', () => {
     roots.push(controllerHome);
     const sessionId = 'runtime-http-timing-session';
     const authToken = 'runtime-http-timing-token';
+    let activeToolCalls = 0;
+    let maxActiveToolCalls = 0;
+    let enteredToolCalls = 0;
+    let releasePeerBarrier: (() => void) | undefined;
+    const peerBarrier = new Promise<void>((resolve) => {
+      releasePeerBarrier = resolve;
+    });
     const readiness = {
       ready: true,
       reasonCodes: [],
@@ -55,6 +62,13 @@ describe('Canonical Runtime HTTP timing', () => {
           tools: [{ name: 'timing_probe', inputSchema: { type: 'object' as const } }],
         }));
         server.setRequestHandler('tools/call', async (request, extra) => {
+          activeToolCalls += 1;
+          maxActiveToolCalls = Math.max(maxActiveToolCalls, activeToolCalls);
+          enteredToolCalls += 1;
+          if (enteredToolCalls >= 2) releasePeerBarrier?.();
+          // If the transport serializes same-session calls, the first request
+          // times out this bounded peer wait and the assertion below exposes it.
+          await Promise.race([peerBarrier, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
           const params = request.params as Record<string, unknown>;
           const rpcId = extra.mcpReq.id as string | number;
           recordMcpTiming(controllerHome, {
@@ -67,6 +81,7 @@ describe('Canonical Runtime HTTP timing', () => {
             outcome: 'ok',
             totalToolDurationMs: 0,
           });
+          activeToolCalls -= 1;
           return { content: [{ type: 'text' as const, text: 'ok' }] };
         });
         return server;
@@ -84,12 +99,20 @@ describe('Canonical Runtime HTTP timing', () => {
 
     try {
       await client.connect(transport);
-      const result = await client.callTool({
-        name: 'timing_probe',
-        arguments: {},
-        _meta: { forgeRuntimeForwarding: { sessionId } },
-      });
-      expect(result.isError).not.toBe(true);
+      const results = await Promise.all([
+        client.callTool({
+          name: 'timing_probe',
+          arguments: {},
+          _meta: { forgeRuntimeForwarding: { sessionId } },
+        }),
+        client.callTool({
+          name: 'timing_probe',
+          arguments: {},
+          _meta: { forgeRuntimeForwarding: { sessionId } },
+        }),
+      ]);
+      expect(results.every((result) => result.isError !== true)).toBe(true);
+      expect(maxActiveToolCalls).toBe(2);
       await flushMcpDiagnostics(controllerHome);
 
       const records = readFileSync(join(controllerHome, 'audit', 'mcp-timings.jsonl'), 'utf8')
@@ -106,6 +129,8 @@ describe('Canonical Runtime HTTP timing', () => {
       const tool = summary.tools.find((entry) => entry.tool === 'timing_probe' && entry.layer === 'canonical_runtime');
       expect(tool?.preHandlerDispatchMs).toBeDefined();
       expect(tool?.responseTailMs).toBeDefined();
+      expect(tool?.sampleCount).toBe(2);
+      expect(tool?.maxConcurrentHttpPosts).toBe(2);
     } finally {
       await client.close().catch(() => undefined);
       await runtime.close().catch(() => undefined);
