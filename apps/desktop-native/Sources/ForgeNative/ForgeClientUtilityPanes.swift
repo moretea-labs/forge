@@ -3473,7 +3473,7 @@ struct SettingsPane: View {
                                     : (model.selectedReasoningEffort.isEmpty ? "默认" : model.selectedReasoningEffort))
                         settingMeta("图片输入",model.selectedProviderSupportsImages ? "可用" : "不可用")
                     }
-                    Text("默认服务仅用于新会话。API / JoyCode 使用 Forge 原生 Agent Engine；Codex 当前保留兼容通道。")
+                    Text("默认服务仅用于新会话。API / JoyCode 使用 Forge 原生 Agent Loop，本地工具由 Direct Dispatcher 直接执行；Codex（MCP 兼容）通过 Codex CLI 调用 Forge MCP 工具。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary)
                 }
                 .padding(.vertical,10)
@@ -3481,8 +3481,8 @@ struct SettingsPane: View {
                 VStack(alignment:.leading,spacing:14) {
                     HStack {
                         VStack(alignment:.leading,spacing:4) {
-                            Text("模型与 API").font(.system(size:15,weight:.semibold))
-                            Text("保存 API 配置后，可直接测试模型连接。")
+                            Text("原生 Agent 服务").font(.system(size:15,weight:.semibold))
+                            Text("配置模型服务并测试连接；本地 Agent 工具由 Direct Dispatcher 直接执行，不经过 MCP。")
                                 .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                         }
                         Spacer()
@@ -3521,9 +3521,9 @@ struct SettingsPane: View {
                                 defaultProvider = "codex"
                             } label: {
                                 if defaultProvider == "codex" {
-                                    Label("Codex（兼容）",systemImage:"checkmark")
+                                    Label("Codex（MCP 兼容）",systemImage:"checkmark")
                                 } else {
-                                    Text("Codex（兼容）")
+                                    Text("Codex（MCP 兼容）")
                                 }
                             }
                             ForEach(profiles) { profile in
@@ -3835,13 +3835,13 @@ struct SettingsPane: View {
     }
 
     private var defaultProviderLabel:String {
-        if defaultProvider == "codex" { return "Codex（兼容）" }
+        if defaultProvider == "codex" { return "Codex（MCP 兼容）" }
         if defaultProvider == "joycode" { return "JoyCode" }
         return profiles.first(where:{ $0.providerId == defaultProvider })?.label ?? "选择服务"
     }
 
     private var selectedProviderLabel:String {
-        if model.selectedProvider == "codex" { return "Codex（兼容）" }
+        if model.selectedProvider == "codex" { return "Codex（MCP 兼容）" }
         if model.selectedProvider == "joycode" { return "JoyCode" }
         return model.selectedApiProfile?.label ?? "API 服务"
     }
