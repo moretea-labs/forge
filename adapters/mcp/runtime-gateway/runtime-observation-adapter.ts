@@ -662,6 +662,10 @@ export async function callRuntimeObservationAdapter(
         };
         const repositoryStartedAt = performance.now();
         const repository = selected(ctx, args);
+        const repositoryReadSession =
+          ctx.sessionId && ctx.repoId === repository.repoId && ctx.checkoutId === repository.activeCheckoutId
+            ? { sessionId: ctx.sessionId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
+            : undefined;
         markPhase('repositoryRouting', repositoryStartedAt);
         const variant = args.detail_level === 'detail' ? ('detail' as const) : ('summary' as const);
         const requestedSections = Array.isArray(args.sections)
@@ -710,7 +714,9 @@ export async function callRuntimeObservationAdapter(
             : undefined;
 
           if (selectedSections.includes('git')) {
-            sectionPayload.git = await measureSectionAsync('git', () => gitSnapshotAsync(repository.canonicalRoot));
+            sectionPayload.git = await measureSectionAsync('git', () =>
+              gitSnapshotAsync(repository.canonicalRoot, repositoryReadSession),
+            );
           }
           if (selectedSections.includes('readiness')) {
             sectionPayload.readiness = await measureSectionAsync('readiness', () =>
@@ -1057,7 +1063,7 @@ export async function callRuntimeObservationAdapter(
                   diffStat: '',
                   dirty: gitIdentity.dirty,
                 }
-              : await gitSnapshotAsync(repository.canonicalRoot);
+              : await gitSnapshotAsync(repository.canonicalRoot, repositoryReadSession);
           markPhase('build.git', gitStartedAt);
           const jobsStartedAt = performance.now();
           const activeRuns = listActiveAgentJobSnapshots(repository.canonicalRoot, 20).map((run) => ({

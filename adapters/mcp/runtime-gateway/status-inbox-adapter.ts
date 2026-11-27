@@ -440,7 +440,11 @@ export async function callStatusInboxAdapter(
     const readiness = await controllerReadinessEvidence(ctx, repository);
     const runtimeObservation = observeRuntimeStatus(ctx.controllerHome);
     markDetailPhase('readiness');
-    const liveGit = await gitSnapshotAsync(repository.canonicalRoot);
+    const repositoryReadSession =
+      ctx.sessionId && ctx.repoId === repository.repoId && ctx.checkoutId === repository.activeCheckoutId
+        ? { sessionId: ctx.sessionId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId }
+        : undefined;
+    const liveGit = await gitSnapshotAsync(repository.canonicalRoot, repositoryReadSession);
     markDetailPhase('git');
     // Compare startup Runtime Source against the Controller package authority —
     // never against the selected execution repository.

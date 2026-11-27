@@ -48,6 +48,7 @@ import {
   gitSnapshot,
   gitSnapshotAsync,
   gitSnapshotPerformanceSnapshot,
+  invalidateRepositoryReadCaches,
   searchRepositoryMany,
 } from '../../src/runtime/repositories/inspector';
 
@@ -575,13 +576,19 @@ describe('repository MCP command tools', () => {
       clearGitIdentityCacheForTest();
       clearGitSnapshotCacheForTest();
 
-      const snapshots = await Promise.all(Array.from({ length: 8 }, () => gitSnapshotAsync(repoRoot)));
+      const session = { sessionId: `git-snapshot-${repoRoot}`, repoId: 'test-repo', checkoutId: 'test-checkout' };
+      const snapshots = await Promise.all(Array.from({ length: 8 }, () => gitSnapshotAsync(repoRoot, session)));
       expect(snapshots.every((snapshot) => snapshot.dirty === false && snapshot.branch === 'main')).toBe(true);
       expect(gitSnapshotPerformanceSnapshot()).toEqual({ cacheHits: 7, refreshes: 1, subprocesses: 1 });
 
-      writeFileSync(join(repoRoot, 'README.md'), 'dirty\n');
       clearGitSnapshotCacheForTest();
-      const dirty = await gitSnapshotAsync(repoRoot);
+      const sessionHit = await gitSnapshotAsync(repoRoot, session);
+      expect(sessionHit).toEqual(snapshots[0]);
+      expect(gitSnapshotPerformanceSnapshot()).toEqual({ cacheHits: 1, refreshes: 0, subprocesses: 0 });
+
+      writeFileSync(join(repoRoot, 'README.md'), 'dirty\n');
+      invalidateRepositoryReadCaches(repoRoot);
+      const dirty = await gitSnapshotAsync(repoRoot, session);
       expect(dirty.dirty).toBe(true);
       expect(dirty.diffStat).toContain('README.md');
       expect(gitSnapshotPerformanceSnapshot().subprocesses).toBe(2);
