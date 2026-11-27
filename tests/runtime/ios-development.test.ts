@@ -5,7 +5,7 @@ import { execFileSync, spawn } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { isProcessAlive } from '../../src/runtime/shared/process-tree';
-import { executeIosPluginAction } from '../../src/runtime/plugins/ios-adapter';
+import { buildIosPluginManifest, executeIosPluginAction } from '../../src/runtime/plugins/ios-adapter';
 import { iosSimulatorResourceKey, IOS_SIMULATOR_TEST_RESOURCE } from '../../src/runtime/resources/claims/conflicts';
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { getOwnedResource } from '../../packages/kernel/identity/api/index';
@@ -69,11 +69,84 @@ function repository() {
   return {
     root,
     appPath,
-    record: { repoId: 'repo-test', canonicalRoot: root, activeCheckoutId: 'active' } as any,
+    record: { repoId: 'repo-test', canonicalRoot: root, activeCheckoutId: 'active' } as unknown as Parameters<
+      typeof iosAppBuild
+    >[0],
   };
 }
 
 describe('iOS development simulator reliability', () => {
+  test('loads shared preview defaults and keeps XCTest out of the preview capability', async () => {
+    const repo = repository();
+    const controllerHome = join(repo.root, 'controller-home');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(join(repo.root, '.forge'), { recursive: true });
+    writeFileSync(
+      join(repo.root, '.forge', 'ios-workflow.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        project: { scheme: 'App', bundleId: 'com.example.app' },
+        preview: { target: 'simulator', simulator: { udid: 'D' }, screenshotLabel: 'configured-preview' },
+      }),
+      'utf8',
+    );
+    const commands: string[][] = [];
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      sleep: () => {},
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (command === 'xcodebuild' && args.includes('-list')) {
+          return result(command, args, { stdout: JSON.stringify({ project: { schemes: ['App'] } }) });
+        }
+        if (command === 'plutil') {
+          return result(command, args, {
+            stdout: args.includes('CFBundleIdentifier') ? 'com.example.app\\n' : 'Example\\n',
+          });
+        }
+        if (command === 'xcrun' && args[0] === 'simctl' && args[1] === 'io') {
+          return result(command, args, { ok: false, stderr: 'screenshot deliberately unavailable in this test' });
+        }
+        if (command === 'xcrun' && args[1] === 'launch') {
+          return result(command, args, { stdout: 'com.example.app: 4242\\n' });
+        }
+        if (command === 'xcrun' && args[1] === 'spawn' && args[3] === 'launchctl') {
+          return result(command, args, { stdout: 'program path = /tmp/Example\\n' });
+        }
+        if (command === 'xcrun' && args[1] === 'spawn' && args[3] === 'log') {
+          return result(command, args, { stdout: 'target app log\\n' });
+        }
+        return result(command, args);
+      },
+    });
+
+    const manifest = buildIosPluginManifest(0, undefined, repo.root);
+    const previewCapability = manifest.capabilities.find(
+      (capability) => capability.capabilityId === 'ios-smoke-review',
+    );
+    const testingCapability = manifest.capabilities.find((capability) => capability.capabilityId === 'ios-testing');
+    expect(previewCapability?.actions).not.toContain('xcode_test');
+    expect(testingCapability?.actions).toContain('xcode_test');
+
+    const review = await executeIosPluginAction({
+      controllerHome,
+      repoId: repo.record.repoId,
+      repoRoot: repo.root,
+      pluginId: 'ios',
+      actionId: 'smoke_review',
+      requestId: 'ios-preview-config-test',
+      args: { skip_build: true, app_path: repo.appPath, launch_wait_ms: 0 },
+      origin: { surface: 'cli' },
+    });
+
+    expect(review.udid).toBe('D');
+    expect(review.overallStatus).toBe('failed');
+    expect(
+      (review.stages as Array<{ stage: string; status: string }>).find((stage) => stage.stage === 'screenshot')?.status,
+    ).toBe('failed');
+    expect(commands.some((argv) => argv[0] === 'xcodebuild' && argv[1] === 'test')).toBe(false);
+  });
+
   test('uses bounded Xcode version probing and resolves simctl without CLI help', () => {
     const probes: Array<{ command: string; args: string[]; timeoutMs: number }> = [];
     setIosDevelopmentHooksForTest({
@@ -136,13 +209,14 @@ describe('iOS development simulator reliability', () => {
         const heartbeat = setInterval(() => {
           ticks += 1;
         }, 10);
-        let built;
+        let built: Awaited<ReturnType<typeof iosAppBuild>> | undefined;
         try {
           built = await iosAppBuild(repo.record, { scheme: 'App', timeoutMs: 1_000 });
         } finally {
           clearInterval(heartbeat);
         }
-        if (ticks === 0) throw new Error('build did not reach supervised execution: ' + JSON.stringify(built));
+        if (ticks === 0 || !built)
+          throw new Error('build did not reach supervised execution: ' + JSON.stringify(built));
         expect(ticks).toBeGreaterThan(0);
         expect(built.ready).toBe(false);
         if (!('stderr' in built)) throw new Error('missing failure evidence');

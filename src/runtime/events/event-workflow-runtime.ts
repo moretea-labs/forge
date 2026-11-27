@@ -62,6 +62,10 @@ function assertPlanIdentity(controllerHome: string, plan: EventAutomationActionP
   }
 }
 
+function eventWorkflowOriginId(event: EventEnvelopeV1): string {
+  return `event:${createHash('sha256').update(event.eventId).digest('hex')}`;
+}
+
 function eventWorkflowRunId(event: EventEnvelopeV1, plan: EventAutomationActionPlanV1): string {
   const handler = workflowHandler(plan);
   const identity = JSON.stringify([
@@ -123,7 +127,7 @@ export async function executeEventWorkflowAutomation(input: {
       registryScope: structuredClone(handler.registryScope),
       workflowId: handler.workflowId,
       inputs: structuredClone(input.plan.inputs) as Record<string, WorkflowJsonValue>,
-      origin: { kind: 'event', id: event.eventId },
+      origin: { kind: 'event', id: eventWorkflowOriginId(event) },
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
       ...(input.approvalContext ? { approvalContext: input.approvalContext } : {}),
     },

@@ -367,6 +367,14 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/autopilot-provider-config.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/autopilot-plan-context.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/autopilot-runtime.test.ts": {
       "module": "controller",
       "resource": "process-tree"
@@ -579,6 +587,10 @@
       "module": "core",
       "resource": "pure"
     },
+    "tests/runtime/event-core-capability.test.ts": {
+      "module": "controller",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/event-policy.test.ts": {
       "module": "core",
       "resource": "pure"
@@ -642,10 +654,6 @@
     "tests/runtime/github-issue-watch-adapter.test.ts": {
       "module": "core",
       "resource": "pure"
-    },
-    "tests/runtime/event-core-capability.test.ts": {
-      "module": "controller",
-      "resource": "temp-isolated"
     },
     "tests/runtime/facade-contracts.test.ts": {
       "module": "workflow",
@@ -748,6 +756,10 @@
       "resource": "temp-isolated"
     },
     "tests/runtime/ios-remote-xpc-hid.test.ts": {
+      "module": "ios",
+      "resource": "pure"
+    },
+    "tests/runtime/ios-workflow-config.test.ts": {
       "module": "ios",
       "resource": "pure"
     },

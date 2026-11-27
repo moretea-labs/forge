@@ -1,7 +1,7 @@
 /**
- * Worker-thread dirty path fingerprinting for Fast Path snapshots.
- * Caps dirty file count, per-file bytes, total read bytes, and wall time.
- * Exceeding budget throws SNAPSHOT_TOO_DIRTY / SNAPSHOT_BUDGET so callers escalate to Durable.
+ * Worker-thread selected-path fingerprinting for Fast Path snapshots.
+ * Caps selected path count, per-file bytes, total read bytes, and wall time.
+ * Callers surface budget failures as unknown evidence without blocking the authorized command.
  */
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, readFileSync, readlinkSync } from 'fs';
@@ -9,7 +9,7 @@ import { isMainThread, parentPort, workerData, Worker } from 'worker_threads';
 import { resolve } from 'path';
 import { fileURLToPath } from 'url';
 
-export const MAX_DIRTY_PATHS_FOR_FINGERPRINT = 200;
+export const MAX_FINGERPRINT_PATHS = 200;
 export const MAX_FINGERPRINT_FILE_BYTES = 256 * 1024;
 export const MAX_FINGERPRINT_TOTAL_BYTES = 8 * 1024 * 1024;
 export const MAX_FINGERPRINT_WORKER_MS = 5_000;
@@ -47,12 +47,10 @@ function fingerprintOne(
       hash.update(`\nsymlink:${readlinkSync(absolute)}`);
     } else if (stat.isFile()) {
       if (stat.size > maxFileBytes) {
-        hash.update(`\nlarge:${stat.size}:${stat.mode}`);
+        throw new Error(`SNAPSHOT_BUDGET: ${relativePath} exceeds per-file fingerprint bytes ${maxFileBytes}`);
       } else {
         if (budget.total + stat.size > budget.maxTotal) {
-          throw new Error(
-            `SNAPSHOT_BUDGET: total fingerprint bytes would exceed ${budget.maxTotal}`,
-          );
+          throw new Error(`SNAPSHOT_BUDGET: total fingerprint bytes would exceed ${budget.maxTotal}`);
         }
         const body = readFileSync(absolute);
         budget.total += body.length;
@@ -69,24 +67,16 @@ function fingerprintOne(
 }
 
 export function computePathFingerprintsSync(input: FingerprintJobInput): FingerprintJobResult {
-  const maxPaths = input.maxPaths ?? MAX_DIRTY_PATHS_FOR_FINGERPRINT;
+  const maxPaths = input.maxPaths ?? MAX_FINGERPRINT_PATHS;
   const maxFileBytes = input.maxFileBytes ?? MAX_FINGERPRINT_FILE_BYTES;
   const maxTotal = input.maxTotalBytes ?? MAX_FINGERPRINT_TOTAL_BYTES;
   if (input.paths.length > maxPaths) {
-    throw new Error(
-      `SNAPSHOT_TOO_DIRTY: ${input.paths.length} dirty paths exceeds Fast Path cap ${maxPaths}`,
-    );
+    throw new Error(`SNAPSHOT_BUDGET: ${input.paths.length} selected paths exceeds the fingerprint budget ${maxPaths}`);
   }
   const budget = { total: 0, maxTotal };
   const pathFingerprints: Record<string, string> = {};
   for (const path of input.paths) {
-    pathFingerprints[path] = fingerprintOne(
-      input.root,
-      path,
-      input.statusByPath[path] ?? [],
-      maxFileBytes,
-      budget,
-    );
+    pathFingerprints[path] = fingerprintOne(input.root, path, input.statusByPath[path] ?? [], maxFileBytes, budget);
   }
   return {
     pathFingerprints,
@@ -162,10 +152,9 @@ export async function computePathFingerprintsAsync(
     const message = error instanceof Error ? error.message : String(error);
     // Timeouts / budget errors must not silently degrade to unbounded sync.
     if (
-      message.startsWith('SNAPSHOT_WORKER_TIMEOUT')
-      || message.startsWith('SNAPSHOT_TOO_DIRTY')
-      || message.startsWith('SNAPSHOT_BUDGET')
-      || message.startsWith('CANCELLED')
+      message.startsWith('SNAPSHOT_WORKER_TIMEOUT') ||
+      message.startsWith('SNAPSHOT_BUDGET') ||
+      message.startsWith('CANCELLED')
     ) {
       throw error instanceof Error ? error : new Error(message);
     }

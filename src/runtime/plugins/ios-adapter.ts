@@ -28,6 +28,7 @@ import type {
 } from './types';
 import { AssistantPluginError } from './errors';
 import { resolveAppStoreConnectXcodeAuthenticationReference } from './app-store-connect-adapter';
+import { readIosWorkflowConfig } from '../safe-tooling/ios-workflow-config';
 import { recordIosTestEvidenceOwner } from '../control-plane/generated-cache-retention';
 import {
   executeIosAgentDeviceAction,
@@ -58,6 +59,18 @@ function repositoryFromInput(input: AssistantPluginActionExecutionInput): Reposi
 
 function controllerArtifactRoot(input: AssistantPluginActionExecutionInput): string {
   return join(repositoryControllerRoot(input.controllerHome, input.repoId), 'artifacts', 'ios');
+}
+
+function iosWorkflowConfigFor(input: AssistantPluginActionExecutionInput) {
+  const result = readIosWorkflowConfig(input.repoRoot);
+  if (!result.ready) {
+    throw new AssistantPluginError(
+      result.error.code,
+      'Invalid Forge iOS workflow config at ' + result.path + ': ' + result.error.message,
+      { retryable: false, details: { path: result.path } },
+    );
+  }
+  return result.config;
 }
 
 function userFacingIosStatus(): Record<string, unknown> {
@@ -103,10 +116,16 @@ function health(repoRoot: string): AssistantPluginHealth {
   const pluginReady = platformOk && (developmentReady || physicalReady || semanticReady);
   const warnings: string[] = [];
   if (!platformOk) warnings.push('iOS capabilities require a macOS host.');
-  if (platformOk && !developmentReady) warnings.push('Xcode/Simulator development capability is not fully ready on this host.');
+  if (platformOk && !developmentReady)
+    warnings.push('Xcode/Simulator development capability is not fully ready on this host.');
   if (platformOk && !physicalReady) warnings.push('CoreDevice physical-iPhone capability is not ready on this host.');
   if (!discovery.ready) warnings.push('No .xcworkspace/.xcodeproj/Package.swift discovered in this repository yet.');
-  const status = userFacingStatusFrom(developmentReady, discovery.ready, Boolean(xcode && 'simctlAvailable' in xcode && xcode.simctlAvailable), physicalReady);
+  const status = userFacingStatusFrom(
+    developmentReady,
+    discovery.ready,
+    Boolean(xcode && 'simctlAvailable' in xcode && xcode.simctlAvailable),
+    physicalReady,
+  );
   return {
     state: !platformOk ? 'disabled' : pluginReady ? 'ready' : 'degraded',
     checkedAt: now(),
@@ -125,14 +144,17 @@ function health(repoRoot: string): AssistantPluginHealth {
         physicalDevice: physicalReady,
         semanticAgentDevice: semanticReady,
       },
-      xcode: xcode && 'ready' in xcode ? {
-        ready: xcode.ready,
-        xcodeSelectPath: 'xcodeSelectPath' in xcode ? xcode.xcodeSelectPath : undefined,
-        xcodebuildVersion: 'xcodebuildVersion' in xcode ? xcode.xcodebuildVersion : undefined,
-        simctlAvailable: 'simctlAvailable' in xcode ? xcode.simctlAvailable : undefined,
-        probed: xcodeSnapshot.probed,
-        cached: xcodeSnapshot.cached,
-      } : xcode,
+      xcode:
+        xcode && 'ready' in xcode
+          ? {
+              ready: xcode.ready,
+              xcodeSelectPath: 'xcodeSelectPath' in xcode ? xcode.xcodeSelectPath : undefined,
+              xcodebuildVersion: 'xcodebuildVersion' in xcode ? xcode.xcodebuildVersion : undefined,
+              simctlAvailable: 'simctlAvailable' in xcode ? xcode.simctlAvailable : undefined,
+              probed: xcodeSnapshot.probed,
+              cached: xcodeSnapshot.cached,
+            }
+          : xcode,
       agentDevice,
       physicalDevice,
       artifactRoots: {
@@ -143,7 +165,12 @@ function health(repoRoot: string): AssistantPluginHealth {
   };
 }
 
-function userFacingStatusFrom(toolingReady: boolean, discoverable: boolean, simReady: boolean, physicalReady: boolean): string {
+function userFacingStatusFrom(
+  toolingReady: boolean,
+  discoverable: boolean,
+  simReady: boolean,
+  physicalReady: boolean,
+): string {
   if (!toolingReady && !physicalReady && !discoverable) return 'not_configured';
   if (toolingReady && discoverable && simReady) return 'buildable';
   if (physicalReady && !toolingReady) return 'physical_device_ready';
@@ -155,10 +182,35 @@ function userFacingStatusFrom(toolingReady: boolean, discoverable: boolean, simR
 
 function permissions(input: { developmentReady: boolean; physicalReady: boolean }): AssistantPluginPermissionScope[] {
   return [
-    { scope: 'ios.discover', mode: 'read', description: 'Discover iOS projects and paired physical devices.', granted: input.developmentReady || input.physicalReady, required: true },
-    { scope: 'ios.build', mode: 'write', description: 'Build iOS app targets into bounded DerivedData.', granted: input.developmentReady, required: true },
-    { scope: 'ios.simulator', mode: 'write', description: 'Boot simulators, install, launch, screenshot, and collect logs.', granted: input.developmentReady, required: true },
-    { scope: 'ios.device', mode: 'write', description: 'Explicit paired-iPhone development/XCTest actions; everyday CoreDevice app interaction belongs to Computer.', granted: input.physicalReady, required: false },
+    {
+      scope: 'ios.discover',
+      mode: 'read',
+      description: 'Discover iOS projects and paired physical devices.',
+      granted: input.developmentReady || input.physicalReady,
+      required: true,
+    },
+    {
+      scope: 'ios.build',
+      mode: 'write',
+      description: 'Build iOS app targets into bounded DerivedData.',
+      granted: input.developmentReady,
+      required: true,
+    },
+    {
+      scope: 'ios.simulator',
+      mode: 'write',
+      description: 'Boot simulators, install, launch, screenshot, and collect logs.',
+      granted: input.developmentReady,
+      required: true,
+    },
+    {
+      scope: 'ios.device',
+      mode: 'write',
+      description:
+        'Explicit paired-iPhone development/XCTest actions; everyday CoreDevice app interaction belongs to Computer.',
+      granted: input.physicalReady,
+      required: false,
+    },
   ];
 }
 
@@ -173,10 +225,17 @@ function capabilities(): AssistantPluginCapability[] {
     },
     {
       capabilityId: 'ios-smoke-review',
-      title: 'iOS Staged Smoke Review',
-      description: 'Run a staged build/install/launch/screenshot workflow with per-stage evidence.',
+      title: 'iOS App Preview',
+      description: 'Build, install, launch, capture a screenshot, and collect logs. Preview never runs XCTest.',
       scopes: ['ios.build', 'ios.simulator'],
-      actions: ['smoke_review', 'build', 'xcode_test', 'launch_simulator', 'capture_screenshot'],
+      actions: ['smoke_review', 'build', 'launch_simulator', 'capture_screenshot'],
+    },
+    {
+      capabilityId: 'ios-testing',
+      title: 'Explicit iOS Testing',
+      description: 'Run XCTest only when a test action is explicitly requested; never as a side effect of preview.',
+      scopes: ['ios.build', 'ios.simulator'],
+      actions: ['xcode_test'],
     },
     ...iosAgentDeviceCapabilities(),
   ];
@@ -290,8 +349,9 @@ function actions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'xcode_test',
-      title: 'Run focused Xcode tests',
-      description: 'Run an Xcode test scheme, optionally narrowed with exact -only-testing selectors, and return bounded xcresult evidence.',
+      title: 'Explicit XCTest run',
+      description:
+        'Run XCTest only when the user explicitly requests tests. Never use for visual preview, build/install/launch, or screenshot-only acceptance. Supports exact -only-testing selectors and bounded xcresult evidence.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -368,8 +428,9 @@ function actions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'smoke_review',
-      title: 'Staged iOS smoke review',
-      description: 'Run project discovery → scheme → build → boot → install → launch → screenshot → logs with per-stage status.',
+      title: 'Preview iOS app',
+      description:
+        'Preview the app through build → boot → install → launch → screenshot → logs. Does not run XCTest; use xcode_test only when tests are explicitly requested.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -402,7 +463,11 @@ function actions(): AssistantPluginActionDescriptor[] {
   ];
 }
 
-export function buildIosPluginManifest(previousRevision = 0, previousUpdatedAt?: string, repoRoot?: string): AssistantPluginManifest {
+export function buildIosPluginManifest(
+  previousRevision = 0,
+  previousUpdatedAt?: string,
+  repoRoot?: string,
+): AssistantPluginManifest {
   const state = health(repoRoot ?? process.cwd());
   const enabled = iosDevelopmentPlatform() === 'darwin';
   return {
@@ -411,12 +476,20 @@ export function buildIosPluginManifest(previousRevision = 0, previousUpdatedAt?:
     revision: Math.max(1, previousRevision || 1),
     pluginId: IOS_PLUGIN_ID,
     provider: 'apple-local',
-    displayName: 'iOS Development / Simulator / XCTest',
+    displayName: 'iOS Development / App Preview / Explicit XCTest',
     pluginVersion: '1.0.0',
     authority: {
       strategy: 'derived',
       duplicateStateAllowed: false,
-      sourceOfTruth: ['local:xcodebuild', 'local:simctl', 'local:devicectl', 'local:agent-device-capability-contract', 'process-env:DEVELOPER_DIR', 'process-env:AGENT_DEVICE_IOS_TEAM_ID', 'process-env:AGENT_DEVICE_IOS_BUNDLE_ID'],
+      sourceOfTruth: [
+        'local:xcodebuild',
+        'local:simctl',
+        'local:devicectl',
+        'local:agent-device-capability-contract',
+        'process-env:DEVELOPER_DIR',
+        'process-env:AGENT_DEVICE_IOS_TEAM_ID',
+        'process-env:AGENT_DEVICE_IOS_BUNDLE_ID',
+      ],
     },
     enabled,
     lifecycle: {
@@ -425,12 +498,20 @@ export function buildIosPluginManifest(previousRevision = 0, previousUpdatedAt?:
         ? 'iOS capabilities are only available on macOS hosts.'
         : state.ready
           ? 'At least one iOS development or physical-device capability is ready.'
-          : state.warnings[0] ?? 'iOS capabilities are partially available.',
+          : (state.warnings[0] ?? 'iOS capabilities are partially available.'),
     },
     health: state,
     permissions: permissions({
-      developmentReady: Boolean(state.details?.capabilities && typeof state.details.capabilities === 'object' && (state.details.capabilities as Record<string, unknown>).development === true),
-      physicalReady: Boolean(state.details?.capabilities && typeof state.details.capabilities === 'object' && (state.details.capabilities as Record<string, unknown>).physicalDevice === true),
+      developmentReady: Boolean(
+        state.details?.capabilities &&
+          typeof state.details.capabilities === 'object' &&
+          (state.details.capabilities as Record<string, unknown>).development === true,
+      ),
+      physicalReady: Boolean(
+        state.details?.capabilities &&
+          typeof state.details.capabilities === 'object' &&
+          (state.details.capabilities as Record<string, unknown>).physicalDevice === true,
+      ),
     }),
     capabilities: capabilities(),
     actions: actions(),
@@ -438,17 +519,27 @@ export function buildIosPluginManifest(previousRevision = 0, previousUpdatedAt?:
   };
 }
 
-export async function executeIosPluginAction(input: AssistantPluginActionExecutionInput): Promise<Record<string, unknown>> {
+export async function executeIosPluginAction(
+  input: AssistantPluginActionExecutionInput,
+): Promise<Record<string, unknown>> {
   if (isIosAgentDeviceAction(input.actionId)) return executeIosAgentDeviceAction(input);
   if (isIosPhysicalDeviceAction(input.actionId)) {
-    throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', `Physical iPhone app actions are available only through computer/${input.actionId}.`, { retryable: false });
+    throw new AssistantPluginError(
+      'PLUGIN_ACTION_NOT_SUPPORTED',
+      `Physical iPhone app actions are available only through computer/${input.actionId}.`,
+      { retryable: false },
+    );
   }
   const currentPlatform = iosDevelopmentPlatform();
   if (currentPlatform !== 'darwin' && input.actionId !== 'discover_project' && input.actionId !== 'xcode_status') {
-    throw new AssistantPluginError('PLUGIN_DEPENDENCY_MISSING', 'iOS plugin actions require macOS with Xcode/Simulator.', {
-      retryable: false,
-      details: { platform: currentPlatform },
-    });
+    throw new AssistantPluginError(
+      'PLUGIN_DEPENDENCY_MISSING',
+      'iOS plugin actions require macOS with Xcode/Simulator.',
+      {
+        retryable: false,
+        details: { platform: currentPlatform },
+      },
+    );
   }
 
   const repository = repositoryFromInput(input);
@@ -458,7 +549,10 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
     case 'xcode_status':
       return { ...iosXcodeStatus(), userFacingStatus: userFacingIosStatus() };
     case 'list_simulators': {
-      const inventory = iosSimulatorsList({ runtime: stringValue(input.args.runtime), name: stringValue(input.args.name) });
+      const inventory = iosSimulatorsList({
+        runtime: stringValue(input.args.runtime),
+        name: stringValue(input.args.name),
+      });
       if (!inventory.ready || !('devices' in inventory) || !Array.isArray(inventory.devices)) return inventory;
       // A waiting project is not a device owner. Read the canonical global
       // Lease authority once, including legacy host-wide compatibility claims.
@@ -471,7 +565,8 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
             ...device,
             forgeLease: {
               resourceKey,
-              owners: leases.filter((lease) => claimsConflict({ resourceKey, mode: 'write' }, lease))
+              owners: leases
+                .filter((lease) => claimsConflict({ resourceKey, mode: 'write' }, lease))
                 .map((lease) => ({
                   repoId: lease.repoId,
                   ownerJobId: lease.ownerJobId,
@@ -493,52 +588,86 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
         }),
       };
     case 'build': {
-      const destinationPlatform = stringValue(input.args.destination_platform);
+      const workflow = iosWorkflowConfigFor(input);
+      const projectDefaults = workflow.project;
+      const previewDefaults = workflow.preview;
+      const destinationPlatform =
+        stringValue(input.args.destination_platform) ??
+        (previewDefaults?.target === 'physical_device' ? 'ios' : 'ios_simulator');
       if (destinationPlatform && destinationPlatform !== 'ios' && destinationPlatform !== 'ios_simulator') {
-        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'destination_platform must be ios or ios_simulator.', { retryable: false });
+        throw new AssistantPluginError(
+          'PLUGIN_ACTION_ARGUMENT_INVALID',
+          'destination_platform must be ios or ios_simulator.',
+          { retryable: false },
+        );
       }
       const allowProvisioningUpdates = input.args.allow_provisioning_updates === true;
       const authenticationProvider = stringValue(input.args.authentication_provider);
       if (authenticationProvider && authenticationProvider !== 'app_store_connect') {
-        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'authentication_provider must be app_store_connect.', { retryable: false });
+        throw new AssistantPluginError(
+          'PLUGIN_ACTION_ARGUMENT_INVALID',
+          'authentication_provider must be app_store_connect.',
+          { retryable: false },
+        );
       }
       if (authenticationProvider && !allowProvisioningUpdates) {
-        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'authentication_provider requires allow_provisioning_updates=true.', { retryable: false });
+        throw new AssistantPluginError(
+          'PLUGIN_ACTION_ARGUMENT_INVALID',
+          'authentication_provider requires allow_provisioning_updates=true.',
+          { retryable: false },
+        );
       }
-      const authentication = authenticationProvider === 'app_store_connect'
-        ? resolveAppStoreConnectXcodeAuthenticationReference(input.repoRoot, input.controllerHome, input.repoId)
-        : undefined;
+      const authentication =
+        authenticationProvider === 'app_store_connect'
+          ? resolveAppStoreConnectXcodeAuthenticationReference(input.repoRoot, input.controllerHome, input.repoId)
+          : undefined;
       return {
-        ...await iosAppBuild(repository, {
-          scheme: stringValue(input.args.scheme),
-          udid: stringValue(input.args.udid),
-          simulatorName: stringValue(input.args.simulator_name),
-          workspace: stringValue(input.args.workspace),
-          project: stringValue(input.args.project),
-          configuration: stringValue(input.args.configuration),
+        ...(await iosAppBuild(repository, {
+          scheme: stringValue(input.args.scheme) ?? projectDefaults?.scheme,
+          udid:
+            stringValue(input.args.udid) ??
+            (destinationPlatform === 'ios' ? previewDefaults?.physicalDevice?.udid : previewDefaults?.simulator?.udid),
+          simulatorName:
+            stringValue(input.args.simulator_name) ??
+            (destinationPlatform === 'ios_simulator' ? previewDefaults?.simulator?.name : undefined),
+          workspace: stringValue(input.args.workspace) ?? projectDefaults?.workspace,
+          project: stringValue(input.args.project) ?? projectDefaults?.project,
+          configuration: stringValue(input.args.configuration) ?? projectDefaults?.configuration,
           destinationPlatform: destinationPlatform as 'ios' | 'ios_simulator' | undefined,
           provisioning: allowProvisioningUpdates ? { allowUpdates: true, authentication } : undefined,
           timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
-        }),
+        })),
       };
     }
     case 'xcode_test': {
+      const workflow = iosWorkflowConfigFor(input);
+      const projectDefaults = workflow.project;
+      const testDefaults = workflow.tests;
       const onlyTesting = Array.isArray(input.args.only_testing)
-        ? input.args.only_testing.map((entry) => String(entry).trim()).filter(Boolean).slice(0, 50)
-        : undefined;
+        ? input.args.only_testing
+            .map((entry) => String(entry).trim())
+            .filter(Boolean)
+            .slice(0, 50)
+        : testDefaults?.onlyTesting;
+      const parallelTesting =
+        typeof input.args.parallel_testing === 'boolean'
+          ? input.args.parallel_testing
+          : (testDefaults?.parallelTesting ?? false);
       const testResult = await iosXcodeTest(repository, {
-          scheme: stringValue(input.args.scheme),
-          udid: stringValue(input.args.udid),
-          simulatorName: stringValue(input.args.simulator_name),
-          workspace: stringValue(input.args.workspace),
-          project: stringValue(input.args.project),
-          configuration: stringValue(input.args.configuration),
-          onlyTesting,
-          parallelTesting: input.args.parallel_testing === true,
-          maxParallelTestingWorkers: typeof input.args.max_parallel_testing_workers === 'number'
+        scheme: stringValue(input.args.scheme) ?? testDefaults?.scheme ?? projectDefaults?.scheme,
+        udid: stringValue(input.args.udid) ?? testDefaults?.simulator?.udid,
+        simulatorName: stringValue(input.args.simulator_name) ?? testDefaults?.simulator?.name,
+        workspace: stringValue(input.args.workspace) ?? projectDefaults?.workspace,
+        project: stringValue(input.args.project) ?? projectDefaults?.project,
+        configuration:
+          stringValue(input.args.configuration) ?? testDefaults?.configuration ?? projectDefaults?.configuration,
+        onlyTesting,
+        parallelTesting,
+        maxParallelTestingWorkers:
+          typeof input.args.max_parallel_testing_workers === 'number'
             ? input.args.max_parallel_testing_workers
-            : undefined,
-          timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
+            : testDefaults?.maxParallelTestingWorkers,
+        timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
       });
       let resultBundleOwnership: { recorded: boolean; resourceId?: string; reason?: string } | undefined;
       if ('resultBundlePath' in testResult && typeof testResult.resultBundlePath === 'string') {
@@ -560,7 +689,8 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
     }
     case 'launch_simulator': {
       const udid = stringValue(input.args.udid);
-      if (!udid) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'udid is required.', { retryable: false });
+      if (!udid)
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'udid is required.', { retryable: false });
       return {
         ...iosSimulatorBoot({
           udid,
@@ -571,7 +701,8 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
     }
     case 'capture_screenshot': {
       const udid = stringValue(input.args.udid);
-      if (!udid) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'udid is required.', { retryable: false });
+      if (!udid)
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'udid is required.', { retryable: false });
       const screenshot = iosSimulatorScreenshot(repository, {
         udid,
         label: stringValue(input.args.label),
@@ -580,39 +711,60 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
       });
       return {
         ...screenshot,
-        artifactCandidates: screenshot && 'absolutePath' in screenshot && typeof screenshot.absolutePath === 'string'
-          ? [{ kind: 'ios_simulator_screenshot', mediaType: 'image/png', path: screenshot.absolutePath }]
-          : [],
+        artifactCandidates:
+          screenshot && 'absolutePath' in screenshot && typeof screenshot.absolutePath === 'string'
+            ? [{ kind: 'ios_simulator_screenshot', mediaType: 'image/png', path: screenshot.absolutePath }]
+            : [],
       };
     }
     case 'smoke_review': {
+      const workflow = iosWorkflowConfigFor(input);
+      const projectDefaults = workflow.project;
+      const previewDefaults = workflow.preview;
+      if (previewDefaults?.target === 'physical_device') {
+        throw new AssistantPluginError(
+          'IOS_PREVIEW_TARGET_MISMATCH',
+          'smoke_review is the Simulator preview path. For a configured physical iPhone, build for destination_platform=ios, install through physical_device_install, then open with observe_after_open=true. XCTest is never part of preview.',
+          {
+            retryable: false,
+            details: {
+              configuredDevice: previewDefaults.physicalDevice?.selector ?? previewDefaults.physicalDevice?.udid,
+            },
+          },
+        );
+      }
       const review = await iosSmokeReview(repository, {
-          scheme: stringValue(input.args.scheme),
-          bundleId: stringValue(input.args.bundle_id),
-          udid: stringValue(input.args.udid),
-          simulatorName: stringValue(input.args.simulator_name),
-          workspace: stringValue(input.args.workspace),
-          project: stringValue(input.args.project),
-          configuration: stringValue(input.args.configuration),
-          appPath: stringValue(input.args.app_path),
-          screenshotLabel: stringValue(input.args.screenshot_label),
-          skipBuild: input.args.skip_build === true,
-          launchWaitMs: typeof input.args.launch_wait_ms === 'number' ? input.args.launch_wait_ms : undefined,
-          cleanupPolicy: ['keep', 'shutdown_on_success', 'shutdown_always'].includes(String(input.args.cleanup_policy))
-            ? input.args.cleanup_policy as 'keep' | 'shutdown_on_success' | 'shutdown_always'
-            : undefined,
+        scheme: stringValue(input.args.scheme) ?? projectDefaults?.scheme,
+        bundleId: stringValue(input.args.bundle_id) ?? projectDefaults?.bundleId,
+        udid: stringValue(input.args.udid) ?? previewDefaults?.simulator?.udid,
+        simulatorName: stringValue(input.args.simulator_name) ?? previewDefaults?.simulator?.name,
+        workspace: stringValue(input.args.workspace) ?? projectDefaults?.workspace,
+        project: stringValue(input.args.project) ?? projectDefaults?.project,
+        configuration: stringValue(input.args.configuration) ?? projectDefaults?.configuration,
+        appPath: stringValue(input.args.app_path),
+        screenshotLabel: stringValue(input.args.screenshot_label) ?? previewDefaults?.screenshotLabel,
+        skipBuild: input.args.skip_build === true,
+        launchWaitMs:
+          typeof input.args.launch_wait_ms === 'number' ? input.args.launch_wait_ms : previewDefaults?.launchWaitMs,
+        cleanupPolicy: ['keep', 'shutdown_on_success', 'shutdown_always'].includes(String(input.args.cleanup_policy))
+          ? (input.args.cleanup_policy as 'keep' | 'shutdown_on_success' | 'shutdown_always')
+          : previewDefaults?.cleanupPolicy,
         artifactRoot,
       });
-      const screenshotPath = review.screenshot && typeof review.screenshot === 'object' && 'absolutePath' in review.screenshot
-        ? String((review.screenshot as { absolutePath?: string }).absolutePath ?? '')
-        : '';
-      const logPath = review.logs && typeof review.logs === 'object' && 'absolutePath' in review.logs
-        ? String((review.logs as { absolutePath?: string }).absolutePath ?? '')
-        : '';
+      const screenshotPath =
+        review.screenshot && typeof review.screenshot === 'object' && 'absolutePath' in review.screenshot
+          ? String((review.screenshot as { absolutePath?: string }).absolutePath ?? '')
+          : '';
+      const logPath =
+        review.logs && typeof review.logs === 'object' && 'absolutePath' in review.logs
+          ? String((review.logs as { absolutePath?: string }).absolutePath ?? '')
+          : '';
       return {
         ...review,
         artifactCandidates: [
-          ...(screenshotPath ? [{ kind: 'ios_simulator_screenshot', mediaType: 'image/png', path: screenshotPath }] : []),
+          ...(screenshotPath
+            ? [{ kind: 'ios_simulator_screenshot', mediaType: 'image/png', path: screenshotPath }]
+            : []),
           ...(logPath ? [{ kind: 'ios_simulator_log', mediaType: 'text/plain', path: logPath }] : []),
         ],
       };
@@ -621,17 +773,25 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
     case 'install': {
       const udid = stringValue(input.args.udid);
       const appPath = stringValue(input.args.app_path);
-      if (!udid || !appPath) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'udid and app_path are required.', { retryable: false });
+      if (!udid || !appPath)
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'udid and app_path are required.', {
+          retryable: false,
+        });
       return { ...iosAppInstall(repository, { udid, appPath, artifactRoot }) };
     }
     case 'launch_app': {
       const udid = stringValue(input.args.udid);
       const bundleId = stringValue(input.args.bundle_id);
-      if (!udid || !bundleId) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'udid and bundle_id are required.', { retryable: false });
+      if (!udid || !bundleId)
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'udid and bundle_id are required.', {
+          retryable: false,
+        });
       return { ...iosAppLaunch({ udid, bundleId }) };
     }
     default:
-      throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', `ios/${input.actionId} is not supported.`, { retryable: false });
+      throw new AssistantPluginError('PLUGIN_ACTION_NOT_SUPPORTED', `ios/${input.actionId} is not supported.`, {
+        retryable: false,
+      });
   }
 }
 

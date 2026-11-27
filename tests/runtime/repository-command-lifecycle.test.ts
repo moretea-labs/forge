@@ -1040,6 +1040,60 @@ describe('repository command execution lifecycle', () => {
     ]);
   });
 
+  test('more than 200 unrelated dirty paths do not block a scoped command or widen its evidence', async () => {
+    const controllerHome = tempRoot('forge-cmd-large-scoped-home-');
+    const repoRoot = tempRoot('forge-cmd-large-scoped-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+    writeFileSync(join(repoRoot, 'target.txt'), 'base\n');
+    writeFileSync(join(repoRoot, 'write-target.mjs'), "await Bun.write('target.txt', 'after\\n');");
+    git(repoRoot, ['add', 'target.txt', 'write-target.mjs']);
+    git(repoRoot, ['commit', '-m', 'add scoped fingerprint fixture']);
+    writeFileSync(join(repoRoot, 'target.txt'), 'before\n');
+    for (let index = 0; index < 205; index += 1) {
+      writeFileSync(join(repoRoot, 'unrelated-' + index + '.txt'), 'dirty\n');
+    }
+
+    const result = await executeRepositoryCommandAsync(controllerHome, repository, {
+      command: [process.execPath, 'write-target.mjs'],
+      mutationPaths: ['target.txt'],
+      timeoutMs: 10_000,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.before.paths.length).toBeGreaterThan(200);
+    expect(Object.keys(result.before.pathFingerprints)).toEqual(['target.txt']);
+    expect(Object.keys(result.after?.pathFingerprints ?? {})).toEqual(['target.txt']);
+    expect(result.repositoryChanged).toBe(true);
+    expect(result.changedPaths).toEqual(['target.txt']);
+    expect(result.evidenceError).toBeUndefined();
+    expect(readFileSync(join(repoRoot, 'target.txt'), 'utf-8')).toBe('after\n');
+  });
+
+  test('more than 200 dirty paths without a declared scope execute but report unknown mutation evidence', async () => {
+    const controllerHome = tempRoot('forge-cmd-large-unscoped-home-');
+    const repoRoot = tempRoot('forge-cmd-large-unscoped-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+    for (let index = 0; index < 205; index += 1) {
+      writeFileSync(join(repoRoot, 'unrelated-' + index + '.txt'), 'dirty\n');
+    }
+
+    const result = await executeRepositoryCommandAsync(controllerHome, repository, {
+      command: ['touch', 'marker.txt'],
+      timeoutMs: 10_000,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.before.paths.length).toBeGreaterThan(200);
+    expect(result.before.pathFingerprints).toEqual({});
+    expect(result.after?.fingerprintScope).toBe('none');
+    expect(result.evidenceError?.code).toBe('SNAPSHOT_SCOPE_UNDECLARED');
+    expect(result.repositoryChanged).toBeUndefined();
+    expect(result.changedPaths).toBeUndefined();
+    expect(readFileSync(join(repoRoot, 'marker.txt'), 'utf-8')).toBe('');
+  });
+
   test('post-execution fingerprint timeout preserves child success while marking repository evidence unknown', async () => {
     const controllerHome = tempRoot('forge-cmd-post-evidence-home-');
     const repoRoot = tempRoot('forge-cmd-post-evidence-repo-');
@@ -1058,6 +1112,7 @@ describe('repository command execution lifecycle', () => {
 
     const result = await executeRepositoryCommandAsync(controllerHome, repository, {
       command: [process.execPath, 'write-three.mjs'],
+      mutationPaths: ['evidence-a.txt', 'evidence-b.txt', 'evidence-c.txt'],
       timeoutMs: 10_000,
       snapshotFingerprintTimeoutMs: 1,
     });
@@ -1070,7 +1125,8 @@ describe('repository command execution lifecycle', () => {
       changedPaths: undefined,
       evidenceError: { code: 'SNAPSHOT_WORKER_TIMEOUT' },
     });
-    expect(result.after).toBeUndefined();
+    expect(result.after).toBeDefined();
+    expect(result.after?.pathFingerprintError?.code).toBe('SNAPSHOT_WORKER_TIMEOUT');
     expect(readFileSync(join(repoRoot, 'evidence-a.txt'), 'utf-8')).toBe('a\n');
   });
 
@@ -1081,6 +1137,7 @@ describe('repository command execution lifecycle', () => {
     persistControllerAccessMode(controllerHome, 'full_access');
     const result = executeRepositoryCommand(controllerHome, repository, {
       command: ['touch', 'marker.txt'],
+      mutationPaths: ['marker.txt'],
       timeoutMs: 10_000,
     });
     expect(result.ok).toBe(true);

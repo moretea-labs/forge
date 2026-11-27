@@ -604,7 +604,6 @@ struct ZenWorkspacePane: View {
         }
     }
 
-    /// Workbench actions participate in the SAME native NSWindow toolbar.
     @ViewBuilder
     private var zenWindowToolbarNavigation: some View {
         if !showingProjectDirectory && screen == .canvas {
@@ -629,6 +628,8 @@ struct ZenWorkspacePane: View {
         }
     }
 
+    /// Workbench actions participate in the SAME native NSWindow toolbar.
+    @ViewBuilder
     private var zenWindowToolbarActions: some View {
         if !showingProjectDirectory && screen == .board {
                 if screen == .board {

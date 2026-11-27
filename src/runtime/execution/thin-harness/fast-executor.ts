@@ -420,6 +420,54 @@ async function runSearchInWorker(
   );
 }
 
+const GIT_INDEX_MUTATION_COMMANDS = new Set([
+  'add',
+  'rm',
+  'mv',
+  'restore',
+  'apply',
+  'reset',
+  'commit',
+  'merge',
+  'rebase',
+  'cherry-pick',
+  'revert',
+  'checkout',
+  'switch',
+  'stash',
+  'pull',
+]);
+
+function commandMutatesGitIndex(command: unknown): boolean {
+  if (Array.isArray(command)) {
+    const values = command.map(String);
+    const program = (values[0] ?? '')
+      .split(/[\\/]/)
+      .at(-1)
+      ?.toLowerCase()
+      .replace(/\.exe$/, '');
+    if (program !== 'git') return false;
+    let index = 1;
+    while (index < values.length) {
+      const argument = values[index].toLowerCase();
+      if (['-C', '-c', '--git-dir', '--work-tree'].includes(argument)) {
+        index += 2;
+        continue;
+      }
+      if (argument.startsWith('-')) {
+        index += 1;
+        continue;
+      }
+      return GIT_INDEX_MUTATION_COMMANDS.has(argument);
+    }
+    return false;
+  }
+  if (typeof command !== 'string') return false;
+  return /^\s*git\s+(?:(?:-C|-c|--git-dir|--work-tree)(?:=|\s+)\S+\s+)*(add|rm|mv|restore|apply|reset|commit|merge|rebase|cherry-pick|revert|checkout|switch|stash|pull)\b/i.test(
+    command,
+  );
+}
+
 function ownershipOptionsFor(
   operation: string,
   decision: ExecutionDecision,
@@ -429,17 +477,22 @@ function ownershipOptionsFor(
     ...(Array.isArray(input.paths) ? input.paths.map(String) : []),
     ...extractPatchPaths(input.operations),
     ...(Array.isArray(input.allowed_paths) ? input.allowed_paths.map(String) : []),
+    ...(Array.isArray(input.mutation_paths) ? input.mutation_paths.map(String) : []),
   ];
+  const operationMutatesGitIndex = [
+    'stage_paths',
+    'git_stage_paths',
+    'commit_paths',
+    'git_commit_paths',
+    'repository_git_commit',
+  ].includes(operation);
   return {
-    writePaths: writePaths.length ? writePaths : undefined,
+    writePaths: writePaths.length ? [...new Set(writePaths)] : undefined,
     mutatesGitRefs:
       decision.effects.mutatesGitRefs || operation.includes('commit') || operation === 'repository_git_commit',
-    // Pure file edits mutate source bytes, not the Git index. Stage/commit
-    // retain their exact index/ref claim; source-only edits must not serialize
-    // against another Writer's short Git critical section (#713).
-    mutatesGitIndex:
-      !['apply_patch', 'repository_safe_patch_apply'].includes(operation) &&
-      (decision.effects.mutatesWorkspace || decision.effects.mutatesGitRefs),
+    // Workspace writes do not mutate the Git index. Claim it only for actual
+    // Git index commands or explicit stage/commit operations.
+    mutatesGitIndex: operationMutatesGitIndex || commandMutatesGitIndex(input.command),
   };
 }
 
@@ -461,7 +514,13 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
       background: request.background,
       timeoutMs: request.timeoutMs,
       command: request.input.command as string | string[] | undefined,
-      paths: stringList(request.input.paths) ?? stringList(request.input.changed_paths),
+      paths: [
+        ...new Set([
+          ...(stringList(request.input.paths) ?? []),
+          ...(stringList(request.input.changed_paths) ?? []),
+          ...(stringList(request.input.mutation_paths) ?? []),
+        ]),
+      ],
       patchPaths,
       allowedPaths: request.allowedPaths ?? stringList(request.input.allowed_paths),
       patchOperationCount: Array.isArray(request.input.operations) ? request.input.operations.length : undefined,
@@ -855,6 +914,7 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
             ctx.repository,
             {
               command,
+              mutationPaths: stringList(request.input.mutation_paths),
               cwd: typeof request.input.cwd === 'string' ? request.input.cwd : undefined,
               authorization: 'confirmed_plan',
               approvalToken:
@@ -882,6 +942,7 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
             ctx.repository,
             {
               command,
+              mutationPaths: stringList(request.input.mutation_paths),
               cwd: typeof request.input.cwd === 'string' ? request.input.cwd : undefined,
               authorization: 'confirmed_plan',
               approvalToken,
@@ -917,6 +978,7 @@ export async function executeFast(ctx: FastExecutorContext, request: FastExecute
         const execution = await trace.measure('executionMs', async () =>
           executeRepositoryCommandAsync(ctx.controllerHome, ctx.repository, {
             command,
+            mutationPaths: stringList(request.input.mutation_paths),
             cwd: typeof request.input.cwd === 'string' ? request.input.cwd : undefined,
             authorization: 'confirmed_plan',
             approvalToken,

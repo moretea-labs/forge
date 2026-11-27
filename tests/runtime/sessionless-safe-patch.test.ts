@@ -186,7 +186,7 @@ test('independent exact replacements continue after source and HEAD change witho
   expect(fx.sessions()).toHaveLength(0);
 });
 
-test('simultaneous processes preserve independent same-file edits through lock/CAS retry (#716)', async () => {
+test('simultaneous processes preserve independent edits and reject same-target conflicts (#716 #724)', async () => {
   const fx = fixture();
   const sourcePath = join(fx.repoRoot, 'source.ts');
   const padded = `${fx.initial}// ${'x'.repeat(2 * 1024 * 1024)}\n`;
@@ -244,14 +244,14 @@ test('simultaneous processes preserve independent same-file edits through lock/C
     process.stdout.write(JSON.stringify(result));
   `;
 
-  const spawnWriter = (ready: string, oldText: string, newText: string) =>
+  const spawnWriter = (ready: string, oldText: string, newText: string, goPath = go) =>
     Bun.spawn([process.execPath, '-e', workerSource], {
       cwd: process.cwd(),
       env: {
         ...process.env,
         RACE_REPO_ROOT: fx.repoRoot,
         RACE_READY: ready,
-        RACE_GO: go,
+        RACE_GO: goPath,
         RACE_OLD: oldText,
         RACE_NEW: newText,
       },
@@ -281,21 +281,65 @@ test('simultaneous processes preserve independent same-file edits through lock/C
   const final = readFileSync(sourcePath, 'utf8');
   expect(final).toContain('n = 2');
   expect(final).toContain('label = 2');
+
+  writeFileSync(sourcePath, padded);
+  const readyC = join(fx.repoRoot, '.race-c-ready');
+  const readyD = join(fx.repoRoot, '.race-d-ready');
+  const conflictGo = join(fx.repoRoot, '.race-conflict-go');
+  const writerC = spawnWriter(readyC, 'n = 1', 'n = 3', conflictGo);
+  const writerD = spawnWriter(readyD, 'n = 1', 'n = 4', conflictGo);
+  await waitForFiles([readyC, readyD]);
+  writeFileSync(conflictGo, 'go');
+
+  const [exitC, exitD] = await Promise.all([writerC.exited, writerD.exited]);
+  const [stdoutC, stdoutD, stderrC, stderrD] = await Promise.all([
+    new Response(writerC.stdout).text(),
+    new Response(writerD.stdout).text(),
+    new Response(writerC.stderr).text(),
+    new Response(writerD.stderr).text(),
+  ]);
+  if (exitC !== 0 || exitD !== 0) {
+    throw new Error(`conflict race worker failed: C(${exitC}) ${stderrC}; D(${exitD}) ${stderrD}`);
+  }
+  const conflictResults = [JSON.parse(stdoutC), JSON.parse(stdoutD)] as Array<{
+    status: string;
+    failures?: Array<{ code?: string }>;
+  }>;
+  expect(conflictResults.filter((result) => result.status === 'applied')).toHaveLength(1);
+  const conflict = conflictResults.find((result) => result.status === 'failed');
+  expect(conflict?.failures?.[0]?.code).toBe('SEMANTIC_CONFLICT');
+  const conflictFinal = readFileSync(sourcePath, 'utf8');
+  expect(conflictFinal.includes('n = 3') || conflictFinal.includes('n = 4')).toBe(true);
+  expect(conflictFinal).toContain('label = 1');
   expect(fx.sessions()).toHaveLength(0);
   expect(existsSync(`${sourcePath}.forge.lock`)).toBe(false);
 });
 
-test('unversioned exact patch rejects ambiguous or changed targets without writing (#716)', async () => {
+test('unversioned exact patch rejects ambiguous or changed targets without writing (#716 #724)', async () => {
   const fx = fixture();
   const duplicate = fx.initial + 'export const duplicate = 1;\n';
   writeFileSync(join(fx.repoRoot, 'source.ts'), duplicate);
-  for (const operation of [
-    { type: 'replace', replacements: [{ old_text: '= 1', new_text: '= 2' }] },
-    { type: 'insert_after', anchor: '= 1', content: ' /* ambiguous */' },
-    { type: 'replace', replacements: [{ old_text: 'n = 3', new_text: 'n = 4' }] },
+  for (const { operation, expectedCode } of [
+    {
+      operation: { type: 'replace', replacements: [{ old_text: '= 1', new_text: '= 2' }] },
+      expectedCode: 'REPLACEMENT_TEXT_NOT_FOUND',
+    },
+    {
+      operation: { type: 'insert_after', anchor: '= 1', content: ' /* ambiguous */' },
+      expectedCode: 'ANCHOR_NOT_FOUND',
+    },
+    {
+      operation: { type: 'replace', replacements: [{ old_text: 'n = 3', new_text: 'n = 4' }] },
+      expectedCode: 'SEMANTIC_CONFLICT',
+    },
+    {
+      operation: { type: 'insert_after', anchor: 'missing anchor', content: ' /* stale */' },
+      expectedCode: 'SEMANTIC_CONFLICT',
+    },
   ]) {
     const result = await apply(fx, { ...operation, path: 'source.ts' });
     expect(result.isError).toBe(true);
+    expect(result.payload.failures[0]).toMatchObject({ code: expectedCode });
     expect(result.payload.failures[0].context).toBeDefined();
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(duplicate);
   }
@@ -537,7 +581,7 @@ test('independent semantic groups continue after one local conflict (#716)', asy
     status: 'partial',
     sessionless: true,
     changedFiles: [createdPath],
-    failures: [{ operationIndex: 1, code: 'REPLACEMENT_TEXT_NOT_FOUND' }],
+    failures: [{ operationIndex: 1, code: 'SEMANTIC_CONFLICT' }],
     groups: [
       { groupId: 'operation:1', status: 'failed', changedFiles: [] },
       { groupId: 'operation:2', status: 'applied', changedFiles: [createdPath] },
@@ -666,7 +710,7 @@ test('cross-file text semantic group performs zero writes when any path fails pr
     status: 'failed',
     sessionless: true,
     changedFiles: [],
-    failures: [{ operationIndex: 2, code: 'REPLACEMENT_TEXT_NOT_FOUND' }],
+    failures: [{ operationIndex: 2, code: 'SEMANTIC_CONFLICT' }],
   });
   expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
   expect(readFileSync(join(fx.repoRoot, secondPath), 'utf8')).toBe(secondBefore);

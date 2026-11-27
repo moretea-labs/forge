@@ -800,7 +800,6 @@ const SEMANTIC_STRING_AUTHORITY_DEBT = new Set([
   `src/runtime/execution/thin-harness/fingerprint-worker.ts::error.message.startsWith('SNAPSHOT_BUDGET')`,
   `src/runtime/execution/thin-harness/fingerprint-worker.ts::message.startsWith('CANCELLED')`,
   `src/runtime/execution/thin-harness/fingerprint-worker.ts::message.startsWith('SNAPSHOT_BUDGET')`,
-  `src/runtime/execution/thin-harness/fingerprint-worker.ts::message.startsWith('SNAPSHOT_TOO_DIRTY')`,
   `src/runtime/execution/thin-harness/fingerprint-worker.ts::message.startsWith('SNAPSHOT_WORKER_TIMEOUT')`,
   `src/runtime/execution/workers/executor.ts::message.startsWith('LEGACY_JOB_TIMEOUT:')`,
 ]);

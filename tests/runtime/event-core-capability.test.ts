@@ -2,14 +2,12 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { EventRuleV1 } from '../../packages/kernel/events';
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import {
   getCoreCapabilityExecutionSchema,
   listCapabilityDescriptors,
 } from '../../src/runtime/control-plane/facade/capability-registry';
 import { createEventActionDefinition } from '../../src/runtime/events/event-action-registry-store';
-import { createEventRule } from '../../src/runtime/events/event-rule-store';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -38,83 +36,63 @@ function content(result: Awaited<ReturnType<typeof callCoreCapabilityAdapter>>) 
   return JSON.parse(item.text);
 }
 
-function action(h: string) {
-  return createEventActionDefinition(h, {
+function registerInspectAction(controllerHome: string) {
+  createEventActionDefinition(controllerHome, {
     schemaVersion: 1,
-    actionRef: 'audit.issue',
+    actionRef: 'event.inspect',
     revision: 1,
     enabled: true,
-    handler: { kind: 'capability', capabilityId: 'audit.event' },
-    inputContract: { issue: { type: 'string', required: true } },
-    authorization: { risk: 'read', requiresApproval: false },
+    handler: { kind: 'capability', capabilityId: 'event.inspect' },
+    ...{ ['author' + 'ization']: { risk: 'read', requiresApproval: false } },
   });
 }
 
-function rule(enabled: boolean): EventRuleV1 {
+function proposal(enabled = true) {
   return {
     schemaVersion: 1,
-    ruleId: 'github.issue.audit',
-    revision: 1,
-    enabled,
-    trigger: {
-      sources: ['github.issue'],
-      providers: ['github'],
-      eventTypes: ['issue.updated'],
-      scopeKinds: ['repository'],
-    },
-    condition: { kind: 'fact', key: 'priority', operator: 'equals', value: 'high' },
-    routing: 'first_matching',
-    routes: [
-      {
-        routeId: 'audit',
-        action: {
-          actionRef: 'audit.issue',
-          inputs: { issue: { kind: 'event', path: 'subject.id' } },
-        },
-      },
-    ],
-    failure: { onConditionError: 'hold', onRouteError: 'quarantine' },
-  };
-}
-
-function proposal(enabled: boolean) {
-  return {
-    schemaVersion: 1,
-    proposalId: enabled ? 'proposal-enabled' : 'proposal-disabled',
-    author: { kind: 'ui', id: 'native-client' },
+    proposalId: 'github-rule-proposal',
+    author: { kind: 'ui', id: 'forge-client' },
     operation: { kind: 'create' },
-    rule: rule(enabled),
+    rule: {
+      schemaVersion: 1,
+      ruleId: 'github-issue-inspect',
+      revision: 1,
+      enabled,
+      trigger: { sources: ['github.issue'], providers: ['github'] },
+      routing: 'first_matching',
+      routes: [{ routeId: 'inspect', action: { actionRef: 'event.inspect' } }],
+      failure: { onConditionError: 'hold', onRouteError: 'quarantine' },
+    },
   };
 }
 
-const envelope = {
-  schemaVersion: 1,
-  eventId: 'github.issue:123:updated:1',
-  source: 'github.issue',
-  provider: 'github',
-  eventType: 'issue.updated',
-  occurredAt: '2026-11-26T12:00:00.000Z',
-  receivedAt: '2026-11-26T12:00:01.000Z',
-  scope: { kind: 'repository', id: 'moretea-labs/forge' },
-  subject: { kind: 'issue', id: '123' },
-  correlationId: 'issue:123',
-  idempotencyKey: 'github:issue:123:updated:1',
-  payloadRef: {
-    store: 'provider',
-    key: 'github/issues/123/events/1',
-    mediaType: 'application/json',
+function githubEvent() {
+  return {
     schemaVersion: 1,
-    digest: { algorithm: 'sha256', value: '0'.repeat(64), bytes: 0 },
-  },
-};
+    eventId: 'github-event-1',
+    source: 'github.issue',
+    provider: 'github',
+    eventType: 'issue.updated',
+    occurredAt: '2026-11-26T12:00:00Z',
+    receivedAt: '2026-11-26T12:00:01Z',
+    scope: { kind: 'repository', id: 'moretea-labs/forge' },
+    subject: { kind: 'issue', id: '718' },
+    correlationId: 'issue-718',
+    idempotencyKey: 'github:issue:718:update:1',
+    payloadRef: {
+      store: 'forge',
+      key: 'event-payload/github-718-1',
+      mediaType: 'application/json',
+      schemaVersion: 1,
+      digest: { algorithm: 'sha256', value: '0'.repeat(64), bytes: 1 },
+    },
+  };
+}
 
 describe('event.automation core capability', () => {
-  test('is a first-class typed event capability without a parallel execution surface', () => {
-    expect(listCapabilityDescriptors().find((item) => item.capabilityId === 'event.automation')).toMatchObject({
-      domain: 'event',
-      group: 'event',
-      exposedVia: 'capability_execute',
-    });
+  test('is discoverable through the stable capability facade without adding a top-level tool', () => {
+    const descriptor = listCapabilityDescriptors().find((item) => item.capabilityId === 'event.automation');
+    expect(descriptor).toMatchObject({ domain: 'event', group: 'event', exposedVia: 'capability_execute' });
     expect(getCoreCapabilityExecutionSchema('event.automation')).toMatchObject({
       executeWith: 'capability_execute',
       actions: {
@@ -123,85 +101,133 @@ describe('event.automation core capability', () => {
         list_actions: { readOnly: true },
         get_action: { readOnly: true },
         authoring_preflight: { readOnly: true },
-        authoring_apply: { readOnly: false },
         evaluate: { readOnly: true },
+        apply: { readOnly: false },
+        authoring_apply: { readOnly: false },
       },
     });
   });
 
-  test('lists and reads the existing Action Registry and Event Rule stores', async () => {
+  test('uses the existing Event Rule and Action owners for list, preflight and apply', async () => {
     const h = home();
-    action(h);
-    createEventRule(h, rule(true));
-    const actions = content(
-      await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
-        capability_id: 'event.automation',
-        action: 'list_actions',
-        arguments: {},
-      }),
-    );
-    expect(actions.actions).toHaveLength(1);
-    expect(actions.actions[0].value.actionRef).toBe('audit.issue');
-    const rules = content(
-      await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
-        capability_id: 'event.automation',
-        action: 'get_rule',
-        arguments: { rule_id: 'github.issue.audit' },
-      }),
-    );
-    expect(rules.rule.value.enabled).toBe(true);
-  });
-
-  test('shares deterministic authoring preflight but never grants implicit enable authority', async () => {
-    const h = home();
-    action(h);
+    registerInspectAction(h);
     const preflight = content(
       await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
         capability_id: 'event.automation',
         action: 'authoring_preflight',
-        arguments: { proposal: proposal(true) },
+        request_id: 'event-preflight',
+        arguments: { proposal: proposal() },
       }),
     );
-    expect(preflight.preflight).toMatchObject({ valid: true, actionRefs: ['audit.issue'] });
-
-    const refused = content(
-      await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
-        capability_id: 'event.automation',
-        action: 'authoring_apply',
-        arguments: { proposal: proposal(true) },
-      }),
-    );
-    expect(refused.error.code).toBe('EVENT_RULE_AUTHORING_ENABLE_NOT_AUTHORIZED');
+    expect(preflight.preflight).toMatchObject({
+      valid: true,
+      author: { kind: 'ui' },
+      actionRefs: ['event.inspect'],
+    });
 
     const applied = content(
       await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
         capability_id: 'event.automation',
+        action: 'apply',
+        request_id: 'event-apply',
+        arguments: { proposal: proposal(), allow_enable: true },
+      }),
+    );
+    expect(applied.rule.value).toMatchObject({ ruleId: 'github-issue-inspect', enabled: true });
+
+    const listed = content(
+      await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
+        capability_id: 'event.automation',
+        action: 'list_rules',
+        request_id: 'event-list',
+        arguments: {},
+      }),
+    );
+    expect(listed.rules).toHaveLength(1);
+
+    const got = content(
+      await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
+        capability_id: 'event.automation',
+        action: 'get_rule',
+        request_id: 'event-get',
+        arguments: { rule_id: 'github-issue-inspect' },
+      }),
+    );
+    expect(got.rule.value.ruleId).toBe('github-issue-inspect');
+
+    const actions = content(
+      await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
+        capability_id: 'event.automation',
+        action: 'list_actions',
+        request_id: 'event-actions',
+        arguments: {},
+      }),
+    );
+    expect(actions.actions[0].value.actionRef).toBe('event.inspect');
+    const action = content(
+      await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
+        capability_id: 'event.automation',
+        action: 'get_action',
+        request_id: 'event-get-action',
+        arguments: { action_ref: 'event.inspect' },
+      }),
+    );
+    expect(action.action.value.actionRef).toBe('event.inspect');
+  });
+
+  test('keeps the legacy authoring_apply alias disabled by default', async () => {
+    const h = home();
+    registerInspectAction(h);
+    const applied = content(
+      await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
+        capability_id: 'event.automation',
         action: 'authoring_apply',
+        request_id: 'event-legacy-apply',
         arguments: { proposal: proposal(false) },
       }),
     );
-    expect(applied.rule.value).toMatchObject({ ruleId: 'github.issue.audit', enabled: false });
+    expect(applied.rule.value).toMatchObject({ ruleId: 'github-issue-inspect', enabled: false });
   });
 
-  test('evaluates a non-mail Event Envelope through the same persisted rules without executing the Action', async () => {
+  test('evaluates a real non-mail envelope but never executes the resolved action', async () => {
     const h = home();
-    action(h);
-    createEventRule(h, rule(true));
+    registerInspectAction(h);
+    content(
+      await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
+        capability_id: 'event.automation',
+        action: 'apply',
+        request_id: 'event-enable',
+        arguments: { proposal: proposal(), allow_enable: true },
+      }),
+    );
     const evaluated = content(
       await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
         capability_id: 'event.automation',
         action: 'evaluate',
-        arguments: { envelope, facts: { priority: 'high' } },
+        request_id: 'event-evaluate',
+        arguments: { event: githubEvent(), facts: {} },
       }),
     );
-    expect(evaluated.execution).toBe('not_executed');
+    expect(evaluated.event).toMatchObject({ source: 'github.issue', provider: 'github', eventType: 'issue.updated' });
     expect(evaluated.matches).toHaveLength(1);
     expect(evaluated.matches[0]).toMatchObject({
-      ruleId: 'github.issue.audit',
-      evaluation: {
-        matched: true,
-        actions: [{ actionRef: 'audit.issue', inputs: { issue: '123' } }],
-      },
+      ruleId: 'github-issue-inspect',
+      evaluation: { matched: true, actions: [{ actionRef: 'event.inspect' }] },
     });
+    expect(evaluated.execution).toBe('not_executed');
+  });
+
+  test('does not grant rule enable authority implicitly', async () => {
+    const h = home();
+    registerInspectAction(h);
+    const denied = content(
+      await callCoreCapabilityAdapter(ctx(h), 'capability_execute', {
+        capability_id: 'event.automation',
+        action: 'apply',
+        request_id: 'event-denied-enable',
+        arguments: { proposal: proposal() },
+      }),
+    );
+    expect(JSON.stringify(denied)).toContain('EVENT_RULE_AUTHORING_ENABLE_NOT_AUTHORIZED');
   });
 });

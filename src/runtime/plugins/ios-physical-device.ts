@@ -7,6 +7,7 @@ import { repositoryControllerRoot } from '../../effects/controller-home';
 import { runBoundedProcess } from '../execution/thin-harness/async-process';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
+import { readIosWorkflowConfig } from '../safe-tooling/ios-workflow-config';
 import { ensureIosDeviceOwnership, iosCoreDeviceOwnershipId, releaseIosDeviceOwnership } from './ios-device-ownership';
 import {
   interactionAutomationEngine,
@@ -552,7 +553,18 @@ async function selectDevice(
   input: AssistantPluginActionExecutionInput,
   selectorValue: unknown,
 ): Promise<PhysicalDevice> {
-  const selector = requireString(selectorValue, 'device');
+  const workflow = readIosWorkflowConfig(input.repoRoot);
+  if (!workflow.ready) {
+    throw new AssistantPluginError(
+      workflow.error.code,
+      'Invalid Forge iOS workflow config at ' + workflow.path + ': ' + workflow.error.message,
+      { retryable: false, details: { path: workflow.path } },
+    );
+  }
+  const configuredPhysicalDevice =
+    workflow.config.preview?.target === 'physical_device' ? workflow.config.preview.physicalDevice : undefined;
+  const configuredSelector = configuredPhysicalDevice?.selector ?? configuredPhysicalDevice?.udid;
+  const selector = requireString(selectorValue ?? configuredSelector, 'device');
   const inventory = await physicalDevices(input);
   const matches = inventory.filter(
     (entry) => entry.identifier === selector || entry.udid === selector || entry.name === selector,
@@ -585,6 +597,14 @@ async function selectDevice(
     );
   }
   const selected = matches[0]!;
+  const expectedUdid = configuredPhysicalDevice?.udid;
+  if (expectedUdid && selected.identifier !== expectedUdid && selected.udid !== expectedUdid) {
+    throw new AssistantPluginError(
+      'IOS_DEVICE_CONFIG_TARGET_MISMATCH',
+      'The configured physical-device selector resolved to a different iPhone than preview.physicalDevice.udid.',
+      { retryable: false, details: { configuredUdid: expectedUdid, selectedIdentifier: selected.identifier } },
+    );
+  }
   if (selected.pairingState !== 'paired') {
     throw new AssistantPluginError('IOS_DEVICE_NOT_PAIRED', 'The selected iPhone is not paired with this Mac.', {
       retryable: false,
@@ -1448,7 +1468,7 @@ export async function resolveIosPhysicalDeviceAuthorizationContext(
   input: AssistantPluginActionExecutionInput,
 ): Promise<AssistantPluginAuthorizationContext | undefined> {
   const action = iosPhysicalDeviceActions().find((entry) => entry.actionId === input.actionId);
-  if (!action || action.confirmation !== 'authorization') return undefined;
+  if (action?.confirmation !== 'authorization') return undefined;
 
   if (input.actionId === 'physical_device_open' || input.actionId === 'physical_device_install') {
     const selected = await selectDevice(input, input.args.device);
@@ -1547,7 +1567,6 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: {
         type: 'object',
         properties: { device: { type: 'string' } },
-        required: ['device'],
         additionalProperties: false,
       },
     },
@@ -1567,7 +1586,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: {
         type: 'object',
         properties: { device: { type: 'string' }, bundle_id: { type: 'string' } },
-        required: ['device', 'bundle_id'],
+        required: ['bundle_id'],
         additionalProperties: false,
       },
     },
@@ -1587,7 +1606,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: {
         type: 'object',
         properties: { device: { type: 'string' }, app_path: { type: 'string' } },
-        required: ['device', 'app_path'],
+        required: ['app_path'],
         additionalProperties: false,
       },
     },
@@ -1613,7 +1632,7 @@ export function iosPhysicalDeviceActions(): AssistantPluginActionDescriptor[] {
           prewarm_input: { type: 'boolean' },
           observe_after_open: { type: 'boolean' },
         },
-        required: ['device', 'bundle_id'],
+        required: ['bundle_id'],
         additionalProperties: false,
       },
     },

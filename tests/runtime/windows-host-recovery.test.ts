@@ -112,8 +112,20 @@ describe('Windows host Recovery plugin registration', () => {
     expect(recoveryScript).toContain('-RestartCount 3');
     expect(recoveryScript).toContain('-RestartInterval (New-TimeSpan -Minutes 1)');
     expect(recoveryScript).toContain('-MultipleInstances IgnoreNew');
+    expect(recoveryScript).toContain(
+      'New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType Interactive -RunLevel Limited',
+    );
+    expect(recoveryScript).toContain('-Principal $Principal');
+    expect(recoveryScript).toContain('Start-ScheduledTask -InputObject $Verify');
+    expect(recoveryScript).toContain('installed = $true; started = $true');
     expect(recoveryScript).toContain('continuous recovery watchdog');
     expect(recoveryScript).toContain("'forge_cloud_verify', 'full_recover', 'watch'");
+    expect(recoveryScript).toContain("method = 'hkcu_run_watch_process'");
+    expect(recoveryScript).toContain('Start-Process -FilePath $PowerShell');
+    expect(recoveryScript).toContain('Local\\ForgeIndependentRecoveryWSLWatch');
+    expect(recoveryScript).not.toContain(
+      '& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath full_recover',
+    );
   });
 
   test('managed helper protocol uses real newline-delimited JSON records', async () => {

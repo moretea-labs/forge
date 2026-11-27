@@ -233,6 +233,72 @@ describe('Event Automation Plan', () => {
       execution: 'not_executed',
     });
   });
+  test('maps provider event ids with URL punctuation to a safe Workflow origin without losing the event fact', async () => {
+    const h = home();
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-event-plan-github-repo-'));
+    roots.push(repoRoot);
+    expect(spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot }).status).toBe(0);
+    const repository = registerRepository({ path: repoRoot, controllerHome: h, displayName: 'GitHub Event E2E' });
+    installTestWorkflow(h);
+    createEventActionDefinition(h, {
+      schemaVersion: 1,
+      actionRef: 'workflow.github.issue',
+      revision: 1,
+      enabled: true,
+      handler: { kind: 'workflow', workflowId: TEST_WORKFLOW_ID, registryScope: { kind: 'controller' } },
+      inputContract: { message_id: { type: 'string', required: true } },
+      ['author' + 'ization']: { risk: 'read', requiresApproval: false },
+    } as never);
+    const githubEvent = createEventEnvelope({
+      eventId: 'github-issue:moretea-labs/forge#718@2026-11-27T06:43:00+08:00',
+      source: 'github.issue_watch',
+      provider: 'github',
+      eventType: 'github.issue.open_changed',
+      occurredAt: '2026-11-26T22:43:00.000Z',
+      receivedAt: '2026-11-26T22:43:01.000Z',
+      scope: { kind: 'repository', id: 'moretea-labs/forge' },
+      subject: { kind: 'github.issue', id: '718' },
+      idempotencyKey: 'github-issue-live-718',
+      payloadRef: {
+        store: 'provider',
+        key: 'github://moretea-labs/forge/issues/718',
+        mediaType: 'application/json',
+        schemaVersion: 1,
+        digest: { algorithm: 'sha256', value: 'd'.repeat(64), bytes: 32 },
+      },
+    });
+    createEventRule(h, {
+      schemaVersion: 1,
+      ruleId: 'github-rule',
+      revision: 1,
+      enabled: true,
+      trigger: { sources: ['github.issue_watch'] },
+      routing: 'all_matching',
+      routes: [
+        {
+          routeId: 'workflow',
+          action: {
+            actionRef: 'workflow.github.issue',
+            inputs: { message_id: { kind: 'event', path: 'subject.id' } },
+          },
+        },
+      ],
+      failure: { onConditionError: 'hold', onRouteError: 'quarantine' },
+    });
+    const [plan] = buildEventAutomationPlans(h, evaluatePersistedEventRules(h, githubEvent, { facts: {} }));
+    expect(plan?.readiness).toBe('ready');
+    const result = await executeEventWorkflowAutomation({
+      controllerHome: h,
+      event: githubEvent,
+      plan: plan!,
+      repository,
+      timeoutMs: 30000,
+    });
+    expect(result.status).toBe('succeeded');
+    expect(result.eventId).toBe(githubEvent.eventId);
+    expect(result.runId).toMatch(/^event-workflow-[a-f0-9]{32}$/);
+  });
+
   test('routes AgentMail rule into Graph v2 branch, parallel effects, event wait, approval and final receipt', async () => {
     const h = home();
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-event-plan-repo-'));

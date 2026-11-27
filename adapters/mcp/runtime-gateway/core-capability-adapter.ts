@@ -32,21 +32,17 @@ import {
   type WorkflowRegistryScope,
 } from '../../../src/runtime/control-plane/persistence/workflow-registry-store';
 import type { WorkflowJsonValue } from '../../../packages/workflow-runtime/api/index';
-import {
-  validateEventEnvelopeV1,
-  type EventRuleEvaluationContext,
-  type EventRuleScalar,
-} from '../../../packages/kernel/events';
-import {
-  listEventActionDefinitions,
-  readEventActionDefinition,
-} from '../../../src/runtime/events/event-action-registry-store';
 import { applyEventRuleProposal, preflightEventRuleProposal } from '../../../src/runtime/events/event-rule-authoring';
 import {
   evaluatePersistedEventRules,
   listEventRules,
   readEventRule,
 } from '../../../src/runtime/events/event-rule-store';
+import {
+  listEventActionDefinitions,
+  readEventActionDefinition,
+} from '../../../src/runtime/events/event-action-registry-store';
+import { validateEventEnvelopeV1, type EventRuleScalar } from '../../../packages/kernel/events';
 import { preflightWorkflowProposal } from '../../../src/runtime/workflows/authoring';
 import { applyPackagedWorkflowProposal } from '../../../src/runtime/workflows/packaged-authoring';
 import { setWorkflowLifecycle } from '../../../src/runtime/workflows/lifecycle';
@@ -57,13 +53,6 @@ import { executionIdentityForRepository } from '../../../src/runtime/control-pla
 import { currentPermissionSnapshotVersion } from '../../../src/runtime/control-plane/execution/session-repository-binding';
 import { principalFor } from '../../../src/runtime/control-plane/execution/session-execution-support';
 import { startOrResumeSession } from './execution-tools';
-import {
-  cancelLocalConversation,
-  readLocalConversationActivity,
-  readLocalConversationModelCatalog,
-  readLocalConversationProviderStatus,
-  sendLocalConversation,
-} from '../../../src/runtime/control-plane/launcher/local-conversation-controller';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -95,25 +84,33 @@ function eventId(input: Record<string, unknown>, field: 'rule_id' | 'action_ref'
   return value;
 }
 
-function eventLimit(input: Record<string, unknown>): number {
-  return typeof input.limit === 'number' ? Math.max(1, Math.min(256, Math.trunc(input.limit))) : 256;
-}
-
-function eventFacts(input: Record<string, unknown>): EventRuleEvaluationContext['facts'] {
-  if (input.facts === undefined) return {};
-  if (!input.facts || typeof input.facts !== 'object' || Array.isArray(input.facts))
-    throw new Error('EVENT_AUTOMATION_FACTS_INVALID');
-  const entries = Object.entries(input.facts as Record<string, unknown>);
-  if (entries.length > 256) throw new Error('EVENT_AUTOMATION_FACTS_TOO_LARGE');
+function eventFacts(input: Record<string, unknown>): Record<string, EventRuleScalar> {
+  const value = input.facts;
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('EVENT_CAPABILITY_FACTS_INVALID');
   const facts: Record<string, EventRuleScalar> = {};
-  for (const [key, value] of entries) {
-    if (!key || key.length > 256 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(key))
-      throw new Error('EVENT_AUTOMATION_FACT_KEY_INVALID');
-    if (value !== null && !['string', 'number', 'boolean'].includes(typeof value))
-      throw new Error('EVENT_AUTOMATION_FACT_VALUE_INVALID');
-    facts[key] = value as EventRuleScalar;
+  for (const [key, item] of Object.entries(value)) {
+    if (item !== null && typeof item !== 'string' && typeof item !== 'number' && typeof item !== 'boolean') {
+      throw new Error('EVENT_CAPABILITY_FACT_VALUE_INVALID');
+    }
+    facts[key] = item as EventRuleScalar;
   }
   return facts;
+}
+
+function eventLimit(input: Record<string, unknown>): number {
+  return typeof input.limit === 'number' ? Math.max(1, Math.min(Math.trunc(input.limit), 256)) : 256;
+}
+
+function approvedSensitiveActionRefs(input: Record<string, unknown>): string[] {
+  if (input.approved_sensitive_action_refs === undefined) return [];
+  if (
+    !Array.isArray(input.approved_sensitive_action_refs) ||
+    input.approved_sensitive_action_refs.some((value) => typeof value !== 'string' || !value.trim())
+  ) {
+    throw new Error('EVENT_CAPABILITY_SENSITIVE_ACTION_REFS_INVALID');
+  }
+  return [...new Set(input.approved_sensitive_action_refs.map((value) => String(value).trim()))];
 }
 
 export async function callCoreCapabilityAdapter(
@@ -163,59 +160,12 @@ export async function callCoreCapabilityAdapter(
         true,
       );
     }
-    if (capabilityId === 'controller.local_conversation') {
-      if (action === 'status') return result({ ...(await readLocalConversationProviderStatus()) });
-      if (action === 'models') return result({ ...(await readLocalConversationModelCatalog()) });
-      if (action === 'activity')
-        return result({ ...readLocalConversationActivity(String(input.conversation_id ?? '')) });
-      if (action === 'cancel') return result(cancelLocalConversation(String(input.conversation_id ?? '')));
-      if (action === 'send') {
-        const conversationId = typeof input.conversation_id === 'string' ? input.conversation_id.trim() : '';
-        const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
-        const providerSessionId =
-          typeof input.provider_session_id === 'string' ? input.provider_session_id.trim() : undefined;
-        const model = typeof input.model === 'string' ? input.model.trim() : undefined;
-        const reasoningEffort = typeof input.reasoning_effort === 'string' ? input.reasoning_effort.trim() : undefined;
-        let imagePaths: string[] | undefined;
-        if (input.image_paths !== undefined) {
-          if (!Array.isArray(input.image_paths) || input.image_paths.some((value) => typeof value !== 'string')) {
-            throw new Error('LOCAL_CONVERSATION_IMAGE_PATHS_INVALID');
-          }
-          imagePaths = input.image_paths as string[];
-        }
-        const timeoutMs = typeof input.timeout_ms === 'number' ? input.timeout_ms : undefined;
-        const requestedRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
-        const repository = requestedRepoId ? selected(ctx, args) : undefined;
-        return result({
-          ...(await sendLocalConversation({
-            controllerHome: ctx.controllerHome,
-            conversationId,
-            prompt,
-            providerSessionId,
-            repoId: repository?.repoId,
-            checkoutId: repository?.activeCheckoutId,
-            model,
-            reasoningEffort,
-            imagePaths,
-            timeoutMs,
-          })),
-        });
-      }
-      return result(
-        {
-          error: {
-            code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED',
-            message: `Unsupported controller.local_conversation action: ${action || '<empty>'}`,
-          },
-        },
-        true,
-      );
-    }
     if (capabilityId === 'event.automation') {
       if (action === 'list_rules') return result({ rules: listEventRules(ctx.controllerHome, eventLimit(input)) });
       if (action === 'get_rule') {
-        const rule = readEventRule(ctx.controllerHome, eventId(input, 'rule_id'));
-        return result({ rule: rule ?? null });
+        const ruleId = typeof input.rule_id === 'string' ? input.rule_id.trim() : '';
+        if (!ruleId) throw new Error('EVENT_CAPABILITY_RULE_ID_REQUIRED');
+        return result({ rule: readEventRule(ctx.controllerHome, ruleId) ?? null });
       }
       if (action === 'list_actions')
         return result({ actions: listEventActionDefinitions(ctx.controllerHome, eventLimit(input)) });
@@ -226,18 +176,29 @@ export async function callCoreCapabilityAdapter(
       if (action === 'authoring_preflight')
         return result({ preflight: preflightEventRuleProposal(ctx.controllerHome, input.proposal) });
       if (action === 'authoring_apply') {
-        const rule = applyEventRuleProposal(ctx.controllerHome, input.proposal, {
-          canWriteRules: true,
-          // Core capability ownership alone never grants rule activation.
-          canEnableRules: false,
+        return result({
+          rule: applyEventRuleProposal(ctx.controllerHome, input.proposal, {
+            canWriteRules: true,
+            canEnableRules: false,
+            approvedSensitiveActionRefs: [],
+          }),
         });
-        return result({ rule });
       }
       if (action === 'evaluate') {
-        const envelope = validateEventEnvelopeV1(input.envelope);
+        const event = validateEventEnvelopeV1(input.event ?? input.envelope);
         return result({
-          matches: evaluatePersistedEventRules(ctx.controllerHome, envelope, { facts: eventFacts(input) }),
+          event,
+          matches: evaluatePersistedEventRules(ctx.controllerHome, event, { facts: eventFacts(input) }),
           execution: 'not_executed',
+        });
+      }
+      if (action === 'apply') {
+        return result({
+          rule: applyEventRuleProposal(ctx.controllerHome, input.proposal, {
+            canWriteRules: true,
+            canEnableRules: input.allow_enable === true,
+            approvedSensitiveActionRefs: approvedSensitiveActionRefs(input),
+          }),
         });
       }
       return result(

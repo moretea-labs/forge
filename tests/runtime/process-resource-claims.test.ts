@@ -32,6 +32,10 @@ import {
   withRepositoryMutationExclusion,
 } from '../../src/runtime/resources/leases/store';
 import { classifyRepositoryCommandRoute } from '../../src/runtime/execution/process-runtime/command-facade';
+import {
+  computePathFingerprintsSync,
+  MAX_FINGERPRINT_FILE_BYTES,
+} from '../../src/runtime/execution/thin-harness/fingerprint-worker';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { buildWorkflowWatchdogReport } from '../../src/runtime/watchdog/workflow-watchdog';
@@ -51,6 +55,22 @@ beforeEach(() => setHostBuildCpuProbeForTest(() => ({ cpus: 10, load: 2.5, memor
 afterEach(() => setHostBuildCpuProbeForTest(undefined));
 
 describe('Process Runtime fine-grained resource claims', () => {
+  test('oversized selected files return unknown fingerprint evidence instead of metadata-only hashes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-fingerprint-budget-'));
+    try {
+      writeFileSync(join(root, 'large.txt'), Buffer.alloc(MAX_FINGERPRINT_FILE_BYTES + 1, 0x61));
+      expect(() =>
+        computePathFingerprintsSync({
+          root,
+          paths: ['large.txt'],
+          statusByPath: { 'large.txt': [' M large.txt'] },
+        }),
+      ).toThrow('SNAPSHOT_BUDGET');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('heavy non-Apple work uses pressure admission while focused tests remain independent', () => {
     for (const command of [['bun', 'test'], ['bun', 'run', 'check:main'], ['cargo', 'build'], ['pytest']]) {
       expect(claimsRequireHostCapacity([], command)).toBe(true);
@@ -114,7 +134,6 @@ describe('Process Runtime fine-grained resource claims', () => {
     const held: CheckoutMutationGate[] = [];
     try {
       ensureControllerHome(home);
-      execFileSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'pipe' });
       writeFileSync(join(repoRoot, 'alpha.txt'), 'initial alpha');
       writeFileSync(join(repoRoot, 'beta.txt'), 'initial beta');
       const acquire = (owner: string, path: string) =>
@@ -131,10 +150,14 @@ describe('Process Runtime fine-grained resource claims', () => {
       expect('acquired' in a && a.acquired).toBe(true);
       if (!('acquired' in a) || !a.acquired) throw new Error('TEST_ALPHA_GATE_NOT_ACQUIRED');
       held.push(a.gate);
+      expect(a.gate.baseHead).toBeNull();
+      expect(a.gate.baseStatusHash).toBeNull();
       const b = await acquire('fast:beta', 'beta.txt');
       expect('acquired' in b && b.acquired).toBe(true);
       if (!('acquired' in b) || !b.acquired) throw new Error('TEST_BETA_GATE_NOT_ACQUIRED');
       held.push(b.gate);
+      expect(b.gate.baseHead).toBeNull();
+      expect(b.gate.baseStatusHash).toBeNull();
       writeFileSync(join(repoRoot, 'alpha.txt'), 'writer A');
       writeFileSync(join(repoRoot, 'beta.txt'), 'writer B');
       const blocked = await acquire('fast:overlap', 'alpha.txt');

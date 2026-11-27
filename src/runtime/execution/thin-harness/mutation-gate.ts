@@ -148,37 +148,13 @@ export function buildMutationClaims(checkoutId: string, options: MutationOwnersh
   return [...map.values()];
 }
 
-async function snapshotHash(
-  repoRoot: string,
-  signal?: AbortSignal,
-): Promise<{ head: string | null; statusHash: string | null }> {
-  const [headResult, statusResult] = await Promise.all([
-    runBoundedGit(repoRoot, ['rev-parse', '--verify', 'HEAD'], {
-      timeoutMs: 5_000,
-      maxOutputBytes: 4_096,
-      signal,
-    }),
-    runBoundedGit(
-      repoRoot,
-      ['status', '--porcelain=v1', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**'],
-      {
-        timeoutMs: 5_000,
-        maxOutputBytes: 128 * 1024,
-        signal,
-      },
-    ),
-  ]);
-  if (statusResult.cancelled || headResult.cancelled) {
-    throw new Error('CANCELLED: mutation snapshot aborted');
-  }
-  if (!statusResult.ok) {
-    throw new Error(`MUTATION_SNAPSHOT_FAILED: git status failed: ${statusResult.stderr || statusResult.exitCode}`);
-  }
-  const head = headResult.ok ? headResult.stdout.trim() || null : null;
-  return {
-    head,
-    statusHash: createHash('sha256').update(statusResult.stdout).digest('hex'),
-  };
+async function snapshotHead(repoRoot: string): Promise<string | null> {
+  const result = await runBoundedGit(repoRoot, ['rev-parse', '--verify', 'HEAD'], {
+    timeoutMs: 5_000,
+    maxOutputBytes: 4_096,
+  });
+  if (result.cancelled) throw new Error('CANCELLED: Git HEAD snapshot aborted');
+  return result.ok ? result.stdout.trim() || null : null;
 }
 
 function gateFromLeases(
@@ -223,8 +199,9 @@ function gateFromLeases(
 }
 
 /**
- * Acquire exclusive checkout mutation ownership via ephemeral Execution Lease(s).
- * Snapshot is taken AFTER lease acquisition under ownership.
+ * Acquire exact resource claims via ephemeral Execution Lease(s).
+ * Only Git-ref mutations capture a HEAD baseline after lease acquisition;
+ * source-only writes never hash checkout-wide status or unrelated dirty files.
  */
 export async function acquireCheckoutMutationGate(input: {
   controllerHome: string;
@@ -245,7 +222,9 @@ export async function acquireCheckoutMutationGate(input: {
   // Writer identity is attribution, not a monopoly: an edit without exact
   // claims holds only its own owner-scoped lease for fencing/renewal (#713).
   const claims = (
-    exactClaims.length > 0 ? exactClaims : [{ resourceKey: `writer:${input.checkoutId}:${ownerJobId}`, mode: 'write' as const }]
+    exactClaims.length > 0
+      ? exactClaims
+      : [{ resourceKey: `writer:${input.checkoutId}:${ownerJobId}`, mode: 'write' as const }]
   ).map((claim) => ({
     ...claim,
     repoId: input.repoId,
@@ -281,7 +260,9 @@ export async function acquireCheckoutMutationGate(input: {
 
   let snap: { head: string | null; statusHash: string | null };
   try {
-    snap = await snapshotHash(input.repoRoot);
+    snap = input.ownership?.mutatesGitRefs
+      ? { head: await snapshotHead(input.repoRoot), statusHash: null }
+      : { head: null, statusHash: null };
   } catch (error) {
     releaseExactExecutionLeases(
       input.controllerHome,

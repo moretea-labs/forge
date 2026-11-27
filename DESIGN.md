@@ -187,6 +187,23 @@ Borders, outlines, dividers and card shells are fallback structure, not the defa
 
 Hover may strengthen an affordance but must not be the only signal. Selected, active and current states must remain legible without hover, preferably through background fill plus typography/contrast. Keyboard focus rings remain mandatory and are not considered decorative chrome.
 
+### Content hierarchy before explanatory copy
+Every visible line must earn a distinct job. Prefer the information order **task → current state → available choice/action → consequence or constraint**. Do not create hierarchy by paraphrasing the same idea at multiple levels.
+
+If a page title, sheet title, section title, action label or control label already communicates the user's task clearly, do not add a subtitle or body line that merely restates it. Examples of redundant pairs include an action such as “Choose medications” followed by “Select from your medication list”, or a page such as “Prepare shopping list” followed by “Confirm your shopping list”.
+
+Supporting copy is justified only when it adds decision-relevant information that the primary label does not contain, such as:
+- the consequence of the action or where the result will appear;
+- a concrete time, quantity, scope or current state;
+- a prerequisite, exception, limitation or irreversible/destructive effect;
+- a distinction the user must understand before choosing between otherwise similar actions.
+
+Empty states follow the same rule. Do not repeat the page or sheet title, then repeat the same meaning again in an empty-state title, body and CTA. Prefer one concise state message plus the minimum necessary action. When a completion or empty-state message is already the dominant central state, do not duplicate the same sentence in the header. Live counts or status summaries may remain when they add information that changes as the state changes.
+
+Section labels are semantic, not decorative. Omit a group heading when there is only one obvious group and the heading adds no comparison, categorization or navigation value. Keep it when it distinguishes meaningful groups or materially improves scanning.
+
+During copy review, apply the deletion test: **if removing a line does not change what the user understands about the task, state, choice, consequence or constraint, remove it**. Accessibility labels and hidden assistive descriptions may remain even when equivalent visible helper copy is removed.
+
 ### Truthful state only
 Never render guessed percentage progress. States are categorical and backed by controller facts: enabled, paused, ready, attention, active, waiting, completed, unavailable.
 

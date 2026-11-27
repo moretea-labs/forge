@@ -19,18 +19,6 @@ import {
   type ExternalControllerInvocationRequest,
 } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import {
-  buildLocalConversationProviderArgs,
-  conversationPrompt,
-  cancelLocalConversation,
-  parseCodexConversationJsonl,
-  parseCodexModelCatalog,
-  readLocalConversationActivity,
-  readLocalConversationProviderStatus,
-  runCodexConversation,
-  sendLocalConversation,
-  validateLocalConversationImagePaths,
-} from '../../src/runtime/control-plane/launcher/local-conversation-controller';
-import {
   RH_PROJECT_MODEL_OPERATIONS,
   isRhProjectAcceptedOperation,
 } from '../../src/runtime/control-plane/facade/rh-project-operation-contract';
@@ -50,55 +38,12 @@ import {
 } from '../../src/runtime/control-plane/facade/types';
 
 describe('handoff and facade contracts', () => {
-  test('Codex status is an asynchronous bounded probe with conservative ready semantics', async () => {
-    const pending = readLocalConversationProviderStatus();
-    expect(pending).toBeInstanceOf(Promise);
-    const provider = await pending;
-    expect(provider.provider).toBe('codex');
-    expect(['ready', 'not_configured', 'unavailable']).toContain(provider.status);
-    if (provider.status !== 'ready') {
-      expect(provider.tools).toBe(false);
-    } else {
-      expect(provider.tools).toBe(true);
-    }
-  });
-
-  test('Codex Runtime exposes observed interim assistant messages without inventing token deltas', async () => {
-    const conversationId = 'forge-codex-preview-test';
-    const childScript = [
-      'const emit = (event) => process.stdout.write(JSON.stringify(event) + "\\n");',
-      'emit({ type: "thread.started", thread_id: "thread-preview" });',
-      'emit({ type: "turn.started" });',
-      'setTimeout(() => emit({type:"item.started", item:{type:"agent_message"}}), 20);',
-      'setTimeout(() => emit({type:"item.updated", item:{type:"agent_message",text:"Preparing response"}}), 60);',
-      'setTimeout(() => emit({type:"item.completed", item:{type:"agent_message",text:"Final answer"}}), 1100);',
-      'setTimeout(() => emit({type:"turn.completed"}), 1140);',
-    ].join('\n');
-    const completion = runCodexConversation(
-      process.execPath,
-      ['-e', childScript],
-      process.env,
-      process.cwd(),
-      9_000,
-      conversationId,
+  test('retired Codex CLI conversation backend is not exposed as a Forge capability', () => {
+    expect(listCapabilityDescriptors().some((entry) => entry.capabilityId === 'controller.local_conversation')).toBe(
+      false,
     );
-    let interim = '';
-    for (let check = 0; check < 100; check += 1) {
-      interim = readLocalConversationActivity(conversationId).responsePreview ?? '';
-      if (interim === 'Preparing response') break;
-      await Bun.sleep(25);
-    }
-    expect(interim).toBe('Preparing response');
-    const result = await completion;
-    expect(result.activity.responsePreview).toBe('Final answer');
-    expect(parseCodexConversationJsonl(result.stdout).output).toBe('Final answer');
-    expect(readLocalConversationActivity(conversationId)).toEqual({
-      conversationId,
-      status: 'idle',
-      toolActivityCount: 0,
-      events: [],
-    });
-  }, 15_000);
+    expect(getCoreCapabilityExecutionSchema('controller.local_conversation')).toBeUndefined();
+  });
 
   test('Controller MCP instructions align GitHub progress authority and prevent unbounded ChatGPT waits', () => {
     const guidance = mcpServerInstructions('controller');
@@ -313,187 +258,6 @@ describe('handoff and facade contracts', () => {
     expect(schema?.actions?.configure_initial).toMatchObject({ readOnly: false, risk: 'workspace_write' });
     expect(schema?.actions?.repair_connector).toMatchObject({ readOnly: false, risk: 'workspace_write' });
     expect(FACADE_TOOLS).toHaveLength(6);
-  });
-
-  test('exposes Work-independent local controller conversation through capability_execute without widening the facade', () => {
-    const descriptor = listCapabilityDescriptors().find(
-      (entry) => entry.capabilityId === 'controller.local_conversation',
-    );
-    expect(descriptor).toMatchObject({
-      domain: 'controller',
-      group: 'controller',
-      operationClass: 'execute',
-      risk: 'workspace_write',
-      exposedVia: 'capability_execute',
-      schemaExposure: 'stable_static',
-    });
-    const schema = getCoreCapabilityExecutionSchema('controller.local_conversation') as
-      | {
-          executeWith?: string;
-          actions?: Record<string, { readOnly?: boolean; risk?: string; argumentsSchema?: { required?: string[] } }>;
-        }
-      | undefined;
-    expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['activity', 'cancel', 'models', 'send', 'status']);
-    expect(schema?.actions?.cancel).toMatchObject({ readOnly: false, risk: 'workspace_write' });
-    expect(schema?.actions?.cancel?.argumentsSchema?.required).toEqual(['conversation_id']);
-    expect(cancelLocalConversation('unregistered-local-id')).toMatchObject({ status: 'not_active' });
-    expect(() => cancelLocalConversation('invalid id')).toThrow('LOCAL_CONVERSATION_ID_INVALID');
-    expect(schema?.actions?.status).toMatchObject({ readOnly: true, risk: 'readonly' });
-    expect(schema?.actions?.models).toMatchObject({ readOnly: true, risk: 'readonly' });
-    expect(schema?.actions?.activity).toMatchObject({ readOnly: true, risk: 'readonly' });
-    expect(schema?.actions?.activity?.argumentsSchema?.required).toEqual(['conversation_id']);
-    expect(readLocalConversationActivity('unregistered-local-id')).toEqual({
-      conversationId: 'unregistered-local-id',
-      status: 'idle',
-      toolActivityCount: 0,
-      events: [],
-    });
-    expect(schema?.actions?.send?.argumentsSchema?.required).toEqual(['conversation_id', 'prompt']);
-    const sendProperties = (schema?.actions?.send?.argumentsSchema as any)?.properties ?? {};
-    expect(sendProperties.image_paths).toMatchObject({ type: 'array', maxItems: 4 });
-    expect(FACADE_TOOLS).toHaveLength(6);
-  });
-
-  test('local controller retrieves current guidance without Work or a known source file', () => {
-    const attached = conversationPrompt('继续优化用药 UI', 'repo-medication', 'checkout-medication');
-    expect(attached).toContain('Prefer the light path');
-    expect(attached).toContain('do not mandatorily call rh_context or rh_status before every edit');
-    expect(attached).toContain('rh_context');
-    expect(attached).toContain('execute_command with Shell tools such as rg/find/sed/git');
-    expect(attached).toContain('read_repository_file');
-    expect(attached).toContain('Do not use rh_context for source search or context packing');
-    expect(attached).toContain('explicit semantic_navigation');
-    expect(attached).not.toContain('known_paths=["AGENTS.md"]');
-    expect(attached).toContain('Forge first-party Design/UI-UX guidance (v1, sha256:');
-    expect(attached).toContain('assets/knowledge-packs/v1/design-ui-ux.md');
-    expect(attached).toContain('moretea-labs/forge-design:docs/PRODUCT_DESIGN_WORKFLOW.md');
-    expect(attached).toContain('Optical centering differs from geometry');
-    expect(attached).toContain('User Job and outcome');
-    expect(attached).toContain('real rendered screen');
-    expect(attached).toContain('frozen structure');
-    expect(attached).toContain(
-      'Explicit user corrections, frozen design and released product baseline take precedence.',
-    );
-    expect(attached).toContain('Absence of actual rendered review must be reported');
-    expect(attached).toContain('selected checkout: checkout-medication');
-    expect(attached).toContain('repo_id=repo-medication');
-    expect(attached).toContain('checkout_id=checkout-medication');
-    const adapterSource = readFileSync(
-      new URL('../../adapters/mcp/runtime-gateway/core-capability-adapter.ts', import.meta.url),
-      'utf8',
-    );
-    expect(adapterSource).toContain('checkoutId: repository?.activeCheckoutId');
-    const iosUi = conversationPrompt('用 SwiftUI 修复 iPhone 详情页', 'repo-medication', 'checkout-medication');
-    expect(iosUi).toContain('Forge first-party Design/UI-UX guidance (v1');
-    expect(iosUi).toContain('Forge first-party iOS Engineering guidance (v1, sha256:');
-    expect(iosUi).toContain('Simulator build is not a physical-device build');
-    const iosBuild = conversationPrompt('修复 Xcode 签名和 XCTest', 'repo-medication', 'checkout-medication');
-    expect(iosBuild).toContain('Forge first-party iOS Engineering guidance (v1');
-    expect(iosBuild).not.toContain('Forge first-party Design/UI-UX guidance (v1');
-    const backend = conversationPrompt(
-      'repair PostgreSQL transaction consistency',
-      'repo-medication',
-      'checkout-medication',
-    );
-    expect(backend).not.toContain('Forge first-party Design/UI-UX guidance (v1');
-    expect(backend).not.toContain('Optical centering differs from geometry');
-    expect(backend).not.toContain('Forge first-party iOS Engineering guidance (v1');
-    const unbound = conversationPrompt('design visual layout', 'repo-medication');
-    expect(unbound).not.toContain('Forge first-party Design/UI-UX guidance (v1');
-    const detached = conversationPrompt('普通聊天');
-    expect(detached).not.toContain('rh_context');
-    expect(detached).toContain('No repository is attached');
-    expect(attached).not.toContain('ControllerRound');
-  });
-
-  test('local conversation requires repository and exact checkout as a pair', async () => {
-    const input = {
-      controllerHome: '/tmp/forge-local-conversation-test',
-      conversationId: 'conversation-checkout-pair',
-      prompt: 'continue',
-    };
-    await expect(sendLocalConversation({ ...input, repoId: 'repo-medication' })).rejects.toThrow(
-      'LOCAL_CONVERSATION_CHECKOUT_REQUIRED',
-    );
-    await expect(sendLocalConversation({ ...input, checkoutId: 'checkout-medication' })).rejects.toThrow(
-      'LOCAL_CONVERSATION_REPOSITORY_REQUIRED',
-    );
-  });
-
-  test('uses the Codex catalog as model authority and builds bounded per-turn overrides', () => {
-    const catalog = parseCodexModelCatalog(
-      JSON.stringify({
-        models: [
-          {
-            slug: 'hidden-model',
-            display_name: 'Hidden',
-            visibility: 'hide',
-            priority: 0,
-            default_reasoning_level: 'medium',
-            supported_reasoning_levels: [],
-          },
-          {
-            slug: 'gpt-6.1-sol',
-            display_name: 'GPT-6.1-Sol',
-            description: 'Workhorse',
-            visibility: 'list',
-            priority: 1,
-            default_reasoning_level: 'low',
-            supported_reasoning_levels: [
-              { effort: 'low', description: 'Fast' },
-              { effort: 'high', description: 'Deep' },
-            ],
-          },
-        ],
-      }),
-    );
-    expect(catalog.models.map((model) => model.slug)).toEqual(['gpt-6.1-sol']);
-    expect(catalog.models[0]?.supportedReasoningLevels.map((level) => level.effort)).toEqual(['low', 'high']);
-    expect(buildLocalConversationProviderArgs('gpt-6.1-sol', 'high', ['/tmp/a.png'])).toEqual([
-      '--skip-git-repo-check',
-      '--model',
-      'gpt-6.1-sol',
-      '-c',
-      'model_reasoning_effort="high"',
-      '--image',
-      '/tmp/a.png',
-    ]);
-    expect(() => buildLocalConversationProviderArgs('../bad', 'high')).toThrow('LOCAL_CONVERSATION_MODEL_INVALID');
-    expect(() => parseCodexModelCatalog('not-json')).toThrow('LOCAL_CONVERSATION_MODEL_CATALOG_INVALID');
-  });
-
-  test('accepts only bounded conversation-scoped staged image paths', () => {
-    const conversationId = 'test-image-' + crypto.randomUUID();
-    const root = join(tmpdir(), 'forge-local-conversation-images', conversationId);
-    mkdirSync(root, { recursive: true });
-    const image = join(root, '0.png');
-    writeFileSync(image, 'image-bytes');
-    try {
-      expect(validateLocalConversationImagePaths(conversationId, [image])).toEqual([realpathSync(image)]);
-      expect(() => validateLocalConversationImagePaths(conversationId, ['/tmp/outside.png'])).toThrow();
-      expect(() => validateLocalConversationImagePaths(conversationId, Array(5).fill(image))).toThrow(
-        'LOCAL_CONVERSATION_IMAGE_COUNT_INVALID',
-      );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test('cancel stops the exact locally owned Codex process and releases its handle', async () => {
-    const conversationId = 'test-local-stop-' + crypto.randomUUID();
-    const running = runCodexConversation(
-      process.execPath,
-      ['-e', 'setTimeout(() => {}, 10000)'],
-      process.env,
-      process.cwd(),
-      5000,
-      conversationId,
-    );
-    // The launcher registers the process synchronously before it awaits exit.
-    expect(cancelLocalConversation(conversationId)).toMatchObject({ status: 'requested' });
-    await expect(running).rejects.toThrow('LOCAL_CONVERSATION_CANCELLED_RECONCILE');
-    expect(cancelLocalConversation(conversationId)).toMatchObject({ status: 'not_active' });
   });
 
   test('does not expose retired Work validation capability', () => {
@@ -1087,34 +851,6 @@ describe('Thin Launcher external Controller invocation', () => {
     expect(resumed.args).toContain('resume');
     expect(resumed.args).toContain('01a1102c-2c50-76d3-ae32-478a4b24788b');
     expect(resumed.args).not.toContain('workspace-write');
-
-    expect(
-      parseCodexConversationJsonl(
-        [
-          JSON.stringify({ type: 'thread.started', thread_id: 'thread-tokens' }),
-          JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'answer' } }),
-          JSON.stringify({
-            type: 'turn.completed',
-            usage: { input_tokens: 300, cached_input_tokens: 90, output_tokens: 120 },
-          }),
-          JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 125, output_tokens: 25 } }),
-        ].join('\n'),
-      ),
-    ).toEqual({
-      providerSessionId: 'thread-tokens',
-      output: 'answer',
-      toolActivityCount: 0,
-      usage: { inputTokens: 425, outputTokens: 145, totalTokens: 570, reportedRounds: 2, totalRounds: 2 },
-    });
-    expect(
-      parseCodexConversationJsonl(
-        [
-          JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }),
-          JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', name: 'forge.rh_status' } }),
-          JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } }),
-        ].join('\n'),
-      ),
-    ).toEqual({ providerSessionId: 'thread-1', output: 'done', toolActivityCount: 1 });
 
     expect(() =>
       buildSuperControllerInvocation(

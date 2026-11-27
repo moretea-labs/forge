@@ -72,17 +72,6 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
       'Read the official pinned plugin catalog and install/update official plugins through the existing plugin lifecycle, trust, lock and authorization authorities.',
   },
   {
-    capabilityId: 'controller.local_conversation',
-    domain: 'controller',
-    group: 'controller',
-    operationClass: 'execute',
-    risk: 'workspace_write',
-    exposedVia: 'capability_execute',
-    schemaExposure: 'stable_static',
-    summary:
-      'Run one Work-independent local controller conversation through the existing Codex provider and current Forge Runtime MCP capabilities; conversation transport never creates semantic Work implicitly.',
-  },
-  {
     capabilityId: 'workflow.control',
     domain: 'workflow',
     group: 'workflow',
@@ -102,7 +91,7 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     exposedVia: 'capability_execute',
     schemaExposure: 'stable_static',
     summary:
-      'Inspect Event Rules and Action Registry entries, deterministically preflight/apply disabled rule drafts, and evaluate canonical Event Envelopes without dispatching actions.',
+      'Inspect Event Rules and Action Registry entries, preflight/apply disabled rule drafts, and evaluate canonical Event Envelopes; explicit enablement remains a separate approved action.',
   },
   {
     capabilityId: 'repository.context',
@@ -433,71 +422,9 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
       },
     };
   }
-  if (capabilityId === 'controller.local_conversation') {
-    return {
-      capabilityId,
-      executeWith: 'capability_execute',
-      actions: {
-        status: {
-          readOnly: true,
-          risk: 'readonly',
-          argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
-        },
-        models: {
-          readOnly: true,
-          risk: 'readonly',
-          argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
-        },
-        activity: {
-          readOnly: true,
-          risk: 'readonly',
-          argumentsSchema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['conversation_id'],
-            properties: { conversation_id: { type: 'string', minLength: 1, maxLength: 160 } },
-          },
-        },
-        cancel: {
-          readOnly: false,
-          risk: 'workspace_write',
-          argumentsSchema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['conversation_id'],
-            properties: {
-              conversation_id: { type: 'string', minLength: 1, maxLength: 160 },
-            },
-          },
-        },
-        send: {
-          readOnly: false,
-          risk: 'workspace_write',
-          argumentsSchema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['conversation_id', 'prompt'],
-            properties: {
-              conversation_id: { type: 'string', minLength: 1, maxLength: 160 },
-              provider_session_id: { type: 'string', minLength: 1, maxLength: 160 },
-              prompt: { type: 'string', minLength: 1, maxLength: 20_000 },
-              model: { type: 'string', minLength: 1, maxLength: 120 },
-              reasoning_effort: { type: 'string', minLength: 1, maxLength: 32 },
-              image_paths: {
-                type: 'array',
-                maxItems: 4,
-                items: { type: 'string', minLength: 1, maxLength: 4096 },
-              },
-              timeout_ms: { type: 'number', minimum: 5_000, maximum: 600_000 },
-            },
-          },
-        },
-      },
-    };
-  }
   if (capabilityId === 'event.automation') {
-    const id = { type: 'string', minLength: 1, maxLength: 128 };
-    const limit = { type: 'integer', minimum: 1, maximum: 256 };
+    const proposalSchema = { type: 'object', additionalProperties: true };
+    const identifier = { type: 'string', minLength: 1, maxLength: 128 };
     return {
       capabilityId,
       executeWith: 'capability_execute',
@@ -508,7 +435,7 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           argumentsSchema: {
             type: 'object',
             additionalProperties: false,
-            properties: { limit },
+            properties: { limit: { type: 'integer', minimum: 1, maximum: 256 } },
           },
         },
         get_rule: {
@@ -518,7 +445,7 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             type: 'object',
             additionalProperties: false,
             required: ['rule_id'],
-            properties: { rule_id: id },
+            properties: { rule_id: identifier },
           },
         },
         list_actions: {
@@ -527,7 +454,7 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           argumentsSchema: {
             type: 'object',
             additionalProperties: false,
-            properties: { limit },
+            properties: { limit: { type: 'integer', minimum: 1, maximum: 256 } },
           },
         },
         get_action: {
@@ -537,7 +464,7 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             type: 'object',
             additionalProperties: false,
             required: ['action_ref'],
-            properties: { action_ref: id },
+            properties: { action_ref: identifier },
           },
         },
         authoring_preflight: {
@@ -547,7 +474,39 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             type: 'object',
             additionalProperties: false,
             required: ['proposal'],
-            properties: { proposal: { type: 'object', additionalProperties: true } },
+            properties: { proposal: proposalSchema },
+          },
+        },
+        evaluate: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['event'],
+            properties: {
+              event: { type: 'object', additionalProperties: true },
+              facts: { type: 'object', additionalProperties: true },
+            },
+          },
+        },
+        apply: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['proposal'],
+            properties: {
+              proposal: proposalSchema,
+              allow_enable: { type: 'boolean' },
+              approved_sensitive_action_refs: {
+                type: 'array',
+                uniqueItems: true,
+                maxItems: 128,
+                items: identifier,
+              },
+            },
           },
         },
         authoring_apply: {
@@ -557,20 +516,7 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             type: 'object',
             additionalProperties: false,
             required: ['proposal'],
-            properties: { proposal: { type: 'object', additionalProperties: true } },
-          },
-        },
-        evaluate: {
-          readOnly: true,
-          risk: 'readonly',
-          argumentsSchema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['envelope'],
-            properties: {
-              envelope: { type: 'object', additionalProperties: true },
-              facts: { type: 'object', additionalProperties: true, maxProperties: 256 },
-            },
+            properties: { proposal: proposalSchema },
           },
         },
       },
