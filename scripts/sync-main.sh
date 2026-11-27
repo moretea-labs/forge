@@ -178,10 +178,50 @@ fi
 echo "[sync-main] GitHub required status '$status_context' confirmed for $sha"
 }
 
+run_bounded_git() {
+  local timeout_seconds="$1"
+  shift
+  # Git/libcurl has no portable hard timeout command on macOS. alarm survives
+  # exec and bounds a stalled HTTP request without depending on coreutils.
+  perl -e 'my $seconds = shift; alarm $seconds; exec @ARGV or die "exec failed: $!"' \
+    "$timeout_seconds" "$@"
+}
+
 fetch_remote_main() {
-  # An explicit source-only refspec updates FETCH_HEAD, not reliably the
-  # remote-tracking ref consumed by sync_refs. Map the remote branch directly.
-  git fetch "$REMOTE" "refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH"
+  local refspec output remote_sha tracking_sha
+  refspec="refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH"
+
+  # Bound the first attempt; a stuck fetch must not hold the sync lease for
+  # minutes. The explicit destination refspec advances the ref sync_refs reads.
+  echo "[sync-main] fetching $REMOTE/$BRANCH over HTTP/2 (20s bound)" >&2
+  if output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git 20 git \
+    -c http.version=HTTP/2 -c http.lowSpeedLimit=512 -c http.lowSpeedTime=15 \
+    fetch --no-tags "$REMOTE" "$refspec" 2>&1)"; then
+    [[ -z "$output" ]] || printf '%s\\n' "$output" >&2
+    return 0
+  fi
+
+  echo "[sync-main] HTTP/2 fetch failed or timed out; checking remote SHA before fallback" >&2
+  if remote_sha="$(GIT_TERMINAL_PROMPT=0 run_bounded_git 10 git \
+    -c http.version=HTTP/1.1 -c http.lowSpeedLimit=512 -c http.lowSpeedTime=8 \
+    ls-remote "$REMOTE" "refs/heads/$BRANCH" 2>/dev/null | awk 'NR == 1 { print $1 }')"; then
+    tracking_sha="$(git rev-parse -q --verify "refs/remotes/$REMOTE/$BRANCH" 2>/dev/null || true)"
+    if [[ -n "$remote_sha" && "$remote_sha" == "$tracking_sha" ]]; then
+      echo "[sync-main] remote already matches origin/main; no duplicate fetch needed" >&2
+      return 0
+    fi
+  fi
+
+  echo "[sync-main] retrying remote fetch once with HTTP/1.1 (20s bound)" >&2
+  if output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git 20 git \
+    -c http.version=HTTP/1.1 -c http.lowSpeedLimit=512 -c http.lowSpeedTime=15 \
+    fetch --no-tags "$REMOTE" "$refspec" 2>&1)"; then
+    [[ -z "$output" ]] || printf '%s\\n' "$output" >&2
+    echo "[sync-main] HTTP/1.1 fetch fallback succeeded" >&2
+    return 0
+  fi
+
+  fail "remote fetch failed or timed out over HTTP/2 and HTTP/1.1; no stale origin/main snapshot will be used: $output"
 }
 
 reconcile_divergence() {
