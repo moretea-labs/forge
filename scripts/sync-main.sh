@@ -178,6 +178,34 @@ fi
 echo "[sync-main] GitHub required status '$status_context' confirmed for $sha"
 }
 
+git_http_proxy() {
+  local proxy port
+  proxy="$(printenv FORGE_GIT_HTTP_PROXY || true)"
+  if [[ -z "$proxy" ]]; then proxy="$(git config --get http.proxy || true)"; fi
+  if [[ -n "$proxy" ]]; then
+    printf '%s' "$proxy"
+    return 0
+  fi
+
+  # Prefer the active local mihomo HTTP listener when Git has no proxy config.
+  # The port is overridable; no global Git configuration is mutated.
+  port="$(printenv FORGE_GIT_HTTP_PROXY_PORT || true)"
+  [[ -n "$port" ]] || port=17890
+  if command -v nc >/dev/null 2>&1 && nc -z -w 1 127.0.0.1 "$port" >/dev/null 2>&1; then
+    printf 'http://127.0.0.1:%s' "$port"
+  fi
+}
+
+run_bounded_git_http() {
+  local timeout_seconds="$1" proxy="$2"
+  shift 2
+  if [[ -n "$proxy" ]]; then
+    run_bounded_git "$timeout_seconds" git -c "http.proxy=$proxy" "$@"
+  else
+    run_bounded_git "$timeout_seconds" git "$@"
+  fi
+}
+
 run_bounded_git() {
   local timeout_seconds="$1"
   shift
@@ -188,13 +216,17 @@ run_bounded_git() {
 }
 
 fetch_remote_main() {
-  local refspec output remote_sha tracking_sha
+  local refspec output remote_sha tracking_sha proxy
   refspec="refs/heads/$BRANCH:refs/remotes/$REMOTE/$BRANCH"
+  proxy="$(git_http_proxy)"
 
-  # Bound the first attempt; a stuck fetch must not hold the sync lease for
-  # minutes. The explicit destination refspec advances the ref sync_refs reads.
+  if [[ -n "$proxy" ]]; then
+    echo "[sync-main] using configured/local HTTP proxy for Git transport" >&2
+  else
+    echo "[sync-main] no local Git HTTP proxy detected; using bounded direct transport" >&2
+  fi
   echo "[sync-main] fetching $REMOTE/$BRANCH over HTTP/2 (20s bound)" >&2
-  if output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git 20 git \
+  if output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git_http 20 "$proxy" \
     -c http.version=HTTP/2 -c http.lowSpeedLimit=512 -c http.lowSpeedTime=15 \
     fetch --no-tags "$REMOTE" "$refspec" 2>&1)"; then
     [[ -z "$output" ]] || printf '%s\\n' "$output" >&2
@@ -202,7 +234,7 @@ fetch_remote_main() {
   fi
 
   echo "[sync-main] HTTP/2 fetch failed or timed out; checking remote SHA before fallback" >&2
-  if remote_sha="$(GIT_TERMINAL_PROMPT=0 run_bounded_git 10 git \
+  if remote_sha="$(GIT_TERMINAL_PROMPT=0 run_bounded_git_http 10 "$proxy" \
     -c http.version=HTTP/1.1 -c http.lowSpeedLimit=512 -c http.lowSpeedTime=8 \
     ls-remote "$REMOTE" "refs/heads/$BRANCH" 2>/dev/null | awk 'NR == 1 { print $1 }')"; then
     tracking_sha="$(git rev-parse -q --verify "refs/remotes/$REMOTE/$BRANCH" 2>/dev/null || true)"
@@ -213,7 +245,7 @@ fetch_remote_main() {
   fi
 
   echo "[sync-main] retrying remote fetch once with HTTP/1.1 (20s bound)" >&2
-  if output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git 20 git \
+  if output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git_http 20 "$proxy" \
     -c http.version=HTTP/1.1 -c http.lowSpeedLimit=512 -c http.lowSpeedTime=15 \
     fetch --no-tags "$REMOTE" "$refspec" 2>&1)"; then
     [[ -z "$output" ]] || printf '%s\\n' "$output" >&2
@@ -368,9 +400,12 @@ if [[ "$ahead" -gt 0 ]]; then
   # Another Writer can advance main after the last HEAD check but before
   # Git resolves push refs; that successor was never included in this Gate.
   PUSH_REF="$VALIDATED_HEAD:refs/heads/$BRANCH"
-  if push_output="$(git push "$REMOTE" "$PUSH_REF" 2>&1)"; then
+  PUSH_PROXY="$(git_http_proxy)"
+  if push_output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git_http 30 "$PUSH_PROXY" \
+    -c http.version=HTTP/2 -c http.lowSpeedLimit=512 -c http.lowSpeedTime=20 \
+    push "$REMOTE" "$PUSH_REF" 2>&1)"; then
     printf '%s\n' "$push_output"
-  elif grep -Eqi 'HTTP/2 framing layer|HTTP/2 stream .*not closed cleanly|curl 92|stream error: INTERNAL_ERROR' <<<"$push_output"; then
+  elif grep -Eqi 'HTTP/2|framing|stream|curl 92|timed out|operation too slow|alarm clock|signal 14' <<<"$push_output"; then
     echo "[sync-main] HTTP/2 transport failed during push; checking remote state before one HTTP/1.1 retry" >&2
     printf '%s\n' "$push_output" >&2
     # A transport error can happen after the server accepted the ref update.
@@ -386,7 +421,9 @@ if [[ "$ahead" -gt 0 ]]; then
         fail "HTTP/2 push failed and remote advanced outside the validated candidate; refusing HTTP/1.1 retry"
       fi
       echo "[sync-main] retrying the same validated ref update once with HTTP/1.1" >&2
-      if push_output="$(git -c http.version=HTTP/1.1 push "$REMOTE" "$PUSH_REF" 2>&1)"; then
+      if push_output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git_http 30 "$PUSH_PROXY" \
+        -c http.version=HTTP/1.1 -c http.lowSpeedLimit=512 -c http.lowSpeedTime=20 \
+        push "$REMOTE" "$PUSH_REF" 2>&1)"; then
         printf '%s\n' "$push_output"
       else
         printf '%s\n' "$push_output" >&2

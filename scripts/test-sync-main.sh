@@ -119,17 +119,20 @@ fi
 if contains_arg fetch "$@" && contains_arg http.version=HTTP/1.1 "$@"; then
   printf '%s\\n' "$*" >"${FORGE_TEST_HTTP1_FETCH_MARKER:?missing HTTP/1.1 fetch marker}"
 fi
-if [[ "${1:-}" == push && "${FORGE_TEST_PUSH_RACE:-}" == 1 && ! -e "${FORGE_TEST_PUSH_RACE_MARKER:-/dev/null}" ]]; then
+if contains_arg push "$@" && [[ "${FORGE_TEST_PUSH_RACE:-}" == 1 ]] && \
+  [[ ! -e "${FORGE_TEST_PUSH_RACE_MARKER:-/dev/null}" ]]; then
   printf '%s\n' "$*" >"$FORGE_TEST_PUSH_RACE_MARKER"
   "$FORGE_TEST_REAL_GIT" -c user.name='Concurrent Writer' -c user.email=writer@example.invalid \
     commit --allow-empty -qm 'test: successor created inside git push'
 fi
-if [[ "${1:-}" == push && "${FORGE_TEST_HTTP2_PUSH_FAILURE:-}" == 1 && ! -e "${FORGE_TEST_HTTP2_PUSH_MARKER:-/dev/null}" ]]; then
+if contains_arg push "$@" && contains_arg http.version=HTTP/2 "$@" && \
+  [[ "${FORGE_TEST_HTTP2_PUSH_FAILURE:-}" == 1 ]] && \
+  [[ ! -e "${FORGE_TEST_HTTP2_PUSH_MARKER:-/dev/null}" ]]; then
   printf '%s\n' "$*" >"$FORGE_TEST_HTTP2_PUSH_MARKER"
   echo 'fatal: unable to access remote: HTTP/2 framing layer' >&2
   exit 1
 fi
-if [[ "${1:-}" == -c && "${2:-}" == http.version=HTTP/1.1 && "${3:-}" == push ]]; then
+if contains_arg push "$@" && contains_arg http.version=HTTP/1.1 "$@"; then
   printf '%s\n' "$*" >"${FORGE_TEST_HTTP1_PUSH_MARKER:?missing HTTP/1.1 marker}"
 fi
 exec "$FORGE_TEST_REAL_GIT" "$@"
@@ -243,7 +246,7 @@ cd "$WORK"
 printf 'local scratch\n' >scratch.txt
 rm -f "$TMP/http2-fetch-marker" "$TMP/http1-fetch-marker"
 # shellcheck disable=SC2016
-env PATH="$TMP/git-wrapper:$PATH" \
+env PATH="$TMP/git-wrapper:$PATH" FORGE_GIT_HTTP_PROXY=http://127.0.0.1:17890 \
   FORGE_TEST_HTTP2_FETCH_FAILURE=1 \
   FORGE_TEST_HTTP2_FETCH_MARKER="$TMP/http2-fetch-marker" \
   FORGE_TEST_HTTP1_FETCH_MARKER="$TMP/http1-fetch-marker" \
@@ -251,6 +254,8 @@ env PATH="$TMP/git-wrapper:$PATH" \
   bash scripts/sync-main.sh >/dev/null
 [[ -f "$TMP/http2-fetch-marker" ]] || fail "HTTP/2 fetch failure was not injected"
 [[ -f "$TMP/http1-fetch-marker" ]] || fail "HTTP/1.1 fetch fallback was not attempted"
+grep -Fq 'http.proxy=http://127.0.0.1:17890' "$TMP/http1-fetch-marker" ||
+  fail "Git fetch did not receive the configured HTTP proxy"
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || fail "remote-only update was not fast-forwarded"
 [[ -f scratch.txt ]] || fail "fast-forward discarded unrelated local dirt"
 
