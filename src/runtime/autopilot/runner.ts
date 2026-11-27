@@ -4,8 +4,11 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { classifyRepositoryCommand } from '../../core/repository-command/classification';
 import { readRequirement, requirementSemanticView } from '../control-plane/persistence/requirement-store';
-import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
-import { resolveRepositoryCommandProcessIdByRequestId, waitRepositoryCommandProcess } from '../execution/process-runtime/command-facade';
+import { listPlanContracts, planSemanticView } from '../control-plane/facade/plan-contract-store';
+import {
+  resolveRepositoryCommandProcessIdByRequestId,
+  waitRepositoryCommandProcess,
+} from '../execution/process-runtime/command-facade';
 import type { ProcessHandle } from '../execution/process-runtime/types';
 import { readAutopilotRun, updateAutopilotRun } from './store';
 import type { AutopilotDecision, AutopilotModelUsage, AutopilotRun } from './types';
@@ -78,7 +81,8 @@ function toolManifest(dependencies: AutopilotRunnerDependencies) {
     type: 'function',
     function: {
       name: 'forge_autopilot_decision',
-      description: 'Record the current autonomous-run decision. This never changes Requirement or Plan lifecycle state.',
+      description:
+        'Record the current autonomous-run decision. This never changes Requirement or Plan lifecycle state.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -96,7 +100,29 @@ function toolManifest(dependencies: AutopilotRunnerDependencies) {
   return tools;
 }
 
-function systemPrompt(run: AutopilotRun, requirement: ReturnType<typeof requirementSemanticView>, plans: ReturnType<typeof listPlanContracts>): string {
+export function autopilotPlanTree(requirementId: string, plans: ReturnType<typeof listPlanContracts>) {
+  const ownedPlans = plans.filter((plan) => plan.requirementId === requirementId);
+  return ownedPlans.slice(0, 32).map((plan) => {
+    const semantic = planSemanticView(plan);
+    return {
+      planId: plan.planId,
+      parentPlanId: plan.parentPlanId,
+      goal: semantic.goal,
+      items: semantic.items.slice(0, 12).map((item) => ({
+        id: item.id,
+        objective: item.objective,
+        dependencies: item.dependencies,
+      })),
+      itemsTruncated: semantic.items.length > 12,
+    };
+  });
+}
+
+function systemPrompt(
+  run: AutopilotRun,
+  requirement: ReturnType<typeof requirementSemanticView>,
+  plans: ReturnType<typeof listPlanContracts>,
+): string {
   const requirementContext = {
     requirementId: requirement.requirementId,
     revision: requirement.revision,
@@ -107,14 +133,8 @@ function systemPrompt(run: AutopilotRun, requirement: ReturnType<typeof requirem
     remainingWork: requirement.remainingWork,
     state: requirement.state,
   };
-  const ownedPlans = plans.filter((plan) => plan.requirementId === run.requirementId);
-  const tree = ownedPlans.slice(0, 32).map((plan) => ({
-    planId: plan.planId,
-    parentPlanId: plan.parentPlanId,
-    goal: plan.goal,
-    steps: plan.steps.slice(0, 12).map((step) => ({ id: step.id, objective: step.objective })),
-    stepsTruncated: plan.steps.length > 12,
-  }));
+  const tree = autopilotPlanTree(run.requirementId, plans);
+  const ownedPlanCount = plans.filter((plan) => plan.requirementId === run.requirementId).length;
   return [
     'You are Forge Autopilot, an autonomous implementation agent operating inside one explicitly authorized repository checkout.',
     'Requirement and Plan are semantic context only. Never invent or mutate their completion/progress state through repository tools.',
@@ -132,7 +152,7 @@ function systemPrompt(run: AutopilotRun, requirement: ReturnType<typeof requirem
       repository: { repoId: run.repoId, checkoutId: run.checkoutId },
       requirement: requirementContext,
       planTree: tree,
-      planTreeTruncated: ownedPlans.length > tree.length,
+      planTreeTruncated: ownedPlanCount > tree.length,
       checkpointPlanIds: run.policy.checkpointPlanIds,
       budgets: {
         maxTotalTokens: run.policy.maxTotalTokens,
@@ -165,17 +185,25 @@ function decisionFrom(args: Record<string, unknown>): AutopilotDecision {
   if (!['continue', 'pause', 'complete', 'blocked'].includes(action)) {
     throw new Error('AUTOPILOT_DECISION_ACTION_INVALID');
   }
-  const summary = String(args.summary ?? '').trim().slice(0, 2_000);
+  const summary = String(args.summary ?? '')
+    .trim()
+    .slice(0, 2_000);
   if (!summary) throw new Error('AUTOPILOT_DECISION_SUMMARY_REQUIRED');
   return {
     action: action as AutopilotDecision['action'],
     summary,
     ...(typeof args.current_plan_id === 'string' && args.current_plan_id.trim()
-      ? { currentPlanId: args.current_plan_id.trim().slice(0, 160) } : {}),
+      ? { currentPlanId: args.current_plan_id.trim().slice(0, 160) }
+      : {}),
     ...(typeof args.next_objective === 'string' && args.next_objective.trim()
-      ? { nextObjective: args.next_objective.trim().slice(0, 1_000) } : {}),
+      ? { nextObjective: args.next_objective.trim().slice(0, 1_000) }
+      : {}),
     evidenceRefs: Array.isArray(args.evidence_refs)
-      ? args.evidence_refs.map(String).map((value) => value.trim()).filter(Boolean).slice(0, 32)
+      ? args.evidence_refs
+          .map(String)
+          .map((value) => value.trim())
+          .filter(Boolean)
+          .slice(0, 32)
       : [],
   };
 }
@@ -238,11 +266,7 @@ function normalizeResponsesResponse(value: unknown): DeepSeekResponse {
         }
       }
     } else if (item.type === 'function_call') {
-      const id = typeof item.call_id === 'string'
-        ? item.call_id
-        : typeof item.id === 'string'
-          ? item.id
-          : '';
+      const id = typeof item.call_id === 'string' ? item.call_id : typeof item.id === 'string' ? item.id : '';
       const name = typeof item.name === 'string' ? item.name : '';
       const args = typeof item.arguments === 'string' ? item.arguments : '{}';
       if (id && name) {
@@ -250,17 +274,17 @@ function normalizeResponsesResponse(value: unknown): DeepSeekResponse {
       }
     }
   }
-  const usage = response.usage && typeof response.usage === 'object'
-    ? response.usage as Record<string, unknown>
-    : {};
+  const usage = response.usage && typeof response.usage === 'object' ? (response.usage as Record<string, unknown>) : {};
   return {
-    choices: [{
-      message: {
-        role: 'assistant',
-        content: text.length > 0 ? text.join('\n') : null,
-        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    choices: [
+      {
+        message: {
+          role: 'assistant',
+          content: text.length > 0 ? text.join('\n') : null,
+          ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+        },
       },
-    }],
+    ],
     usage: {
       prompt_tokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
       completion_tokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
@@ -290,20 +314,24 @@ async function requestDeepSeek(
     const response = await fetchImpl(`${endpoint}/${responses ? 'responses' : 'chat/completions'}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(responses ? {
-        model: run.policy.model,
-        ...responseInput,
-        tools: responsesToolManifest(dependencies),
-        tool_choice: 'auto',
-        max_output_tokens: Math.min(65_536, remaining),
-      } : {
-        model: run.policy.model,
-        messages,
-        tools: toolManifest(dependencies),
-        tool_choice: 'auto',
-        temperature: 0.1,
-        max_tokens: Math.min(8_192, remaining),
-      }),
+      body: JSON.stringify(
+        responses
+          ? {
+              model: run.policy.model,
+              ...responseInput,
+              tools: responsesToolManifest(dependencies),
+              tool_choice: 'auto',
+              max_output_tokens: Math.min(65_536, remaining),
+            }
+          : {
+              model: run.policy.model,
+              messages,
+              tools: toolManifest(dependencies),
+              tool_choice: 'auto',
+              temperature: 0.1,
+              max_tokens: Math.min(8_192, remaining),
+            },
+      ),
       signal: requestController.signal,
     });
     if (!response.ok) {
@@ -311,18 +339,19 @@ async function requestDeepSeek(
       throw new Error(`AUTOPILOT_MODEL_HTTP_${response.status}: ${body}`);
     }
     const payload = await response.json();
-    return responses ? normalizeResponsesResponse(payload) : payload as DeepSeekResponse;
+    return responses ? normalizeResponsesResponse(payload) : (payload as DeepSeekResponse);
   } finally {
     clearTimeout(timeout);
     signal.removeEventListener('abort', forwardAbort);
   }
 }
 
-
 function forgeDesktopHelperPath(dependencies: AutopilotRunnerDependencies): string {
-  return dependencies.helperPath?.trim()
-    || process.env.FORGE_DESKTOP_HELPER_PATH?.trim()
-    || join(homedir(), 'Applications', 'Forge.app', 'Contents', 'MacOS', 'forge-desktop');
+  return (
+    dependencies.helperPath?.trim() ||
+    process.env.FORGE_DESKTOP_HELPER_PATH?.trim() ||
+    join(homedir(), 'Applications', 'Forge.app', 'Contents', 'MacOS', 'forge-desktop')
+  );
 }
 
 async function requestJoyCode(
@@ -341,12 +370,12 @@ async function requestJoyCode(
     max_tokens: Math.min(16_384, remaining),
   };
   if (dependencies.modelRound) {
-    return await dependencies.modelRound({ provider:'joycode', body }, signal) as DeepSeekResponse;
+    return (await dependencies.modelRound({ provider: 'joycode', body }, signal)) as DeepSeekResponse;
   }
   if (signal.aborted) throw new Error('AUTOPILOT_MODEL_ABORTED');
   const helper = forgeDesktopHelperPath(dependencies);
   return await new Promise<DeepSeekResponse>((resolve, reject) => {
-    const child = spawn(helper, ['--native-model-round'], { stdio:['pipe','pipe','pipe'] });
+    const child = spawn(helper, ['--native-model-round'], { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -366,7 +395,7 @@ async function requestJoyCode(
       child.kill('SIGTERM');
       finish(new Error('AUTOPILOT_JOYCODE_MODEL_TIMEOUT'));
     }, 180_000);
-    signal.addEventListener('abort', abort, { once:true });
+    signal.addEventListener('abort', abort, { once: true });
     child.on('error', (error) => finish(new Error('AUTOPILOT_JOYCODE_HELPER_FAILED: ' + error.message)));
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -398,7 +427,7 @@ async function requestJoyCode(
       }
     });
     child.stdin.on('error', (error) => finish(new Error('AUTOPILOT_JOYCODE_HELPER_FAILED: ' + error.message)));
-    child.stdin.end(JSON.stringify({ provider:'joycode', body }));
+    child.stdin.end(JSON.stringify({ provider: 'joycode', body }));
   });
 }
 
@@ -440,36 +469,48 @@ function appendRecentToolName(current: string[] | undefined, name: string): stri
 // A Process acceptance receipt is not evidence that a command has finished.
 // Reuse the canonical Process owner; never reissue the accepted command.
 export function autopilotPendingProcess(value: unknown): { pending: boolean; processId?: string; timeoutMs?: number } {
-  const envelope = value && typeof value === 'object' ? value as Record<string, unknown> : {};
-  const receipt = envelope.structuredContent && typeof envelope.structuredContent === 'object'
-    ? envelope.structuredContent as Record<string, unknown> : envelope;
-  const pending = receipt.accepted === true && ['starting','running','running_recovered'].includes(String(receipt.status ?? ''));
-  if (!pending) return { pending:false };
+  const envelope = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const receipt =
+    envelope.structuredContent && typeof envelope.structuredContent === 'object'
+      ? (envelope.structuredContent as Record<string, unknown>)
+      : envelope;
+  const pending =
+    receipt.accepted === true && ['starting', 'running', 'running_recovered'].includes(String(receipt.status ?? ''));
+  if (!pending) return { pending: false };
   const id = receipt.processId;
-  const validId = typeof id === 'string' && (/^proc_[A-Za-z0-9_]{1,123}$/.test(id)
-    || /^lightweight:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id));
+  const validId =
+    typeof id === 'string' &&
+    (/^proc_[A-Za-z0-9_]{1,123}$/.test(id) ||
+      /^lightweight:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id));
   const timeout = receipt.timeoutMs;
   return {
-    pending:true,
-    ...(validId ? {processId:id as string} : {}),
-    ...(typeof timeout === 'number' && Number.isSafeInteger(timeout) && timeout > 0 ? {timeoutMs:timeout} : {}),
+    pending: true,
+    ...(validId ? { processId: id as string } : {}),
+    ...(typeof timeout === 'number' && Number.isSafeInteger(timeout) && timeout > 0 ? { timeoutMs: timeout } : {}),
   };
 }
 
 export function autopilotTerminalProcessEvidence(handle: ProcessHandle): Record<string, unknown> | undefined {
-  if (!handle.completed || !['succeeded','failed','timed_out','cancelled','orphaned'].includes(handle.status)) return undefined;
+  if (!handle.completed || !['succeeded', 'failed', 'timed_out', 'cancelled', 'orphaned'].includes(handle.status))
+    return undefined;
   return {
-    processId: handle.processId, completed:true, status:handle.status,
-    ok:handle.ok === true && handle.status === 'succeeded' && handle.exitCode === 0 && !handle.timedOut,
-    exitCode:handle.exitCode ?? null, timedOut:handle.timedOut ?? false,
-    stdoutTail:handle.stdoutTail ?? handle.stdout ?? '',
-    stderrTail:handle.stderrTail ?? handle.stderr ?? '',
+    processId: handle.processId,
+    completed: true,
+    status: handle.status,
+    ok: handle.ok === true && handle.status === 'succeeded' && handle.exitCode === 0 && !handle.timedOut,
+    exitCode: handle.exitCode ?? null,
+    timedOut: handle.timedOut ?? false,
+    stdoutTail: handle.stdoutTail ?? handle.stdout ?? '',
+    stderrTail: handle.stderrTail ?? handle.stderr ?? '',
   };
 }
 
 async function joinAutopilotProcess(
-  controllerHome: string, repoId: string, processId: string,
-  timeoutMs: number | undefined, signal: AbortSignal,
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+  timeoutMs: number | undefined,
+  signal: AbortSignal,
 ): Promise<Record<string, unknown> | undefined> {
   const deadline = Date.now() + Math.min(600_000, timeoutMs ?? 60_000) + 15_000;
   // Read only the authoritative Process; do not pass cancellation to it,
@@ -491,15 +532,13 @@ async function joinAutopilotProcess(
 
 function boundedToolResult(value: unknown): string {
   const text = JSON.stringify(value);
-  return text.length <= TOOL_RESULT_MAX_CHARS
-    ? text
-    : text.slice(0, TOOL_RESULT_MAX_CHARS - 100) + '...<truncated>';
+  return text.length <= TOOL_RESULT_MAX_CHARS ? text : text.slice(0, TOOL_RESULT_MAX_CHARS - 100) + '...<truncated>';
 }
 
 function recentModelMessages(messages: DeepSeekMessage[]): DeepSeekMessage[] {
   if (messages.length <= 2) return messages;
   const assistantIndexes = messages
-    .map((message, index) => message.role === 'assistant' ? index : -1)
+    .map((message, index) => (message.role === 'assistant' ? index : -1))
     .filter((index) => index >= 2);
   if (assistantIndexes.length <= RECENT_ASSISTANT_ROUNDS) return messages;
   const start = assistantIndexes[assistantIndexes.length - RECENT_ASSISTANT_ROUNDS];
@@ -508,7 +547,8 @@ function recentModelMessages(messages: DeepSeekMessage[]): DeepSeekMessage[] {
     messages[1],
     {
       role: 'user',
-      content: 'Earlier repository exploration was compacted to control context growth. Re-read any repository fact you still need; do not assume omitted tool output remains current.',
+      content:
+        'Earlier repository exploration was compacted to control context growth. Re-read any repository fact you still need; do not assume omitted tool output remains current.',
     },
     ...messages.slice(start),
   ];
@@ -528,12 +568,18 @@ export async function runAutopilotLoop(
   if (!initialRecord) throw new Error(`AUTOPILOT_RUN_NOT_FOUND: ${requirementId}`);
   if (signal.aborted || initialRecord.value.status !== 'running') return;
   if (requirement.revision !== initialRecord.value.requirementRevision) {
-    throw new Error(`AUTOPILOT_REQUIREMENT_REVISION_CHANGED: approved=${initialRecord.value.requirementRevision},current=${requirement.revision}`);
+    throw new Error(
+      `AUTOPILOT_REQUIREMENT_REVISION_CHANGED: approved=${initialRecord.value.requirementRevision},current=${requirement.revision}`,
+    );
   }
   const plans = listPlanContracts({ controllerHome, repoId, status: 'active', limit: 100 });
   const messages: DeepSeekMessage[] = [
     { role: 'system', content: systemPrompt(initialRecord.value, requirement, plans) },
-    { role: 'user', content: 'Continue the approved Requirement autonomously. Choose one concrete highest-value remaining-work slice. Use no more than six consecutive read-only inspections, then implement or validate that slice and record a structured decision. Do not spend the run rediscovering the whole repository.' },
+    {
+      role: 'user',
+      content:
+        'Continue the approved Requirement autonomously. Choose one concrete highest-value remaining-work slice. Use no more than six consecutive read-only inspections, then implement or validate that slice and record a structured decision. Do not spend the run rediscovering the whole repository.',
+    },
   ];
 
   // Run persistence stores only the correlation ID, not Process truth.
@@ -544,36 +590,63 @@ export async function runAutopilotLoop(
     let resolvedProcessId: string | undefined;
     try {
       resolvedProcessId = resolveRepositoryCommandProcessIdByRequestId(
-        controllerHome, repoId, initialRecord.value.checkoutId, requestId,
+        controllerHome,
+        repoId,
+        initialRecord.value.checkoutId,
+        requestId,
       );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-        ...run, status:'paused',
-        stopReason:'process_admission_unconfirmed:' + requestId,
-        lastSummary:'The original Process request identity could not be safely read. Its outcome remains unknown; do not replay it. ' + detail.slice(0, 500),
-      }), 'autopilot_process_admission_unconfirmed');
+      updateAutopilotRun(
+        controllerHome,
+        repoId,
+        requirementId,
+        (run) => ({
+          ...run,
+          status: 'paused',
+          stopReason: 'process_admission_unconfirmed:' + requestId,
+          lastSummary:
+            'The original Process request identity could not be safely read. Its outcome remains unknown; do not replay it. ' +
+            detail.slice(0, 500),
+        }),
+        'autopilot_process_admission_unconfirmed',
+      );
       return;
     }
     if (!resolvedProcessId) {
-      updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-        ...run, status:'paused',
-        stopReason:'process_admission_unconfirmed:' + requestId,
-        lastSummary:'No canonical Process request binding or lightweight handle is visible for this request ID. Its outcome remains unknown; do not replay it.',
-      }), 'autopilot_process_admission_unconfirmed');
+      updateAutopilotRun(
+        controllerHome,
+        repoId,
+        requirementId,
+        (run) => ({
+          ...run,
+          status: 'paused',
+          stopReason: 'process_admission_unconfirmed:' + requestId,
+          lastSummary:
+            'No canonical Process request binding or lightweight handle is visible for this request ID. Its outcome remains unknown; do not replay it.',
+        }),
+        'autopilot_process_admission_unconfirmed',
+      );
       return;
     }
     pendingProcessId = resolvedProcessId;
-    updateAutopilotRun(controllerHome, repoId, requirementId, (run) => {
-      const next = { ...run, pendingProcessId:resolvedProcessId };
-      delete next.pendingCommandRequestId;
-      next.lastSummary = 'Recovered the original Process ID from its canonical request binding; joining the existing command without replay.';
-      return next;
-    }, 'autopilot_process_request_reconciled');
+    updateAutopilotRun(
+      controllerHome,
+      repoId,
+      requirementId,
+      (run) => {
+        const next = { ...run, pendingProcessId: resolvedProcessId };
+        delete next.pendingCommandRequestId;
+        next.lastSummary =
+          'Recovered the original Process ID from its canonical request binding; joining the existing command without replay.';
+        return next;
+      },
+      'autopilot_process_request_reconciled',
+    );
   }
   if (pendingProcessId) {
     const processId = pendingProcessId;
-    const valid = autopilotPendingProcess({accepted:true,status:'running',processId}).processId === processId;
+    const valid = autopilotPendingProcess({ accepted: true, status: 'running', processId }).processId === processId;
     const terminal = valid
       ? await joinAutopilotProcess(controllerHome, repoId, processId, undefined, signal)
       : undefined;
@@ -581,17 +654,28 @@ export async function runAutopilotLoop(
     if (!terminal) {
       const current = readAutopilotRun(controllerHome, repoId, requirementId)?.value;
       if (current?.status === 'running') {
-        updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-          ...run, status:'paused', stopReason:'process_terminal_unconfirmed:' + processId,
-          lastSummary:'Reconcile the persisted Process ID with Forge Process Runtime before resuming. Never replay the command.',
-        }), 'autopilot_process_reconciliation_required');
+        updateAutopilotRun(
+          controllerHome,
+          repoId,
+          requirementId,
+          (run) => ({
+            ...run,
+            status: 'paused',
+            stopReason: 'process_terminal_unconfirmed:' + processId,
+            lastSummary:
+              'Reconcile the persisted Process ID with Forge Process Runtime before resuming. Never replay the command.',
+          }),
+          'autopilot_process_reconciliation_required',
+        );
       }
       return;
     }
     messages.push({
-      role:'user',
-      content:'Recovered terminal receipt for the previously accepted execute_command from Forge Process Runtime (not a new command): '
-        + boundedToolResult(terminal) + '. Use this evidence; do not reissue that command.',
+      role: 'user',
+      content:
+        'Recovered terminal receipt for the previously accepted execute_command from Forge Process Runtime (not a new command): ' +
+        boundedToolResult(terminal) +
+        '. Use this evidence; do not reissue that command.',
     });
   }
 
@@ -601,36 +685,74 @@ export async function runAutopilotLoop(
     const current = currentRecord.value;
     const latestRequirementRecord = readRequirement({ controllerHome }, requirementId);
     if (!latestRequirementRecord) {
-      updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({ ...run, status:'blocked', stopReason:'requirement_missing' }), 'autopilot_requirement_blocked');
+      updateAutopilotRun(
+        controllerHome,
+        repoId,
+        requirementId,
+        (run) => ({ ...run, status: 'blocked', stopReason: 'requirement_missing' }),
+        'autopilot_requirement_blocked',
+      );
       return;
     }
     const latestRequirement = requirementSemanticView(latestRequirementRecord.value);
     if (latestRequirement.revision !== current.requirementRevision) {
-      updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-        ...run,
-        status:'paused',
-        stopReason:`requirement_revision_changed:approved=${run.requirementRevision},current=${latestRequirement.revision}`,
-      }), 'autopilot_reapproval_required');
+      updateAutopilotRun(
+        controllerHome,
+        repoId,
+        requirementId,
+        (run) => ({
+          ...run,
+          status: 'paused',
+          stopReason: `requirement_revision_changed:approved=${run.requirementRevision},current=${latestRequirement.revision}`,
+        }),
+        'autopilot_reapproval_required',
+      );
       return;
     }
-    const authorization = dependencies.validateAuthorization?.() ?? { ok:true };
+    const authorization = dependencies.validateAuthorization?.() ?? { ok: true };
     if (!authorization.ok) {
-      updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-        ...run,status:'paused',stopReason:authorization.reason?.slice(0,1000) || 'authorization_invalid',
-      }), 'autopilot_authorization_paused');
+      updateAutopilotRun(
+        controllerHome,
+        repoId,
+        requirementId,
+        (run) => ({
+          ...run,
+          status: 'paused',
+          stopReason: authorization.reason?.slice(0, 1000) || 'authorization_invalid',
+        }),
+        'autopilot_authorization_paused',
+      );
       return;
     }
     const windowUsage = budgetUsage(current);
     if (windowUsage.turns >= current.policy.maxTurns) {
-      updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({ ...run, status: 'paused', stopReason: 'max_turns_reached' }), 'autopilot_budget_paused');
+      updateAutopilotRun(
+        controllerHome,
+        repoId,
+        requirementId,
+        (run) => ({ ...run, status: 'paused', stopReason: 'max_turns_reached' }),
+        'autopilot_budget_paused',
+      );
       return;
     }
     if (windowUsage.toolCalls >= current.policy.maxToolCalls) {
-      updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({ ...run, status: 'paused', stopReason: 'max_tool_calls_reached' }), 'autopilot_budget_paused');
+      updateAutopilotRun(
+        controllerHome,
+        repoId,
+        requirementId,
+        (run) => ({ ...run, status: 'paused', stopReason: 'max_tool_calls_reached' }),
+        'autopilot_budget_paused',
+      );
       return;
     }
     if (windowUsage.totalTokens >= current.policy.maxTotalTokens) {
-      updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({ ...run, status: 'paused', stopReason: 'max_total_tokens_reached' }), 'autopilot_budget_paused');
+      updateAutopilotRun(
+        controllerHome,
+        repoId,
+        requirementId,
+        (run) => ({ ...run, status: 'paused', stopReason: 'max_total_tokens_reached' }),
+        'autopilot_budget_paused',
+      );
       return;
     }
 
@@ -638,24 +760,33 @@ export async function runAutopilotLoop(
     const assistant = response.choices?.[0]?.message;
     if (!assistant) throw new Error('AUTOPILOT_MODEL_RESPONSE_INVALID');
     const usage = usageOf(response);
-    updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-      ...run,
-      // The next model response has now consumed the prior Process receipt.
-      pendingProcessId: undefined,
-      pendingCommandRequestId: undefined,
-      usage: {
-        promptTokens: run.usage.promptTokens + usage.promptTokens,
-        completionTokens: run.usage.completionTokens + usage.completionTokens,
-        totalTokens: run.usage.totalTokens + usage.totalTokens,
-        turns: run.usage.turns + 1,
-        toolCalls: run.usage.toolCalls,
-      },
-    }), 'autopilot_model_turn_recorded');
+    updateAutopilotRun(
+      controllerHome,
+      repoId,
+      requirementId,
+      (run) => ({
+        ...run,
+        // The next model response has now consumed the prior Process receipt.
+        pendingProcessId: undefined,
+        pendingCommandRequestId: undefined,
+        usage: {
+          promptTokens: run.usage.promptTokens + usage.promptTokens,
+          completionTokens: run.usage.completionTokens + usage.completionTokens,
+          totalTokens: run.usage.totalTokens + usage.totalTokens,
+          turns: run.usage.turns + 1,
+          toolCalls: run.usage.toolCalls,
+        },
+      }),
+      'autopilot_model_turn_recorded',
+    );
     messages.push({ role: 'assistant', content: assistant.content ?? null, tool_calls: assistant.tool_calls });
 
     const toolCalls = assistant.tool_calls ?? [];
     if (toolCalls.length === 0) {
-      messages.push({ role: 'user', content: 'Use repository tools or call forge_autopilot_decision. Do not end with unstructured prose.' });
+      messages.push({
+        role: 'user',
+        content: 'Use repository tools or call forge_autopilot_decision. Do not end with unstructured prose.',
+      });
       continue;
     }
 
@@ -667,14 +798,24 @@ export async function runAutopilotLoop(
       // A long command's terminal result must be consumed by the model before
       // another tool from the same response can perform a second effect.
       if (needsNextModelRound) {
-        messages.push({ role:'tool', tool_call_id:toolCall.id, content:JSON.stringify({
-          error:'AUTOPILOT_PROCESS_RESULT_REQUIRES_NEXT_MODEL_ROUND',
-          message:'This tool was not executed. Inspect the preceding Process terminal receipt, then decide again.',
-        }) });
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: JSON.stringify({
+            error: 'AUTOPILOT_PROCESS_RESULT_REQUIRES_NEXT_MODEL_ROUND',
+            message: 'This tool was not executed. Inspect the preceding Process terminal receipt, then decide again.',
+          }),
+        });
         continue;
       }
       if (budgetUsage(latest).toolCalls >= latest.policy.maxToolCalls) {
-        updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({ ...run, status: 'paused', stopReason: 'max_tool_calls_reached' }), 'autopilot_budget_paused');
+        updateAutopilotRun(
+          controllerHome,
+          repoId,
+          requirementId,
+          (run) => ({ ...run, status: 'paused', stopReason: 'max_tool_calls_reached' }),
+          'autopilot_budget_paused',
+        );
         return;
       }
 
@@ -688,77 +829,124 @@ export async function runAutopilotLoop(
       if (toolCall.function.name === 'forge_autopilot_decision') {
         const decision = decisionFrom(args);
         const checkpoint = decision.currentPlanId && latest.policy.checkpointPlanIds.includes(decision.currentPlanId);
-        const status = checkpoint || decision.action === 'pause'
-          ? 'paused'
-          : decision.action === 'complete'
-            ? 'completed'
-            : decision.action === 'blocked'
-              ? 'blocked'
-              : 'running';
-        updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-          ...run,
-          status,
-          currentPlanId: decision.currentPlanId,
-          lastSummary: decision.summary,
-          stopReason: checkpoint ? `human_checkpoint:${decision.currentPlanId}` : status === 'running' ? undefined : decision.action,
-          evidenceRefs: [...new Set([...run.evidenceRefs, ...(decision.evidenceRefs ?? [])])].slice(-100),
-          inspectionStreak: 0,
-          recentToolNames: appendRecentToolName(run.recentToolNames, 'forge_autopilot_decision'),
-          usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
-        }), 'autopilot_decision_recorded');
-        messages.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ accepted: true, status, checkpoint: Boolean(checkpoint) }) });
+        const status =
+          checkpoint || decision.action === 'pause'
+            ? 'paused'
+            : decision.action === 'complete'
+              ? 'completed'
+              : decision.action === 'blocked'
+                ? 'blocked'
+                : 'running';
+        updateAutopilotRun(
+          controllerHome,
+          repoId,
+          requirementId,
+          (run) => ({
+            ...run,
+            status,
+            currentPlanId: decision.currentPlanId,
+            lastSummary: decision.summary,
+            stopReason: checkpoint
+              ? `human_checkpoint:${decision.currentPlanId}`
+              : status === 'running'
+                ? undefined
+                : decision.action,
+            evidenceRefs: [...new Set([...run.evidenceRefs, ...(decision.evidenceRefs ?? [])])].slice(-100),
+            inspectionStreak: 0,
+            recentToolNames: appendRecentToolName(run.recentToolNames, 'forge_autopilot_decision'),
+            usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
+          }),
+          'autopilot_decision_recorded',
+        );
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: JSON.stringify({ accepted: true, status, checkpoint: Boolean(checkpoint) }),
+        });
         if (status !== 'running') return;
         continue;
       }
 
       if (!ALLOWED_REPOSITORY_TOOLS.has(toolCall.function.name)) {
-        messages.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ error: 'AUTOPILOT_TOOL_NOT_ALLOWED' }) });
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: JSON.stringify({ error: 'AUTOPILOT_TOOL_NOT_ALLOWED' }),
+        });
         continue;
       }
       args.repo_id = repoId;
       args.checkout_id = latest.checkoutId;
-      let inspection = toolCall.function.name === 'read_repository_file'
-        || toolCall.function.name === 'repository_git_status'
-        || toolCall.function.name === 'repository_git_diff';
+      let inspection =
+        toolCall.function.name === 'read_repository_file' ||
+        toolCall.function.name === 'repository_git_status' ||
+        toolCall.function.name === 'repository_git_diff';
       if (toolCall.function.name === 'execute_command') {
         args.scope = 'repository';
         const normalizedCommand = normalizeAutopilotCommand(args.command);
         if (!normalizedCommand) {
-          updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-            ...run,
-            recentToolNames: appendRecentToolName(run.recentToolNames, 'execute_command:invalid'),
-            usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
-          }), 'autopilot_tool_call_rejected');
-          messages.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ error: 'AUTOPILOT_COMMAND_INVALID' }) });
+          updateAutopilotRun(
+            controllerHome,
+            repoId,
+            requirementId,
+            (run) => ({
+              ...run,
+              recentToolNames: appendRecentToolName(run.recentToolNames, 'execute_command:invalid'),
+              usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
+            }),
+            'autopilot_tool_call_rejected',
+          );
+          messages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: JSON.stringify({ error: 'AUTOPILOT_COMMAND_INVALID' }),
+          });
           continue;
         }
         args.command = normalizedCommand;
         const classification = classifyRepositoryCommand(normalizedCommand);
         if ((RISK_RANK[classification.risk] ?? 99) > RISK_RANK.workspace_write) {
-          updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-            ...run,
-            recentToolNames: appendRecentToolName(run.recentToolNames, 'execute_command:risk_denied'),
-            usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
-          }), 'autopilot_tool_call_rejected');
-          messages.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ error: 'AUTOPILOT_COMMAND_RISK_DENIED', classification }) });
+          updateAutopilotRun(
+            controllerHome,
+            repoId,
+            requirementId,
+            (run) => ({
+              ...run,
+              recentToolNames: appendRecentToolName(run.recentToolNames, 'execute_command:risk_denied'),
+              usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
+            }),
+            'autopilot_tool_call_rejected',
+          );
+          messages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: JSON.stringify({ error: 'AUTOPILOT_COMMAND_RISK_DENIED', classification }),
+          });
           continue;
         }
         inspection = classification.risk === 'readonly';
       }
 
       if (inspection && (latest.inspectionStreak ?? 0) >= MAX_INSPECTION_STREAK) {
-        updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-          ...run,
-          inspectionStreak: MAX_INSPECTION_STREAK,
-          recentToolNames: appendRecentToolName(run.recentToolNames, toolCall.function.name + ':inspection_blocked'),
-          usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
-        }), 'autopilot_inspection_guard_rejected');
+        updateAutopilotRun(
+          controllerHome,
+          repoId,
+          requirementId,
+          (run) => ({
+            ...run,
+            inspectionStreak: MAX_INSPECTION_STREAK,
+            recentToolNames: appendRecentToolName(run.recentToolNames, toolCall.function.name + ':inspection_blocked'),
+            usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
+          }),
+          'autopilot_inspection_guard_rejected',
+        );
         messages.push({
           role: 'tool',
           tool_call_id: toolCall.id,
           content: JSON.stringify({
             error: 'AUTOPILOT_INSPECTION_BUDGET_EXHAUSTED',
-            message: 'Six consecutive read-only inspections are enough. Make a workspace change, run a targeted workspace-write validation, or record a structured blocked/complete/pause decision.',
+            message:
+              'Six consecutive read-only inspections are enough. Make a workspace change, run a targeted workspace-write validation, or record a structured blocked/complete/pause decision.',
           }),
         });
         continue;
@@ -770,30 +958,58 @@ export async function runAutopilotLoop(
         // Process Runtime owns dedupe and command effects; the Run owns only a
         // recovery pointer if an accepted handle never reaches this caller.
         const requestId = 'autopilot_' + randomUUID().replaceAll('-', '');
-        updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-          ...run, pendingCommandRequestId:requestId,
-        }), 'autopilot_command_request_recorded');
+        updateAutopilotRun(
+          controllerHome,
+          repoId,
+          requirementId,
+          (run) => ({
+            ...run,
+            pendingCommandRequestId: requestId,
+          }),
+          'autopilot_command_request_recorded',
+        );
         args.request_id = requestId;
       }
       let toolResult = await dependencies.executeTool(toolCall.function.name, args);
-      const commandReceipt = (toolResult && typeof toolResult === 'object'
-        ? (toolResult as Record<string, unknown>).structuredContent ?? toolResult : {}) as Record<string, unknown>;
+      const commandReceipt = (
+        toolResult && typeof toolResult === 'object'
+          ? ((toolResult as Record<string, unknown>).structuredContent ?? toolResult)
+          : {}
+      ) as Record<string, unknown>;
       const receiptProcessId = typeof commandReceipt.processId === 'string' ? commandReceipt.processId : undefined;
-      if (toolCall.function.name === 'execute_command' && commandReceipt.accepted === true && receiptProcessId
-        && autopilotPendingProcess({accepted:true,status:'running',processId:receiptProcessId}).processId) {
-        updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-          ...run, pendingProcessId:receiptProcessId,
-        }), 'autopilot_process_handle_recorded');
+      if (
+        toolCall.function.name === 'execute_command' &&
+        commandReceipt.accepted === true &&
+        receiptProcessId &&
+        autopilotPendingProcess({ accepted: true, status: 'running', processId: receiptProcessId }).processId
+      ) {
+        updateAutopilotRun(
+          controllerHome,
+          repoId,
+          requirementId,
+          (run) => ({
+            ...run,
+            pendingProcessId: receiptProcessId,
+          }),
+          'autopilot_process_handle_recorded',
+        );
       }
-      const pending = toolCall.function.name === 'execute_command'
-        ? autopilotPendingProcess(toolResult) : { pending:false };
+      const pending =
+        toolCall.function.name === 'execute_command' ? autopilotPendingProcess(toolResult) : { pending: false };
       if (pending.pending) {
         // Persist the correlation before joining. The same Run can reconcile
         // this Process after the Runtime or model transport is restarted.
         if (pending.processId) {
-          updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-            ...run, pendingProcessId:pending.processId,
-          }), 'autopilot_process_accepted');
+          updateAutopilotRun(
+            controllerHome,
+            repoId,
+            requirementId,
+            (run) => ({
+              ...run,
+              pendingProcessId: pending.processId,
+            }),
+            'autopilot_process_accepted',
+          );
         }
         const terminal = pending.processId
           ? await joinAutopilotProcess(controllerHome, repoId, pending.processId, pending.timeoutMs, signal)
@@ -802,11 +1018,21 @@ export async function runAutopilotLoop(
         if (!terminal) {
           const current = readAutopilotRun(controllerHome, repoId, requirementId)?.value;
           if (current?.status === 'running') {
-            updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-              ...run, status:'paused',
-              stopReason:pending.processId ? 'process_terminal_unconfirmed:' + pending.processId : 'process_identity_missing',
-              lastSummary:'Accepted command has no confirmed terminal Process receipt. Inspect the canonical Process ID before resuming; never replay this command.',
-            }), 'autopilot_process_reconciliation_required');
+            updateAutopilotRun(
+              controllerHome,
+              repoId,
+              requirementId,
+              (run) => ({
+                ...run,
+                status: 'paused',
+                stopReason: pending.processId
+                  ? 'process_terminal_unconfirmed:' + pending.processId
+                  : 'process_identity_missing',
+                lastSummary:
+                  'Accepted command has no confirmed terminal Process receipt. Inspect the canonical Process ID before resuming; never replay this command.',
+              }),
+              'autopilot_process_reconciliation_required',
+            );
           }
           return;
         }
@@ -817,12 +1043,18 @@ export async function runAutopilotLoop(
       if (toolCall.function.name === 'execute_command' && !inspection) {
         needsNextModelRound = true;
       }
-      updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-        ...run,
-        inspectionStreak: inspection ? Math.min(MAX_INSPECTION_STREAK, (run.inspectionStreak ?? 0) + 1) : 0,
-        recentToolNames: appendRecentToolName(run.recentToolNames, toolCall.function.name),
-        usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
-      }), 'autopilot_tool_call_recorded');
+      updateAutopilotRun(
+        controllerHome,
+        repoId,
+        requirementId,
+        (run) => ({
+          ...run,
+          inspectionStreak: inspection ? Math.min(MAX_INSPECTION_STREAK, (run.inspectionStreak ?? 0) + 1) : 0,
+          recentToolNames: appendRecentToolName(run.recentToolNames, toolCall.function.name),
+          usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
+        }),
+        'autopilot_tool_call_recorded',
+      );
       messages.push({ role: 'tool', tool_call_id: toolCall.id, content: boundedToolResult(toolResult) });
     }
   }

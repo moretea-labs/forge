@@ -371,6 +371,10 @@
       "module": "controller",
       "resource": "temp-isolated"
     },
+    "tests/runtime/autopilot-plan-context.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
     "tests/runtime/autopilot-runtime.test.ts": {
       "module": "controller",
       "resource": "process-tree"
