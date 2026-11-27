@@ -148,14 +148,6 @@ async fn read_mcp_payload(response: reqwest::Response, error_prefix: &str) -> Re
     parse_mcp_payload(body, &content_type, error_prefix)
 }
 
-fn mcp_tool_timeout(name: &str, arguments: &Value) -> std::time::Duration {
-    let seconds = if name == "capability_execute"
-        && arguments.get("capability_id").and_then(Value::as_str) == Some("controller.local_conversation")
-        && arguments.get("action").and_then(Value::as_str) == Some("send")
-    { 600 } else { 90 };
-    std::time::Duration::from_secs(seconds)
-}
-
 async fn call_mcp_tool(
     endpoint: &str,
     token: &str,
@@ -163,7 +155,6 @@ async fn call_mcp_tool(
     arguments: Value,
     error_prefix: &str,
 ) -> Result<Value, String> {
-    let tool_timeout = mcp_tool_timeout(name, &arguments);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(90))
         .redirect(reqwest::redirect::Policy::none())
@@ -222,7 +213,7 @@ async fn call_mcp_tool(
             "id": request_id("mcp-tool"),
             "method": "tools/call",
             "params": { "name": name, "arguments": arguments }
-        }), negotiated_version, session_id.as_deref()).timeout(tool_timeout).send().await
+        }), negotiated_version, session_id.as_deref()).timeout(std::time::Duration::from_secs(90)).send().await
             .map_err(|_| format!("{error_prefix}_UNREACHABLE"))?;
         if !response.status().is_success() {
             return Err(format!("{error_prefix}_HTTP_{}", response.status().as_u16()));
@@ -1433,27 +1424,6 @@ async fn autopilot_control(
     Ok(semantic_facade_data(result))
 }
 
-#[tauri::command]
-async fn read_local_provider_status() -> Result<Value, String> {
-    call_runtime_tool("capability_execute", json!({
-        "capability_id": "controller.local_conversation",
-        "action": "status",
-        "arguments": {},
-        "request_id": request_id("local-conversation-status")
-    })).await
-}
-
-#[tauri::command]
-async fn read_local_provider_models() -> Result<Value, String> {
-    call_runtime_tool("capability_execute", json!({
-        "capability_id": "controller.local_conversation",
-        "action": "models",
-        "arguments": {},
-        "request_id": request_id("local-conversation-models")
-    })).await
-}
-
-
 fn project_knowledge_runtime_arguments(
     repo_id: &str,
     query: &str,
@@ -1520,166 +1490,6 @@ async fn read_project_knowledge(
         .filter(|value| value.get("readonly").and_then(Value::as_bool) == Some(true))
         .cloned()
         .ok_or_else(|| "FORGE_DESKTOP_KNOWLEDGE_UNAVAILABLE".to_string())
-}
-
-const LOCAL_CONVERSATION_MAX_IMAGES: usize = 4;
-const LOCAL_CONVERSATION_MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
-const LOCAL_CONVERSATION_IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
-
-fn valid_local_conversation_id(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 160
-        && value.chars().all(|character| character.is_ascii_alphanumeric() || "._:-".contains(character))
-}
-
-fn local_conversation_image_root(conversation_id: &str) -> Result<PathBuf, String> {
-    if !valid_local_conversation_id(conversation_id) {
-        return Err("FORGE_DESKTOP_CONVERSATION_INVALID".into());
-    }
-    Ok(env::temp_dir().join("forge-local-conversation-images").join(conversation_id))
-}
-
-fn cleanup_local_conversation_images(conversation_id: &str) {
-    if let Ok(root) = local_conversation_image_root(conversation_id) {
-        let _ = fs::remove_dir_all(root);
-    }
-}
-
-fn stage_local_conversation_images(
-    conversation_id: &str,
-    image_paths: Vec<String>,
-) -> Result<Vec<String>, String> {
-    if image_paths.is_empty() { return Ok(Vec::new()); }
-    if image_paths.len() > LOCAL_CONVERSATION_MAX_IMAGES {
-        return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_COUNT_INVALID".into());
-    }
-
-    let staging_parent = fs::canonicalize(env::temp_dir())
-        .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())?
-        .join("forge-local-conversation-images");
-    let sources = image_paths.into_iter().map(|raw| {
-        if raw.trim().is_empty() || raw.len() > 4096 {
-            return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_PATH_INVALID".to_string());
-        }
-        let source = fs::canonicalize(&raw)
-            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_PATH_INVALID".to_string())?;
-        if source.starts_with(&staging_parent) {
-            return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_SOURCE_UNSAFE".into());
-        }
-        let metadata = fs::metadata(&source)
-            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_PATH_INVALID".to_string())?;
-        let extension = source.extension().and_then(|value| value.to_str())
-            .map(|value| value.to_ascii_lowercase())
-            .filter(|value| LOCAL_CONVERSATION_IMAGE_EXTENSIONS.contains(&value.as_str()))
-            .ok_or_else(|| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_TYPE_UNSUPPORTED".to_string())?;
-        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > LOCAL_CONVERSATION_MAX_IMAGE_BYTES {
-            return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_FILE_INVALID".into());
-        }
-        Ok((source, extension))
-    }).collect::<Result<Vec<_>, String>>()?;
-
-    let root = local_conversation_image_root(conversation_id)?;
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root)
-        .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())?;
-
-    let staged = sources.into_iter().enumerate().map(|(index, (source, extension))| {
-        let target = root.join(format!("{index}.{extension}"));
-        fs::copy(source, &target)
-            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())?;
-        fs::canonicalize(target)
-            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())
-            .map(|path| path.to_string_lossy().to_string())
-    }).collect::<Result<Vec<_>, String>>();
-
-    if staged.is_err() { cleanup_local_conversation_images(conversation_id); }
-    staged
-}
-
-#[tauri::command]
-async fn send_local_conversation(
-    conversation_id: String,
-    provider_session_id: Option<String>,
-    prompt: String,
-    model: Option<String>,
-    reasoning_effort: Option<String>,
-    repo_id: Option<String>,
-    checkout_id: Option<String>,
-    image_paths: Option<Vec<String>>,
-) -> Result<Value, String> {
-    let staged_images = stage_local_conversation_images(
-        &conversation_id, image_paths.unwrap_or_default()
-    )?;
-    let request = match local_conversation_request(
-        conversation_id.clone(), provider_session_id, prompt, model, reasoning_effort,
-        repo_id, checkout_id, staged_images,
-    ) {
-        Ok(request) => request,
-        Err(error) => {
-            cleanup_local_conversation_images(&conversation_id);
-            return Err(error);
-        }
-    };
-    let result = call_runtime_tool("capability_execute", request).await;
-    cleanup_local_conversation_images(&conversation_id);
-    result
-}
-
-fn local_conversation_request(
-    conversation_id: String, provider_session_id: Option<String>, prompt: String,
-    model: Option<String>, reasoning_effort: Option<String>,
-    repo_id: Option<String>, checkout_id: Option<String>, image_paths: Vec<String>,
-) -> Result<Value, String> {
-    if !valid_local_conversation_id(conversation_id.trim()) || prompt.trim().is_empty() {
-        return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_ARGUMENT_REQUIRED".to_string());
-    }
-    if repo_id.as_ref().is_some_and(|value| value.trim().is_empty())
-        || checkout_id.as_ref().is_some_and(|value| value.trim().is_empty())
-        || repo_id.is_some() != checkout_id.is_some() {
-        return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_CHECKOUT_REQUIRED".into());
-    }
-    validate_agent_checkout_binding(repo_id.as_deref(), checkout_id.as_deref(), false)?;
-    let mut request = json!({
-        "capability_id": "controller.local_conversation",
-        "action": "send",
-        "arguments": {
-            "conversation_id": conversation_id,
-            "prompt": prompt
-        },
-        "request_id": request_id("local-conversation-send")
-    });
-    if let Some(provider_session_id) = provider_session_id.filter(|value| !value.trim().is_empty()) {
-        request["arguments"]["provider_session_id"] = Value::String(provider_session_id);
-    }
-    if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
-        request["arguments"]["model"] = Value::String(model);
-    }
-    if let Some(reasoning_effort) = reasoning_effort.filter(|value| !value.trim().is_empty()) {
-        request["arguments"]["reasoning_effort"] = Value::String(reasoning_effort);
-    }
-    if !image_paths.is_empty() {
-        request["arguments"]["image_paths"] = json!(image_paths);
-    }
-    if let Some(repo_id) = repo_id { request["repo_id"] = Value::String(repo_id); }
-    if let Some(checkout_id) = checkout_id { request["checkout_id"] = Value::String(checkout_id); }
-    Ok(request)
-}
-
-#[tauri::command]
-async fn cancel_local_conversation(conversation_id: String) -> Result<Value, String> {
-    if conversation_id.is_empty() || conversation_id.len() > 160
-        || !conversation_id.chars().all(|character| character.is_ascii_alphanumeric() || "._:-".contains(character)) {
-        return Err("FORGE_DESKTOP_CONVERSATION_INVALID".into());
-    }
-    let receipt = call_runtime_tool("capability_execute", json!({
-        "capability_id": "controller.local_conversation",
-        "action": "cancel",
-        "arguments": { "conversation_id": conversation_id },
-        "request_id": request_id("local-conversation-cancel"),
-    })).await?;
-    if receipt.get("status").and_then(Value::as_str) != Some("requested") {
-        return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_NOT_ACTIVE".into());
-    }
-    Ok(json!({"requested":true,"conversationId":conversation_id}))
 }
 
 #[tauri::command]
@@ -1925,7 +1735,7 @@ const LOCAL_API_PROFILE_LIMIT: usize = 20;
 fn default_local_api_config() -> Value {
     json!({
         "schemaVersion": LOCAL_API_CONFIG_SCHEMA_VERSION,
-        "defaultProvider": "codex",
+        "defaultProvider": "api",
         "apiProfiles": [],
         "joyCodeModel": JOYCODE_DEFAULT_MODEL
     })
@@ -1946,7 +1756,7 @@ fn api_profile_id(provider: &str) -> Option<&str> {
 
 fn clear_managed_credential_references(config: &mut Value, credential_ref: &str) -> bool {
     let mut default_provider = config.get("defaultProvider")
-        .and_then(Value::as_str).unwrap_or("codex").to_string();
+        .and_then(Value::as_str).unwrap_or("api").to_string();
     let Some(profiles) = config.get_mut("apiProfiles").and_then(Value::as_array_mut) else {
         return false;
     };
@@ -1957,7 +1767,7 @@ fn clear_managed_credential_references(config: &mut Value, credential_ref: &str)
         }
         let profile_provider = profile.get("id").and_then(Value::as_str).map(api_provider_id);
         if profile_provider.as_deref() == Some(default_provider.as_str()) {
-            default_provider = "codex".to_string();
+            default_provider = "api".to_string();
         }
         profile["credentialRef"] = Value::Null;
         changed = true;
@@ -2020,8 +1830,9 @@ fn normalize_local_api_config(value: Value) -> Result<Value, String> {
             }
             profiles.push(normalized);
         }
-        let default_provider = value.get("defaultProvider").and_then(Value::as_str).unwrap_or("codex");
-        if default_provider != "codex" && default_provider != "joycode"
+        let configured_default = value.get("defaultProvider").and_then(Value::as_str).unwrap_or("api");
+        let default_provider = if configured_default == "codex" { "api" } else { configured_default };
+        if default_provider != "api" && default_provider != "joycode"
             && api_profile_id(default_provider).is_none() {
             return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
         }
@@ -2044,7 +1855,7 @@ fn normalize_local_api_config(value: Value) -> Result<Value, String> {
     }
 
     // One-time read migration from the historical single generic API slot.
-    let legacy_provider = value.get("provider").and_then(Value::as_str).unwrap_or("codex");
+    let legacy_provider = value.get("provider").and_then(Value::as_str).unwrap_or("api");
     let endpoint = value.get("endpoint").and_then(Value::as_str).unwrap_or("https://api.openai.com/v1");
     let model = value.get("model").and_then(Value::as_str).unwrap_or("").trim();
     let protocol = value.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
@@ -2069,7 +1880,7 @@ fn normalize_local_api_config(value: Value) -> Result<Value, String> {
     let default_provider = match legacy_provider {
         "api" if !profiles.is_empty() => "api:legacy-api",
         "joycode" => "joycode",
-        _ => "codex",
+        _ => "api",
     };
     let joycode_model = value.get("joyCodeModel").and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty()).unwrap_or(JOYCODE_DEFAULT_MODEL);
@@ -2526,7 +2337,7 @@ fn read_local_api_settings() -> Result<Value, String> {
         ));
         projected.push(row);
     }
-    let default_provider = config.get("defaultProvider").and_then(Value::as_str).unwrap_or("codex");
+    let default_provider = config.get("defaultProvider").and_then(Value::as_str).unwrap_or("api");
     let compatibility_provider = if api_profile_id(default_provider).is_some() { "api" } else { default_provider };
     let compatibility_profile = api_profile_id(default_provider)
         .and_then(|id| projected.iter().find(|row| row.get("id").and_then(Value::as_str) == Some(id)))
@@ -4197,7 +4008,7 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
     // The saved default only selects new conversations. Existing threads carry
     // a stable provider/profile identity so editing defaults cannot redirect them.
     let requested_provider = provider_override.as_deref()
-        .unwrap_or_else(|| config.get("defaultProvider").and_then(Value::as_str).unwrap_or("codex"));
+        .unwrap_or_else(|| config.get("defaultProvider").and_then(Value::as_str).unwrap_or("api"));
     // An old generic API thread has no stable profile identity. Never redirect
     // its established history to whichever profile is the current default.
     if requested_provider == "api" {
@@ -4708,11 +4519,7 @@ fn main() {
             revise_requirement,
             revise_plan,
             autopilot_control,
-            read_local_provider_status,
-            read_local_provider_models,
             read_project_knowledge,
-            send_local_conversation,
-            cancel_local_conversation,
             read_local_api_settings,
             save_local_api_settings,
             managed_api_credential_control,
@@ -6322,55 +6129,6 @@ mod tests {
     }
 
     #[test]
-    fn local_conversation_binds_checkout_or_rejects_incomplete_context() {
-        let build = |repo: Option<&str>, checkout: Option<&str>| local_conversation_request(
-            "conversation".into(), None, "hello".into(),
-            Some("gpt-6.1-sol".into()), Some("high".into()),
-            repo.map(str::to_owned), checkout.map(str::to_owned), Vec::new());
-        let bound = build(Some("repo_a"), Some("checkout_b")).unwrap();
-        assert_eq!(bound["arguments"]["model"], "gpt-6.1-sol");
-        assert_eq!(bound["arguments"]["reasoning_effort"], "high");
-        assert_eq!(bound["repo_id"], "repo_a");
-        assert_eq!(bound["checkout_id"], "checkout_b");
-        let unbound = build(None, None).unwrap();
-        assert!(unbound.get("repo_id").is_none() && unbound.get("checkout_id").is_none());
-        assert!(build(Some("repo_a"), None).is_err());
-        assert!(build(None, Some("checkout_b")).is_err());
-        assert!(build(Some(" "), Some(" ")).is_err());
-        assert!(build(Some("repo_a"), Some("../invalid")).is_err());
-    }
-    #[test]
-    fn local_conversation_images_are_staged_scoped_and_cleaned() {
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let conversation_id = format!("test-image-stage-{}-{nonce}", std::process::id());
-        let source = env::temp_dir().join(format!("forge-image-source-{}-{nonce}.png", std::process::id()));
-        fs::write(&source, b"image-bytes").unwrap();
-
-        let staged = stage_local_conversation_images(
-            &conversation_id,
-            vec![source.to_string_lossy().to_string()],
-        ).unwrap();
-        assert_eq!(staged.len(), 1);
-        let root = fs::canonicalize(local_conversation_image_root(&conversation_id).unwrap()).unwrap();
-        let staged_path = fs::canonicalize(&staged[0]).unwrap();
-        assert!(staged_path.starts_with(&root));
-        assert!(staged_path.is_file());
-
-        cleanup_local_conversation_images(&conversation_id);
-        assert!(!root.exists());
-        let _ = fs::remove_file(source);
-    }
-
-    #[test]
-    fn mcp_timeout_only_extends_local_conversation_send() {
-        let send = json!({"capability_id": "controller.local_conversation", "action": "send"});
-        assert_eq!(mcp_tool_timeout("capability_execute", &send).as_secs(), 600);
-        assert_eq!(mcp_tool_timeout("other", &send).as_secs(), 90);
-        assert_eq!(mcp_tool_timeout("capability_execute", &json!({"capability_id": "other", "action": "send"})).as_secs(), 90);
-        assert_eq!(mcp_tool_timeout("capability_execute", &json!({"capability_id": "controller.local_conversation", "action": "cancel"})).as_secs(), 90);
-        assert_eq!(mcp_tool_timeout("capability_execute", &json!({})).as_secs(), 90);
-    }
-    #[test]
     fn agent_git_inspector_forwards_exact_staged_selection() {
         assert_eq!(agent_git_diff_arguments(false), json!({"max_bytes": 20000, "staged": false}));
         assert_eq!(agent_git_diff_arguments(true), json!({"max_bytes": 20000, "staged": true}));
@@ -7404,6 +7162,18 @@ mod tests {
     }
 
     #[test]
+    fn legacy_codex_default_migrates_to_native_api_provider() {
+        assert_eq!(default_local_api_config()["defaultProvider"], "api");
+        let migrated = normalize_local_api_config(json!({
+            "schemaVersion": LOCAL_API_CONFIG_SCHEMA_VERSION,
+            "defaultProvider": "codex",
+            "apiProfiles": [],
+            "joyCodeModel": JOYCODE_DEFAULT_MODEL
+        })).unwrap();
+        assert_eq!(migrated["defaultProvider"], "api");
+    }
+
+    #[test]
     fn deleting_managed_credential_clears_all_profile_references_and_default_provider() {
         let mut config = json!({
             "defaultProvider": "api:deepseek",
@@ -7414,7 +7184,7 @@ mod tests {
             ]
         });
         assert!(clear_managed_credential_references(&mut config, "cred_fixture"));
-        assert_eq!(config["defaultProvider"], "codex");
+        assert_eq!(config["defaultProvider"], "api");
         let profiles = config["apiProfiles"].as_array().unwrap();
         assert!(profiles[..2].iter().all(|row| row["credentialRef"].is_null()));
         assert_eq!(profiles[2]["credentialRef"], "cred_other");

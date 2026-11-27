@@ -50,13 +50,6 @@ import { executionIdentityForRepository } from '../../../src/runtime/control-pla
 import { currentPermissionSnapshotVersion } from '../../../src/runtime/control-plane/execution/session-repository-binding';
 import { principalFor } from '../../../src/runtime/control-plane/execution/session-execution-support';
 import { startOrResumeSession } from './execution-tools';
-import {
-  cancelLocalConversation,
-  readLocalConversationActivity,
-  readLocalConversationModelCatalog,
-  readLocalConversationProviderStatus,
-  sendLocalConversation,
-} from '../../../src/runtime/control-plane/launcher/local-conversation-controller';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -153,54 +146,6 @@ export async function callCoreCapabilityAdapter(
           error: {
             code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED',
             message: 'Unsupported controller.plugins action: ' + (action || '<empty>'),
-          },
-        },
-        true,
-      );
-    }
-    if (capabilityId === 'controller.local_conversation') {
-      if (action === 'status') return result({ ...(await readLocalConversationProviderStatus()) });
-      if (action === 'models') return result({ ...(await readLocalConversationModelCatalog()) });
-      if (action === 'activity')
-        return result({ ...readLocalConversationActivity(String(input.conversation_id ?? '')) });
-      if (action === 'cancel') return result(cancelLocalConversation(String(input.conversation_id ?? '')));
-      if (action === 'send') {
-        const conversationId = typeof input.conversation_id === 'string' ? input.conversation_id.trim() : '';
-        const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
-        const providerSessionId =
-          typeof input.provider_session_id === 'string' ? input.provider_session_id.trim() : undefined;
-        const model = typeof input.model === 'string' ? input.model.trim() : undefined;
-        const reasoningEffort = typeof input.reasoning_effort === 'string' ? input.reasoning_effort.trim() : undefined;
-        let imagePaths: string[] | undefined;
-        if (input.image_paths !== undefined) {
-          if (!Array.isArray(input.image_paths) || input.image_paths.some((value) => typeof value !== 'string')) {
-            throw new Error('LOCAL_CONVERSATION_IMAGE_PATHS_INVALID');
-          }
-          imagePaths = input.image_paths as string[];
-        }
-        const timeoutMs = typeof input.timeout_ms === 'number' ? input.timeout_ms : undefined;
-        const requestedRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
-        const repository = requestedRepoId ? selected(ctx, args) : undefined;
-        return result({
-          ...(await sendLocalConversation({
-            controllerHome: ctx.controllerHome,
-            conversationId,
-            prompt,
-            providerSessionId,
-            repoId: repository?.repoId,
-            checkoutId: repository?.activeCheckoutId,
-            model,
-            reasoningEffort,
-            imagePaths,
-            timeoutMs,
-          })),
-        });
-      }
-      return result(
-        {
-          error: {
-            code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED',
-            message: `Unsupported controller.local_conversation action: ${action || '<empty>'}`,
           },
         },
         true,

@@ -72,17 +72,6 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
       'Read the official pinned plugin catalog and install/update official plugins through the existing plugin lifecycle, trust, lock and authorization authorities.',
   },
   {
-    capabilityId: 'controller.local_conversation',
-    domain: 'controller',
-    group: 'controller',
-    operationClass: 'execute',
-    risk: 'workspace_write',
-    exposedVia: 'capability_execute',
-    schemaExposure: 'stable_static',
-    summary:
-      'Run one Work-independent local controller conversation through the existing Codex provider and current Forge Runtime MCP capabilities; conversation transport never creates semantic Work implicitly.',
-  },
-  {
     capabilityId: 'workflow.control',
     domain: 'workflow',
     group: 'workflow',
@@ -427,68 +416,6 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             required: ['plugin_id'],
             properties: {
               plugin_id: { type: 'string', pattern: '^[a-z][a-z0-9_]{1,63}$' },
-            },
-          },
-        },
-      },
-    };
-  }
-  if (capabilityId === 'controller.local_conversation') {
-    return {
-      capabilityId,
-      executeWith: 'capability_execute',
-      actions: {
-        status: {
-          readOnly: true,
-          risk: 'readonly',
-          argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
-        },
-        models: {
-          readOnly: true,
-          risk: 'readonly',
-          argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
-        },
-        activity: {
-          readOnly: true,
-          risk: 'readonly',
-          argumentsSchema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['conversation_id'],
-            properties: { conversation_id: { type: 'string', minLength: 1, maxLength: 160 } },
-          },
-        },
-        cancel: {
-          readOnly: false,
-          risk: 'workspace_write',
-          argumentsSchema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['conversation_id'],
-            properties: {
-              conversation_id: { type: 'string', minLength: 1, maxLength: 160 },
-            },
-          },
-        },
-        send: {
-          readOnly: false,
-          risk: 'workspace_write',
-          argumentsSchema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['conversation_id', 'prompt'],
-            properties: {
-              conversation_id: { type: 'string', minLength: 1, maxLength: 160 },
-              provider_session_id: { type: 'string', minLength: 1, maxLength: 160 },
-              prompt: { type: 'string', minLength: 1, maxLength: 20_000 },
-              model: { type: 'string', minLength: 1, maxLength: 120 },
-              reasoning_effort: { type: 'string', minLength: 1, maxLength: 32 },
-              image_paths: {
-                type: 'array',
-                maxItems: 4,
-                items: { type: 'string', minLength: 1, maxLength: 4096 },
-              },
-              timeout_ms: { type: 'number', minimum: 5_000, maximum: 600_000 },
             },
           },
         },

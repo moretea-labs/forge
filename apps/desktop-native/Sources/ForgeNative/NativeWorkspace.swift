@@ -186,21 +186,6 @@ struct NativeWorkspaceStore: Codable {
     )
   }
 }
-struct AgentReasoningOption: Codable, Identifiable {
-  let effort: String
-  let description: String
-  var id: String { effort }
-}
-
-struct AgentModelOption: Codable, Identifiable {
-  let slug: String
-  let displayName: String
-  let description: String
-  let defaultReasoningLevel: String
-  let supportedReasoningLevels: [AgentReasoningOption]
-  var id: String { slug }
-}
-
 struct AgentGitDiff: Codable {
   let repoId: String
   let checkoutId: String
@@ -525,9 +510,7 @@ struct ChatThread: Codable, Identifiable {
   var readOnlyRepoId: String? = nil
   var readOnlyCheckoutId: String? = nil
   var provider: String?
-  var providerSessionId: String?
   var model: String?
-  var reasoningEffort: String?
   var messages: [ChatMessage] = []
   // The complete unfinished composer belongs to this conversation.
   var pendingDraft: String? = nil
@@ -986,7 +969,7 @@ struct LocalApiSettingsDetail {
       hasKey: hasKey, endpointReady: endpointReady
     )
     self.init(
-      defaultProvider: provider == "api" ? profile.providerId : provider,
+      defaultProvider: provider == "api" || provider == "codex" ? profile.providerId : provider,
       profiles: [profile], joyCodeModel: joyCodeModel, joyCodeReady: joyCodeReady
     )
   }
@@ -1193,14 +1176,10 @@ final class NativeWorkspace: ObservableObject {
   @Published private(set) var activeConversationId: String?
   private(set) var activeConversationGeneration = 0
   private var activeApiTurn: ForgeApiTurn?
-  private var activeTurnProvider: String?
   private var conversationScrollRevision = 0
   private var knowledgeRecallPending = false
   private var activeKnowledgeRecall: Task<KnowledgeRecallDetail, Error>?
   private var cancelRequestedBeforeTurn = false
-  @Published var provider = "未检测"
-  @Published private(set) var localProviderReady = false
-  @Published var imageInputAvailable = false
   @Published private(set) var repositoryAccessMode = "request"
   @Published var repositoryAccessLoading = false
   private var repositoryAccessRequestGeneration = 0
@@ -1228,7 +1207,6 @@ final class NativeWorkspace: ObservableObject {
   @Published var checkoutRoot: URL?
   @Published var checkoutBranch: String?
   @Published var checkoutContextLoading = false
-  @Published private(set) var agentModels: [AgentModelOption] = []
 
   var checkoutIsAvailable: Bool {
     checkoutId != nil && Self.checkoutPathIsGitWorktree(checkoutRoot)
@@ -1407,14 +1385,16 @@ final class NativeWorkspace: ObservableObject {
     }
   }
   var selectedProvider: String {
-    if let provider = thread?.provider {
-      if provider == "api" {
-        return localApiSettings?.defaultApiProfile?.providerId ?? "api"
-      }
-      return provider
+    let configuredDefault = localApiSettings?.defaultProvider ?? "api"
+    let defaultProvider = configuredDefault == "api"
+      ? (localApiSettings?.defaultApiProfile?.providerId ?? "api")
+      : configuredDefault
+    guard let provider = thread?.provider else { return defaultProvider }
+    if provider == "api" {
+      return localApiSettings?.defaultApiProfile?.providerId ?? "api"
     }
-    if thread?.messages.isEmpty == false { return "codex" }
-    return localApiSettings?.defaultProvider ?? "codex"
+    if provider == "codex" { return defaultProvider }
+    return provider
   }
   var selectedApiProfile: ApiProviderProfileDetail? {
     localApiSettings?.profile(providerId: selectedProvider)
@@ -1436,7 +1416,7 @@ final class NativeWorkspace: ObservableObject {
     if selectedProvider == "joycode" {
       return localApiSettings?.joyCodeReady == true && !selectedApiModel.isEmpty
     }
-    return localProviderReady
+    return selectedApiProfile?.endpointReady == true && !selectedApiModel.isEmpty
   }
   var readOnlyAnalysisProvider: String? {
     if Self.matchesExternalProvider(selectedProvider) && selectedProviderReady {
@@ -1461,7 +1441,7 @@ final class NativeWorkspace: ObservableObject {
     if isProjectOnlyConversation { return "仅项目上下文" }
     if !selectedProviderReady {
       if selectedProvider == "joycode" { return "JoyCode 未就绪" }
-      return selectedProvider == "api" ? "API 未配置" : "Codex 未就绪"
+      return "模型服务未配置"
     }
     if thread?.repoId == nil { return "未绑定项目" }
     if thread?.checkoutId == nil { return "缺少工作区" }
@@ -1482,7 +1462,7 @@ final class NativeWorkspace: ObservableObject {
       if selectedProvider == "joycode" {
         return "JoyCode 尚未就绪；请先在本机 JoyCode 登录并确认模型配置。"
       }
-      return selectedProvider == "api" ? "兼容 API 配置尚未就绪；请检查 Endpoint、必要的 API Key 与模型" : provider
+      return "模型服务尚未就绪；请检查 Provider、Endpoint、API Key 与模型配置。"
     }
     if thread?.repoId == nil { return "当前会话可以对话，但没有项目工作区，无法执行代码操作。" }
     if thread?.checkoutId == nil {
@@ -1539,42 +1519,24 @@ final class NativeWorkspace: ObservableObject {
       if Self.matchesExternalProvider(selectedProvider) {
         return "API Provider 未就绪，请检查 Profile、Endpoint、Key 和模型。"
       }
-      return "Codex 未就绪，请刷新 Provider 状态。"
+      return "模型服务未就绪，请先在设置中配置可用服务。"
     }
     if !pendingImageURLs.isEmpty && !selectedProviderSupportsImages {
-      return "当前模型不支持图片输入，请移除图片后发送。"
+      return "Forge Native Agent 暂不支持图片输入，请移除图片后发送。"
     }
     return nil
   }
   var selectedApiModel: String {
-    let threadModel = thread?.model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let threadModel = thread?.provider == "codex"
+      ? ""
+      : (thread?.model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
     if Self.matchesExternalProvider(selectedProvider) && !threadModel.isEmpty { return threadModel }
     if selectedProvider == "joycode" {
       return localApiSettings?.joyCodeModel.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
     return selectedApiProfile?.model.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   }
-  var selectedProviderSupportsImages: Bool {
-    selectedProvider == "codex" && imageInputAvailable
-  }
-  var selectedAgentModel: AgentModelOption? {
-    if let slug = thread?.model, let exact = agentModels.first(where: { $0.slug == slug }) {
-      return exact
-    }
-    return agentModels.first
-  }
-  var selectedReasoningEffort: String {
-    guard let model = selectedAgentModel else { return "" }
-    if let current = thread?.reasoningEffort,
-      model.supportedReasoningLevels.contains(where: { $0.effort == current })
-    {
-      return current
-    }
-    return model.defaultReasoningLevel
-  }
-  var selectedReasoningOptions: [AgentReasoningOption] {
-    selectedAgentModel?.supportedReasoningLevels ?? []
-  }
+  var selectedProviderSupportsImages: Bool { false }
   var visibleThreads: [ChatThread] {
     let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
     return threads.filter { t in
@@ -1620,8 +1582,11 @@ final class NativeWorkspace: ObservableObject {
       self.error = "请先停止正在运行的会话。"
       return
     }
-    let provider = providerOverride ?? localApiSettings?.defaultProvider
-    let profile = provider.flatMap { localApiSettings?.profile(providerId: $0) }
+    let requestedProvider = providerOverride ?? localApiSettings?.defaultProvider ?? "api"
+    let provider = (requestedProvider == "codex" || requestedProvider == "api")
+      ? (localApiSettings?.defaultApiProfile?.providerId ?? "api")
+      : requestedProvider
+    let profile = localApiSettings?.profile(providerId: provider)
     let item = ChatThread(
       repoId: repoId,
       checkoutId: checkoutId,
@@ -1760,7 +1725,16 @@ final class NativeWorkspace: ObservableObject {
     var copy = source
     copy.id = UUID().uuidString
     copy.title = String(source.title.prefix(76)) + "（副本）"
-    copy.providerSessionId = nil
+    if copy.provider == "codex" {
+      let fallback = localApiSettings?.defaultProvider ?? "api"
+      let migratedProvider = fallback == "api"
+        ? (localApiSettings?.defaultApiProfile?.providerId ?? "api")
+        : fallback
+      copy.provider = migratedProvider
+      copy.model = migratedProvider == "joycode"
+        ? localApiSettings?.joyCodeModel
+        : localApiSettings?.profile(providerId: migratedProvider)?.model
+    }
     copy.updatedAt = Date()
     threads.insert(copy, at: 0)
     showSearch = false
@@ -1837,19 +1811,15 @@ final class NativeWorkspace: ObservableObject {
     } else {
       threads[index].model = nil
     }
-    // Provider switching is explicit thread intent and is valid after a
-    // conversation has started. Preserve Codex session identity so
-    // switching back can resume it; API providers use bounded history.
+    // Provider selection only changes which model the shared Forge Agent Loop uses.
     threads[index].provider = value
-    threads[index].reasoningEffort = nil
     threads[index].updatedAt = Date()
-    pendingImageURLs = []
     persist()
     self.error = nil
   }
 
   private func matchesProvider(_ value: String) -> Bool {
-    if value == "codex" || value == "joycode" { return true }
+    if value == "joycode" { return true }
     return value.hasPrefix("api:") && localApiSettings?.profile(providerId: value) != nil
   }
 
@@ -1862,7 +1832,7 @@ final class NativeWorkspace: ObservableObject {
   ) -> String {
     if requiresKnowledgeRecall { return "正在读取项目上下文" }
     if provider == "joycode" { return "正在连接 JoyCode" }
-    return matchesExternalProvider(provider) ? "正在连接 API Provider" : "正在启动 Codex"
+    return "正在连接模型服务"
   }
 
   private func updateLiveActivityText(_ text: String) {
@@ -1887,29 +1857,6 @@ final class NativeWorkspace: ObservableObject {
     return fallback
   }
 
-  func selectAgentModel(_ slug: String) {
-    guard !rejectConversationMutationDuringZenRefinement() else { return }
-    guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }),
-      let model = agentModels.first(where: { $0.slug == slug })
-    else { return }
-    threads[index].model = model.slug
-    if !model.supportedReasoningLevels.contains(where: {
-      $0.effort == threads[index].reasoningEffort
-    }) {
-      threads[index].reasoningEffort = model.defaultReasoningLevel
-    }
-    threads[index].updatedAt = Date()
-    persist()
-  }
-  func selectReasoningEffort(_ effort: String) {
-    guard !rejectConversationMutationDuringZenRefinement() else { return }
-    guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }),
-      selectedReasoningOptions.contains(where: { $0.effort == effort })
-    else { return }
-    threads[index].reasoningEffort = effort
-    threads[index].updatedAt = Date()
-    persist()
-  }
   func renameThread(_ id: String, to title: String) {
     let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !title.isEmpty, let index = threads.firstIndex(where: { $0.id == id }) else { return }
@@ -1979,7 +1926,7 @@ final class NativeWorkspace: ObservableObject {
         notes.append("历史消息图片超过当前限制，仅恢复前 4 张。")
       }
       if !pendingImageURLs.isEmpty && !selectedProviderSupportsImages {
-        notes.append("当前模型不支持图片输入，请切换到支持图片的模型或移除图片。")
+        notes.append("Forge Native Agent 暂不支持图片输入，请移除图片后发送。")
       }
     } else if message.attachmentNames?.isEmpty == false {
       notes.append("历史图片没有保存原始路径，请重新附加图片后再发送。")
@@ -2501,16 +2448,6 @@ final class NativeWorkspace: ObservableObject {
     }
   }
 
-  nonisolated static func localProviderStatusReady(_ status: [String: Any]) -> Bool {
-    status["status"] as? String == "ready"
-  }
-
-  private func applyLocalProviderStatus(_ status: [String: Any]) {
-    provider = status["label"] as? String ?? status["status"] as? String ?? "Codex 不可用"
-    localProviderReady = Self.localProviderStatusReady(status)
-    imageInputAvailable = status["imageInput"] as? Bool == true
-  }
-
   nonisolated static func decodeProjects(_ result: [String: Any]) throws -> [ForgeProject] {
     guard let rows = result["repositories"] as? [[String: Any]] else {
       throw ForgeBridgeError.invalidResponse
@@ -2902,29 +2839,10 @@ final class NativeWorkspace: ObservableObject {
     if !settingsLoading {
       // Agent repository context is owned by the selected ChatThread. Do not
       // fabricate a binding from preferredRepoId for an unbound conversation.
-      let providerStatus = try? await ForgeBridge.request("read_local_provider_status")
-      guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
-      if let providerStatus {
-        applyLocalProviderStatus(providerStatus)
-      } else {
-        provider = "Codex 不可用"
-        localProviderReady = false
-        imageInputAvailable = false
-      }
-      if !selectedProviderSupportsImages { pendingImageURLs = [] }
       let settingsValue = try? await ForgeBridge.request("read_local_api_settings")
       guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
       if let settingsValue, let parsed = Self.localApiSettingsDetail(settingsValue) {
         localApiSettings = parsed
-      }
-      let catalog = try? await ForgeBridge.request("read_local_provider_models")
-      guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
-      if let catalog,
-        let rows = catalog["models"] as? [[String: Any]],
-        let bytes = try? JSONSerialization.data(withJSONObject: rows),
-        let decoded = try? JSONDecoder().decode([AgentModelOption].self, from: bytes)
-      {
-        agentModels = decoded
       }
       let connectionValue = try? await ForgeBridge.request("read_connection_status")
       guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
@@ -4130,20 +4048,10 @@ final class NativeWorkspace: ObservableObject {
     defer { settingsLoading = false }
 
     async let runtimeRefresh: Void = loadRuntimePage()
-    async let statusRequest = ForgeBridge.request("read_local_provider_status")
     async let settingsRequest = ForgeBridge.request("read_local_api_settings")
     async let credentialRequest = ForgeBridge.request(
       "managed_api_credential_control", ["operation": "list"])
     var failures: [String] = []
-
-    do {
-      applyLocalProviderStatus(try await statusRequest)
-    } catch {
-      provider = "Codex 状态不可用"
-      localProviderReady = false
-      imageInputAvailable = false
-      failures.append("Provider：\(error.localizedDescription)")
-    }
 
     do {
       let settingsValue = try await settingsRequest
@@ -5671,37 +5579,6 @@ final class NativeWorkspace: ObservableObject {
     }
   }
 
-  func refreshLiveActivity(conversationId: String, generation: Int) async {
-    guard
-      Self.liveActivityRequestIsCurrent(
-        requestConversationId: conversationId, currentConversationId: activeConversationId,
-        requestGeneration: generation, currentGeneration: activeConversationGeneration
-      )
-    else { return }
-    do {
-      let value = try await ForgeBridge.request(
-        "read_local_conversation_activity",
-        [
-          "conversationId": conversationId
-        ])
-      guard
-        Self.liveActivityRequestIsCurrent(
-          requestConversationId: conversationId, currentConversationId: activeConversationId,
-          requestGeneration: generation, currentGeneration: activeConversationGeneration
-        )
-      else { return }
-      let bytes = try JSONSerialization.data(withJSONObject: value)
-      let activity = try JSONDecoder().decode(AgentLiveActivity.self, from: bytes)
-      // Runtime is the sole Codex process owner. Its observed JSONL
-      // agent_message is a provisional preview, not a persisted reply.
-      if let preview = value["responsePreview"] as? String {
-        streamedAnswer = String(preview.prefix(32_000))
-      }
-      liveActivity = activity.status == "running" ? activity : nil
-    } catch {
-      // Live activity is advisory UI only; the authoritative send result owns completion/errors.
-    }
-  }
   private func loadAgentChanges(paths: [String]? = nil, staged: Bool = false) async throws
     -> AgentGitDiff
   {
@@ -5977,10 +5854,7 @@ final class NativeWorkspace: ObservableObject {
 
   func addPendingImages(_ urls: [URL]) {
     guard selectedProviderSupportsImages else {
-      self.error =
-        Self.matchesExternalProvider(selectedProvider)
-        ? "当前外部模型 Agent 尚不支持图片输入。"
-        : "当前 Runtime 尚未启用图片输入。"
+      self.error = "Forge Native Agent 暂不支持图片输入，请移除图片后发送。"
       return
     }
     let accepted = urls.filter { Self.agentImageExtensions.contains($0.pathExtension.lowercased()) }
@@ -6043,15 +5917,6 @@ final class NativeWorkspace: ObservableObject {
 
   func removePendingContextPath(_ path: String) {
     pendingContextPaths.removeAll { $0 == path }
-  }
-
-  static func decodeActivityEvents(_ raw: Any?) -> [AgentLiveActivityEvent]? {
-    guard let rows = raw as? [[String: Any]],
-      let bytes = try? JSONSerialization.data(withJSONObject: rows),
-      let events = try? JSONDecoder().decode([AgentLiveActivityEvent].self, from: bytes),
-      !events.isEmpty
-    else { return nil }
-    return boundedActivityEvents(events)
   }
 
   nonisolated static func providerPrompt(
@@ -6886,6 +6751,13 @@ final class NativeWorkspace: ObservableObject {
       self.error = reason
       return
     }
+    if threads[index].provider == "codex" {
+      threads[index].provider = turnProvider
+      threads[index].model = turnProvider == "joycode"
+        ? localApiSettings?.joyCodeModel
+        : localApiSettings?.profile(providerId: turnProvider)?.model
+      persist()
+    }
     if Self.matchesExternalProvider(turnProvider) {
       let current = threads[index].model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       let configured =
@@ -6904,11 +6776,9 @@ final class NativeWorkspace: ObservableObject {
     cancelRequestedBeforeTurn = false
     busy = true
     activeConversationGeneration &+= 1
-    let activityGeneration = activeConversationGeneration
     activeConversationId = id
     streamedAnswer = ""
     streamedReasoning = ""
-    activeTurnProvider = turnProvider
     draft = ""
     pendingImageURLs = []
     pendingContextPaths = []
@@ -6924,11 +6794,7 @@ final class NativeWorkspace: ObservableObject {
     threads[index].updatedAt = Date()
     persist()
 
-    var activityMonitor: Task<Void, Never>?
     let requiresKnowledgeRecall = item.messages.isEmpty && item.repoId != nil
-    let providerStartupActivity = Self.initialAgentActivityText(
-      provider: turnProvider, requiresKnowledgeRecall: false
-    )
     liveActivity = AgentLiveActivity(
       conversationId: id, status: "running", phase: "starting",
       toolActivityCount: 0,
@@ -6938,11 +6804,9 @@ final class NativeWorkspace: ObservableObject {
       startedAt: nil, updatedAt: nil, events: []
     )
     defer {
-      activityMonitor?.cancel()
       activeKnowledgeRecall?.cancel()
       activeKnowledgeRecall = nil
       activeApiTurn = nil
-      activeTurnProvider = nil
       streamedAnswer = ""
       streamedReasoning = ""
       liveActivity = nil
@@ -6985,65 +6849,27 @@ final class NativeWorkspace: ObservableObject {
       if cancelRequestedBeforeTurn || Task.isCancelled {
         throw ForgeBridgeError.remote("FORGE_DESKTOP_API_TURN_CANCELLED")
       }
-      updateLiveActivityText(providerStartupActivity)
-      if turnProvider == "codex" {
-        activityMonitor = Task { [weak self] in
-          while !Task.isCancelled {
-            await self?.refreshLiveActivity(conversationId: id, generation: activityGeneration)
-            try? await Task.sleep(for: .milliseconds(350))
-          }
+      updateLiveActivityText(Self.initialAgentActivityText(provider: turnProvider, requiresKnowledgeRecall: false))
+      var apiArguments: [String: Any] = [
+        "conversationId": id,
+        "provider": turnProvider,
+        "allowEffects": Self.apiTurnAllowsEffects(
+          provider: turnProvider, thread: item, accessMode: repositoryAccessMode
+        ),
+        "messages": Self.apiTurnMessages(
+          item, prompt: prompt, contextPaths: contextPaths, advisoryKnowledge: advisoryKnowledge),
+        "model": item.model ?? "",
+      ]
+      if let repo = item.repoId { apiArguments["repoId"] = repo }
+      if let checkout = item.checkoutId { apiArguments["checkoutId"] = checkout }
+      let turn = try ForgeBridge.startApiTurn(apiArguments)
+      activeApiTurn = turn
+      let response = try await turn.wait { [weak self] payload in
+        if payload["kind"] is String {
+          self?.applyApiModelProgress(payload, conversationId: id)
+        } else {
+          self?.applyApiToolProgress(payload, conversationId: id)
         }
-      }
-      let response: [String: Any]
-      if Self.matchesExternalProvider(turnProvider) {
-        var apiArguments: [String: Any] = [
-          "conversationId": id,
-          "provider": turnProvider,
-          "allowEffects": Self.apiTurnAllowsEffects(
-            provider: turnProvider, thread: item, accessMode: repositoryAccessMode
-          ),
-          "messages": Self.apiTurnMessages(
-            item, prompt: prompt, contextPaths: contextPaths, advisoryKnowledge: advisoryKnowledge),
-          "model": item.model ?? "",
-        ]
-        if let repo = item.repoId { apiArguments["repoId"] = repo }
-        if let checkout = item.checkoutId { apiArguments["checkoutId"] = checkout }
-        let turn = try ForgeBridge.startApiTurn(apiArguments)
-        activeApiTurn = turn
-        response = try await turn.wait { [weak self] payload in
-          // Read and apply model deltas in their original pipe order.
-          // Independent unstructured Tasks could reorder streamed tokens.
-          if payload["kind"] is String {
-            self?.applyApiModelProgress(payload, conversationId: id)
-          } else {
-            self?.applyApiToolProgress(payload, conversationId: id)
-          }
-        }
-      } else {
-        var args: [String: Any] = [
-          "conversationId": id,
-          "prompt": Self.providerPrompt(
-            prompt, contextPaths: contextPaths,
-            projectId: item.projectId, requirementId: item.requirementId,
-            planId: item.planId,
-            advisoryKnowledge: advisoryKnowledge
-          ),
-        ]
-        if !imageURLs.isEmpty { args["imagePaths"] = imageURLs.map(\.path) }
-        if let repo = item.repoId { args["repoId"] = repo }
-        if let checkout = item.checkoutId { args["checkoutId"] = checkout }
-        if let session = item.providerSessionId { args["providerSessionId"] = session }
-        let effectiveModel =
-          item.model.flatMap { slug in agentModels.first { $0.slug == slug } } ?? agentModels.first
-        if let effectiveModel {
-          args["model"] = effectiveModel.slug
-          let reasoning =
-            item.reasoningEffort.flatMap { current in
-              effectiveModel.supportedReasoningLevels.first(where: { $0.effort == current })?.effort
-            } ?? effectiveModel.defaultReasoningLevel
-          if !reasoning.isEmpty { args["reasoningEffort"] = reasoning }
-        }
-        response = try await ForgeBridge.request("send_local_conversation", args)
       }
 
       guard let current = threads.firstIndex(where: { $0.id == id }) else { return }
@@ -7055,13 +6881,10 @@ final class NativeWorkspace: ObservableObject {
         .flatMap(AgentTokenUsage.fromProviderReceipt)
       let providerTiming = (response["providerTiming"] as? [String: Any])
         .flatMap(AgentProviderTiming.fromProviderReceipt)
-      let activityEvents =
-        Self.matchesExternalProvider(turnProvider)
-        ? Self.mergeActivityReceipts(
-          liveActivity?.events ?? [],
-          receipts: Self.apiActivityEvents(response["toolEvents"]) ?? []
-        )
-        : Self.decodeActivityEvents(response["activityEvents"]) ?? []
+      let activityEvents = Self.mergeActivityReceipts(
+        liveActivity?.events ?? [],
+        receipts: Self.apiActivityEvents(response["toolEvents"]) ?? []
+      )
       threads[current].messages.append(
         ChatMessage(
           role: "assistant", text: answer, toolActivityCount: toolActivityCount,
@@ -7069,14 +6892,10 @@ final class NativeWorkspace: ObservableObject {
           incomplete: response["incomplete"] as? Bool,
           usage: usage, providerTiming: providerTiming, providerUsed: turnProvider,
           modelUsed: item.model
-            ?? (Self.matchesExternalProvider(turnProvider)
-              ? localApiSettings?.profile(providerId: turnProvider)?.model
-              : selectedAgentModel?.slug)
+            ?? (turnProvider == "joycode"
+              ? localApiSettings?.joyCodeModel
+              : localApiSettings?.profile(providerId: turnProvider)?.model)
         ))
-      if turnProvider == "codex" {
-        threads[current].providerSessionId =
-          response["providerSessionId"] as? String ?? threads[current].providerSessionId
-      }
       threads[current].updatedAt = Date()
       persist()
       error = nil
@@ -7267,12 +7086,6 @@ final class NativeWorkspace: ObservableObject {
       activeKnowledgeRecall?.cancel()
       return
     }
-    if activeTurnProvider.map(Self.matchesExternalProvider) == true {
-      activeApiTurn?.cancel()
-      return
-    }
-    do {
-      _ = try await ForgeBridge.request("cancel_local_conversation", ["conversationId": id])
-    } catch { self.error = error.localizedDescription }
+    activeApiTurn?.cancel()
   }
 }

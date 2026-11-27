@@ -2815,11 +2815,11 @@ struct RuntimeSettingsSection: View {
                         HStack(spacing:10) {
                             Menu {
                                 Button("ChatGPT") { setupController = "chatgpt" }
-                                Button("Codex") { setupController = "codex" }
+                                Button("外部 Codex（MCP）") { setupController = "codex" }
                                 Button("Claude Code") { setupController = "claude" }
                                 Button("MCP 客户端") { setupController = "mcp" }
                             } label: {
-                                let title = setupController == "codex" ? "Codex"
+                                let title = setupController == "codex" ? "外部 Codex（MCP）"
                                     : (setupController == "claude" ? "Claude Code"
                                        : (setupController == "mcp" ? "MCP 客户端" : "ChatGPT"))
                                 ForgeMenuTriggerLabel(title:title,systemImage:"macwindow")
@@ -2838,7 +2838,9 @@ struct RuntimeSettingsSection: View {
                         }
                         Text(setupController == "chatgpt" || setupController == "mcp"
                              ? "通过 Forge 远程连接。"
-                             : "直接连接本机服务。")
+                             : (setupController == "codex"
+                                ? "外部 Codex 通过 MCP 调用 Forge 工具，不改变 Forge Client 的执行模式。"
+                                : "直接连接本机服务。"))
                             .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                         Text("保存后，在对应客户端发送一条消息确认可用。")
                             .font(.system(size:10.5)).foregroundStyle(.tertiary)
@@ -3439,7 +3441,7 @@ struct ProviderProfileDraft: Identifiable, Equatable {
 
 struct SettingsPane: View {
     @ObservedObject var model: NativeWorkspace
-    @State private var defaultProvider = "codex"
+    @State private var defaultProvider = "api"
     @State private var profiles:[ProviderProfileDraft] = []
     @State private var selectedProfileId = ""
     @State private var joyCodeModel = "JoyAI-Code-1.6"
@@ -3465,15 +3467,12 @@ struct SettingsPane: View {
                     }
                     LazyVGrid(columns:[GridItem(.adaptive(minimum:145,maximum:260),spacing:14,alignment:.leading)],
                               alignment:.leading,spacing:10) {
-                        settingMeta("会话模型",NativeWorkspace.matchesExternalProvider(model.selectedProvider)
-                                    ? (model.selectedApiModel.isEmpty ? "未配置" : model.selectedApiModel)
-                                    : (model.selectedAgentModel?.displayName ?? "Codex 默认"))
-                        settingMeta("推理强度",model.selectedProvider == "joycode" || NativeWorkspace.matchesExternalProvider(model.selectedProvider)
-                                    ? "默认"
-                                    : (model.selectedReasoningEffort.isEmpty ? "默认" : model.selectedReasoningEffort))
-                        settingMeta("图片输入",model.selectedProviderSupportsImages ? "可用" : "不可用")
+                        settingMeta("会话模型",model.selectedApiModel.isEmpty ? "未配置" : model.selectedApiModel)
+                        settingMeta("执行引擎","Forge Native Agent")
+                        settingMeta("本地工具","直接调用")
+                        settingMeta("图片输入",model.selectedProviderSupportsImages ? "可用" : "暂不可用")
                     }
-                    Text("默认服务仅用于新会话。API / JoyCode 使用 Forge 原生 Agent Loop，本地工具由 Direct Dispatcher 直接执行；Codex（MCP 兼容）通过 Codex CLI 调用 Forge MCP 工具。")
+                    Text("Forge Client 只使用 Forge Native Agent；本地工具由 Direct Dispatcher 直接调用。MCP Server 仅用于外部 MCP 客户端接入。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary)
                 }
                 .padding(.vertical,10)
@@ -3517,15 +3516,6 @@ struct SettingsPane: View {
                         Text("新会话默认").font(.system(size:10.5,weight:.medium))
                             .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
                         Menu {
-                            Button {
-                                defaultProvider = "codex"
-                            } label: {
-                                if defaultProvider == "codex" {
-                                    Label("Codex（MCP 兼容）",systemImage:"checkmark")
-                                } else {
-                                    Text("Codex（MCP 兼容）")
-                                }
-                            }
                             ForEach(profiles) { profile in
                                 Button {
                                     defaultProvider = profile.providerId
@@ -3835,15 +3825,13 @@ struct SettingsPane: View {
     }
 
     private var defaultProviderLabel:String {
-        if defaultProvider == "codex" { return "Codex（MCP 兼容）" }
         if defaultProvider == "joycode" { return "JoyCode" }
         return profiles.first(where:{ $0.providerId == defaultProvider })?.label ?? "选择服务"
     }
 
     private var selectedProviderLabel:String {
-        if model.selectedProvider == "codex" { return "Codex（MCP 兼容）" }
         if model.selectedProvider == "joycode" { return "JoyCode" }
-        return model.selectedApiProfile?.label ?? "API 服务"
+        return model.selectedApiProfile?.label ?? "选择服务"
     }
 
     private var settingsSignature:String {
@@ -3869,8 +3857,10 @@ struct SettingsPane: View {
 
     private func syncSettingsDraft() {
         guard let settings=model.localApiSettings else { return }
-        defaultProvider=settings.defaultProvider
         profiles=settings.profiles.map(ProviderProfileDraft.init)
+        defaultProvider = settings.defaultProvider == "api"
+            ? (model.localApiSettings?.defaultApiProfile?.providerId ?? "api")
+            : settings.defaultProvider
         if let id=settings.defaultProvider.split(separator:":",maxSplits:1).dropFirst().first,
            profiles.contains(where:{$0.id == String(id)}) {
             selectedProfileId=String(id)
@@ -3887,13 +3877,17 @@ struct SettingsPane: View {
         )
         profiles.append(profile)
         selectedProfileId=profile.id
+        if defaultProvider == "api" { defaultProvider=profile.providerId }
     }
 
     private func deleteProfile(_ index:Int) {
         guard profiles.indices.contains(index) else { return }
         let providerId=profiles[index].providerId
         profiles.remove(at:index)
-        if defaultProvider == providerId { defaultProvider="codex" }
+        if defaultProvider == providerId {
+            defaultProvider = profiles.first?.providerId
+                ?? (model.localApiSettings?.joyCodeReady == true ? "joycode" : "api")
+        }
         selectedProfileId=profiles.first?.id ?? ""
     }
 
