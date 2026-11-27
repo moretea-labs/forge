@@ -189,6 +189,13 @@ publish_required_main_gate_status() {
     printf '%s\n' "$sha" >"$STATUS_PENDING_PATH"
     fail "GitHub CLI is unavailable; refusing to bypass the required '$status_context' status check"
   }
+  if main_gate_status_is_success "$sha"; then
+    if [[ -f "$STATUS_PENDING_PATH" ]] && [[ "$(cat "$STATUS_PENDING_PATH")" == "$sha" ]]; then
+      rm -f "$STATUS_PENDING_PATH"
+    fi
+    echo "[sync-main] GitHub required status '$status_context' is already confirmed for $sha"
+    return 0
+  fi
 
   if ! post_response="$("$gh_bin" api "repos/$repository/statuses/$sha" \
     -f state=success \
@@ -232,19 +239,29 @@ retry_pending_main_gate_status() {
   [[ "$pending_sha" =~ ^[0-9a-f]{40,64}$ ]] || fail "pending Main gate status contains an invalid commit SHA"
   remote_sha="$(git rev-parse "$REMOTE/$BRANCH")"
   if git merge-base --is-ancestor "$pending_sha" "$remote_sha"; then
-    if main_gate_status_is_success "$pending_sha"; then
-      rm -f "$STATUS_PENDING_PATH"
-      return 0
+    if ! main_gate_status_is_success "$pending_sha"; then
+      if publish_required_main_gate_status "$pending_sha"; then
+        :
+      else
+        status_result=$?
+        [[ "$status_result" -eq 2 ]] && fail "origin/main contains $pending_sha but GitHub still cannot resolve its Main gate status"
+        exit "$status_result"
+      fi
     fi
-    if publish_required_main_gate_status "$pending_sha"; then
-      return 0
-    else
-      status_result=$?
-      [[ "$status_result" -eq 2 ]] && fail "origin/main contains $pending_sha but GitHub still cannot resolve its Main gate status"
-      exit "$status_result"
-    fi
+    rm -f "$STATUS_PENDING_PATH"
+    delete_validation_ref "$pending_sha"
   elif git merge-base --is-ancestor "$pending_sha" HEAD; then
-    echo "[sync-main] pending Main gate status for $pending_sha awaits publication of the validated commit" >&2
+    ensure_validation_ref "$pending_sha"
+    if ! main_gate_status_is_success "$pending_sha"; then
+      if publish_required_main_gate_status "$pending_sha"; then
+        :
+      else
+        status_result=$?
+        [[ "$status_result" -eq 2 ]] && fail "GitHub still cannot resolve $pending_sha after its temporary validation ref was published"
+        exit "$status_result"
+      fi
+    fi
+    rm -f "$STATUS_PENDING_PATH"
   else
     fail "pending Main gate status belongs to $pending_sha, which is not reachable from local or remote main"
   fi
@@ -285,6 +302,107 @@ run_bounded_git() {
   # exec and bounds a stalled HTTP request without depending on coreutils.
   perl -e 'my $seconds = shift; alarm $seconds; exec @ARGV or die "exec failed: $!"' \
     "$timeout_seconds" "$@"
+}
+
+validation_ref_for_sha() {
+  printf 'refs/tags/forge-validation/%s' "$1"
+}
+
+read_remote_validation_ref() {
+  local ref="$1" proxy output
+  proxy="$(git_http_proxy)"
+  if ! output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git_http 10 "$proxy" \
+    -c http.version=HTTP/1.1 ls-remote "$REMOTE" "$ref" 2>&1)"; then
+    fail "could not read temporary validation ref $ref: $output"
+  fi
+  awk 'NR == 1 { print $1 }' <<<"$output"
+}
+
+push_validation_refspec() {
+  local refspec="$1" ref="$2" expected_sha="$3" expected_present="$4"
+  local proxy output remote_output actual
+  proxy="$(git_http_proxy)"
+
+  if ! output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git_http 30 "$proxy" \
+    -c http.version=HTTP/2 -c http.lowSpeedLimit=512 -c http.lowSpeedTime=20 \
+    push "$REMOTE" "$refspec" 2>&1)"; then
+    if grep -Eqi 'HTTP/2|framing|stream|curl 92|timed out|operation too slow|alarm clock|signal 14' <<<"$output"; then
+      remote_output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git_http 10 "$proxy" \
+        -c http.version=HTTP/1.1 ls-remote "$REMOTE" "$ref" 2>&1)" ||
+        fail "temporary validation ref readback failed after HTTP/2 push error: $remote_output"
+      actual="$(awk 'NR == 1 { print $1 }' <<<"$remote_output")"
+      if [[ "$expected_present" == "1" && "$actual" == "$expected_sha" ]] ||
+        [[ "$expected_present" == "0" && -z "$actual" ]]; then
+        return 0
+      fi
+      if ! output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git_http 30 "$proxy" \
+        -c http.version=HTTP/1.1 -c http.lowSpeedLimit=512 -c http.lowSpeedTime=20 \
+        push "$REMOTE" "$refspec" 2>&1)"; then
+        remote_output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git_http 10 "$proxy" \
+          -c http.version=HTTP/1.1 ls-remote "$REMOTE" "$ref" 2>&1)" ||
+          fail "temporary validation ref readback failed after HTTP/1.1 retry: $remote_output"
+        actual="$(awk 'NR == 1 { print $1 }' <<<"$remote_output")"
+        if [[ "$expected_present" == "1" && "$actual" == "$expected_sha" ]] ||
+          [[ "$expected_present" == "0" && -z "$actual" ]]; then
+          return 0
+        fi
+        fail "temporary validation ref update failed over HTTP/2 and HTTP/1.1: $output"
+      fi
+    else
+      fail "temporary validation ref update failed: $output"
+    fi
+  fi
+
+  remote_output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git_http 10 "$proxy" \
+    -c http.version=HTTP/1.1 ls-remote "$REMOTE" "$ref" 2>&1)" ||
+    fail "temporary validation ref readback failed: $remote_output"
+  actual="$(awk 'NR == 1 { print $1 }' <<<"$remote_output")"
+  if [[ "$expected_present" == "1" ]]; then
+    [[ "$actual" == "$expected_sha" ]] || fail "temporary validation ref $ref did not resolve to $expected_sha"
+  else
+    [[ -z "$actual" ]] || fail "temporary validation ref $ref was not deleted"
+  fi
+}
+
+ensure_validation_ref() {
+  local sha="$1" ref existing
+  ref="$(validation_ref_for_sha "$sha")"
+  existing="$(read_remote_validation_ref "$ref")"
+  if [[ "$existing" == "$sha" ]]; then
+    return 0
+  fi
+  [[ -z "$existing" ]] || fail "temporary validation ref $ref already points to unexpected commit $existing"
+  echo "[sync-main] publishing temporary validation tag for exact commit $sha" >&2
+  push_validation_refspec "$sha:$ref" "$ref" "$sha" 1
+  [[ "$(git rev-parse HEAD)" == "$sha" ]] || {
+    delete_validation_ref "$sha"
+    fail "HEAD changed while publishing temporary validation ref; no main push was attempted"
+  }
+}
+
+delete_validation_ref() {
+  local sha="$1" ref existing
+  ref="$(validation_ref_for_sha "$sha")"
+  existing="$(read_remote_validation_ref "$ref")"
+  [[ -n "$existing" ]] || return 0
+  [[ "$existing" == "$sha" ]] || fail "refusing to delete temporary validation ref $ref pointing to $existing"
+  echo "[sync-main] deleting temporary validation tag for $sha" >&2
+  push_validation_refspec ":$ref" "$ref" "" 0
+}
+
+cleanup_validation_refs() {
+  local proxy remote_output sha ref
+  proxy="$(git_http_proxy)"
+  if ! remote_output="$(GIT_TERMINAL_PROMPT=0 run_bounded_git_http 15 "$proxy" \
+    -c http.version=HTTP/1.1 ls-remote "$REMOTE" 'refs/tags/forge-validation/*' 2>&1)"; then
+    fail "could not inspect temporary validation refs: $remote_output"
+  fi
+  while read -r sha ref; do
+    [[ -n "$sha" && "$ref" == refs/tags/forge-validation/* ]] || continue
+    if git merge-base --is-ancestor "$sha" "$REMOTE/$BRANCH"; then
+      delete_validation_ref "$sha"
+    fi
+  done <<<"$remote_output"
 }
 
 fetch_remote_main() {
@@ -414,6 +532,7 @@ echo "[sync-main] fetching $REMOTE/$BRANCH"
 fetch_remote_main
 reconcile_divergence
 read -r ahead behind < <(sync_refs)
+cleanup_validation_refs
 retry_pending_main_gate_status
 
 # Validate the complete candidate against the remote branch, not only HEAD.
@@ -471,6 +590,14 @@ if [[ "$ahead" -gt 0 ]]; then
   else
     status_result=$?
     [[ "$status_result" -eq 2 ]] || exit "$status_result"
+    ensure_validation_ref "$VALIDATED_HEAD"
+    if publish_required_main_gate_status "$VALIDATED_HEAD"; then
+      :
+    else
+      status_result=$?
+      [[ "$status_result" -eq 2 ]] && fail "GitHub still cannot resolve $VALIDATED_HEAD after the temporary validation tag was published"
+      exit "$status_result"
+    fi
   fi
   echo "[sync-main] pushing $ahead linear commit(s) to $REMOTE/$BRANCH (fast-forward only)"
   # Push the exact validated commit object, not a moving local branch ref.
@@ -526,7 +653,13 @@ fi
 fetch_remote_main
 LOCAL_SHA="$(git rev-parse "$BRANCH")"
 REMOTE_SHA="$(git rev-parse "$REMOTE/$BRANCH")"
-[[ "$LOCAL_SHA" == "$REMOTE_SHA" ]] || fail "main synchronization did not converge: local=$LOCAL_SHA remote=$REMOTE_SHA"
+if [[ "$LOCAL_SHA" != "$REMOTE_SHA" ]]; then
+  if git merge-base --is-ancestor "$VALIDATED_HEAD" "$REMOTE/$BRANCH"; then
+    delete_validation_ref "$VALIDATED_HEAD"
+  fi
+  fail "main synchronization did not converge: local=$LOCAL_SHA remote=$REMOTE_SHA"
+fi
+cleanup_validation_refs
 retry_pending_main_gate_status
 
 echo "[sync-main] main synchronized at $LOCAL_SHA"

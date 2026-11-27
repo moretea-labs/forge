@@ -109,6 +109,13 @@ contains_arg() {
   done
   return 1
 }
+is_main_ref_update() {
+  local arg
+  for arg in "$@"; do
+    [[ "$arg" == *"refs/heads/main" ]] && return 0
+  done
+  return 1
+}
 if contains_arg fetch "$@" && contains_arg http.version=HTTP/2 "$@" && \
   [[ "${FORGE_TEST_HTTP2_FETCH_FAILURE:-}" == 1 ]] && \
   [[ ! -e "${FORGE_TEST_HTTP2_FETCH_MARKER:-/dev/null}" ]]; then
@@ -119,20 +126,20 @@ fi
 if contains_arg fetch "$@" && contains_arg http.version=HTTP/1.1 "$@"; then
   printf '%s\\n' "$*" >"${FORGE_TEST_HTTP1_FETCH_MARKER:?missing HTTP/1.1 fetch marker}"
 fi
-if contains_arg push "$@" && [[ "${FORGE_TEST_PUSH_RACE:-}" == 1 ]] && \
+if contains_arg push "$@" && is_main_ref_update "$@" && [[ "${FORGE_TEST_PUSH_RACE:-}" == 1 ]] && \
   [[ ! -e "${FORGE_TEST_PUSH_RACE_MARKER:-/dev/null}" ]]; then
   printf '%s\n' "$*" >"$FORGE_TEST_PUSH_RACE_MARKER"
   "$FORGE_TEST_REAL_GIT" -c user.name='Concurrent Writer' -c user.email=writer@example.invalid \
     commit --allow-empty -qm 'test: successor created inside git push'
 fi
-if contains_arg push "$@" && contains_arg http.version=HTTP/2 "$@" && \
+if contains_arg push "$@" && is_main_ref_update "$@" && contains_arg http.version=HTTP/2 "$@" && \
   [[ "${FORGE_TEST_HTTP2_PUSH_FAILURE:-}" == 1 ]] && \
   [[ ! -e "${FORGE_TEST_HTTP2_PUSH_MARKER:-/dev/null}" ]]; then
   printf '%s\n' "$*" >"$FORGE_TEST_HTTP2_PUSH_MARKER"
   echo 'fatal: unable to access remote: HTTP/2 framing layer' >&2
   exit 1
 fi
-if contains_arg push "$@" && contains_arg http.version=HTTP/1.1 "$@"; then
+if contains_arg push "$@" && is_main_ref_update "$@" && contains_arg http.version=HTTP/1.1 "$@"; then
   printf '%s\n' "$*" >"${FORGE_TEST_HTTP1_PUSH_MARKER:?missing HTTP/1.1 marker}"
 fi
 exec "$FORGE_TEST_REAL_GIT" "$@"
@@ -181,7 +188,7 @@ printf '%s\n' "$*" >>"$FORGE_TEST_GH_MARKER"
 case "$2" in
   repos/*/statuses/*)
     sha="${2##*/}"
-    if ! git --git-dir="$FORGE_TEST_BARE_GIT_DIR" cat-file -e "$sha^{commit}" 2>/dev/null; then
+    if ! git --git-dir="$FORGE_TEST_BARE_GIT_DIR" show-ref --verify --quiet "refs/tags/forge-validation/$sha"; then
       printf '{"message":"No commit found for SHA: %s"}\n' "$sha" >&2
       exit 1
     fi
@@ -220,8 +227,12 @@ env FORGE_GH_BIN="$TMP/fake-gh" \
   fail "unknown commit status was not retried after the remote push"
 grep -Fq 'repos/moretea-labs/forge/commits/' "$TMP/github-status-marker" ||
   fail "required Main gate status was not read back"
+STATUS_SUCCESS_SHA="$(git rev-parse HEAD)"
+if git --git-dir="$BARE" show-ref --verify --quiet "refs/tags/forge-validation/$STATUS_SUCCESS_SHA"; then
+  fail "temporary validation tag remained after successful main publication"
+fi
 
-# A real status failure before publication must still stop the push.
+# A real status failure after validation-ref publication must still stop the main push.
 printf 'status failure candidate\n' >pending-status-failure.ts
 git add pending-status-failure.ts
 git commit -m 'test: block publication without required Main gate status' >/dev/null
@@ -230,6 +241,11 @@ cat >"$TMP/fake-gh-failure" <<'GH_FAILURE'
 set -euo pipefail
 case "$2" in
   repos/*/statuses/*)
+    sha="${2##*/}"
+    if ! git --git-dir="$FORGE_TEST_BARE_GIT_DIR" show-ref --verify --quiet "refs/tags/forge-validation/$sha"; then
+      printf '{"message":"No commit found for SHA: %s"}\n' "$sha" >&2
+      exit 1
+    fi
     printf '{"state":"failure","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
     ;;
   repos/*/commits/*/status)
@@ -248,53 +264,28 @@ expect_failure 'failed required Main gate status' 'did not confirm success' \
   env FORGE_GH_BIN="$TMP/fake-gh-failure" \
   FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
   FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
-  bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed'
-[[ "$(git --git-dir="$BARE" rev-parse main)" == "$REMOTE_BEFORE_STATUS_FAILURE" ]] ||
-  fail "push occurred despite a failed required Main gate status"
-# A status API outage after the remote accepted the commit leaves a pending
-# marker; the next interval must retry status publication without another push.
-printf 'post-push status retry\n' >pending-status-retry.ts
-git add pending-status-retry.ts
-git commit -m 'test: retry Main gate status after publication' >/dev/null
-cat >"$TMP/fake-gh-after-push-failure" <<'GH_AFTER_PUSH_FAILURE'
-#!/usr/bin/env bash
-set -euo pipefail
-case "$2" in
-  repos/*/statuses/*)
-    sha="${2##*/}"
-    if ! git --git-dir="$FORGE_TEST_BARE_GIT_DIR" cat-file -e "$sha^{commit}" 2>/dev/null; then
-      printf '{"message":"No commit found for SHA: %s"}\n' "$sha" >&2
-      exit 1
-    fi
-    printf '{"state":"failure","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
-    ;;
-  repos/*/commits/*/status)
-    printf '{"statuses":[]}\n'
-    ;;
-  *)
-    echo "unexpected GitHub API path: $2" >&2
-    exit 2
-    ;;
-esac
-GH_AFTER_PUSH_FAILURE
-chmod +x "$TMP/fake-gh-after-push-failure"
-# shellcheck disable=SC2016
-expect_failure 'post-push Main gate status failure' 'did not confirm success' \
-  env FORGE_GH_BIN="$TMP/fake-gh-after-push-failure" \
-  FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
-  FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
   FORGE_TEST_BARE_GIT_DIR="$BARE" \
   bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed'
-[[ "$(git --git-dir="$BARE" rev-parse main)" == "$(git rev-parse HEAD)" ]] ||
-  fail "validated commit was not retained on the remote after status failure"
+[[ "$(git --git-dir="$BARE" rev-parse main)" == "$REMOTE_BEFORE_STATUS_FAILURE" ]] ||
+  fail "main push occurred despite a failed required Main gate status"
+FAILED_STATUS_SHA="$(git rev-parse HEAD)"
+FAILED_STATUS_REF="refs/tags/forge-validation/$FAILED_STATUS_SHA"
+[[ "$(git --git-dir="$BARE" rev-parse "$FAILED_STATUS_REF")" == "$FAILED_STATUS_SHA" ]] ||
+  fail "failed status publication did not preserve its temporary validation tag"
 PENDING_STATUS_PATH="$(git rev-parse --git-path forge-main-gate-status-pending)"
-[[ -f "$PENDING_STATUS_PATH" ]] || fail "post-push status failure did not leave a retry marker"
+[[ -f "$PENDING_STATUS_PATH" ]] || fail "failed status publication did not leave a retry marker"
+# Retry the failed status against the existing validation tag. The next
+# run must publish the status first, then push main and delete the tag.
 cat >"$TMP/fake-gh-recovery" <<'GH_RECOVERY'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$2" in
   repos/*/statuses/*)
     sha="${2##*/}"
+    if ! git --git-dir="$FORGE_TEST_BARE_GIT_DIR" show-ref --verify --quiet "refs/tags/forge-validation/$sha"; then
+      printf '{"message":"No commit found for SHA: %s"}\n' "$sha" >&2
+      exit 1
+    fi
     mkdir -p "$FORGE_TEST_GH_SUCCESS_DIR"
     touch "$FORGE_TEST_GH_SUCCESS_DIR/$sha"
     printf '{"state":"success","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
@@ -315,16 +306,20 @@ case "$2" in
 esac
 GH_RECOVERY
 chmod +x "$TMP/fake-gh-recovery"
-# A false check command proves the pending status is retried from prior
-# validation evidence rather than re-running or weakening the Main gate.
+# The committed candidate is revalidated normally after the pending status is
+# restored; no branch protection rule is skipped.
 # shellcheck disable=SC2016
 env FORGE_GH_BIN="$TMP/fake-gh-recovery" \
   FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
   FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
+  FORGE_TEST_BARE_GIT_DIR="$BARE" \
   FORGE_TEST_GH_SUCCESS_DIR="$TMP/github-status-retry" \
-  bash scripts/sync-main.sh --check-command false >/dev/null
+  bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed' >/dev/null
 [[ "$(git --git-dir="$BARE" rev-parse main)" == "$(git rev-parse HEAD)" ]] ||
-  fail "status retry changed the already-published main commit"
+  fail "status retry did not publish the validated main commit"
+if git --git-dir="$BARE" show-ref --verify --quiet "$FAILED_STATUS_REF"; then
+  fail "temporary validation tag remained after successful status retry"
+fi
 [[ ! -f "$PENDING_STATUS_PATH" ]] || fail "successful status retry did not clear its marker"
 
 # A remote-only fast-forward is synchronized without touching unrelated dirt.
