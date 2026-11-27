@@ -168,21 +168,35 @@ env PATH="$TMP/git-wrapper:$PATH" FORGE_TEST_HTTP2_PUSH_FAILURE=1 \
 [[ "$(git rev-parse HEAD)" == "$(git --git-dir="$BARE" rev-parse main)" ]] ||
   fail "HTTP/1.1 fallback did not publish the exact validated candidate"
 
-# GitHub repositories publish and read back the required Main gate status
-# before push. A local/bare remote does not require GitHub status.
+# GitHub only accepts commit statuses for commits it can resolve. The first
+# POST must therefore defer on an unknown SHA; the same status is published
+# and read back after the exact validated commit reaches the bare remote.
 printf 'status candidate\n' >pending-status.ts
 git add pending-status.ts
-git commit -m 'test: require Main gate status before push' >/dev/null
+git commit -m 'test: publish Main gate status after remote commit exists' >/dev/null
 cat >"$TMP/fake-gh" <<'GH_WRAPPER'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FORGE_TEST_GH_MARKER"
 case "$2" in
   repos/*/statuses/*)
+    sha="${2##*/}"
+    if ! git --git-dir="$FORGE_TEST_BARE_GIT_DIR" cat-file -e "$sha^{commit}" 2>/dev/null; then
+      printf '{"message":"No commit found for SHA: %s"}\n' "$sha" >&2
+      exit 1
+    fi
+    mkdir -p "$FORGE_TEST_GH_SUCCESS_DIR"
+    touch "$FORGE_TEST_GH_SUCCESS_DIR/$sha"
     printf '{"state":"success","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
     ;;
   repos/*/commits/*/status)
-    printf '{"statuses":[{"state":"success","context":"%s"}]}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
+    sha="${2%/status}"
+    sha="${sha##*/}"
+    if [[ -f "$FORGE_TEST_GH_SUCCESS_DIR/$sha" ]]; then
+      printf '{"statuses":[{"state":"success","context":"%s"}]}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
+    else
+      printf '{"statuses":[]}\n'
+    fi
     ;;
   *)
     echo "unexpected GitHub API path: $2" >&2
@@ -196,42 +210,122 @@ rm -f "$TMP/github-status-marker"
 env FORGE_GH_BIN="$TMP/fake-gh" \
   FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
   FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
+  FORGE_TEST_BARE_GIT_DIR="$BARE" \
+  FORGE_TEST_GH_SUCCESS_DIR="$TMP/github-status-success" \
   FORGE_TEST_GH_MARKER="$TMP/github-status-marker" \
   bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed' >/dev/null
-grep -Fq 'repos/moretea-labs/forge/statuses/' "$TMP/github-status-marker" ||
-  fail "required Main gate status was not published"
+[[ "$(git --git-dir="$BARE" rev-parse main)" == "$(git rev-parse HEAD)" ]] ||
+  fail "candidate was not pushed before GitHub status publication"
+[[ "$(grep -Fc 'repos/moretea-labs/forge/statuses/' "$TMP/github-status-marker")" -eq 2 ]] ||
+  fail "unknown commit status was not retried after the remote push"
 grep -Fq 'repos/moretea-labs/forge/commits/' "$TMP/github-status-marker" ||
   fail "required Main gate status was not read back"
 
-# A missing/failed required status must stop before the Git push.
+# A real status failure before publication must still stop the push.
 printf 'status failure candidate\n' >pending-status-failure.ts
 git add pending-status-failure.ts
 git commit -m 'test: block publication without required Main gate status' >/dev/null
 cat >"$TMP/fake-gh-failure" <<'GH_FAILURE'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '{"state":"failure","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
+case "$2" in
+  repos/*/statuses/*)
+    printf '{"state":"failure","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
+    ;;
+  repos/*/commits/*/status)
+    printf '{"statuses":[]}\n'
+    ;;
+  *)
+    echo "unexpected GitHub API path: $2" >&2
+    exit 2
+    ;;
+esac
 GH_FAILURE
 chmod +x "$TMP/fake-gh-failure"
 REMOTE_BEFORE_STATUS_FAILURE="$(git --git-dir="$BARE" rev-parse main)"
 # shellcheck disable=SC2016
 expect_failure 'failed required Main gate status' 'did not confirm success' \
   env FORGE_GH_BIN="$TMP/fake-gh-failure" \
-    FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
-    FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
-    bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed'
-[[ "$(git --git-dir="$BARE" rev-parse main)" == "$REMOTE_BEFORE_STATUS_FAILURE" ]] ||
-  fail "push occurred despite a failed required Main gate status"
-# The rejected candidate remains local; publish it only after a successful
-# required status so later remote-only fast-forward coverage starts in sync.
-# shellcheck disable=SC2016
-env FORGE_GH_BIN="$TMP/fake-gh" \
   FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
   FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
-  FORGE_TEST_GH_MARKER="$TMP/github-status-marker" \
-  bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed' >/dev/null
-[[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] ||
-  fail "candidate was not published after the required status recovered"
+  bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed'
+[[ "$(git --git-dir="$BARE" rev-parse main)" == "$REMOTE_BEFORE_STATUS_FAILURE" ]] ||
+  fail "push occurred despite a failed required Main gate status"
+# A status API outage after the remote accepted the commit leaves a pending
+# marker; the next interval must retry status publication without another push.
+printf 'post-push status retry\n' >pending-status-retry.ts
+git add pending-status-retry.ts
+git commit -m 'test: retry Main gate status after publication' >/dev/null
+cat >"$TMP/fake-gh-after-push-failure" <<'GH_AFTER_PUSH_FAILURE'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$2" in
+  repos/*/statuses/*)
+    sha="${2##*/}"
+    if ! git --git-dir="$FORGE_TEST_BARE_GIT_DIR" cat-file -e "$sha^{commit}" 2>/dev/null; then
+      printf '{"message":"No commit found for SHA: %s"}\n' "$sha" >&2
+      exit 1
+    fi
+    printf '{"state":"failure","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
+    ;;
+  repos/*/commits/*/status)
+    printf '{"statuses":[]}\n'
+    ;;
+  *)
+    echo "unexpected GitHub API path: $2" >&2
+    exit 2
+    ;;
+esac
+GH_AFTER_PUSH_FAILURE
+chmod +x "$TMP/fake-gh-after-push-failure"
+# shellcheck disable=SC2016
+expect_failure 'post-push Main gate status failure' 'did not confirm success' \
+  env FORGE_GH_BIN="$TMP/fake-gh-after-push-failure" \
+  FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
+  FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
+  FORGE_TEST_BARE_GIT_DIR="$BARE" \
+  bash scripts/sync-main.sh --check-command 'test "$FORGE_CHECK_SOURCE_QUALITY_MODE" = committed'
+[[ "$(git --git-dir="$BARE" rev-parse main)" == "$(git rev-parse HEAD)" ]] ||
+  fail "validated commit was not retained on the remote after status failure"
+PENDING_STATUS_PATH="$(git rev-parse --git-path forge-main-gate-status-pending)"
+[[ -f "$PENDING_STATUS_PATH" ]] || fail "post-push status failure did not leave a retry marker"
+cat >"$TMP/fake-gh-recovery" <<'GH_RECOVERY'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$2" in
+  repos/*/statuses/*)
+    sha="${2##*/}"
+    mkdir -p "$FORGE_TEST_GH_SUCCESS_DIR"
+    touch "$FORGE_TEST_GH_SUCCESS_DIR/$sha"
+    printf '{"state":"success","context":"%s"}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
+    ;;
+  repos/*/commits/*/status)
+    sha="${2%/status}"
+    sha="${sha##*/}"
+    if [[ -f "$FORGE_TEST_GH_SUCCESS_DIR/$sha" ]]; then
+      printf '{"statuses":[{"state":"success","context":"%s"}]}\n' "$FORGE_MAIN_GATE_STATUS_CONTEXT"
+    else
+      printf '{"statuses":[]}\n'
+    fi
+    ;;
+  *)
+    echo "unexpected GitHub API path: $2" >&2
+    exit 2
+    ;;
+esac
+GH_RECOVERY
+chmod +x "$TMP/fake-gh-recovery"
+# A false check command proves the pending status is retried from prior
+# validation evidence rather than re-running or weakening the Main gate.
+# shellcheck disable=SC2016
+env FORGE_GH_BIN="$TMP/fake-gh-recovery" \
+  FORGE_GITHUB_REPOSITORY=moretea-labs/forge \
+  FORGE_MAIN_GATE_STATUS_CONTEXT='Main gate' \
+  FORGE_TEST_GH_SUCCESS_DIR="$TMP/github-status-retry" \
+  bash scripts/sync-main.sh --check-command false >/dev/null
+[[ "$(git --git-dir="$BARE" rev-parse main)" == "$(git rev-parse HEAD)" ]] ||
+  fail "status retry changed the already-published main commit"
+[[ ! -f "$PENDING_STATUS_PATH" ]] || fail "successful status retry did not clear its marker"
 
 # A remote-only fast-forward is synchronized without touching unrelated dirt.
 git clone "$BARE" "$OTHER" >/dev/null 2>&1

@@ -102,6 +102,7 @@ git remote get-url "$REMOTE" >/dev/null 2>&1 || fail "remote '$REMOTE' is not co
 # refs concurrently. The lock lives in this checkout's Git metadata, not the
 # working tree, and is always released on normal exit/signals.
 LOCK_DIR="$(git rev-parse --git-path forge-sync-main.lock)"
+STATUS_PENDING_PATH="$(git rev-parse --git-path forge-main-gate-status-pending)"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   LOCK_PID="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
   if [[ "$LOCK_PID" =~ ^[0-9]+$ ]] && kill -0 "$LOCK_PID" 2>/dev/null; then
@@ -129,53 +130,124 @@ elif [[ "${#PATHS[@]}" -gt 0 || -n "$MESSAGE" ]]; then
   fail "--path and --message require --commit"
 fi
 
-publish_required_main_gate_status() {
-local sha="$1" repository remote_url status_context gh_bin post_response readback_response
-
-repository="$(printenv FORGE_GITHUB_REPOSITORY || true)"
-if [[ -z "$repository" ]]; then repository="$(printenv GITHUB_REPOSITORY || true)"; fi
-if [[ -z "$repository" ]]; then
-  remote_url="$(git remote get-url "$REMOTE")"
-  case "$remote_url" in
-    https://github.com/*|git@github.com:*|ssh://git@github.com/*)
+github_repository() {
+  local repository remote_url
+  repository="$(printenv FORGE_GITHUB_REPOSITORY || true)"
+  if [[ -z "$repository" ]]; then repository="$(printenv GITHUB_REPOSITORY || true)"; fi
+  if [[ -z "$repository" ]]; then
+    remote_url="$(git remote get-url "$REMOTE")"
+    case "$remote_url" in
+    https://github.com/* | git@github.com:* | ssh://git@github.com/*)
       repository="$(printf '%s' "$remote_url" | sed -E 's#^https://github.com/|^git@github.com:|^ssh://git@github.com/##; s#\.git$##')"
       ;;
-    *) return 0 ;;
-  esac
-fi
+    *)
+      printf ''
+      return 0
+      ;;
+    esac
+  fi
+  [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+    fail "invalid GitHub repository identity for required Main gate status: $repository"
+  printf '%s' "$repository"
+}
 
-[[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
-  fail "invalid GitHub repository identity for required Main gate status: $repository"
+github_status_context() {
+  local status_context
+  status_context="$(printenv FORGE_MAIN_GATE_STATUS_CONTEXT || true)"
+  [[ -n "$status_context" ]] || status_context="Main gate"
+  printf '%s' "$status_context"
+}
 
-status_context="$(printenv FORGE_MAIN_GATE_STATUS_CONTEXT || true)"
-[[ -n "$status_context" ]] || status_context="Main gate"
+github_cli() {
+  local gh_bin
+  gh_bin="$(printenv FORGE_GH_BIN || command -v gh || true)"
+  if [[ -z "$gh_bin" && -x /opt/homebrew/bin/gh ]]; then gh_bin=/opt/homebrew/bin/gh; fi
+  printf '%s' "$gh_bin"
+}
 
-gh_bin="$(printenv FORGE_GH_BIN || command -v gh || true)"
-if [[ -z "$gh_bin" && -x /opt/homebrew/bin/gh ]]; then gh_bin=/opt/homebrew/bin/gh; fi
-[[ -n "$gh_bin" && -x "$gh_bin" ]] ||
-  fail "GitHub CLI is unavailable; refusing to bypass the required '$status_context' status check"
+main_gate_status_is_success() {
+  local sha="$1" repository status_context gh_bin readback_response
+  repository="$(github_repository)"
+  [[ -n "$repository" ]] || return 0
+  status_context="$(github_status_context)"
+  gh_bin="$(github_cli)"
+  [[ -n "$gh_bin" && -x "$gh_bin" ]] || return 1
+  if ! readback_response="$("$gh_bin" api "repos/$repository/commits/$sha/status" 2>/dev/null)"; then
+    return 1
+  fi
+  node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const x=JSON.parse(s);process.exit(Array.isArray(x.statuses)&&x.statuses.some(v=>v.context===process.argv[1]&&v.state==="success")?0:1)}catch{process.exit(1)}})' \
+    "$status_context" <<<"$readback_response"
+}
 
-if ! post_response="$("$gh_bin" api "repos/$repository/statuses/$sha" \
-  -f state=success \
-  -f "context=$status_context" \
-  -f "description=Forge Main gate passed for $sha" 2>&1)"; then
-  fail "could not publish required GitHub status '$status_context' for $sha: $post_response"
-fi
+publish_required_main_gate_status() {
+  local sha="$1" repository status_context gh_bin post_response readback_response
+  repository="$(github_repository)"
+  [[ -n "$repository" ]] || return 0
+  status_context="$(github_status_context)"
+  gh_bin="$(github_cli)"
+  [[ -n "$gh_bin" && -x "$gh_bin" ]] || {
+    printf '%s\n' "$sha" >"$STATUS_PENDING_PATH"
+    fail "GitHub CLI is unavailable; refusing to bypass the required '$status_context' status check"
+  }
 
-if ! node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const x=JSON.parse(s);process.exit(x.state==="success"&&x.context===process.argv[1]?0:1)}catch{process.exit(1)}})' \
-  "$status_context" <<<"$post_response"; then
-  fail "GitHub did not confirm success for required status '$status_context' on $sha"
-fi
+  if ! post_response="$("$gh_bin" api "repos/$repository/statuses/$sha" \
+    -f state=success \
+    -f "context=$status_context" \
+    -f "description=Forge Main gate passed for $sha" 2>&1)"; then
+    if grep -Fq "No commit found for SHA: $sha" <<<"$post_response"; then
+      printf '%s\n' "$sha" >"$STATUS_PENDING_PATH"
+      echo "[sync-main] GitHub has not indexed $sha yet; deferring Main gate status until after push" >&2
+      return 2
+    fi
+    printf '%s\n' "$sha" >"$STATUS_PENDING_PATH"
+    fail "could not publish required GitHub status '$status_context' for $sha: $post_response"
+  fi
 
-if ! readback_response="$("$gh_bin" api "repos/$repository/commits/$sha/status" 2>&1)"; then
-  fail "could not read back required GitHub status '$status_context' for $sha: $readback_response"
-fi
-if ! node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const x=JSON.parse(s);process.exit(Array.isArray(x.statuses)&&x.statuses.some(v=>v.context===process.argv[1]&&v.state==="success")?0:1)}catch{process.exit(1)}})' \
-  "$status_context" <<<"$readback_response"; then
-  fail "GitHub readback did not contain a successful '$status_context' status for $sha"
-fi
+  if ! node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const x=JSON.parse(s);process.exit(x.state==="success"&&x.context===process.argv[1]?0:1)}catch{process.exit(1)}})' \
+    "$status_context" <<<"$post_response"; then
+    printf '%s\n' "$sha" >"$STATUS_PENDING_PATH"
+    fail "GitHub did not confirm success for required status '$status_context' on $sha"
+  fi
 
-echo "[sync-main] GitHub required status '$status_context' confirmed for $sha"
+  if ! readback_response="$("$gh_bin" api "repos/$repository/commits/$sha/status" 2>&1)"; then
+    printf '%s\n' "$sha" >"$STATUS_PENDING_PATH"
+    fail "could not read back required GitHub status '$status_context' for $sha: $readback_response"
+  fi
+  if ! node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const x=JSON.parse(s);process.exit(Array.isArray(x.statuses)&&x.statuses.some(v=>v.context===process.argv[1]&&v.state==="success")?0:1)}catch{process.exit(1)}})' \
+    "$status_context" <<<"$readback_response"; then
+    printf '%s\n' "$sha" >"$STATUS_PENDING_PATH"
+    fail "GitHub readback did not contain a successful '$status_context' status for $sha"
+  fi
+
+  if [[ -f "$STATUS_PENDING_PATH" ]] && [[ "$(cat "$STATUS_PENDING_PATH")" == "$sha" ]]; then
+    rm -f "$STATUS_PENDING_PATH"
+  fi
+  echo "[sync-main] GitHub required status '$status_context' confirmed for $sha"
+}
+
+retry_pending_main_gate_status() {
+  local pending_sha remote_sha status_result
+  [[ -f "$STATUS_PENDING_PATH" ]] || return 0
+  pending_sha="$(cat "$STATUS_PENDING_PATH")"
+  [[ "$pending_sha" =~ ^[0-9a-f]{40,64}$ ]] || fail "pending Main gate status contains an invalid commit SHA"
+  remote_sha="$(git rev-parse "$REMOTE/$BRANCH")"
+  if git merge-base --is-ancestor "$pending_sha" "$remote_sha"; then
+    if main_gate_status_is_success "$pending_sha"; then
+      rm -f "$STATUS_PENDING_PATH"
+      return 0
+    fi
+    if publish_required_main_gate_status "$pending_sha"; then
+      return 0
+    else
+      status_result=$?
+      [[ "$status_result" -eq 2 ]] && fail "origin/main contains $pending_sha but GitHub still cannot resolve its Main gate status"
+      exit "$status_result"
+    fi
+  elif git merge-base --is-ancestor "$pending_sha" HEAD; then
+    echo "[sync-main] pending Main gate status for $pending_sha awaits publication of the validated commit" >&2
+  else
+    fail "pending Main gate status belongs to $pending_sha, which is not reachable from local or remote main"
+  fi
 }
 
 git_http_proxy() {
@@ -276,8 +348,7 @@ reconcile_divergence() {
   [[ -z "$dirty_status" ]] ||
     fail "local main and origin/main require linear reconciliation (ahead=$ahead behind=$behind), but the checkout is dirty; preserve Writer changes and retry after the Writer finishes: $(git status --short)"
 
-
-if [[ "$DRY_RUN" -eq 1 ]]; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[sync-main] would linearize $ahead local and $behind remote commit(s) with rebase; no merge commit will be created" >&2
     return 0
   fi
@@ -343,6 +414,7 @@ echo "[sync-main] fetching $REMOTE/$BRANCH"
 fetch_remote_main
 reconcile_divergence
 read -r ahead behind < <(sync_refs)
+retry_pending_main_gate_status
 
 # Validate the complete candidate against the remote branch, not only HEAD.
 # If the remote moves during validation, reconcile and validate the new linear
@@ -394,7 +466,12 @@ if [[ "$ahead" -gt 0 ]]; then
   [[ "$(git rev-parse HEAD)" == "$VALIDATED_HEAD" ]] || fail "HEAD changed since validation; refusing to push unvalidated successor commits"
   [[ -z "$(git rev-list --merges "$REMOTE/$BRANCH..$VALIDATED_HEAD")" ]] ||
     fail "validated candidate contains unpublished merge commits; refusing to bypass the linear-history rule"
-  publish_required_main_gate_status "$VALIDATED_HEAD"
+  if publish_required_main_gate_status "$VALIDATED_HEAD"; then
+    :
+  else
+    status_result=$?
+    [[ "$status_result" -eq 2 ]] || exit "$status_result"
+  fi
   echo "[sync-main] pushing $ahead linear commit(s) to $REMOTE/$BRANCH (fast-forward only)"
   # Push the exact validated commit object, not a moving local branch ref.
   # Another Writer can advance main after the last HEAD check but before
@@ -450,6 +527,7 @@ fetch_remote_main
 LOCAL_SHA="$(git rev-parse "$BRANCH")"
 REMOTE_SHA="$(git rev-parse "$REMOTE/$BRANCH")"
 [[ "$LOCAL_SHA" == "$REMOTE_SHA" ]] || fail "main synchronization did not converge: local=$LOCAL_SHA remote=$REMOTE_SHA"
+retry_pending_main_gate_status
 
 echo "[sync-main] main synchronized at $LOCAL_SHA"
 if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
