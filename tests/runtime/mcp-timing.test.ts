@@ -7,6 +7,7 @@ import {
   readRecentMcpTransportEvents,
   recordMcpHttpTransportSpan,
   recordMcpTiming,
+  readRecentMcpTimingSummary,
   recordMcpTransportEvent,
 } from '../../src/runtime/diagnostics/mcp-timing';
 
@@ -84,6 +85,69 @@ describe('MCP timing diagnostics', () => {
       httpOutcome: 'finished',
     });
     expect(httpSpan).not.toHaveProperty('totalToolDurationMs');
+  });
+
+  test('summarizes tool duration, pre-handler dispatch wait, and response tail by runtime layer', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-mcp-timing-summary-'));
+    homes.push(home);
+    recordMcpTiming(home, {
+      tool: 'rh_status',
+      traceId: 'trace-summary-gateway',
+      rpcId: 31,
+      sessionId: 'session-summary-gateway',
+      layer: 'public_gateway',
+      startedAt: '2026-11-24T12:00:00.010Z',
+      outcome: 'ok',
+      totalToolDurationMs: 9.5,
+      gatewayProxyCallMs: 15.5,
+      gatewayProxyLaneWaitMs: 0.2,
+    });
+    recordMcpHttpTransportSpan(home, {
+      sessionId: 'session-summary-gateway',
+      rpcId: 31,
+      tool: 'rh_status',
+      route: '/mcp',
+      layer: 'public_gateway',
+      startedAt: '2026-11-24T12:00:00.000Z',
+      finishedAt: '2026-11-24T12:00:00.030Z',
+      durationMs: 30,
+      statusCode: 200,
+      outcome: 'finished',
+    });
+    recordMcpTiming(home, {
+      tool: 'rh_status',
+      traceId: 'trace-summary-runtime',
+      rpcId: 32,
+      sessionId: 'session-summary-runtime',
+      layer: 'canonical_runtime',
+      startedAt: '2026-11-24T12:00:01.000Z',
+      outcome: 'ok',
+      totalToolDurationMs: 20,
+    });
+    await flushMcpDiagnostics(home);
+
+    const summary = readRecentMcpTimingSummary(home);
+    expect(summary).toMatchObject({ observation: 'observed', sampleCount: 2, httpSpanCount: 1 });
+    expect(summary.tools).toEqual([
+      {
+        tool: 'rh_status',
+        layer: 'canonical_runtime',
+        sampleCount: 1,
+        outcomes: { ok: 1, error: 0, exception: 0 },
+        totalToolDurationMs: { p50Ms: 20, p95Ms: 20, maxMs: 20 },
+      },
+      {
+        tool: 'rh_status',
+        layer: 'public_gateway',
+        sampleCount: 1,
+        outcomes: { ok: 1, error: 0, exception: 0 },
+        totalToolDurationMs: { p50Ms: 9.5, p95Ms: 9.5, maxMs: 9.5 },
+        preHandlerDispatchMs: { p50Ms: 10, p95Ms: 10, maxMs: 10 },
+        responseTailMs: { p50Ms: 10.5, p95Ms: 10.5, maxMs: 10.5 },
+        gatewayProxyCallMs: { p50Ms: 15.5, p95Ms: 15.5, maxMs: 15.5 },
+        gatewayProxyLaneWaitMs: { p50Ms: 0.2, p95Ms: 0.2, maxMs: 0.2 },
+      },
+    ]);
   });
 
   test('preserves the oldest live correlation when the pending bound is full', async () => {

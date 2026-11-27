@@ -616,6 +616,7 @@ export class CanonicalForgeRuntime {
         // Candidate-only A/B gate: never change existing SSE sessions by default.
         enableGatewayJsonResponses: process.env.FORGE_RUNTIME_GATEWAY_JSON_RESPONSES === '1',
         authToken: this.config.authToken,
+        controllerHome: this.config.controllerHome,
         readiness: () => this.readiness(),
         createServer: (principalId, sessionId, controllerType) =>
           createRuntimeGatewayServer(this.controller!, principalId, {

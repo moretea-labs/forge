@@ -11,8 +11,11 @@ import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../../r
 import { resolveEphemeralWorkspaceTarget } from '../../repositories/ephemeral-workspace';
 import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../repositories/command-scope';
 import type { ResolvedExecutionIdentity } from '../execution/execution-identity';
-import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../repositories/command-executor';
-import { withControllerLock } from '../../../effects/controller-locks';
+import {
+  auditRepositoryCommand,
+  executeRepositoryCommand,
+  previewRepositoryCommandExecutionAsync,
+} from '../../repositories/command-executor';
 import { withRepositoryMutationExclusion } from '../../resources/leases/store';
 import {
   disableRepository,
@@ -875,25 +878,23 @@ export async function callRepositoryTool(
         if (args.dry_run === true) {
           const target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue);
           const { commandTarget } = target;
-          const execution = withControllerLock(
+          const { execution } = await previewRepositoryCommandExecutionAsync(
+            commandTarget,
+            {
+              command: args.command as string | string[],
+              mutationPaths: Array.isArray(args.mutation_paths)
+                ? args.mutation_paths
+                    .map(String)
+                    .map((path) => path.trim())
+                    .filter(Boolean)
+                : undefined,
+              cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
+              dryRun: true,
+              allowNonGitWorkspace: target.workspace !== undefined,
+            },
             controllerHome,
-            { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
-            'mcp:execute_command:preview',
-            () =>
-              executeRepositoryCommand(controllerHome, commandTarget, {
-                command: args.command as string | string[],
-                mutationPaths: Array.isArray(args.mutation_paths)
-                  ? args.mutation_paths
-                      .map(String)
-                      .map((path) => path.trim())
-                      .filter(Boolean)
-                  : undefined,
-                cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
-                dryRun: true,
-                allowNonGitWorkspace: target.workspace !== undefined,
-              }),
-            60_000,
           );
+          auditRepositoryCommand(controllerHome, commandTarget, execution);
           const {
             repoId: _previewRepoId,
             checkoutId: _previewCheckoutId,

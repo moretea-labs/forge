@@ -564,6 +564,7 @@ async function prepareRepositoryCommandExecutionAsync(
   );
 }
 
+/** @deprecated Use the async preview for request/transport dispatch to avoid blocking the Runtime event loop. */
 export function previewRepositoryCommandExecution(
   repository: RepositoryCommandScopeTarget,
   input: ExecuteRepositoryCommandInput,
@@ -591,7 +592,7 @@ export async function previewRepositoryCommandExecutionAsync(
   };
 }
 
-function auditCommand(
+export function auditRepositoryCommand(
   controllerHome: string,
   repository: RepositoryCommandScopeTarget,
   execution: RepositoryCommandExecution,
@@ -615,6 +616,8 @@ function auditCommand(
     'utf-8',
   );
 }
+
+const auditCommand = auditRepositoryCommand;
 
 export function executeRepositoryCommand(
   controllerHome: string,

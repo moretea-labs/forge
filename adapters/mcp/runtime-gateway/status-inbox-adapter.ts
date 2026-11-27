@@ -18,7 +18,7 @@ import {
 import type { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
 import { buildCheckExecutionSchedule } from '../../../src/runtime/execution/process-runtime/check-scheduling';
 import { listAssistantPluginManifests } from '../../../src/runtime/plugins/store';
-import { cachedGitIdentityAsync, gitSnapshot } from '../../../src/runtime/repositories/inspector';
+import { cachedGitIdentityAsync, gitSnapshot, gitSnapshotAsync } from '../../../src/runtime/repositories/inspector';
 import { buildRuntimeMaintenanceStatus } from '../../../src/runtime/recovery';
 import {
   allowedFacadeOperations,
@@ -440,7 +440,7 @@ export async function callStatusInboxAdapter(
     const readiness = await controllerReadinessEvidence(ctx, repository);
     const runtimeObservation = observeRuntimeStatus(ctx.controllerHome);
     markDetailPhase('readiness');
-    const liveGit = gitSnapshot(repository.canonicalRoot);
+    const liveGit = await gitSnapshotAsync(repository.canonicalRoot);
     markDetailPhase('git');
     // Compare startup Runtime Source against the Controller package authority —
     // never against the selected execution repository.

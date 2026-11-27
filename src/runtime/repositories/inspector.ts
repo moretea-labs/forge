@@ -34,6 +34,8 @@ interface GitSnapshotResult {
 
 const GIT_SNAPSHOT_CACHE_MAX_ENTRIES = 128;
 const gitSnapshotCache = new Map<string, { createdAt: number; value: GitSnapshotResult }>();
+const gitSnapshotInFlight = new Map<string, Promise<GitSnapshotResult>>();
+const gitSnapshotInvalidationEpoch = new Map<string, number>();
 
 export interface CachedGitIdentity {
   sampledAt: number;
@@ -232,6 +234,8 @@ export function invalidateRepositoryReadCaches(repoRoot: string): void {
   gitIdentityInvalidationEpoch.set(root, (gitIdentityInvalidationEpoch.get(root) ?? 0) + 1);
   gitIdentityInFlight.delete(root);
   gitIdentityCache.delete(root);
+  gitSnapshotInvalidationEpoch.set(root, (gitSnapshotInvalidationEpoch.get(root) ?? 0) + 1);
+  gitSnapshotInFlight.delete(root);
   gitSnapshotCache.delete(root);
   for (const key of [...searchFileInventoryCache.keys()]) {
     try {
@@ -1136,6 +1140,8 @@ export function readRepositoryRange(
 
 export function clearGitSnapshotCacheForTest(): void {
   gitSnapshotCache.clear();
+  gitSnapshotInFlight.clear();
+  gitSnapshotInvalidationEpoch.clear();
   gitSnapshotPerformance.cacheHits = 0;
   gitSnapshotPerformance.refreshes = 0;
   gitSnapshotPerformance.subprocesses = 0;
@@ -1143,6 +1149,112 @@ export function clearGitSnapshotCacheForTest(): void {
 
 export function gitSnapshotPerformanceSnapshot(): GitSnapshotPerformanceSnapshot {
   return { ...gitSnapshotPerformance };
+}
+
+async function bindSessionCacheAsync(
+  repoRoot: string,
+  session?: RepositoryReadSession,
+): Promise<RepositorySessionCache | null> {
+  if (!session?.sessionId || !session.repoId || !session.checkoutId) return null;
+  const sampled = await cachedGitIdentityAsync(repoRoot);
+  const identity: SessionIdentity = {
+    repoId: session.repoId,
+    checkoutId: session.checkoutId,
+    branch: sampled.branch,
+    head: sampled.head,
+    workingTreeFingerprint:
+      sampled.workingTreeFingerprint ??
+      createHash('sha256').update(`${sampled.head ?? ''}\n${sampled.branch ?? ''}`).digest('hex').slice(0, 24),
+  };
+  return getOrCreateSessionCache(session.sessionId, repoRoot, identity);
+}
+
+/** Async Git snapshot for MCP hot paths; concurrent cold reads share one refresh. */
+export async function gitSnapshotAsync(
+  repoRoot: string,
+  session?: RepositoryReadSession,
+): Promise<GitSnapshotResult> {
+  const root = resolve(repoRoot);
+  const sessionCache = await bindSessionCacheAsync(root, session);
+  if (sessionCache) {
+    const hit = sessionCache.getGitSnapshot();
+    if (hit && typeof hit === 'object') {
+      gitSnapshotPerformance.cacheHits += 1;
+      return hit as GitSnapshotResult;
+    }
+  }
+
+  const now = Date.now();
+  const cached = gitSnapshotCache.get(root);
+  if (cached && now - cached.createdAt <= GIT_SNAPSHOT_CACHE_TTL_MS) {
+    gitSnapshotPerformance.cacheHits += 1;
+    if (sessionCache) sessionCache.putGitSnapshot(cached.value);
+    return cached.value;
+  }
+
+  const existing = gitSnapshotInFlight.get(root);
+  if (existing) {
+    gitSnapshotPerformance.cacheHits += 1;
+    const value = await existing;
+    if (sessionCache) sessionCache.putGitSnapshot(value);
+    return value;
+  }
+
+  const epoch = gitSnapshotInvalidationEpoch.get(root) ?? 0;
+  const refresh = (async (): Promise<GitSnapshotResult> => {
+    gitSnapshotPerformance.refreshes += 1;
+    const identity = await cachedGitIdentityAsync(root);
+    gitSnapshotPerformance.subprocesses += 1;
+    const statusResult = await runBoundedChild('git', ['status', '--short', '--branch'], {
+      cwd: root,
+      timeoutMs: 10_000,
+      maxOutputBytes: 64 * 1024,
+    });
+    const status =
+      statusResult.status === 0 && !statusResult.timedOut && !statusResult.failureCode
+        ? statusResult.stdout.trim()
+        : statusResult.error || statusResult.stderr.trim();
+    const changeLines = status.split(/\r?\n/).filter((line) => line.trim() && !line.startsWith('##'));
+    const dirty = changeLines.length > 0;
+    const hasWorktreeDiff = changeLines.some((line) => {
+      const code = line.slice(0, 2);
+      return code !== '??' && code !== '!!' && code.length === 2 && code[1] !== ' ';
+    });
+    let diffStat = '';
+    if (hasWorktreeDiff) {
+      gitSnapshotPerformance.subprocesses += 1;
+      const diffResult = await runBoundedChild('git', ['diff', '--stat'], {
+        cwd: root,
+        timeoutMs: 10_000,
+        maxOutputBytes: 64 * 1024,
+      });
+      diffStat =
+        diffResult.status === 0 && !diffResult.timedOut && !diffResult.failureCode
+          ? diffResult.stdout.trim()
+          : diffResult.error || diffResult.stderr.trim();
+    }
+    const value: GitSnapshotResult = {
+      branch: identity.branch,
+      head: identity.head,
+      status,
+      diffStat,
+      dirty,
+    };
+    if ((gitSnapshotInvalidationEpoch.get(root) ?? 0) === epoch) {
+      gitSnapshotCache.set(root, { createdAt: Date.now(), value });
+      pruneGitSnapshotCache();
+    }
+    return value;
+  })();
+
+  gitSnapshotInFlight.set(root, refresh);
+  try {
+    const value = await refresh;
+    if (sessionCache) sessionCache.putGitSnapshot(value);
+    return value;
+  } finally {
+    if (gitSnapshotInFlight.get(root) === refresh) gitSnapshotInFlight.delete(root);
+  }
 }
 
 export function gitSnapshot(repoRoot: string, session?: RepositoryReadSession): GitSnapshotResult {

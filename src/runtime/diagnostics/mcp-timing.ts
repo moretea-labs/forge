@@ -398,6 +398,172 @@ function readDiagnosticTail<T>(controllerHome: string, fileName: string, maxByte
   }
 }
 
+export interface McpTimingPercentiles {
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+}
+
+export interface McpToolTimingSummary {
+  tool: string;
+  layer: NonNullable<McpTimingTrace['layer']>;
+  sampleCount: number;
+  outcomes: { ok: number; error: number; exception: number };
+  totalToolDurationMs: McpTimingPercentiles;
+  /** HTTP ingress to tools/call handler start; includes transport/SDK dispatch wait. */
+  preHandlerDispatchMs?: McpTimingPercentiles;
+  /** Tool handler completion to HTTP response finish; includes response encoding/flush. */
+  responseTailMs?: McpTimingPercentiles;
+  gatewayProxyCallMs?: McpTimingPercentiles;
+  gatewayProxyLaneWaitMs?: McpTimingPercentiles;
+  gatewayProxyCanonicalDispatchLagMs?: McpTimingPercentiles;
+  gatewayProxyCanonicalDurationMs?: McpTimingPercentiles;
+}
+
+export interface RecentMcpTimingSummary {
+  observation: 'observed' | 'empty';
+  sampleCount: number;
+  httpSpanCount: number;
+  tools: McpToolTimingSummary[];
+}
+
+function timingPercentiles(values: readonly number[]): McpTimingPercentiles | undefined {
+  if (values.length === 0) return undefined;
+  const sorted = [...values].sort((left, right) => left - right);
+  const percentile = (fraction: number): number =>
+    Math.round(sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)]! * 100) / 100;
+  return {
+    p50Ms: percentile(0.5),
+    p95Ms: percentile(0.95),
+    maxMs: Math.round(sorted[sorted.length - 1]! * 100) / 100,
+  };
+}
+
+function finiteTiming(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function timingTimestamp(value: unknown): number | undefined {
+  if (typeof value !== 'string') return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Bounded read-only summary for the performance diagnostic. It joins tool-handler
+ * spans to HTTP ingress/finish spans by traceId, exposing pre-handler dispatch
+ * wait and response-tail time without returning request/session identifiers.
+ */
+export function readRecentMcpTimingSummary(controllerHome: string, limit = 128): RecentMcpTimingSummary {
+  const records = readDiagnosticTail<Record<string, unknown>>(controllerHome, 'mcp-timings.jsonl', 512 * 1024);
+  const boundedLimit = Math.max(1, Math.min(512, Math.trunc(limit) || 128));
+  const httpSpans = records.filter((record) => record.spanKind === 'http_transport');
+  const httpByTrace = new Map<string, Record<string, unknown>>();
+  for (const span of httpSpans) {
+    if (typeof span.traceId === 'string') httpByTrace.set(span.traceId, span);
+  }
+  const toolRows = records
+    .filter(
+      (record) =>
+        record.spanKind !== 'http_transport' &&
+        typeof record.tool === 'string' &&
+        (record.layer === 'public_gateway' || record.layer === 'canonical_runtime') &&
+        finiteTiming(record.totalToolDurationMs) !== undefined,
+    )
+    .slice(-boundedLimit);
+  type Bucket = {
+    tool: string;
+    layer: NonNullable<McpTimingTrace['layer']>;
+    outcomes: { ok: number; error: number; exception: number };
+    total: number[];
+    preHandler: number[];
+    responseTail: number[];
+    gatewayCall: number[];
+    laneWait: number[];
+    dispatchLag: number[];
+    canonicalDuration: number[];
+  };
+  const buckets = new Map<string, Bucket>();
+  for (const row of toolRows) {
+    const tool = String(row.tool);
+    const layer = row.layer as NonNullable<McpTimingTrace['layer']>;
+    const key = JSON.stringify([layer, tool]);
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = {
+        tool,
+        layer,
+        outcomes: { ok: 0, error: 0, exception: 0 },
+        total: [],
+        preHandler: [],
+        responseTail: [],
+        gatewayCall: [],
+        laneWait: [],
+        dispatchLag: [],
+        canonicalDuration: [],
+      };
+      buckets.set(key, bucket);
+    }
+    const total = finiteTiming(row.totalToolDurationMs)!;
+    bucket.total.push(total);
+    if (row.outcome === 'ok' || row.outcome === 'error' || row.outcome === 'exception') {
+      bucket.outcomes[row.outcome] += 1;
+    }
+    const traceId = typeof row.traceId === 'string' ? row.traceId : undefined;
+    const http = traceId ? httpByTrace.get(traceId) : undefined;
+    if (http && http.layer === layer) {
+      const httpStart = timingTimestamp(http.httpStartedAt);
+      const toolStart = timingTimestamp(row.startedAt);
+      const httpFinish = timingTimestamp(http.httpFinishedAt);
+      if (httpStart !== undefined && toolStart !== undefined && toolStart >= httpStart) {
+        bucket.preHandler.push(toolStart - httpStart);
+      }
+      if (httpFinish !== undefined && toolStart !== undefined && httpFinish >= toolStart + total) {
+        bucket.responseTail.push(httpFinish - toolStart - total);
+      }
+    }
+    const gatewayCall = finiteTiming(row.gatewayProxyCallMs);
+    const laneWait = finiteTiming(row.gatewayProxyLaneWaitMs);
+    const dispatchLag = finiteTiming(row.gatewayProxyCanonicalDispatchLagMs);
+    const canonicalDuration = finiteTiming(row.gatewayProxyCanonicalDurationMs);
+    if (gatewayCall !== undefined) bucket.gatewayCall.push(gatewayCall);
+    if (laneWait !== undefined) bucket.laneWait.push(laneWait);
+    if (dispatchLag !== undefined) bucket.dispatchLag.push(dispatchLag);
+    if (canonicalDuration !== undefined) bucket.canonicalDuration.push(canonicalDuration);
+  }
+  const tools = [...buckets.values()]
+    .map(
+      (bucket): McpToolTimingSummary => ({
+        tool: bucket.tool,
+        layer: bucket.layer,
+        sampleCount: bucket.total.length,
+        outcomes: bucket.outcomes,
+        totalToolDurationMs: timingPercentiles(bucket.total)!,
+        ...(timingPercentiles(bucket.preHandler)
+          ? { preHandlerDispatchMs: timingPercentiles(bucket.preHandler)! }
+          : {}),
+        ...(timingPercentiles(bucket.responseTail) ? { responseTailMs: timingPercentiles(bucket.responseTail)! } : {}),
+        ...(timingPercentiles(bucket.gatewayCall)
+          ? { gatewayProxyCallMs: timingPercentiles(bucket.gatewayCall)! }
+          : {}),
+        ...(timingPercentiles(bucket.laneWait) ? { gatewayProxyLaneWaitMs: timingPercentiles(bucket.laneWait)! } : {}),
+        ...(timingPercentiles(bucket.dispatchLag)
+          ? { gatewayProxyCanonicalDispatchLagMs: timingPercentiles(bucket.dispatchLag)! }
+          : {}),
+        ...(timingPercentiles(bucket.canonicalDuration)
+          ? { gatewayProxyCanonicalDurationMs: timingPercentiles(bucket.canonicalDuration)! }
+          : {}),
+      }),
+    )
+    .sort((left, right) => right.totalToolDurationMs.p95Ms - left.totalToolDurationMs.p95Ms);
+  return {
+    observation: toolRows.length > 0 ? 'observed' : 'empty',
+    sampleCount: toolRows.length,
+    httpSpanCount: httpSpans.length,
+    tools,
+  };
+}
+
 /**
  * Durable transport evidence only. It is deliberately separate from MCP tool
  * incidents so normal reconnects cannot trigger incident-repair Work. The

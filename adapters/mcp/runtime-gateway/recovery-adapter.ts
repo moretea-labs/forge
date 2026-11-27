@@ -6,7 +6,7 @@ import {
   ensureRepositoryRuntimeStorage,
   inspectRepositoryRuntimeStorage,
 } from '../../../src/runtime/repositories/runtime-storage';
-import { cachedGitIdentity } from '../../../src/runtime/repositories/inspector';
+import { cachedGitIdentityAsync } from '../../../src/runtime/repositories/inspector';
 import { inferLocalControllerProcess } from '../../../src/runtime/diagnostics/performance';
 import { listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
 import { buildRuntimeOperationalView } from '../../../src/runtime/health';
@@ -51,7 +51,7 @@ async function capabilityRecoveryInput(
   const contextProjectionSourceRevision = runtimeSnapshot
     ? String(runtimeSnapshot.projection.metadata?.contentRevision ?? runtimeSnapshot.projection.revision)
     : undefined;
-  const contextGitIdentity = repository ? cachedGitIdentity(repository.canonicalRoot) : undefined;
+  const contextGitIdentity = repository ? await cachedGitIdentityAsync(repository.canonicalRoot) : undefined;
   const contextSourceIdentity =
     repository && contextProjectionSourceRevision !== undefined
       ? {

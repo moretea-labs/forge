@@ -1,4 +1,5 @@
-import { execFileSync } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
+import { readFile } from 'fs/promises';
 
 export interface TerminateProcessTreeOptions {
   gracePeriodMs?: number;
@@ -31,13 +32,51 @@ export function isProcessStatAlive(stat: string | undefined): boolean {
   return Boolean(normalized && !normalized.startsWith('Z'));
 }
 
+function execFileText(command: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
+  return new Promise((resolve) => {
+    execFile(command, args, { encoding: 'utf8', timeout: 2_000, maxBuffer: 64 * 1024 }, (error, stdout) => {
+      resolve({ ok: !error, stdout });
+    });
+  });
+}
+
+/** Non-blocking process liveness probe for request and worker hot paths. */
+export async function isProcessAliveAsync(pid: number | undefined): Promise<boolean> {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  if (process.platform === 'win32') return true;
+  if (process.platform === 'linux') {
+    try {
+      const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+      return isProcessStatAlive(
+        stat
+          .slice(stat.lastIndexOf(')') + 1)
+          .trim()
+          .split(/\s+/, 1)[0],
+      );
+    } catch {
+      // Preserve the safe synchronous fallback when procfs is restricted.
+      return true;
+    }
+  }
+  const result = await execFileText('ps', ['-o', 'stat=', '-p', String(pid)]);
+  if (!result.ok || !result.stdout.trim()) return true;
+  return isProcessStatAlive(result.stdout.trim());
+}
+
 function readProcessStatPosix(pid: number): string | undefined {
   try {
-    return execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {
-      encoding: 'utf8',
-      timeout: 2_000,
-      maxBuffer: 8 * 1024,
-    }).trim() || undefined;
+    return (
+      execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {
+        encoding: 'utf8',
+        timeout: 2_000,
+        maxBuffer: 8 * 1024,
+      }).trim() || undefined
+    );
   } catch {
     return undefined;
   }
@@ -106,6 +145,27 @@ export function listProcessTreeMembers(pid: number | undefined): number[] {
   return isProcessAlive(pid) ? [pid] : [];
 }
 
+async function listProcessGroupMembersPosixAsync(processGroupId: number): Promise<number[]> {
+  const pidResult = await execFileText('pgrep', ['-g', String(processGroupId)]);
+  if (!pidResult.ok || !pidResult.stdout.trim()) return [];
+  const pids = pidResult.stdout
+    .split(/\s+/)
+    .map((value) => Number.parseInt(value, 10))
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+  if (pids.length === 0) return [];
+  const result = await execFileText('ps', ['-o', 'pid=,pgid=,stat=', '-p', pids.join(',')]);
+  return result.ok ? parseProcessGroupMembersPosix(result.stdout, processGroupId) : [];
+}
+
+/** Async counterpart to listProcessTreeMembers; it never waits synchronously for pgrep/ps. */
+export async function listProcessTreeMembersAsync(pid: number | undefined): Promise<number[]> {
+  if (!pid || pid <= 0) return [];
+  if (process.platform === 'win32') return (await isProcessAliveAsync(pid)) ? [pid] : [];
+  const members = await listProcessGroupMembersPosixAsync(pid);
+  if (members.length > 0) return members;
+  return (await isProcessAliveAsync(pid)) ? [pid] : [];
+}
+
 export function signalProcessTree(pid: number | undefined, signal: NodeJS.Signals): boolean {
   if (!pid || pid <= 0 || pid === process.pid) return false;
   if (process.platform !== 'win32') {
@@ -139,7 +199,7 @@ export async function terminateProcessTree(
     };
   }
   while (true) {
-    const result = pollTermination(state);
+    const result = await pollTerminationAsync(state);
     if (result) return result;
     await sleep(state.pollIntervalMs);
   }
@@ -169,14 +229,16 @@ export function terminateProcessTreeSync(
 function startTermination(
   pid: number | undefined,
   options: TerminateProcessTreeOptions,
-): {
-  pid: number;
-  signaled: boolean;
-  escalated: boolean;
-  escalateAt: number;
-  deadline: number;
-  pollIntervalMs: number;
-} | undefined {
+):
+  | {
+      pid: number;
+      signaled: boolean;
+      escalated: boolean;
+      escalateAt: number;
+      deadline: number;
+      pollIntervalMs: number;
+    }
+  | undefined {
   if (!pid || pid <= 0 || pid === process.pid) return undefined;
   const gracePeriodMs = Math.max(0, options.gracePeriodMs ?? DEFAULT_GRACE_PERIOD_MS);
   const killAfterMs = Math.max(gracePeriodMs, options.killAfterMs ?? DEFAULT_KILL_AFTER_MS);
@@ -189,6 +251,41 @@ function startTermination(
     deadline: startedAt + killAfterMs,
     pollIntervalMs: Math.max(10, options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS),
   };
+}
+
+async function pollTerminationAsync(state: {
+  pid: number;
+  signaled: boolean;
+  escalated: boolean;
+  escalateAt: number;
+  deadline: number;
+  pollIntervalMs: number;
+}): Promise<ProcessTreeTerminationResult | undefined> {
+  const remainingPids = await listProcessTreeMembersAsync(state.pid);
+  if (remainingPids.length === 0) {
+    return {
+      pid: state.pid,
+      signaled: state.signaled,
+      escalated: state.escalated,
+      exited: true,
+      remainingPids: [],
+    };
+  }
+  const now = Date.now();
+  if (!state.escalated && now >= state.escalateAt) {
+    signalProcessTree(state.pid, 'SIGKILL');
+    state.escalated = true;
+  }
+  if (now >= state.deadline) {
+    return {
+      pid: state.pid,
+      signaled: state.signaled,
+      escalated: state.escalated,
+      exited: false,
+      remainingPids,
+    };
+  }
+  return undefined;
 }
 
 function pollTermination(state: {

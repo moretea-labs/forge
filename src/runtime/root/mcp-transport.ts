@@ -6,6 +6,7 @@ import type { Server } from '@modelcontextprotocol/server';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import type { RuntimeReadiness } from './types';
 import { mcpSessionLookupError } from '../shared/mcp-session-errors';
+import { recordMcpHttpTransportSpan } from '../diagnostics/mcp-timing';
 
 interface ManagedSession {
   transport: NodeStreamableHTTPServerTransport;
@@ -15,9 +16,19 @@ interface ManagedSession {
 }
 
 type RuntimeMcpRequestId = string | number;
+interface RuntimeMcpToolCallTrace {
+  rpcId: RuntimeMcpRequestId;
+  tool: string;
+  sessionId?: string;
+}
+
 interface ActiveRuntimeMcpPost {
   response: Response;
   requestIds: RuntimeMcpRequestId[];
+  toolCalls: RuntimeMcpToolCallTrace[];
+  startedAt: string;
+  startedAtMs: number;
+  httpSpansRecorded: boolean;
   transport?: NodeStreamableHTTPServerTransport;
 }
 
@@ -44,6 +55,8 @@ export type ForwardedControllerType = 'chatgpt' | 'codex' | 'claude' | 'grok';
 export interface StartRuntimeMcpTransportOptions {
   host: string;
   port: number;
+  /** Controller home for bounded MCP timing evidence. */
+  controllerHome?: string;
   authToken: string;
   readiness: () => RuntimeReadiness;
   createServer: (principalId: string, sessionId?: string, controllerType?: ForwardedControllerType) => Server;
@@ -118,6 +131,40 @@ function runtimeMcpRequestIds(body: unknown): RuntimeMcpRequestId[] {
     if (!value || typeof value !== 'object') return [];
     const id = (value as Record<string, unknown>).id;
     return typeof id === 'string' || typeof id === 'number' ? [id] : [];
+  });
+}
+
+function runtimeMcpToolCallTraces(body: unknown, fallbackSessionId?: string): RuntimeMcpToolCallTrace[] {
+  const values = Array.isArray(body) ? body : [body];
+  return values.flatMap((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    const request = value as Record<string, unknown>;
+    if (request.method !== 'tools/call' || (typeof request.id !== 'string' && typeof request.id !== 'number')) {
+      return [];
+    }
+    const params = request.params;
+    if (!params || typeof params !== 'object' || Array.isArray(params)) return [];
+    const parameters = params as Record<string, unknown>;
+    if (typeof parameters.name !== 'string' || !parameters.name.trim()) return [];
+    const meta = parameters._meta;
+    const metaRecord =
+      meta && typeof meta === 'object' && !Array.isArray(meta) ? (meta as Record<string, unknown>) : undefined;
+    const forwarding = metaRecord?.forgeRuntimeForwarding;
+    const forwardingRecord =
+      forwarding && typeof forwarding === 'object' && !Array.isArray(forwarding)
+        ? (forwarding as Record<string, unknown>)
+        : undefined;
+    const sessionId =
+      typeof forwardingRecord?.sessionId === 'string'
+        ? forwardingRecord.sessionId.trim().slice(0, 512)
+        : fallbackSessionId;
+    return [
+      {
+        rpcId: request.id,
+        tool: parameters.name.trim(),
+        ...(sessionId ? { sessionId } : {}),
+      },
+    ];
   });
 }
 
@@ -234,6 +281,7 @@ export async function startRuntimeMcpTransport(
   let capacityEvictions = 0;
   let activeRequests = 0;
   const activePosts = new Map<Response, ActiveRuntimeMcpPost>();
+  const postStartedAt = new WeakMap<Response, { startedAt: string; startedAtMs: number }>();
 
   const sessionSnapshot = (): RuntimeMcpSessionSnapshot => ({
     active: sessions.size,
@@ -278,7 +326,10 @@ export async function startRuntimeMcpTransport(
   const postDrainWaiters = new Set<() => void>();
   const app = express();
   app.disable('x-powered-by');
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
+    if (req.method === 'POST' && req.path === '/mcp') {
+      postStartedAt.set(res, { startedAt: new Date().toISOString(), startedAtMs: performance.now() });
+    }
     activeRequests += 1;
     let settled = false;
     const settle = (): void => {
@@ -302,8 +353,38 @@ export async function startRuntimeMcpTransport(
 
   const requireAuth = authMiddleware(options.authToken);
   app.post('/mcp', requireAuth, express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    const activePost: ActiveRuntimeMcpPost = { response: res, requestIds: [] };
+    const started = postStartedAt.get(res) ?? { startedAt: new Date().toISOString(), startedAtMs: performance.now() };
+    const activePost: ActiveRuntimeMcpPost = {
+      response: res,
+      requestIds: [],
+      toolCalls: [],
+      startedAt: started.startedAt,
+      startedAtMs: started.startedAtMs,
+      httpSpansRecorded: false,
+    };
     activePosts.set(res, activePost);
+    const recordHttpSpans = (outcome: 'finished' | 'closed'): void => {
+      if (activePost.httpSpansRecorded) return;
+      activePost.httpSpansRecorded = true;
+      if (!options.controllerHome || activePost.toolCalls.length === 0) return;
+      const finishedAt = new Date().toISOString();
+      const durationMs = Math.max(0, performance.now() - activePost.startedAtMs);
+      for (const call of activePost.toolCalls) {
+        if (!call.sessionId) continue;
+        recordMcpHttpTransportSpan(options.controllerHome, {
+          sessionId: call.sessionId,
+          rpcId: call.rpcId,
+          tool: call.tool,
+          layer: 'canonical_runtime',
+          route: '/mcp',
+          startedAt: activePost.startedAt,
+          finishedAt,
+          durationMs,
+          statusCode: res.statusCode,
+          outcome,
+        });
+      }
+    };
     const releasePostResponse = (): void => {
       activePosts.delete(res);
       if (activePosts.size === 0) {
@@ -311,8 +392,14 @@ export async function startRuntimeMcpTransport(
         postDrainWaiters.clear();
       }
     };
-    res.once('finish', releasePostResponse);
-    res.once('close', releasePostResponse);
+    res.once('finish', () => {
+      recordHttpSpans('finished');
+      releasePostResponse();
+    });
+    res.once('close', () => {
+      recordHttpSpans(res.writableFinished ? 'finished' : 'closed');
+      releasePostResponse();
+    });
     void (async () => {
       let body: unknown;
       try {
@@ -322,6 +409,11 @@ export async function startRuntimeMcpTransport(
         return;
       }
       activePost.requestIds = runtimeMcpRequestIds(body);
+      const forwardedSessionId =
+        typeof req.headers['x-forge-forwarded-session-id'] === 'string'
+          ? req.headers['x-forge-forwarded-session-id'].trim().slice(0, 512)
+          : undefined;
+      activePost.toolCalls = runtimeMcpToolCallTraces(body, forwardedSessionId);
       if (observesToolSurface(body)) options.onToolSurfaceObservation?.();
       const requestedSessionId = req.headers['mcp-session-id'];
       const sessionId = typeof requestedSessionId === 'string' ? requestedSessionId : undefined;
@@ -336,10 +428,7 @@ export async function startRuntimeMcpTransport(
           typeof req.headers['x-forge-forwarded-principal-id'] === 'string'
             ? req.headers['x-forge-forwarded-principal-id'].trim().slice(0, 512)
             : '';
-        const forwardedSessionId =
-          typeof req.headers['x-forge-forwarded-session-id'] === 'string'
-            ? req.headers['x-forge-forwarded-session-id'].trim().slice(0, 512)
-            : '';
+        const forwardedSessionIdForSession = forwardedSessionId ?? '';
         const forwardedControllerTypeRaw =
           typeof req.headers['x-forge-forwarded-controller-type'] === 'string'
             ? req.headers['x-forge-forwarded-controller-type'].trim().toLowerCase()
@@ -348,7 +437,11 @@ export async function startRuntimeMcpTransport(
           ? (forwardedControllerTypeRaw as ForwardedControllerType)
           : undefined;
         const principal = forwardedPrincipalId || principalId(options.authToken);
-        const server = options.createServer(principal, forwardedSessionId || undefined, forwardedControllerType);
+        const server = options.createServer(
+          principal,
+          forwardedSessionIdForSession || undefined,
+          forwardedControllerType,
+        );
         transport = new NodeStreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse:
@@ -408,8 +501,6 @@ export async function startRuntimeMcpTransport(
       })
       .finally(() => {
         releasePostResponse();
-        res.off('finish', releasePostResponse);
-        res.off('close', releasePostResponse);
       });
   });
   app.get('/mcp', requireAuth, (req, res) => {

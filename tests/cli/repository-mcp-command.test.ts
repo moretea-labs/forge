@@ -7,6 +7,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { repositoryControllerRoot } from '../../src/effects/controller-home';
+import { acquireControllerLock, readControllerLock, releaseControllerLock } from '../../src/effects/controller-locks';
 import {
   addRepositoryCheckout,
   getRepository,
@@ -43,6 +44,7 @@ import {
   clearGitIdentityCacheForTest,
   clearGitSnapshotCacheForTest,
   gitSnapshot,
+  gitSnapshotAsync,
   gitSnapshotPerformanceSnapshot,
   searchRepositoryMany,
 } from '../../src/runtime/repositories/inspector';
@@ -533,6 +535,35 @@ describe('repository MCP command tools', () => {
     }
   });
 
+  test('async git snapshots share one cold refresh across concurrent callers', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-git-snapshot-async-'));
+    try {
+      git(repoRoot, ['init', '-b', 'main']);
+      git(repoRoot, ['config', 'user.name', 'Test']);
+      git(repoRoot, ['config', 'user.email', 'test@example.com']);
+      writeFileSync(join(repoRoot, 'README.md'), 'clean\n');
+      git(repoRoot, ['add', 'README.md']);
+      git(repoRoot, ['commit', '-m', 'init']);
+      clearGitIdentityCacheForTest();
+      clearGitSnapshotCacheForTest();
+
+      const snapshots = await Promise.all(Array.from({ length: 8 }, () => gitSnapshotAsync(repoRoot)));
+      expect(snapshots.every((snapshot) => snapshot.dirty === false && snapshot.branch === 'main')).toBe(true);
+      expect(gitSnapshotPerformanceSnapshot()).toEqual({ cacheHits: 7, refreshes: 1, subprocesses: 1 });
+
+      writeFileSync(join(repoRoot, 'README.md'), 'dirty\n');
+      clearGitSnapshotCacheForTest();
+      const dirty = await gitSnapshotAsync(repoRoot);
+      expect(dirty.dirty).toBe(true);
+      expect(dirty.diffStat).toContain('README.md');
+      expect(gitSnapshotPerformanceSnapshot().subprocesses).toBe(2);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+      clearGitIdentityCacheForTest();
+      clearGitSnapshotCacheForTest();
+    }
+  });
+
   test('git snapshot skips diff-stat subprocess when status cannot produce an unstaged diff', () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-git-snapshot-fast-'));
     try {
@@ -901,12 +932,20 @@ describe('repository MCP command tools', () => {
       const repository = registerRepository({ path: repoRoot, controllerHome });
       writeFileSync(join(repoRoot, 'tracked.txt'), 'v1\n');
 
-      const preview = callRepositoryTool(controllerHome, 'execute_command', {
-        dry_run: true,
-        repo_id: repository.repoId,
-        command: 'git add tracked.txt',
-      });
-      const previewValue = await json(preview);
+      const previewLockKey = { scope: 'repository' as const, repoId: repository.repoId };
+      const previewLock = acquireControllerLock(controllerHome, previewLockKey, 'foreign-source-writer');
+      let previewValue: Awaited<ReturnType<typeof json>>;
+      try {
+        const preview = callRepositoryTool(controllerHome, 'execute_command', {
+          dry_run: true,
+          repo_id: repository.repoId,
+          command: 'git add tracked.txt',
+        });
+        previewValue = await json(preview);
+        expect(readControllerLock(controllerHome, previewLockKey)?.lockId).toBe(previewLock.lockId);
+      } finally {
+        releaseControllerLock(controllerHome, previewLockKey, previewLock.lockId);
+      }
       expect(previewValue.status).toBe('preview');
       expect(previewValue.classification.risk).toBe('workspace_write');
       expect(typeof previewValue.approvalToken).toBe('string');

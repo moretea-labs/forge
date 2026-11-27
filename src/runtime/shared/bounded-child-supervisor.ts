@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess, type StdioOptions } from 'child_process';
 import {
   isProcessAlive,
+  isProcessAliveAsync,
   listProcessTreeMembers,
+  listProcessTreeMembersAsync,
   signalProcessTree,
   terminateProcessTree,
   type ProcessTreeTerminationResult,
@@ -19,7 +21,9 @@ export type ChildSupervisorFailureCode =
 
 export interface BoundedChildSupervisorOperations {
   isProcessAlive(pid: number | undefined): boolean;
+  isProcessAliveAsync?(pid: number | undefined): Promise<boolean>;
   listProcessTreeMembers(pid: number | undefined): number[];
+  listProcessTreeMembersAsync?(pid: number | undefined): Promise<number[]>;
   signalProcessTree(pid: number | undefined, signal: NodeJS.Signals): boolean;
   terminateProcessTree(
     pid: number | undefined,
@@ -29,7 +33,9 @@ export interface BoundedChildSupervisorOperations {
 
 const defaultOperations: BoundedChildSupervisorOperations = {
   isProcessAlive,
+  isProcessAliveAsync,
   listProcessTreeMembers,
+  listProcessTreeMembersAsync,
   signalProcessTree,
   terminateProcessTree,
 };
@@ -68,7 +74,9 @@ const DEFAULT_TERMINATION = { gracePeriodMs: 100, killAfterMs: 2_000, pollInterv
 function appendBounded(current: string, chunk: Buffer | string, maxBytes: number): string {
   const next = current + chunk.toString();
   if (Buffer.byteLength(next, 'utf8') <= maxBytes * 2) return next;
-  return Buffer.from(next, 'utf8').subarray(-maxBytes * 2).toString('utf8');
+  return Buffer.from(next, 'utf8')
+    .subarray(-maxBytes * 2)
+    .toString('utf8');
 }
 
 function capOutput(value: string, maxBytes: number): string {
@@ -88,14 +96,22 @@ export async function cleanupOwnedProcessGroup(
   if (!pid || pid <= 0) {
     return { residualPids: [], remainingPids: [], pidReuseFenced: false };
   }
-  if (operations.isProcessAlive(pid)) {
+  const isAlive = (targetPid: number | undefined): Promise<boolean> =>
+    operations.isProcessAliveAsync
+      ? operations.isProcessAliveAsync(targetPid)
+      : Promise.resolve(operations.isProcessAlive(targetPid));
+  const listMembers = (targetPid: number | undefined): Promise<number[]> =>
+    operations.listProcessTreeMembersAsync
+      ? operations.listProcessTreeMembersAsync(targetPid)
+      : Promise.resolve(operations.listProcessTreeMembers(targetPid));
+  if (await isAlive(pid)) {
     return { residualPids: [], remainingPids: [], pidReuseFenced: true };
   }
-  const residualPids = operations.listProcessTreeMembers(pid).filter((member) => member !== pid);
+  const residualPids = (await listMembers(pid)).filter((member) => member !== pid);
   if (residualPids.length === 0) {
     return { residualPids: [], remainingPids: [], pidReuseFenced: false };
   }
-  if (operations.isProcessAlive(pid)) {
+  if (await isAlive(pid)) {
     return { residualPids: [], remainingPids: [], pidReuseFenced: true };
   }
   const result = await operations.terminateProcessTree(pid, {
@@ -120,9 +136,10 @@ export async function runBoundedChild(
 ): Promise<BoundedChildRunResult> {
   const operations = options.operations ?? defaultOperations;
   const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-  const stdio: StdioOptions = options.stdio === 'inherit'
-    ? ['ignore', 'inherit', 'inherit']
-    : [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'];
+  const stdio: StdioOptions =
+    options.stdio === 'inherit'
+      ? ['ignore', 'inherit', 'inherit']
+      : [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'];
   let child: ChildProcess;
   try {
     child = spawn(command, [...args], {
@@ -157,8 +174,12 @@ export async function runBoundedChild(
   }
   let stdout = '';
   let stderr = '';
-  child.stdout?.on('data', (chunk) => { stdout = appendBounded(stdout, chunk, maxOutputBytes); });
-  child.stderr?.on('data', (chunk) => { stderr = appendBounded(stderr, chunk, maxOutputBytes); });
+  child.stdout?.on('data', (chunk) => {
+    stdout = appendBounded(stdout, chunk, maxOutputBytes);
+  });
+  child.stderr?.on('data', (chunk) => {
+    stderr = appendBounded(stderr, chunk, maxOutputBytes);
+  });
 
   return await new Promise<BoundedChildRunResult>((resolve) => {
     let settled = false;
@@ -188,15 +209,18 @@ export async function runBoundedChild(
       clear();
       let cleanup: Pick<BoundedChildRunResult, 'residualPids' | 'remainingPids' | 'pidReuseFenced' | 'failureCode'>;
       if (beforeClose) {
-        const remainingPids = operations.listProcessTreeMembers(pid);
+        const remainingPids = operations.listProcessTreeMembersAsync
+          ? await operations.listProcessTreeMembersAsync(pid)
+          : operations.listProcessTreeMembers(pid);
         cleanup = { residualPids: remainingPids, remainingPids, pidReuseFenced: false };
       } else {
         cleanup = await cleanupOwnedProcessGroup(pid, operations, options.termination);
       }
-      const failureCode = forcedFailureCode
-        ?? cleanup.failureCode
-        ?? (timedOut ? CHILD_SUPERVISOR_FAILURE_CODES.WALL_TIMEOUT : undefined)
-        ?? (error ? CHILD_SUPERVISOR_FAILURE_CODES.CHILD_START_FAILED : undefined);
+      const failureCode =
+        forcedFailureCode ??
+        cleanup.failureCode ??
+        (timedOut ? CHILD_SUPERVISOR_FAILURE_CODES.WALL_TIMEOUT : undefined) ??
+        (error ? CHILD_SUPERVISOR_FAILURE_CODES.CHILD_START_FAILED : undefined);
       resolve({
         status: failureCode ? 1 : status,
         signal,
@@ -237,7 +261,11 @@ export async function runBoundedChild(
     }
     const wallTimer = setTimeout(() => stop('SIGTERM', true), Math.max(1, options.timeoutMs));
     wallTimer.unref?.();
-    child.once('error', (error) => { void finish(1, null, error.message); });
-    child.once('close', (code, signal) => { void finish(code ?? 1, signal); });
+    child.once('error', (error) => {
+      void finish(1, null, error.message);
+    });
+    child.once('close', (code, signal) => {
+      void finish(code ?? 1, signal);
+    });
   });
 }

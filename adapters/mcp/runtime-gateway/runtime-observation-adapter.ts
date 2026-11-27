@@ -58,9 +58,9 @@ import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../../src/run
 import { listAssistantPluginManifests } from '../../../src/runtime/plugins/store';
 import { sessionCacheGlobalDiagnostics } from '../../../src/runtime/repositories/session-cache';
 import {
-  cachedGitIdentity,
+  cachedGitIdentityAsync,
   gitIdentityPerformanceSnapshot,
-  gitSnapshot,
+  gitSnapshotAsync,
   gitSnapshotPerformanceSnapshot,
 } from '../../../src/runtime/repositories/inspector';
 import { buildWorkflowWatchdogReport } from '../../../src/runtime/watchdog/workflow-watchdog';
@@ -710,7 +710,7 @@ export async function callRuntimeObservationAdapter(
             : undefined;
 
           if (selectedSections.includes('git')) {
-            sectionPayload.git = measureSection('git', () => gitSnapshot(repository.canonicalRoot));
+            sectionPayload.git = await measureSectionAsync('git', () => gitSnapshotAsync(repository.canonicalRoot));
           }
           if (selectedSections.includes('readiness')) {
             sectionPayload.readiness = await measureSectionAsync('readiness', () =>
@@ -879,7 +879,7 @@ export async function callRuntimeObservationAdapter(
         // Git identity is sampled at most once per TTL per repository; hot reads
         // reuse the sampled HEAD/fingerprint instead of spawning subprocesses.
         const gitIdentityStartedAt = performance.now();
-        const gitIdentity = cachedGitIdentity(repository.canonicalRoot);
+        const gitIdentity = await cachedGitIdentityAsync(repository.canonicalRoot);
         const gitIdentityObservation = {
           observedAt: new Date(gitIdentity.sampledAt).toISOString(),
           ageMs: Math.max(0, Date.now() - gitIdentity.sampledAt),
@@ -1057,7 +1057,7 @@ export async function callRuntimeObservationAdapter(
                   diffStat: '',
                   dirty: gitIdentity.dirty,
                 }
-              : gitSnapshot(repository.canonicalRoot);
+              : await gitSnapshotAsync(repository.canonicalRoot);
           markPhase('build.git', gitStartedAt);
           const jobsStartedAt = performance.now();
           const activeRuns = listActiveAgentJobSnapshots(repository.canonicalRoot, 20).map((run) => ({

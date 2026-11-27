@@ -5,21 +5,14 @@ import { listLocalBridgeJobSnapshots } from '../local-bridge/read-model';
 import { inspectRepositoryRuntimeStorage } from '../repositories/runtime-storage';
 import { sessionCacheGlobalDiagnostics } from '../repositories/session-cache';
 import {
-  cachedGitIdentity,
+  cachedGitIdentityAsync,
   gitIdentityPerformanceSnapshot,
   gitSnapshotPerformanceSnapshot,
 } from '../repositories/inspector';
 import { previewRuntimeCleanup } from '../maintenance/cleanup';
-import {
-  buildCapabilityRecoverySnapshot,
-  buildRuntimeMaintenanceStatus,
-  listRecoveryAuditRecords,
-} from '../recovery';
+import { buildCapabilityRecoverySnapshot, buildRuntimeMaintenanceStatus, listRecoveryAuditRecords } from '../recovery';
 import { buildWorkflowWatchdogReport } from '../watchdog/workflow-watchdog';
-import {
-  collectRuntimePerformanceDiagnostics,
-  inferLocalControllerProcess,
-} from './performance';
+import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } from './performance';
 import { readRepositoryProjectionSnapshot } from '../projections/materialized-view';
 import {
   controllerContextPerformanceSnapshot,
@@ -31,6 +24,7 @@ import { processRuntimeResourceDiagnostics } from '../execution/process-runtime'
 import { readSchedulerHealthSnapshot } from '../control-plane/global-scheduler/scheduler';
 import { readForgeRuntimeStatus } from '../control-plane/runtime-status-client';
 import { listAssistantPluginManifests } from '../plugins/store';
+import { readRecentMcpTimingSummary } from './mcp-timing';
 
 export const READ_ONLY_DIAGNOSTIC_TOOLS = [
   'runtime_maintenance_status',
@@ -49,8 +43,9 @@ export function isReadOnlyDiagnosticTool(value: string): value is ReadOnlyDiagno
 }
 
 function activeExecutionJobs(controllerHome: string, repoId: string) {
-  return listExecutionJobs(controllerHome, repoId, 100)
-    .filter((job) => !['succeeded', 'failed', 'cancelled', 'timed_out', 'orphaned', 'stale'].includes(job.status));
+  return listExecutionJobs(controllerHome, repoId, 100).filter(
+    (job) => !['succeeded', 'failed', 'cancelled', 'timed_out', 'orphaned', 'stale'].includes(job.status),
+  );
 }
 
 function performanceDiagnostic(
@@ -60,7 +55,8 @@ function performanceDiagnostic(
 ): Record<string, unknown> {
   const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
   const runtime = loadMcpRuntimeState(repository.canonicalRoot);
-  const inferredLocalBridge = args.include_processes === false ? undefined : inferLocalControllerProcess(repository.canonicalRoot);
+  const inferredLocalBridge =
+    args.include_processes === false ? undefined : inferLocalControllerProcess(repository.canonicalRoot);
   const activeJobs = activeExecutionJobs(controllerHome, repository.repoId);
   const daemon = readForgeRuntimeStatus(controllerHome);
   return {
@@ -81,6 +77,7 @@ function performanceDiagnostic(
     contextPerformance: controllerContextPerformanceSnapshot(),
     gitPerformance: gitSnapshotPerformanceSnapshot(),
     gitIdentity: gitIdentityPerformanceSnapshot(),
+    mcpTiming: readRecentMcpTimingSummary(controllerHome),
     runtimeIdentity: {
       runtimeCommit: daemon.source?.commit,
       buildCommit: daemon.source?.releaseRevision,
@@ -97,14 +94,16 @@ function performanceDiagnostic(
   };
 }
 
-function diagnosticContextProjectionStale(
+async function diagnosticContextProjectionStale(
   controllerHome: string,
   repository: RepositoryRecord,
   args: Record<string, unknown>,
-): boolean {
+): Promise<boolean> {
   const runtimeSnapshot = readRepositoryProjectionSnapshot(controllerHome, repository.repoId);
-  const sourceRevision = String(runtimeSnapshot.projection.metadata?.contentRevision ?? runtimeSnapshot.projection.revision);
-  const gitIdentity = cachedGitIdentity(repository.canonicalRoot);
+  const sourceRevision = String(
+    runtimeSnapshot.projection.metadata?.contentRevision ?? runtimeSnapshot.projection.revision,
+  );
+  const gitIdentity = await cachedGitIdentityAsync(repository.canonicalRoot);
   const sourceIdentity = {
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
@@ -122,11 +121,11 @@ function diagnosticContextProjectionStale(
   return controllerContextProjectionNeedsRefresh(projection, sourceRevision, sourceIdentity);
 }
 
-function recoveryProbe(
+async function recoveryProbe(
   controllerHome: string,
   repository: RepositoryRecord,
   args: Record<string, unknown>,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   const daemon = readForgeRuntimeStatus(controllerHome);
   const scheduler = readSchedulerHealthSnapshot(controllerHome);
   const projectionSnapshot = readRepositoryProjectionSnapshot(controllerHome, repository.repoId);
@@ -148,8 +147,11 @@ function recoveryProbe(
   }
   const localJobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 30);
   const recentErrors = Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : [];
-  const contextProjectionStale = diagnosticContextProjectionStale(controllerHome, repository, args);
-  const plugins = listAssistantPluginManifests(controllerHome, repository, { preferStored: true, fallbackToLive: false });
+  const contextProjectionStale = await diagnosticContextProjectionStale(controllerHome, repository, args);
+  const plugins = listAssistantPluginManifests(controllerHome, repository, {
+    preferStored: true,
+    fallbackToLive: false,
+  });
   const recovery = buildCapabilityRecoverySnapshot({
     generatedAt: new Date().toISOString(),
     daemonStatus: daemon.status === 'ready' ? 'ready' : daemon.status,
@@ -164,8 +166,10 @@ function recoveryProbe(
     runtimeProjectionStale: projectionSnapshot.stale,
     runtimeProjectionPersisted: projectionSnapshot.persisted,
     contextProjectionStale,
-    commandPreviewAvailable: args.command_preview_available === undefined ? true : args.command_preview_available === true,
-    commandExecuteAvailable: args.command_execute_available === undefined ? true : args.command_execute_available === true,
+    commandPreviewAvailable:
+      args.command_preview_available === undefined ? true : args.command_preview_available === true,
+    commandExecuteAvailable:
+      args.command_execute_available === undefined ? true : args.command_execute_available === true,
     issueToolsAvailable: args.issue_tools_available === undefined ? true : args.issue_tools_available === true,
     jobToolsAvailable: args.job_tools_available === undefined ? true : args.job_tools_available === true,
     checksAvailable: listControllerChecks(repository.canonicalRoot).length > 0,
@@ -221,6 +225,6 @@ export async function executeReadOnlyDiagnostic(
     case 'runtime_performance_diagnostics':
       return performanceDiagnostic(controllerHome, repository, args);
     case 'capability_recovery_probe':
-      return recoveryProbe(controllerHome, repository, args);
+      return await recoveryProbe(controllerHome, repository, args);
   }
 }
