@@ -1,9 +1,21 @@
 import { normalizeRepositoryCommand, type CanonicalRepositoryCommand } from './normalization';
-import { fixedShellWrapperCommand, isRedirectionAmpersand, shellSegments, shellWordsPreservingQuotes } from '../shell-command';
+import {
+  fixedShellWrapperCommand,
+  isRedirectionAmpersand,
+  shellSegments,
+  shellWordsPreservingQuotes,
+} from '../shell-command';
 export { fixedShellWrapperCommand, shellSegments, shellWordsPreservingQuotes } from '../shell-command';
 
 export type RepositoryCommandRisk = 'readonly' | 'workspace_write' | 'remote_write' | 'destructive';
-export type RepositoryCommandAuthorization = 'explicit_user_request' | 'confirmed_plan' | 'policy' | 'full_access' | 'goal_delegation' | 'gpt_risk_delegate' | 'user_confirmation';
+export type RepositoryCommandAuthorization =
+  | 'explicit_user_request'
+  | 'confirmed_plan'
+  | 'policy'
+  | 'full_access'
+  | 'goal_delegation'
+  | 'gpt_risk_delegate'
+  | 'user_confirmation';
 export type RepositoryCommandConfirmation = 'none' | 'authorization' | 'strong_confirmation';
 
 /**
@@ -29,28 +41,106 @@ export interface RepositoryCommandReplayClassification {
 }
 
 const READ_ONLY_PROGRAMS = new Set([
-  'pwd', 'ls', 'rg', 'grep', 'egrep', 'fgrep', 'cat', 'head', 'tail', 'wc',
-  'sort', 'uniq', 'cut', 'tr', 'stat', 'file', 'which', 'whereis', 'basename',
-  'dirname', 'printf', 'echo', 'true', 'false', 'ps', 'pgrep', 'date', 'uname',
-  'id', 'whoami', 'du', 'df', 'realpath', 'readlink', 'jq', 'shasum', 'sha256sum',
+  'pwd',
+  'ls',
+  'rg',
+  'grep',
+  'egrep',
+  'fgrep',
+  'cat',
+  'head',
+  'tail',
+  'wc',
+  'sort',
+  'uniq',
+  'cut',
+  'tr',
+  'stat',
+  'file',
+  'which',
+  'whereis',
+  'basename',
+  'dirname',
+  'printf',
+  'echo',
+  'true',
+  'false',
+  'ps',
+  'pgrep',
+  'date',
+  'uname',
+  'id',
+  'whoami',
+  'du',
+  'df',
+  'realpath',
+  'readlink',
+  'jq',
+  'shasum',
+  'sha256sum',
   // Pure delay/wait utilities do not mutate the repository; used by Fast Path concurrency tests.
   'sleep',
 ]);
 
 const READ_ONLY_GIT_SUBCOMMANDS = new Set([
-  'status', 'log', 'show', 'diff', 'blame', 'grep', 'merge-base', 'rev-list',
-  'rev-parse', 'for-each-ref', 'show-ref', 'ls-files', 'ls-tree', 'cat-file',
-  'name-rev', 'describe', 'shortlog', 'reflog', 'fsck', 'ls-remote',
-  'count-objects', 'verify-pack', 'check-ignore',
+  'status',
+  'log',
+  'show',
+  'diff',
+  'blame',
+  'grep',
+  'merge-base',
+  'rev-list',
+  'rev-parse',
+  'for-each-ref',
+  'show-ref',
+  'ls-files',
+  'ls-tree',
+  'cat-file',
+  'name-rev',
+  'describe',
+  'shortlog',
+  'reflog',
+  'fsck',
+  'ls-remote',
+  'count-objects',
+  'verify-pack',
+  'check-ignore',
 ]);
 
-
 const SAFE_SQLITE_READ_OPTIONS = new Set([
-  '-safe', '--safe', '-readonly', '--readonly', '-batch', '--batch',
-  '-header', '--header', '-noheader', '--noheader', '-json', '--json',
-  '-csv', '--csv', '-list', '--list', '-line', '--line', '-column', '--column',
-  '-tabs', '--tabs', '-table', '--table', '-box', '--box', '-markdown', '--markdown',
-  '-quote', '--quote', '-ascii', '--ascii',
+  '-safe',
+  '--safe',
+  '-readonly',
+  '--readonly',
+  '-batch',
+  '--batch',
+  '-header',
+  '--header',
+  '-noheader',
+  '--noheader',
+  '-json',
+  '--json',
+  '-csv',
+  '--csv',
+  '-list',
+  '--list',
+  '-line',
+  '--line',
+  '-column',
+  '--column',
+  '-tabs',
+  '--tabs',
+  '-table',
+  '--table',
+  '-box',
+  '--box',
+  '-markdown',
+  '--markdown',
+  '-quote',
+  '--quote',
+  '-ascii',
+  '--ascii',
 ]);
 
 function isSingleReadOnlySql(sql: string): boolean {
@@ -59,7 +149,9 @@ function isSingleReadOnlySql(sql: string): boolean {
   const withoutTrailingSemicolon = normalized.endsWith(';') ? normalized.slice(0, -1).trimEnd() : normalized;
   if (withoutTrailingSemicolon.includes(';')) return false;
   if (!/^(?:select\b|with\b)/i.test(withoutTrailingSemicolon)) return false;
-  return !/\b(?:insert|update|delete|replace|create|drop|alter|vacuum|attach|detach|reindex|analyze|pragma|begin|commit|rollback|savepoint|release)\b/i.test(withoutTrailingSemicolon);
+  return !/\b(?:insert|update|delete|replace|create|drop|alter|vacuum|attach|detach|reindex|analyze|pragma|begin|commit|rollback|savepoint|release)\b/i.test(
+    withoutTrailingSemicolon,
+  );
 }
 
 function isSafeReadOnlySqliteWords(rawWords: string[]): boolean {
@@ -67,7 +159,8 @@ function isSafeReadOnlySqliteWords(rawWords: string[]): boolean {
   const program = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
   if (program !== 'sqlite3') return false;
   const args = words.slice(1);
-  if (args.some((word) => /^(?:--?nonce)(?:=|$)/i.test(word) || /^(?:--?unsafe-testing)(?:=|$)/i.test(word))) return false;
+  if (args.some((word) => /^(?:--?nonce)(?:=|$)/i.test(word) || /^(?:--?unsafe-testing)(?:=|$)/i.test(word)))
+    return false;
   let safe = false;
   let readonly = false;
   let index = 0;
@@ -93,9 +186,9 @@ function isSafeReadOnlySqliteSegment(segment: string): boolean {
 function isSedInPlaceSegment(segment: string): boolean {
   const words = firstWords(segment);
   if (words[0]?.toLowerCase() !== 'sed') return false;
-  return words.slice(1).some((word) => word === '--in-place'
-    || word.startsWith('--in-place=')
-    || /^-[^-]*i/.test(word));
+  return words
+    .slice(1)
+    .some((word) => word === '--in-place' || word.startsWith('--in-place=') || /^-[^-]*i/.test(word));
 }
 
 function hasRepositoryOutputRedirection(command: string): boolean {
@@ -155,33 +248,66 @@ function isReadOnlyGitCommand(words: string[]): boolean {
   if (!subcommand) return false;
   if (READ_ONLY_GIT_SUBCOMMANDS.has(subcommand)) return true;
   if (subcommand === 'branch') {
-    const shortFlags = words.slice(2)
+    const shortFlags = words
+      .slice(2)
       .filter((word) => /^-[^-]+$/.test(word))
       .flatMap((word) => [...word.slice(1)]);
-    if (shortFlags.some((flag) => 'dDmMcCfFtuU'.includes(flag))
-      || hasGitFlag(words, '--delete', '--move', '--copy', '--force', '--track', '--no-track', '--create-reflog', '--edit-description', '--set-upstream-to', '--unset-upstream')
-      || words.some((word) => word.startsWith('--set-upstream-to='))) {
+    if (
+      shortFlags.some((flag) => 'dDmMcCfFtuU'.includes(flag)) ||
+      hasGitFlag(
+        words,
+        '--delete',
+        '--move',
+        '--copy',
+        '--force',
+        '--track',
+        '--no-track',
+        '--create-reflog',
+        '--edit-description',
+        '--set-upstream-to',
+        '--unset-upstream',
+      ) ||
+      words.some((word) => word.startsWith('--set-upstream-to='))
+    ) {
       return false;
     }
-    return words.length === 2
-      || hasGitFlag(
+    return (
+      words.length === 2 ||
+      hasGitFlag(
         words,
-        '-a', '--all', '-r', '--remotes', '-l', '--list', '-v', '-vv',
-        '--merged', '--no-merged', '--contains', '--no-contains', '--points-at', '--show-current',
-      )
-      || (shortFlags.length > 1 && shortFlags.every((flag) => 'arlv'.includes(flag)))
-      || words.some((word) => word.startsWith('--contains=') || word.startsWith('--points-at='));
+        '-a',
+        '--all',
+        '-r',
+        '--remotes',
+        '-l',
+        '--list',
+        '-v',
+        '-vv',
+        '--merged',
+        '--no-merged',
+        '--contains',
+        '--no-contains',
+        '--points-at',
+        '--show-current',
+      ) ||
+      (shortFlags.length > 1 && shortFlags.every((flag) => 'arlv'.includes(flag))) ||
+      words.some((word) => word.startsWith('--contains=') || word.startsWith('--points-at='))
+    );
   }
   if (subcommand === 'tag') {
-    return words.length === 2
-      || hasGitFlag(words, '-l', '--list', '--points-at', '--contains', '--no-contains')
-      || words.some((word) => word.startsWith('--contains=') || word.startsWith('--points-at='));
+    return (
+      words.length === 2 ||
+      hasGitFlag(words, '-l', '--list', '--points-at', '--contains', '--no-contains') ||
+      words.some((word) => word.startsWith('--contains=') || word.startsWith('--points-at='))
+    );
   }
   if (subcommand === 'remote') {
-    return words.length === 2
-      || hasGitFlag(words, '-v', '--verbose')
-      || words[2]?.toLowerCase() === 'show'
-      || words[2]?.toLowerCase() === 'get-url';
+    return (
+      words.length === 2 ||
+      hasGitFlag(words, '-v', '--verbose') ||
+      words[2]?.toLowerCase() === 'show' ||
+      words[2]?.toLowerCase() === 'get-url'
+    );
   }
   if (subcommand === 'config') {
     return hasGitFlag(words, '--get', '--get-all', '--get-regexp', '--list', '-l');
@@ -225,8 +351,15 @@ function isReadOnlyGitHubCliCommand(words: string[]): boolean {
   if (method) return method === 'GET' || method === 'HEAD';
   const hasBodyInput = words.slice(2).some((word) => {
     const lower = word.toLowerCase();
-    return lower === '-f' || lower === '--raw-field' || lower === '--field'
-      || lower === '--input' || lower.startsWith('--raw-field=') || lower.startsWith('--field=') || lower.startsWith('--input=');
+    return (
+      lower === '-f' ||
+      lower === '--raw-field' ||
+      lower === '--field' ||
+      lower === '--input' ||
+      lower.startsWith('--raw-field=') ||
+      lower.startsWith('--field=') ||
+      lower.startsWith('--input=')
+    );
   });
   return !hasBodyInput;
 }
@@ -294,7 +427,8 @@ function isReadOnlyLoopbackCurl(words: string[]): boolean {
       continue;
     }
     if (safeLongFlags.has(lower)) continue;
-    if (['>/dev/null', '1>/dev/null', '2>/dev/null', '>>/dev/null', '1>>/dev/null', '2>>/dev/null'].includes(arg)) continue;
+    if (['>/dev/null', '1>/dev/null', '2>/dev/null', '>>/dev/null', '1>>/dev/null', '2>>/dev/null'].includes(arg))
+      continue;
     if (['>', '1>', '2>', '>>', '1>>', '2>>'].includes(arg) && args[index + 1] === '/dev/null') {
       index += 1;
       continue;
@@ -305,13 +439,21 @@ function isReadOnlyLoopbackCurl(words: string[]): boolean {
       index += 1;
       continue;
     }
-    if (arg.startsWith('-') && arg.length > 1 && Array.from(arg.slice(1)).every((flag) => ['f', 's', 'S', 'I'].includes(flag))) continue;
+    if (
+      arg.startsWith('-') &&
+      arg.length > 1 &&
+      Array.from(arg.slice(1)).every((flag) => ['f', 's', 'S', 'I'].includes(flag))
+    )
+      continue;
     return false;
   }
   if (urls.length === 0) return false;
   return urls.every((url) => {
-    try { return ['127.0.0.1', 'localhost', '::1'].includes(new URL(url).hostname.toLowerCase()); }
-    catch { return false; }
+    try {
+      return ['127.0.0.1', 'localhost', '::1'].includes(new URL(url).hostname.toLowerCase());
+    } catch {
+      return false;
+    }
   });
 }
 
@@ -342,11 +484,16 @@ function isReplaySafeValidationWords(words: string[]): boolean {
   if (program === 'tsc') return true;
   if (program === 'eslint' || program === 'biome') return true;
   if (program === 'pytest' || program === 'py.test') return true;
-  if ((program === 'python' || program === 'python3') && subcommand === '-m') return words[2]?.toLowerCase() === 'pytest';
-  if (program === 'mvn' || program === 'mvnw') return words.slice(1).some((word) => word === 'test' || word === 'verify');
-  if (program === 'gradle' || program === 'gradlew') return words.slice(1).some((word) => word === 'test' || word === 'check');
+  if ((program === 'python' || program === 'python3') && subcommand === '-m')
+    return words[2]?.toLowerCase() === 'pytest';
+  if (program === 'mvn' || program === 'mvnw')
+    return words.slice(1).some((word) => word === 'test' || word === 'verify');
+  if (program === 'gradle' || program === 'gradlew')
+    return words.slice(1).some((word) => word === 'test' || word === 'check');
   if (program === 'xcodebuild') {
-    return words.slice(1).some((word) => ['build', 'test', 'build-for-testing', 'test-without-building'].includes(word.toLowerCase()));
+    return words
+      .slice(1)
+      .some((word) => ['build', 'test', 'build-for-testing', 'test-without-building'].includes(word.toLowerCase()));
   }
   return false;
 }
@@ -393,9 +540,9 @@ export function shellCommandHasUnsafeConstructs(command: string): { unsafe: bool
   const normalized = command.trim();
   const operators = shellOperatorView(normalized);
   // Background jobs
-  const controlOperators = [...operators].map((char, index) =>
-    char === '&' && isRedirectionAmpersand(operators, index) ? ' ' : char
-  ).join('');
+  const controlOperators = [...operators]
+    .map((char, index) => (char === '&' && isRedirectionAmpersand(operators, index) ? ' ' : char))
+    .join('');
   if (/(?:^|[^&])&(?:[^&]|$)/.test(controlOperators.replace(/&&/g, ' '))) {
     reasons.push('background execution (&) is not allowed on the direct process path');
   }
@@ -484,9 +631,10 @@ export function classifyRepositoryCommand(
   input: string | readonly string[] | CanonicalRepositoryCommand,
   defaultBranch?: string,
 ): RepositoryCommandClassification {
-  const canonical = 'kind' in Object(input) && (input as CanonicalRepositoryCommand).kind
-    ? input as CanonicalRepositoryCommand
-    : normalizeRepositoryCommand(input);
+  const canonical =
+    'kind' in Object(input) && (input as CanonicalRepositoryCommand).kind
+      ? (input as CanonicalRepositoryCommand)
+      : normalizeRepositoryCommand(input);
   if (canonical.kind === 'argv') return classifyArgvCommand(canonical, defaultBranch);
   return classifyShellCommand(canonical.shellCommand!, defaultBranch);
 }
@@ -495,9 +643,10 @@ export function classifyRepositoryCommandReplay(
   input: string | readonly string[] | CanonicalRepositoryCommand,
   defaultBranch?: string,
 ): RepositoryCommandReplayClassification {
-  const canonical = 'kind' in Object(input) && (input as CanonicalRepositoryCommand).kind
-    ? input as CanonicalRepositoryCommand
-    : normalizeRepositoryCommand(input);
+  const canonical =
+    'kind' in Object(input) && (input as CanonicalRepositoryCommand).kind
+      ? (input as CanonicalRepositoryCommand)
+      : normalizeRepositoryCommand(input);
   const classification = classifyRepositoryCommand(canonical, defaultBranch);
   if (classification.risk === 'readonly') {
     return {
@@ -516,17 +665,17 @@ export function classifyRepositoryCommandReplay(
     };
   }
   const rawShellCommand = canonical.kind === 'shell' ? canonical.shellCommand! : undefined;
-  const effectiveShellCommand = rawShellCommand === undefined
-    ? undefined
-    : fixedShellWrapperScript(rawShellCommand) ?? rawShellCommand;
+  const effectiveShellCommand =
+    rawShellCommand === undefined ? undefined : (fixedShellWrapperScript(rawShellCommand) ?? rawShellCommand);
   const shellParts = effectiveShellCommand === undefined ? [] : shellSegments(effectiveShellCommand);
-  const validationOnly = canonical.kind === 'argv'
-    ? isReplaySafeValidationWords([canonical.executable!, ...(canonical.args ?? [])])
-    : effectiveShellCommand !== undefined
-      && !hasRepositoryOutputRedirection(effectiveShellCommand)
-      && !shellParts.some(isSedInPlaceSegment)
-      && shellParts.length > 0
-      && shellParts.every((segment) => isReadOnlySegment(segment) || isReplaySafeValidationSegment(segment));
+  const validationOnly =
+    canonical.kind === 'argv'
+      ? isReplaySafeValidationWords([canonical.executable!, ...(canonical.args ?? [])])
+      : effectiveShellCommand !== undefined &&
+        !hasRepositoryOutputRedirection(effectiveShellCommand) &&
+        !shellParts.some(isSedInPlaceSegment) &&
+        shellParts.length > 0 &&
+        shellParts.every((segment) => isReadOnlySegment(segment) || isReplaySafeValidationSegment(segment));
   if (validationOnly) {
     return {
       replayable: true,
@@ -552,34 +701,62 @@ function classifyArgvCommand(
   const subcommand = argv[1]?.toLowerCase();
   const reasons: string[] = [];
   const has = (value: string) => argv.includes(value);
-  const forcePush = program === 'git' && subcommand === 'push' && (has('--force') || has('--force-with-lease') || has('-f') || argv.some((arg) => arg.startsWith('+')));
+  const forcePush =
+    program === 'git' &&
+    subcommand === 'push' &&
+    (has('--force') || has('--force-with-lease') || has('-f') || argv.some((arg) => arg.startsWith('+')));
   const hardReset = program === 'git' && subcommand === 'reset' && has('--hard');
-  const cleanAll = program === 'git' && subcommand === 'clean' && (has('-fdx') || argv.some((arg) => arg.startsWith('-') && arg.includes('x') && arg.includes('f')));
-  const deleteRemote = program === 'git' && subcommand === 'push' && (has('--delete') || argv.some((arg) => arg.startsWith(':')));
+  const cleanAll =
+    program === 'git' &&
+    subcommand === 'clean' &&
+    (has('-fdx') || argv.some((arg) => arg.startsWith('-') && arg.includes('x') && arg.includes('f')));
+  const deleteRemote =
+    program === 'git' && subcommand === 'push' && (has('--delete') || argv.some((arg) => arg.startsWith(':')));
   const deletesDefault = Boolean(defaultBranch && deleteRemote && argv.includes(defaultBranch));
   if (forcePush) reasons.push('force push rewrites shared remote history');
   if (hardReset) reasons.push('hard reset can discard local changes and commits');
   if (cleanAll) reasons.push('git clean can permanently remove untracked or ignored files');
   if (deletesDefault) reasons.push(`remote deletion targets the default branch ${defaultBranch}`);
   if (reasons.length > 0) return { risk: 'destructive', confirmation: 'strong_confirmation', reasons };
-  if (program === 'git' && ((subcommand === 'push' && deleteRemote) || (['branch', 'tag'].includes(subcommand ?? '') && (has('--delete') || has('-d') || has('-D'))))) {
+  if (
+    program === 'git' &&
+    ((subcommand === 'push' && deleteRemote) ||
+      (['branch', 'tag'].includes(subcommand ?? '') && (has('--delete') || has('-d') || has('-D'))))
+  ) {
     return { risk: 'destructive', confirmation: 'authorization', reasons: ['deletes a remote branch or tag'] };
   }
   if (program === 'rm' || program === 'rmdir' || program === 'unlink' || (program === 'find' && has('-delete'))) {
     return { risk: 'destructive', confirmation: 'authorization', reasons: ['deletes repository files'] };
   }
-  if (program === 'git' && subcommand === 'push') return { risk: 'remote_write', confirmation: 'authorization', reasons: ['writes Git refs to a remote'] };
+  if (program === 'git' && subcommand === 'push')
+    return { risk: 'remote_write', confirmation: 'authorization', reasons: ['writes Git refs to a remote'] };
   if (program === 'git' && isReadOnlyGitCommand(argv)) {
-    return { risk: 'readonly', confirmation: 'none', reasons: ['the argv command is a recognized repository-local read operation'] };
+    return {
+      risk: 'readonly',
+      confirmation: 'none',
+      reasons: ['the argv command is a recognized repository-local read operation'],
+    };
   }
   if (program === 'curl' && isReadOnlyLoopbackCurl(argv)) {
-    return { risk: 'readonly', confirmation: 'none', reasons: ['curl performs a read-only loopback HTTP observation without writing response data to disk'] };
+    return {
+      risk: 'readonly',
+      confirmation: 'none',
+      reasons: ['curl performs a read-only loopback HTTP observation without writing response data to disk'],
+    };
   }
   if (program === 'sqlite3' && isSafeReadOnlySqliteWords(argv)) {
-    return { risk: 'readonly', confirmation: 'none', reasons: ['sqlite3 is constrained by safe mode, readonly database access, and one read-only SQL statement'] };
+    return {
+      risk: 'readonly',
+      confirmation: 'none',
+      reasons: ['sqlite3 is constrained by safe mode, readonly database access, and one read-only SQL statement'],
+    };
   }
   if (isReadOnlyCodeGraphCommand(argv)) {
-    return { risk: 'readonly', confirmation: 'none', reasons: ['CodeGraph status is a read-only repository observation'] };
+    return {
+      risk: 'readonly',
+      confirmation: 'none',
+      reasons: ['CodeGraph status is a read-only repository observation'],
+    };
   }
   // Explicit shell wrappers are common in generated diagnostics. Re-classify
   // the fixed inner command instead of treating `sh -c` / `bash -lc` wrappers
@@ -592,65 +769,152 @@ function classifyArgvCommand(
   if (program === 'find' && !argv.some((word) => ['-delete', '-exec', '-execdir', '-ok', '-okdir'].includes(word))) {
     return { risk: 'readonly', confirmation: 'none', reasons: ['find is read-only without mutation or exec actions'] };
   }
-  if (program === 'sed' && !argv.slice(1).some((word) => word === '--in-place' || word.startsWith('--in-place=') || /^-[^-]*i/.test(word))) {
+  if (
+    program === 'sed' &&
+    !argv.slice(1).some((word) => word === '--in-place' || word.startsWith('--in-place=') || /^-[^-]*i/.test(word))
+  ) {
     return { risk: 'readonly', confirmation: 'none', reasons: ['sed is read-only without in-place editing'] };
   }
-  if (program === 'launchctl' && ['print', 'print-disabled', 'list', 'managerpid', 'manageruid'].includes(subcommand ?? '')) {
-    return { risk: 'readonly', confirmation: 'none', reasons: ['launchctl observation does not mutate repository or host service state'] };
+  if (
+    program === 'launchctl' &&
+    ['print', 'print-disabled', 'list', 'managerpid', 'manageruid'].includes(subcommand ?? '')
+  ) {
+    return {
+      risk: 'readonly',
+      confirmation: 'none',
+      reasons: ['launchctl observation does not mutate repository or host service state'],
+    };
   }
   if (program === 'plutil' && argv.slice(1).some((word) => word === '-p' || word === '-lint')) {
     return { risk: 'readonly', confirmation: 'none', reasons: ['plutil print/lint is read-only'] };
   }
-  if (program === 'log' && ['show', 'stream', 'stats', 'config'].includes(subcommand ?? '') && subcommand !== 'config') {
+  if (
+    program === 'log' &&
+    ['show', 'stream', 'stats', 'config'].includes(subcommand ?? '') &&
+    subcommand !== 'config'
+  ) {
     return { risk: 'readonly', confirmation: 'none', reasons: ['system log observation is read-only'] };
   }
   if (program === 'gh') {
     if (isReadOnlyGitHubCliCommand(argv)) {
-      return { risk: 'readonly', confirmation: 'none', reasons: ['the argv command is a recognized GitHub read operation'] };
+      return {
+        risk: 'readonly',
+        confirmation: 'none',
+        reasons: ['the argv command is a recognized GitHub read operation'],
+      };
     }
     if (isLocalGitHubCliWorkspaceCommand(argv)) {
-      return { risk: 'workspace_write', confirmation: 'authorization', reasons: ['the GitHub CLI command changes only the local checkout'] };
+      return {
+        risk: 'workspace_write',
+        confirmation: 'authorization',
+        reasons: ['the GitHub CLI command changes only the local checkout'],
+      };
     }
     if (isGitHubCliExternalMutation(argv)) {
-      return { risk: 'remote_write', confirmation: 'authorization', reasons: ['the GitHub CLI command may mutate external GitHub state'] };
+      return {
+        risk: 'remote_write',
+        confirmation: 'authorization',
+        reasons: ['the GitHub CLI command may mutate external GitHub state'],
+      };
     }
   }
-  if (program === 'git' && ['add', 'commit', 'pull', 'fetch', 'merge', 'rebase', 'checkout', 'switch', 'cherry-pick', 'revert', 'stash', 'mv', 'restore', 'apply', 'am', 'bisect'].includes(subcommand ?? '')) {
-    return { risk: 'workspace_write', confirmation: 'authorization', reasons: ['changes the checkout, local refs, index, or working tree'] };
+  if (
+    program === 'git' &&
+    [
+      'add',
+      'commit',
+      'pull',
+      'fetch',
+      'merge',
+      'rebase',
+      'checkout',
+      'switch',
+      'cherry-pick',
+      'revert',
+      'stash',
+      'mv',
+      'restore',
+      'apply',
+      'am',
+      'bisect',
+    ].includes(subcommand ?? '')
+  ) {
+    return {
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      reasons: ['changes the checkout, local refs, index, or working tree'],
+    };
   }
-  if (['touch', 'mkdir', 'cp', 'mv', 'install', 'tee', 'truncate', 'patch'].includes(program)
-    || (['npm', 'bun', 'pnpm', 'yarn'].includes(program) && ['install', 'add', 'remove', 'update', 'run'].includes(subcommand ?? ''))) {
+  if (
+    ['touch', 'mkdir', 'cp', 'mv', 'install', 'tee', 'truncate', 'patch'].includes(program) ||
+    (['npm', 'bun', 'pnpm', 'yarn'].includes(program) &&
+      ['install', 'add', 'remove', 'update', 'run'].includes(subcommand ?? ''))
+  ) {
     return { risk: 'workspace_write', confirmation: 'authorization', reasons: ['writes repository files'] };
   }
   // Package-manager `version` is a mutation command (for example
   // `npm version 1.5.1 --no-git-tag-version` updates package metadata). Keep
   // flag-style queries such as `npm --version` on the readonly path below.
   if (['npm', 'pnpm', 'yarn'].includes(program) && subcommand === 'version') {
-    return { risk: 'workspace_write', confirmation: 'authorization', reasons: ['package-manager version command may update package metadata'] };
+    return {
+      risk: 'workspace_write',
+      confirmation: 'authorization',
+      reasons: ['package-manager version command may update package metadata'],
+    };
   }
   // Lightweight project script info queries stay readonly when they only request help/version.
-  if (['bun', 'node', 'npm', 'pnpm', 'yarn', 'python', 'python3', 'cargo', 'go', 'swift'].includes(program)
-    && argv.slice(1).some((word) => word === '--help' || word === '-h' || word === '--version' || word === '-V' || word === 'version' || word === 'help')) {
-    const mutating = argv.slice(1).some((word) => ['install', 'add', 'remove', 'update', 'publish', 'run', 'test', 'build'].includes(word.toLowerCase()));
+  if (
+    ['bun', 'node', 'npm', 'pnpm', 'yarn', 'python', 'python3', 'cargo', 'go', 'swift'].includes(program) &&
+    argv
+      .slice(1)
+      .some(
+        (word) =>
+          word === '--help' ||
+          word === '-h' ||
+          word === '--version' ||
+          word === '-V' ||
+          word === 'version' ||
+          word === 'help',
+      )
+  ) {
+    const mutating = argv
+      .slice(1)
+      .some((word) =>
+        ['install', 'add', 'remove', 'update', 'publish', 'run', 'test', 'build'].includes(word.toLowerCase()),
+      );
     // `bun test --help` is a Bun CLI query, not a test execution; the `test`
     // token must not override the explicit help request.
-    const bunTestHelp = program === 'bun' && subcommand === 'test'
-      && ['--help', '-h', '--version', '-V'].includes(argv[2] ?? '');
+    const bunTestHelp =
+      program === 'bun' && subcommand === 'test' && ['--help', '-h', '--version', '-V'].includes(argv[2] ?? '');
     if (!mutating || bunTestHelp) {
-      return { risk: 'readonly', confirmation: 'none', reasons: ['the argv command only requests help or version information'] };
+      return {
+        risk: 'readonly',
+        confirmation: 'none',
+        reasons: ['the argv command only requests help or version information'],
+      };
     }
   }
   if (program === 'git' && READ_ONLY_GIT_SUBCOMMANDS.has(subcommand ?? '')) {
-    return { risk: 'readonly', confirmation: 'none', reasons: ['the argv command is a recognized repository-local read operation'] };
+    return {
+      risk: 'readonly',
+      confirmation: 'none',
+      reasons: ['the argv command is a recognized repository-local read operation'],
+    };
   }
-  if (READ_ONLY_PROGRAMS.has(program)) return { risk: 'readonly', confirmation: 'none', reasons: ['the argv command is a recognized repository-local read operation'] };
-  return { risk: 'workspace_write', confirmation: 'authorization', reasons: ['unrecognized argv behavior is conservatively treated as a workspace write'] };
+  if (READ_ONLY_PROGRAMS.has(program))
+    return {
+      risk: 'readonly',
+      confirmation: 'none',
+      reasons: ['the argv command is a recognized repository-local read operation'],
+    };
+  return {
+    risk: 'workspace_write',
+    confirmation: 'authorization',
+    reasons: ['unrecognized argv behavior is conservatively treated as a workspace write'],
+  };
 }
 
-function classifyShellCommand(
-  command: string,
-  defaultBranch?: string,
-): RepositoryCommandClassification {
+function classifyShellCommand(command: string, defaultBranch?: string): RepositoryCommandClassification {
   const normalized = command.trim();
   const wrapped = fixedShellWrapperScript(normalized);
   if (wrapped !== undefined) return classifyShellCommand(wrapped, defaultBranch);
@@ -675,9 +939,14 @@ function classifyShellCommand(
   const hardReset = /\bgit\s+reset\b[^\n]*--hard\b/i.test(normalized);
   const cleanAll = /\bgit\s+clean\b[^\n]*(?:-[a-z]*x|--force)/i.test(normalized);
   const deleteRemote = /\bgit\s+push\b[^\n]*(?:--delete\b|\s:[^\s]+)/i.test(normalized);
-  const deletesDefault = Boolean(defaultBranch && deleteRemote
-    && new RegExp(`(?:^|[\\s/:])${escapeRegex(defaultBranch)}(?:\\s|$)`, 'i').test(normalized));
-  const broadDelete = /(?:^|[;&|]\s*)rm\s+(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r)\s+(?:\.|\*|[^\s]*\/\*)(?:\s|$)/i.test(normalized);
+  const deletesDefault = Boolean(
+    defaultBranch &&
+      deleteRemote &&
+      new RegExp(`(?:^|[\\s/:])${escapeRegex(defaultBranch)}(?:\\s|$)`, 'i').test(normalized),
+  );
+  const broadDelete = /(?:^|[;&|]\s*)rm\s+(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r)\s+(?:\.|\*|[^\s]*\/\*)(?:\s|$)/i.test(
+    normalized,
+  );
 
   if (forcePush) reasons.push('force push rewrites shared remote history');
   if (hardReset) reasons.push('hard reset can discard local changes and commits');
@@ -689,7 +958,10 @@ function classifyShellCommand(
   const destructivePatterns: Array<[RegExp, string]> = [
     [/\bgit\s+push\b[^\n]*(?:--delete\b|\s:[^\s]+)/i, 'deletes a remote branch or tag'],
     [/\bgit\s+(?:branch|tag)\b[^\n]*(?:\s-[dD]\b|\s--delete\b)/i, 'deletes a local branch or tag'],
-    [/\bgit\s+(?:checkout|restore)\b[^\n]*(?:--force\b|-f\b|--worktree\b|--source\b)/i, 'may overwrite working-tree content'],
+    [
+      /\bgit\s+(?:checkout|restore)\b[^\n]*(?:--force\b|-f\b|--worktree\b|--source\b)/i,
+      'may overwrite working-tree content',
+    ],
     [/(?:^|[;&|]\s*)(?:rm|rmdir|unlink)(?:\s|$)/i, 'deletes repository files'],
     [/\bfind\b[^\n]*-delete\b/i, 'deletes repository files through find'],
   ];
@@ -715,7 +987,10 @@ function classifyShellCommand(
   // workspace_write with no confirmation — they may write caches/snapshots but
   // do not require Durable solely because they use `bun run` / `npm run`.
   const segmentsRaw = shellSegments(normalized);
-  if (segmentsRaw.length > 0 && segmentsRaw.every((segment) => isReadOnlySegment(segment) || isReplaySafeValidationSegment(segment))) {
+  if (
+    segmentsRaw.length > 0 &&
+    segmentsRaw.every((segment) => isReadOnlySegment(segment) || isReplaySafeValidationSegment(segment))
+  ) {
     const allReadonly = segmentsRaw.every(isReadOnlySegment);
     return {
       risk: allReadonly ? 'readonly' : 'workspace_write',
@@ -727,11 +1002,20 @@ function classifyShellCommand(
   }
 
   const workspaceWritePatterns: Array<[RegExp, string]> = [
-    [/\bgit\s+(?:add|commit|pull|fetch|merge|rebase|checkout|switch|cherry-pick|revert|stash|mv|rm|restore|apply|am|bisect)(?:\s|$)/i, 'changes the checkout, local refs, index, or working tree'],
+    [
+      /\bgit\s+(?:add|commit|pull|fetch|merge|rebase|checkout|switch|cherry-pick|revert|stash|mv|rm|restore|apply|am|bisect)(?:\s|$)/i,
+      'changes the checkout, local refs, index, or working tree',
+    ],
     [/(?:^|[;&|]\s*)(?:touch|mkdir|cp|mv|install|tee|truncate|patch)(?:\s|$)/i, 'writes repository files'],
     // install/add/remove/update mutate deps; bare `run` of unknown scripts stays conservative below.
-    [/(?:^|[;&|]\s*)(?:npm|bun|pnpm|yarn)\s+(?:install|add|remove|update)(?:\s|$)/i, 'may modify dependencies, generated files, or the working tree'],
-    [/(?:^|[;&|]\s*)(?:npm|bun|pnpm|yarn)\s+run\s+(?!test|check|lint|typecheck|format:check|tsc)[a-z0-9:_-]+/i, 'may modify dependencies, generated files, or the working tree'],
+    [
+      /(?:^|[;&|]\s*)(?:npm|bun|pnpm|yarn)\s+(?:install|add|remove|update)(?:\s|$)/i,
+      'may modify dependencies, generated files, or the working tree',
+    ],
+    [
+      /(?:^|[;&|]\s*)(?:npm|bun|pnpm|yarn)\s+run\s+(?!test|check|lint|typecheck|format:check|tsc)[a-z0-9:_-]+/i,
+      'may modify dependencies, generated files, or the working tree',
+    ],
   ];
   for (const [pattern, reason] of workspaceWritePatterns) if (pattern.test(normalized)) reasons.push(reason);
   if (reasons.length > 0) return { risk: 'workspace_write', confirmation: 'authorization', reasons };
