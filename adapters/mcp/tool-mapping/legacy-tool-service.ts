@@ -6,6 +6,7 @@ import { join } from 'path';
 import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/runtime/editing/edit-operation-contract';
 import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/leases/store';
 import type { ResourceClaimSpec } from '../../../src/runtime/execution/jobs/types';
+import { claimPathWrite } from '../../../src/runtime/execution/process-runtime/resource-claims';
 import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
 import {
   listCapabilityDescriptors,
@@ -131,8 +132,7 @@ function mcpRepositoryIdentity(ctx: McpToolContext): { repoId: string; checkoutI
  * Semantic Mutation Planner performs atomic CAS; this wrapper coordinates
  * those paths with other repository mutation owners.
  */
-function mcpSourceClaims(ctx: McpToolContext, paths: Iterable<string>): ResourceClaimSpec[] | undefined {
-  // Unknown checkout identity keeps the existing conservative repository fence.
+export function buildMcpSourceClaims(ctx: McpToolContext, paths: Iterable<string>): ResourceClaimSpec[] {
   const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
   const checkoutId =
     ctx.checkoutId?.trim() ||
@@ -141,11 +141,19 @@ function mcpSourceClaims(ctx: McpToolContext, paths: Iterable<string>): Resource
       controllerHome,
       allowSoleRepository: true,
     }).activeCheckoutId;
-  if (!checkoutId) return undefined;
-  return [...new Set(paths)].filter(Boolean).map((path) => ({
-    resourceKey: `path:${checkoutId}:${path}`,
-    mode: 'write' as const,
-  }));
+  // Do not fall back to a repository-wide writer lock when exact placement is
+  // unknown. This MCP mutation requires a provable checkout and exact paths.
+  if (!checkoutId) throw new Error('MCP_SOURCE_CHECKOUT_ID_REQUIRED');
+  const claimsByResource = new Map<string, ResourceClaimSpec>();
+  for (const rawPath of paths) {
+    const path = rawPath.trim();
+    if (!path) continue;
+    const claim = claimPathWrite(path, checkoutId, ctx.repoId);
+    if (!claim) throw new Error('MCP_SOURCE_PATH_UNPROVABLE');
+    claimsByResource.set(claim.resourceKey, claim);
+  }
+  if (claimsByResource.size === 0) throw new Error('MCP_SOURCE_PATHS_REQUIRED');
+  return [...claimsByResource.values()];
 }
 
 function withMcpRepositoryMutation<T>(
@@ -822,7 +830,7 @@ export async function callMcpTool(
                 allowedPaths: stringList(args.allowed_paths),
                 refreshFingerprints: args.refresh_fingerprints === true,
               }),
-            mcpSourceClaims(ctx, extractPatchPaths(args.operations)),
+            buildMcpSourceClaims(ctx, extractPatchPaths(args.operations)),
           );
           audit(ctx, name, applied.status === 'failed' ? 'failed' : 'ok', args);
           return textResult(applied);

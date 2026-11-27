@@ -8,6 +8,7 @@ import { redactMcpText } from '../../adapters/mcp/redaction';
 import { globMatches, normalizeMcpRelativePath, resolveMcpPath } from '../../src/runtime/safe-tooling/path-policy';
 import { buildMcpToolDefinitions } from '../../adapters/mcp/tool-mapping/tools';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
+import { buildMcpSourceClaims } from '../../adapters/mcp/tool-mapping/legacy-tool-service';
 
 describe('mcp policy and paths', () => {
   test('retired Agent and Local Bridge submission aliases have no public schema', () => {
@@ -44,6 +45,20 @@ describe('mcp policy and paths', () => {
     expect(properties).toHaveProperty('operations');
     expect(properties).not.toHaveProperty('session_id');
     expect(properties).not.toHaveProperty('expected_revision');
+  });
+
+  test('MCP source mutations use canonical exact path claims and fail closed when unprovable', () => {
+    const context = {
+      repoRoot: '/tmp/forge-mcp-claims',
+      policy: getToolPolicy('controller'),
+      repoId: 'repo1',
+      checkoutId: 'checkout1',
+    };
+    expect(buildMcpSourceClaims(context, ['./src/a.ts', 'src/a.ts'])).toEqual([
+      { resourceKey: 'path:checkout1:src/a.ts', mode: 'write' },
+    ]);
+    expect(() => buildMcpSourceClaims(context, ['../outside.ts'])).toThrow('MCP_SOURCE_PATH_UNPROVABLE');
+    expect(() => buildMcpSourceClaims(context, [])).toThrow('MCP_SOURCE_PATHS_REQUIRED');
   });
 
   test('preferred facades do not advertise retired work_id (#483)', () => {
