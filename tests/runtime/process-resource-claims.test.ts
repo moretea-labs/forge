@@ -94,38 +94,53 @@ describe('Process Runtime fine-grained resource claims', () => {
       expect(claimsForRepositoryCommand(command, 'repo', 'checkout')).not.toContainEqual(claim);
     }
   });
-  test('MutationGate exact-path edits do not take checkout ownership (#713)', () => {
-    const a = buildMutationClaims('co1', { writePaths: ['src/alpha.ts'], mutatesGitIndex: false });
-    const b = buildMutationClaims('co1', { writePaths: ['./src/beta.ts'], mutatesGitIndex: false });
-    const overlap = buildMutationClaims('co1', { writePaths: ['src/alpha.ts'], mutatesGitIndex: false });
+  test('MutationGate reuses Process Runtime path, index, and repository-scoped ref claims (#725)', () => {
+    const a = buildMutationClaims('repo1', 'co1', { writePaths: ['src/alpha.ts'], mutatesGitIndex: false });
+    const b = buildMutationClaims('repo1', 'co1', { writePaths: ['./src/beta.ts'], mutatesGitIndex: false });
+    const overlap = buildMutationClaims('repo1', 'co1', { writePaths: ['src/alpha.ts'], mutatesGitIndex: false });
     expect(a).toEqual([{ resourceKey: 'path:co1:src/alpha.ts', mode: 'write' }]);
     expect(b).toEqual([{ resourceKey: 'path:co1:src/beta.ts', mode: 'write' }]);
     expect(claimsConflict(a[0]!, lease(b[0]!.resourceKey, 'write'))).toBe(false);
     expect(claimsConflict(a[0]!, lease(overlap[0]!.resourceKey, 'write'))).toBe(true);
     expect(a.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
 
-    const staged = buildMutationClaims('co1', {
+    const staged = buildMutationClaims('repo1', 'co1', {
       writePaths: ['src/alpha.ts'],
       mutatesGitIndex: true,
       mutatesGitRefs: true,
     });
-    expect(staged).toContainEqual({ resourceKey: 'path:co1:src/alpha.ts', mode: 'write' });
-    expect(staged).toContainEqual({ resourceKey: 'git-index:co1', mode: 'write' });
-    expect(staged).toContainEqual({ resourceKey: 'git-head:co1', mode: 'write' });
-    expect(staged).toContainEqual({ resourceKey: 'git-ref:HEAD', mode: 'write' });
-    expect(staged.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+    expect(staged).toEqual([
+      { resourceKey: 'path:co1:src/alpha.ts', mode: 'write' },
+      { resourceKey: 'git-index:co1', mode: 'exclusive' },
+      { resourceKey: 'git-refs:repo1', mode: 'exclusive' },
+    ]);
+    expect(claimsConflict(staged[2]!, lease('git-refs:repo1', 'exclusive'))).toBe(true);
+    expect(claimsConflict(staged[2]!, lease('git-refs:repo2', 'exclusive'))).toBe(false);
+    expect(staged.some((claim) => claim.resourceKey.startsWith('git-ref:'))).toBe(false);
+    expect(staged.some((claim) => claim.resourceKey.startsWith('git-head:'))).toBe(false);
+
+    const stageOnly = buildMutationClaims('repo1', 'co1', { mutatesGitIndex: true });
+    expect(stageOnly).toEqual([{ resourceKey: 'git-index:co1', mode: 'exclusive' }]);
+    expect(buildMutationClaims('repo1', 'co1', { mutatesGitIndex: true, mutatesGitRefs: true })).toEqual(
+      claimsForRepositoryCommand(['git', 'commit', '-m', 'slice'], 'repo1', 'co1'),
+    );
   });
 
-  test('MutationGate unknown or invalid source scopes keep conservative exclusion (#713)', () => {
+  test('MutationGate unknown or invalid source scopes do not create checkout-wide or implicit Git claims (#725)', () => {
     for (const options of [
+      {},
       { mutatesGitIndex: false },
       { writePaths: [] as string[], mutatesGitIndex: false },
       { writePaths: ['src/a.ts', '../outside'], mutatesGitIndex: false },
       { writePaths: ['src/a.ts', '/outside'], mutatesGitIndex: false },
       { writePaths: ['src/a.ts', '*'], mutatesGitIndex: false },
     ]) {
-      expect(buildMutationClaims('co1', options)).not.toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
+      const claims = buildMutationClaims('repo1', 'co1', options);
+      expect(claims.some((claim) => claim.resourceKey.startsWith('workspace:'))).toBe(false);
+      expect(claims.some((claim) => claim.resourceKey.startsWith('git-index:'))).toBe(false);
+      expect(claims.some((claim) => claim.resourceKey.startsWith('git-refs:'))).toBe(false);
     }
+    expect(buildMutationClaims('repo1', 'co1')).toEqual([]);
   });
 
   test('two same-checkout MutationGate owners coexist on disjoint paths but never overlap (#713)', async () => {
