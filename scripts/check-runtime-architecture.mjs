@@ -2296,7 +2296,30 @@ requireText('adapters/mcp/runtime-gateway/status-inbox-adapter.ts', 'gatewayLate
 requireText('src/cli/local-bridge/facade-api.ts', 'withRepositoryMutationExclusion(');
 requireText(
   'src/runtime/resources/leases/store.ts',
-  'assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner, mutationClaims)',
+  "if (mutationClaims === undefined) throw new Error('MUTATION_RESOURCE_CLAIMS_REQUIRED')",
+);
+requireText(
+  'src/runtime/resources/leases/store.ts',
+  "if (!supportedClaims) throw new Error('MUTATION_RESOURCE_CLAIMS_UNSUPPORTED')",
+);
+forbid(
+  'src/runtime/resources/leases/store.ts',
+  /function assertRepositoryProcessMutationAvailable/,
+  'editor-side duplicate repository mutation arbitration must stay retired',
+);
+forbidBetween(
+  'src/runtime/resources/leases/store.ts',
+  'export function withRepositoryMutationExclusion<T>(',
+  'export async function withRepositoryMutationExclusionAsync<T>(',
+  /withControllerLock\s*\(/,
+  'synchronous editor mutations must use the Resource Claim/ExecutionLease authority without repository-lock fallback',
+);
+forbidBetween(
+  'src/runtime/resources/leases/store.ts',
+  'export async function withRepositoryMutationExclusionAsync<T>(',
+  'export function acquireExecutionLeases(',
+  /withControllerLockAsync\s*\(/,
+  'asynchronous editor mutations must use the Resource Claim/ExecutionLease authority without repository-lock fallback',
 );
 forbid(
   'src/cli/local-bridge/server.ts',
