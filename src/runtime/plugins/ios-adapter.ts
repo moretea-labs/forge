@@ -28,6 +28,7 @@ import type {
 } from './types';
 import { AssistantPluginError } from './errors';
 import { resolveAppStoreConnectXcodeAuthenticationReference } from './app-store-connect-adapter';
+import { readIosWorkflowConfig } from '../safe-tooling/ios-workflow-config';
 import { recordIosTestEvidenceOwner } from '../control-plane/generated-cache-retention';
 import {
   executeIosAgentDeviceAction,
@@ -58,6 +59,18 @@ function repositoryFromInput(input: AssistantPluginActionExecutionInput): Reposi
 
 function controllerArtifactRoot(input: AssistantPluginActionExecutionInput): string {
   return join(repositoryControllerRoot(input.controllerHome, input.repoId), 'artifacts', 'ios');
+}
+
+function iosWorkflowConfigFor(input: AssistantPluginActionExecutionInput) {
+  const result = readIosWorkflowConfig(input.repoRoot);
+  if (!result.ready) {
+    throw new AssistantPluginError(
+      result.error.code,
+      'Invalid Forge iOS workflow config at ' + result.path + ': ' + result.error.message,
+      { retryable: false, details: { path: result.path } },
+    );
+  }
+  return result.config;
 }
 
 function userFacingIosStatus(): Record<string, unknown> {
@@ -173,10 +186,17 @@ function capabilities(): AssistantPluginCapability[] {
     },
     {
       capabilityId: 'ios-smoke-review',
-      title: 'iOS Staged Smoke Review',
-      description: 'Run a staged build/install/launch/screenshot workflow with per-stage evidence.',
+      title: 'iOS App Preview',
+      description: 'Build, install, launch, capture a screenshot, and collect logs. Preview never runs XCTest.',
       scopes: ['ios.build', 'ios.simulator'],
-      actions: ['smoke_review', 'build', 'xcode_test', 'launch_simulator', 'capture_screenshot'],
+      actions: ['smoke_review', 'build', 'launch_simulator', 'capture_screenshot'],
+    },
+    {
+      capabilityId: 'ios-testing',
+      title: 'Explicit iOS Testing',
+      description: 'Run XCTest only when a test action is explicitly requested; never as a side effect of preview.',
+      scopes: ['ios.build', 'ios.simulator'],
+      actions: ['xcode_test'],
     },
     ...iosAgentDeviceCapabilities(),
   ];
@@ -290,8 +310,8 @@ function actions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'xcode_test',
-      title: 'Run focused Xcode tests',
-      description: 'Run an Xcode test scheme, optionally narrowed with exact -only-testing selectors, and return bounded xcresult evidence.',
+      title: 'Explicit XCTest run',
+      description: 'Run XCTest only when the user explicitly requests tests. Never use for visual preview, build/install/launch, or screenshot-only acceptance. Supports exact -only-testing selectors and bounded xcresult evidence.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -368,8 +388,8 @@ function actions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'smoke_review',
-      title: 'Staged iOS smoke review',
-      description: 'Run project discovery → scheme → build → boot → install → launch → screenshot → logs with per-stage status.',
+      title: 'Preview iOS app',
+      description: 'Preview the app through build → boot → install → launch → screenshot → logs. Does not run XCTest; use xcode_test only when tests are explicitly requested.',
       readOnly: false,
       risk: 'workspace_write',
       confirmation: 'authorization',
@@ -411,7 +431,7 @@ export function buildIosPluginManifest(previousRevision = 0, previousUpdatedAt?:
     revision: Math.max(1, previousRevision || 1),
     pluginId: IOS_PLUGIN_ID,
     provider: 'apple-local',
-    displayName: 'iOS Development / Simulator / XCTest',
+    displayName: 'iOS Development / App Preview / Explicit XCTest',
     pluginVersion: '1.0.0',
     authority: {
       strategy: 'derived',
@@ -493,7 +513,11 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
         }),
       };
     case 'build': {
-      const destinationPlatform = stringValue(input.args.destination_platform);
+      const workflow = iosWorkflowConfigFor(input);
+      const projectDefaults = workflow.project;
+      const previewDefaults = workflow.preview;
+      const destinationPlatform = stringValue(input.args.destination_platform) ??
+        (previewDefaults?.target === 'physical_device' ? 'ios' : 'ios_simulator');
       if (destinationPlatform && destinationPlatform !== 'ios' && destinationPlatform !== 'ios_simulator') {
         throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'destination_platform must be ios or ios_simulator.', { retryable: false });
       }
@@ -510,12 +534,16 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
         : undefined;
       return {
         ...await iosAppBuild(repository, {
-          scheme: stringValue(input.args.scheme),
-          udid: stringValue(input.args.udid),
-          simulatorName: stringValue(input.args.simulator_name),
-          workspace: stringValue(input.args.workspace),
-          project: stringValue(input.args.project),
-          configuration: stringValue(input.args.configuration),
+          scheme: stringValue(input.args.scheme) ?? projectDefaults?.scheme,
+          udid: stringValue(input.args.udid) ??
+            (destinationPlatform === 'ios'
+              ? previewDefaults?.physicalDevice?.udid
+              : previewDefaults?.simulator?.udid),
+          simulatorName: stringValue(input.args.simulator_name) ??
+            (destinationPlatform === 'ios_simulator' ? previewDefaults?.simulator?.name : undefined),
+          workspace: stringValue(input.args.workspace) ?? projectDefaults?.workspace,
+          project: stringValue(input.args.project) ?? projectDefaults?.project,
+          configuration: stringValue(input.args.configuration) ?? projectDefaults?.configuration,
           destinationPlatform: destinationPlatform as 'ios' | 'ios_simulator' | undefined,
           provisioning: allowProvisioningUpdates ? { allowUpdates: true, authentication } : undefined,
           timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
@@ -523,21 +551,27 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
       };
     }
     case 'xcode_test': {
+      const workflow = iosWorkflowConfigFor(input);
+      const projectDefaults = workflow.project;
+      const testDefaults = workflow.tests;
       const onlyTesting = Array.isArray(input.args.only_testing)
         ? input.args.only_testing.map((entry) => String(entry).trim()).filter(Boolean).slice(0, 50)
-        : undefined;
+        : testDefaults?.onlyTesting;
+      const parallelTesting = typeof input.args.parallel_testing === 'boolean'
+        ? input.args.parallel_testing
+        : testDefaults?.parallelTesting ?? false;
       const testResult = await iosXcodeTest(repository, {
-          scheme: stringValue(input.args.scheme),
-          udid: stringValue(input.args.udid),
-          simulatorName: stringValue(input.args.simulator_name),
-          workspace: stringValue(input.args.workspace),
-          project: stringValue(input.args.project),
-          configuration: stringValue(input.args.configuration),
+          scheme: stringValue(input.args.scheme) ?? testDefaults?.scheme ?? projectDefaults?.scheme,
+          udid: stringValue(input.args.udid) ?? testDefaults?.simulator?.udid,
+          simulatorName: stringValue(input.args.simulator_name) ?? testDefaults?.simulator?.name,
+          workspace: stringValue(input.args.workspace) ?? projectDefaults?.workspace,
+          project: stringValue(input.args.project) ?? projectDefaults?.project,
+          configuration: stringValue(input.args.configuration) ?? testDefaults?.configuration ?? projectDefaults?.configuration,
           onlyTesting,
-          parallelTesting: input.args.parallel_testing === true,
+          parallelTesting,
           maxParallelTestingWorkers: typeof input.args.max_parallel_testing_workers === 'number'
             ? input.args.max_parallel_testing_workers
-            : undefined,
+            : testDefaults?.maxParallelTestingWorkers,
           timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
       });
       let resultBundleOwnership: { recorded: boolean; resourceId?: string; reason?: string } | undefined;
@@ -586,21 +620,33 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
       };
     }
     case 'smoke_review': {
+      const workflow = iosWorkflowConfigFor(input);
+      const projectDefaults = workflow.project;
+      const previewDefaults = workflow.preview;
+      if (previewDefaults?.target === 'physical_device') {
+        throw new AssistantPluginError(
+          'IOS_PREVIEW_TARGET_MISMATCH',
+          'smoke_review is the Simulator preview path. For a configured physical iPhone, build for destination_platform=ios, install through physical_device_install, then open with observe_after_open=true. XCTest is never part of preview.',
+          { retryable: false, details: { configuredDevice: previewDefaults.physicalDevice?.selector ?? previewDefaults.physicalDevice?.udid } },
+        );
+      }
       const review = await iosSmokeReview(repository, {
-          scheme: stringValue(input.args.scheme),
-          bundleId: stringValue(input.args.bundle_id),
-          udid: stringValue(input.args.udid),
-          simulatorName: stringValue(input.args.simulator_name),
-          workspace: stringValue(input.args.workspace),
-          project: stringValue(input.args.project),
-          configuration: stringValue(input.args.configuration),
+          scheme: stringValue(input.args.scheme) ?? projectDefaults?.scheme,
+          bundleId: stringValue(input.args.bundle_id) ?? projectDefaults?.bundleId,
+          udid: stringValue(input.args.udid) ?? previewDefaults?.simulator?.udid,
+          simulatorName: stringValue(input.args.simulator_name) ?? previewDefaults?.simulator?.name,
+          workspace: stringValue(input.args.workspace) ?? projectDefaults?.workspace,
+          project: stringValue(input.args.project) ?? projectDefaults?.project,
+          configuration: stringValue(input.args.configuration) ?? projectDefaults?.configuration,
           appPath: stringValue(input.args.app_path),
-          screenshotLabel: stringValue(input.args.screenshot_label),
+          screenshotLabel: stringValue(input.args.screenshot_label) ?? previewDefaults?.screenshotLabel,
           skipBuild: input.args.skip_build === true,
-          launchWaitMs: typeof input.args.launch_wait_ms === 'number' ? input.args.launch_wait_ms : undefined,
+          launchWaitMs: typeof input.args.launch_wait_ms === 'number'
+            ? input.args.launch_wait_ms
+            : previewDefaults?.launchWaitMs,
           cleanupPolicy: ['keep', 'shutdown_on_success', 'shutdown_always'].includes(String(input.args.cleanup_policy))
             ? input.args.cleanup_policy as 'keep' | 'shutdown_on_success' | 'shutdown_always'
-            : undefined,
+            : previewDefaults?.cleanupPolicy,
         artifactRoot,
       });
       const screenshotPath = review.screenshot && typeof review.screenshot === 'object' && 'absolutePath' in review.screenshot

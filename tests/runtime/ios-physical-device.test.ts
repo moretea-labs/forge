@@ -2615,6 +2615,15 @@ describe('CoreDevice-first physical iPhone provider', () => {
 
   it('surfaces CoreDevice display, lock, View Device Screen, and HID capabilities without a Runner', async () => {
     const value = fixture();
+    mkdirSync(join(value.repoRoot, '.forge'), { recursive: true });
+    writeFileSync(
+      join(value.repoRoot, '.forge', 'ios-workflow.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        preview: { target: 'physical_device', physicalDevice: { selector: 'greyson', udid: '00008150-TEST' } },
+      }),
+      'utf8',
+    );
     setIosPhysicalDeviceRuntimeHooksForTest({
       platform: () => 'darwin',
       runCommand: (command, args) => {
@@ -2658,7 +2667,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
       },
     });
 
-    const info = await executeIosPhysicalDeviceAction(input(value, 'physical_device_info', { device: 'greyson' }));
+    const info = await executeIosPhysicalDeviceAction(input(value, 'physical_device_info', {}));
     expect(info.screenViewingURL).toBe('devices://device/open?id=CORE-DEVICE-1');
     expect(info.capabilities).toEqual({
       applicationControl: true,
