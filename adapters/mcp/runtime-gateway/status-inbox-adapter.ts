@@ -30,7 +30,7 @@ import {
   runHandoffInboxApplication,
   type FacadeTool,
 } from '../../../src/runtime/control-plane/facade';
-import { observeRuntimeStatus } from '../../../src/runtime/root/status';
+import { observeRuntimeStatusAsync } from '../../../src/runtime/root/status';
 import { summarizeHandoffItem } from '../../../src/runtime/control-plane/facade';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import {
@@ -250,7 +250,7 @@ export async function callStatusInboxAdapter(
         summaryPhaseTimingsMs[phase] = Number((now - summaryTimingMark).toFixed(2));
         summaryTimingMark = now;
       };
-      const observation = observeRuntimeStatus(ctx.controllerHome);
+      const observation = await observeRuntimeStatusAsync(ctx.controllerHome);
       markSummaryPhase('runtime');
       // Summary answers only whether this repository can work now. Reuse one
       // porcelain-v2 sample for branch/HEAD/dirty and avoid the full Git
@@ -438,7 +438,7 @@ export async function callStatusInboxAdapter(
       detailTimingMark = now;
     };
     const readiness = await controllerReadinessEvidence(ctx, repository);
-    const runtimeObservation = observeRuntimeStatus(ctx.controllerHome);
+    const runtimeObservation = await observeRuntimeStatusAsync(ctx.controllerHome);
     markDetailPhase('readiness');
     const repositoryReadSession =
       ctx.sessionId && ctx.repoId === repository.repoId && ctx.checkoutId === repository.activeCheckoutId

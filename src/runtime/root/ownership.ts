@@ -13,7 +13,7 @@ import { resolveControllerHome } from '../../effects/controller-home';
 import { isProcessAlive, terminateProcessTree, type ProcessTreeTerminationResult } from '../shared/process-tree';
 import { forgeRuntimePersistentServiceLabel } from '../platform/service-inventory';
 import { systemdUserServiceOwnsPid } from '../platform/systemd-user';
-import { defaultProcessIdentityProbe, executableFingerprint, LINUX_PROCESS_START_TIME_PREFIX, processIdentityMatches, type ProcessIdentityProbe } from '../shared/process-identity';
+import { defaultProcessIdentityProbe, executableFingerprint, LINUX_PROCESS_START_TIME_PREFIX, processIdentityMatches, processIdentityMatchesAsync, type ProcessIdentityProbe } from '../shared/process-identity';
 
 export interface RuntimeOwnerRecord {
   schemaVersion: 1 | 2;
@@ -208,6 +208,21 @@ export function runtimeOwnerProcessIdentityMatches(
 ): boolean {
   if (!record?.processStartTime || !record.executableFingerprint) return false;
   const identity = processIdentityMatches({
+    pid: record.pid,
+    processStartTime: record.processStartTime,
+    executableFingerprint: record.executableFingerprint,
+  }, record.pid);
+  return identity.matches || legacyRuntimeProcessIdentityMatchesWithSystemd(record, controllerHome, identity, systemdServiceOwnsPidProbe);
+}
+
+/** Async read-only owner fence; the Linux legacy systemd bridge is unchanged. */
+export async function runtimeOwnerProcessIdentityMatchesAsync(
+  record: RuntimeOwnerRecord | undefined,
+  controllerHome: string,
+  systemdServiceOwnsPidProbe: RuntimeSystemdServiceOwnsPidProbe = systemdUserServiceOwnsPid,
+): Promise<boolean> {
+  if (!record?.processStartTime || !record.executableFingerprint) return false;
+  const identity = await processIdentityMatchesAsync({
     pid: record.pid,
     processStartTime: record.processStartTime,
     executableFingerprint: record.executableFingerprint,

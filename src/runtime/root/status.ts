@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from 'path';
 import { randomUUID } from 'crypto';
 import { resolveControllerHome } from '../../effects/controller-home';
-import { isProcessAlive } from '../shared/process-tree';
-import { readRuntimeOwner, runtimeOwnerProcessIdentityMatches } from './ownership';
+import { isProcessAlive, isProcessAliveAsync } from '../shared/process-tree';
+import { readRuntimeOwner, runtimeOwnerProcessIdentityMatches, runtimeOwnerProcessIdentityMatchesAsync } from './ownership';
 import type {
   RuntimeDiagnosticEvidence,
   RuntimeReadiness,
@@ -139,17 +139,12 @@ export function removeRuntimeStatusSnapshot(
  * This is a read-only projection, never lifecycle authority. A stored ready=true
  * is accepted only while the live Runtime owner has the same instance and PID.
  */
-export function observeRuntimeStatus(
-  controllerHome: string,
-  now: () => string = () => new Date().toISOString(),
+function formatRuntimeStatusObservation(
+  snapshot: RuntimeStatusSnapshot | undefined,
+  owner: ReturnType<typeof readRuntimeOwner>,
+  ownerAlive: boolean,
+  now: () => string,
 ): RuntimeStatusObservation {
-  const snapshot = readRuntimeStatusSnapshot(controllerHome);
-  const owner = readRuntimeOwner(controllerHome);
-  const ownerAlive = Boolean(owner && (
-    owner.processStartTime && owner.executableFingerprint
-      ? runtimeOwnerProcessIdentityMatches(owner, controllerHome)
-      : isProcessAlive(owner.pid)
-  ));
   if (!snapshot) {
     return {
       schemaVersion: 1,
@@ -177,4 +172,34 @@ export function observeRuntimeStatus(
     snapshot,
     observedAt: now(),
   };
+}
+
+/** Lifecycle-compatible synchronous observation; avoid on high-frequency tool reads. */
+export function observeRuntimeStatus(
+  controllerHome: string,
+  now: () => string = () => new Date().toISOString(),
+): RuntimeStatusObservation {
+  const snapshot = readRuntimeStatusSnapshot(controllerHome);
+  const owner = readRuntimeOwner(controllerHome);
+  const ownerAlive = Boolean(owner && (
+    owner.processStartTime && owner.executableFingerprint
+      ? runtimeOwnerProcessIdentityMatches(owner, controllerHome)
+      : isProcessAlive(owner.pid)
+  ));
+  return formatRuntimeStatusObservation(snapshot, owner, ownerAlive, now);
+}
+
+/** Async owner liveness observation for the MCP request hot path. */
+export async function observeRuntimeStatusAsync(
+  controllerHome: string,
+  now: () => string = () => new Date().toISOString(),
+): Promise<RuntimeStatusObservation> {
+  const snapshot = readRuntimeStatusSnapshot(controllerHome);
+  const owner = readRuntimeOwner(controllerHome);
+  const ownerAlive = Boolean(owner && await (
+    owner.processStartTime && owner.executableFingerprint
+      ? runtimeOwnerProcessIdentityMatchesAsync(owner, controllerHome)
+      : isProcessAliveAsync(owner.pid)
+  ));
+  return formatRuntimeStatusObservation(snapshot, owner, ownerAlive, now);
 }
