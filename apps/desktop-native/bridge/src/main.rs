@@ -6017,7 +6017,10 @@ mod tests {
         responses.consume("responses",&json!({
             "type":"response.completed","response":completed
         }).to_string(),&host,"conv-3").expect("Responses complete");
-        assert_eq!(responses.finish("responses").unwrap(),completed);
+        let response = responses.finish("responses").unwrap();
+        assert_eq!(response["output"], completed["output"]);
+        assert!(response["_forgeProviderTiming"].is_object(),
+            "provider timing is an internal receipt and must not alter the Responses output contract");
         assert!(host.events.lock().unwrap().iter().any(|event|
             event["kind"] == "reasoning_summary_delta" && event["delta"] == "Checked two sources."));
 
