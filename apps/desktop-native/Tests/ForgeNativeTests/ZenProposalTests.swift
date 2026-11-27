@@ -433,6 +433,7 @@ final class ZenProposalTests: XCTestCase {
       var data: [String: Any] = [
         "run": run, "runtimeActive": active, "providerReady": ready,
         "requiresReapproval": needsReapproval,
+        "policy": ["provider": "deepseek", "model": "deepseek-chat"],
       ]
       if authorized { data["grant"] = ["grantId": "grant-one"] }
       return try XCTUnwrap(NativeWorkspace.autopilotStatusDetail(["data": data]))
