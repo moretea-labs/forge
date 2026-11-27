@@ -11,7 +11,14 @@ import {
 import { repositoryGitStatus, resolveRepositoryGitCommitScope } from '../../runtime/repositories/structured-git';
 import { withControllerLock } from '../../effects/controller-locks';
 import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
-import { normalizeClaimPath } from '../../runtime/resources/claims/conflicts';
+import { normalizeClaims } from '../../runtime/resources/claims/conflicts';
+import {
+  claimGitIndex,
+  claimGitIndexRead,
+  claimGitRefs,
+  claimGitRefsRead,
+  claimPathWrites,
+} from '../execution/process-runtime/resource-claims';
 import type { ResourceClaimSpec } from '../../runtime/execution/jobs/types';
 import type { RepositoryRecord } from '../../core/repository/types';
 
@@ -141,15 +148,13 @@ function selectedPathMutationClaims(
   paths: string[],
   action: 'commit' | 'restore',
 ): ResourceClaimSpec[] {
-  const sourceClaims: ResourceClaimSpec[] = paths.flatMap((path): ResourceClaimSpec[] => {
-    const normalized = normalizeClaimPath(path);
-    return normalized ? [{ resourceKey: `path:${repository.activeCheckoutId}:${normalized}`, mode: 'write' }] : [];
-  });
-  return [
-    ...sourceClaims,
-    { resourceKey: `git-index:${repository.activeCheckoutId}`, mode: action === 'commit' ? 'exclusive' : 'read' },
-    { resourceKey: `git-refs:${repository.repoId}`, mode: action === 'commit' ? 'exclusive' : 'read' },
-  ];
+  const mutatesGit = action === 'commit';
+  return normalizeClaims([
+    ...claimPathWrites(paths, repository.activeCheckoutId, repository.repoId),
+    ...(mutatesGit
+      ? [claimGitIndex(repository.activeCheckoutId, repository.repoId), claimGitRefs(repository.repoId)]
+      : [claimGitIndexRead(repository.activeCheckoutId, repository.repoId), claimGitRefsRead(repository.repoId)]),
+  ]);
 }
 
 function runGit(

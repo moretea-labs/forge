@@ -8,8 +8,9 @@
  * Ownership lifecycle is covered by the mutation lease alone — do NOT hold the
  * repository controller lock for the duration of the write (renew needs that lock).
  *
- * Claims cover exact paths when known, and workspace only for unknown changes;
- * Git index/head/ref retain independent fences.
+ * Claims cover exact paths when known; unknown effects receive only an
+ * owner-scoped fencing lease. Git index and repository refs are claimed only
+ * when the operation actually mutates those resources.
  */
 import { createHash } from 'crypto';
 import {
@@ -21,7 +22,8 @@ import {
 import type { ExecutionLease, ExecutionLeaseOwnerIdentity } from '../../resources/leases/types';
 import { recordGatewayLatency } from '../../../core/observability/gateway-contention-metrics';
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
-import { normalizeClaimPath } from '../../resources/claims/conflicts';
+import { normalizeClaims } from '../../resources/claims/conflicts';
+import { claimGitIndex, claimGitRefs, claimPathWrites } from '../process-runtime/resource-claims';
 import { runBoundedGit } from './async-process';
 import { terminateProcessTree } from '../../shared/process-tree';
 
@@ -74,7 +76,7 @@ export interface MutationOwnershipOptions {
   writePaths?: string[];
   /** When true, also claim git-ref (commit / branch mutation). */
   mutatesGitRefs?: boolean;
-  /** When true (default for workspace writes), claim git-index + git-head. */
+  /** When true, claim the checkout's Git index. */
   mutatesGitIndex?: boolean;
 }
 
@@ -123,29 +125,19 @@ export function normalizeMutationOwnerIdentity(input: {
   };
 }
 
-export function buildMutationClaims(checkoutId: string, options: MutationOwnershipOptions = {}): ResourceClaimSpec[] {
-  const declaredPaths = options.writePaths ?? [];
-  const normalizedPaths = declaredPaths.map((path) => normalizeClaimPath(path));
-  // Exact source paths only. Undeclared or unprovable paths take no
-  // checkout-wide writer; the model reconciles against latest source (#713).
-  const claims: ResourceClaimSpec[] = normalizedPaths
-    .filter((path): path is string => Boolean(path))
-    .map((path) => ({ resourceKey: `path:${checkoutId}:${path}`, mode: 'write' }));
-  const mutatesIndex = options.mutatesGitIndex !== false;
-  if (mutatesIndex) {
-    claims.push({ resourceKey: `git-index:${checkoutId}`, mode: 'write' });
-    claims.push({ resourceKey: `git-head:${checkoutId}`, mode: 'write' });
-  }
-  if (options.mutatesGitRefs) {
-    claims.push({ resourceKey: `git-ref:HEAD`, mode: 'write' });
-    claims.push({ resourceKey: `git-ref:refs/heads/*`, mode: 'write' });
-  }
-  // Dedupe by resourceKey, prefer exclusive/write
-  const map = new Map<string, ResourceClaimSpec>();
-  for (const claim of claims) {
-    map.set(claim.resourceKey, claim);
-  }
-  return [...map.values()];
+export function buildMutationClaims(
+  repoId: string,
+  checkoutId: string,
+  options: MutationOwnershipOptions = {},
+): ResourceClaimSpec[] {
+  // Use the same constructors and conflict keys as Process Runtime. This keeps
+  // Fast and managed writes on one resource vocabulary and scopes Git refs to
+  // their owning repository rather than a process-global wildcard.
+  return normalizeClaims([
+    ...claimPathWrites(options.writePaths ?? [], checkoutId, repoId),
+    ...(options.mutatesGitIndex === true ? [claimGitIndex(checkoutId, repoId)] : []),
+    ...(options.mutatesGitRefs ? [claimGitRefs(repoId)] : []),
+  ]);
 }
 
 async function snapshotHead(repoRoot: string): Promise<string | null> {
@@ -218,7 +210,7 @@ export async function acquireCheckoutMutationGate(input: {
   const ownerIdentity = normalizeMutationOwnerIdentity(input);
   const ownerJobId =
     input.owner.startsWith('fast:') || input.owner.startsWith('JOB-') ? input.owner : `fast:${input.owner}`;
-  const exactClaims = buildMutationClaims(input.checkoutId, input.ownership);
+  const exactClaims = buildMutationClaims(input.repoId, input.checkoutId, input.ownership);
   // Writer identity is attribution, not a monopoly: an edit without exact
   // claims holds only its own owner-scoped lease for fencing/renewal (#713).
   const claims = (
