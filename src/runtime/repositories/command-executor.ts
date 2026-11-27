@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
 import { appendFileSync, existsSync, lstatSync, mkdirSync } from 'fs';
-import { dirname, join, relative, resolve } from 'path';
+import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { MAX_AGENT_TIMEOUT_MS, MIN_AGENT_TIMEOUT_MS } from '../shared/runtime-config';
 import { scopedOperationRoot } from '../../effects/controller-home';
@@ -18,15 +18,28 @@ import {
   type RepositoryCommandExternalPathUsage,
   resolveRepositoryCommandCwd,
 } from './command-scope';
-import { commandValue, type CanonicalRepositoryCommand, type RepositoryCommandValue } from '../../core/repository-command/normalization';
+import {
+  commandValue,
+  type CanonicalRepositoryCommand,
+  type RepositoryCommandValue,
+} from '../../core/repository-command/normalization';
 import { loadExternalFilesystemGrants } from '../safe-tooling/external-filesystem';
 import type { RepositoryRecord } from '../../core/repository/types';
 import { isForgeSourceRemote } from '../../core/git-branch-policy';
 import { readRepositoryAccessPolicy } from '../control-plane/governance/access-policy';
 import { invalidateRepositoryReadCaches } from './inspector';
-import { assertResolvedAuthorization, decideAuthorization, type AuthorizationDecision } from '../control-plane/governance/authorization';
+import {
+  assertResolvedAuthorization,
+  decideAuthorization,
+  type AuthorizationDecision,
+} from '../control-plane/governance/authorization';
 import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from '../root/write-fence';
-import { commandEnvironment, runCanonicalCommand, type RepositoryCommandAsyncHooks, type SpawnCommandResult } from './command-process';
+import {
+  commandEnvironment,
+  runCanonicalCommand,
+  type RepositoryCommandAsyncHooks,
+  type SpawnCommandResult,
+} from './command-process';
 import {
   changedSnapshotPaths,
   emptyWorkspaceSnapshot,
@@ -55,6 +68,8 @@ export type {
 export interface ExecuteRepositoryCommandInput {
   command: string | readonly string[];
   cwd?: string;
+  /** Model-declared repository-relative paths/directories this command may mutate. */
+  mutationPaths?: readonly string[];
   authorization?: RepositoryCommandAuthorization;
   approvalToken?: string;
   dryRun?: boolean;
@@ -75,12 +90,11 @@ export interface ExecuteRepositoryCommandInput {
   allowNonGitWorkspace?: boolean;
   /** Internal: command-facade already classified this as a bounded local script; retain policy/snapshot/audit without durable Process state. */
   allowOpaqueLocalScript?: boolean;
-  /** Internal/test seam: bound dirty-path fingerprint enrichment independently from child execution lifetime. */
+  /** Internal/test seam: bound selected-path fingerprint enrichment independently from child execution lifetime. */
   snapshotFingerprintTimeoutMs?: number;
 }
 
 export type { RepositoryCommandScopeTarget as RepositoryCommandExecutionTarget };
-
 
 export interface RepositoryCommandExecution {
   status: 'preview' | 'approval_required' | 'executed';
@@ -110,13 +124,11 @@ export interface RepositoryCommandExecution {
   externalPathUsages?: RepositoryCommandExternalPathUsage[];
 }
 
-
 export interface PreparedRepositoryCommandExecution {
   before: RepositoryCommandSnapshot;
   executable: boolean;
   execution: RepositoryCommandExecution;
 }
-
 
 /** Sensible interactive default for ordinary repository commands. */
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -143,13 +155,39 @@ function boundedInteger(value: number | undefined, fallback: number, minimum: nu
   return normalized;
 }
 
-function boundedSnapshotFingerprintPaths(
+function normalizedRepositoryMutationPaths(root: string, paths?: readonly string[]): string[] | undefined {
+  if (!paths?.length) return undefined;
+  const normalized: string[] = [];
+  for (const candidate of paths) {
+    const value = candidate.trim().replace(/\\/g, '/').replace(/^\.\//, '');
+    if (
+      !value ||
+      value.includes('\0') ||
+      isAbsolute(value) ||
+      value.startsWith(':') ||
+      value.split('/').includes('..') ||
+      /[*?\[\]]/.test(value)
+    )
+      return undefined;
+    const absolute = resolve(root, value);
+    const path = relative(root, absolute).replace(/\\/g, '/');
+    if (!path || path === '..' || path.startsWith('../')) return undefined;
+    normalized.push(path);
+  }
+  return [...new Set(normalized)].sort();
+}
+
+function gitAddSnapshotFingerprintPaths(
   root: string,
   cwd: string,
   command: CanonicalRepositoryCommand,
 ): string[] | undefined {
   if (command.kind !== 'argv') return undefined;
-  const program = (command.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase().replace(/\.exe$/, '');
+  const program = (command.executable ?? '')
+    .split(/[\\/]/)
+    .at(-1)
+    ?.toLowerCase()
+    .replace(/\.exe$/, '');
   const args = [...(command.args ?? [])];
   if (program !== 'git' || args[0]?.toLowerCase() !== 'add') return undefined;
   const separator = args.indexOf('--');
@@ -173,6 +211,111 @@ function boundedSnapshotFingerprintPaths(
   return [...new Set(paths)].sort();
 }
 
+function boundedSnapshotFingerprintPaths(
+  root: string,
+  cwd: string,
+  command: CanonicalRepositoryCommand,
+  mutationPaths?: readonly string[],
+): string[] | undefined {
+  const declared = normalizedRepositoryMutationPaths(root, mutationPaths);
+  if (mutationPaths?.length && !declared) {
+    throw new Error(
+      'COMMAND_MUTATION_PATHS_INVALID: mutation_paths must be repository-relative file or directory paths',
+    );
+  }
+  const gitAdd = gitAddSnapshotFingerprintPaths(root, cwd, command);
+  const paths = [...(declared ?? []), ...(gitAdd ?? [])];
+  return paths.length > 0 ? [...new Set(paths)].sort() : undefined;
+}
+
+function snapshotMetadataChanged(before: RepositoryCommandSnapshot, after: RepositoryCommandSnapshot): boolean {
+  return before.head !== after.head || before.branch !== after.branch || before.refsHash !== after.refsHash;
+}
+
+function commandMutatesGitMetadata(command: CanonicalRepositoryCommand): boolean {
+  const metadataCommands = new Set([
+    'commit',
+    'merge',
+    'rebase',
+    'cherry-pick',
+    'revert',
+    'checkout',
+    'switch',
+    'branch',
+    'tag',
+    'reset',
+    'stash',
+    'update-ref',
+  ]);
+  if (command.kind === 'argv') {
+    const program = (command.executable ?? '')
+      .split(/[\\/]/)
+      .at(-1)
+      ?.toLowerCase()
+      .replace(/\.exe$/, '');
+    return program === 'git' && metadataCommands.has((command.args ?? [])[0]?.toLowerCase() ?? '');
+  }
+  return Boolean(
+    command.shellCommand?.match(
+      /^\s*git\s+(commit|merge|rebase|cherry-pick|revert|checkout|switch|branch|tag|reset|stash|update-ref)\b/i,
+    ),
+  );
+}
+
+function snapshotEvidenceError(
+  before: RepositoryCommandSnapshot,
+  after: RepositoryCommandSnapshot,
+  fingerprintPaths: readonly string[] | undefined,
+  command: CanonicalRepositoryCommand,
+): { code: string; message: string } | undefined {
+  const fingerprintError = before.pathFingerprintError ?? after.pathFingerprintError;
+  if (fingerprintError) return fingerprintError;
+
+  const metadataChanged = snapshotMetadataChanged(before, after);
+  if (fingerprintPaths?.length) {
+    if (before.fingerprintScope !== 'selected' || after.fingerprintScope !== 'selected') {
+      return {
+        code: 'SNAPSHOT_SCOPE_MISMATCH',
+        message: 'The before/after snapshots did not retain the declared mutation-path fingerprint scope.',
+      };
+    }
+    if (metadataChanged && !commandMutatesGitMetadata(command)) {
+      return {
+        code: 'SNAPSHOT_CONCURRENT_GIT_METADATA_CHANGE',
+        message: 'Git HEAD, branch, or refs changed outside this source-path command; mutation attribution is unknown.',
+      };
+    }
+    return undefined;
+  }
+
+  if (before.paths.length > 0 || after.paths.length > 0) {
+    return {
+      code: 'SNAPSHOT_SCOPE_UNDECLARED',
+      message:
+        'The command had no exact mutation-path scope while the checkout contained dirty paths; status-only evidence cannot attribute edits safely.',
+    };
+  }
+  if (metadataChanged && !commandMutatesGitMetadata(command)) {
+    return {
+      code: 'SNAPSHOT_METADATA_SCOPE_UNDECLARED',
+      message: 'Git HEAD, branch, or refs changed during a command without a declared Git metadata effect.',
+    };
+  }
+  return undefined;
+}
+
+function commandRepositoryChanged(
+  before: RepositoryCommandSnapshot,
+  after: RepositoryCommandSnapshot,
+  fingerprintPaths: readonly string[] | undefined,
+  command: CanonicalRepositoryCommand,
+): boolean {
+  return (
+    changedSnapshotPaths(before, after, fingerprintPaths).length > 0 ||
+    (snapshotMetadataChanged(before, after) && commandMutatesGitMetadata(command))
+  );
+}
+
 function approvalToken(
   repository: RepositoryCommandScopeTarget,
   relativeCwd: string,
@@ -181,16 +324,20 @@ function approvalToken(
   snapshot: RepositoryCommandSnapshot,
   externalPathUsages: RepositoryCommandExternalPathUsage[],
 ): string {
-  return createHash('sha256').update(JSON.stringify({
-    version: 2,
-    repoId: commandExecutionScopeKey(repository),
-    checkoutId: repository.activeCheckoutId,
-    cwd: relativeCwd,
-    command,
-    classification,
-    snapshot,
-    externalPathUsages,
-  })).digest('hex');
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        version: 2,
+        repoId: commandExecutionScopeKey(repository),
+        checkoutId: repository.activeCheckoutId,
+        cwd: relativeCwd,
+        command,
+        classification,
+        snapshot,
+        externalPathUsages,
+      }),
+    )
+    .digest('hex');
 }
 
 function finalizePreparedExecution(
@@ -216,34 +363,61 @@ function finalizePreparedExecution(
   externalPathUsages: RepositoryCommandExternalPathUsage[];
 } {
   const commandForPersistence = commandValue(command);
-  const token = approvalToken(repository, relativeCwd, commandForPersistence, classification, before, externalPathUsages);
-  const permission = controllerHome ? readRepositoryAccessPolicy(controllerHome, commandExecutionScopeKey(repository)) : undefined;
-  const isGit = command.kind === 'argv'
-    ? command.executable?.split(/[\\/]/).at(-1)?.toLowerCase() === 'git'
-    : /^\s*git\s+/i.test(command.shellCommand!);
+  const token = approvalToken(
+    repository,
+    relativeCwd,
+    commandForPersistence,
+    classification,
+    before,
+    externalPathUsages,
+  );
+  const permission = controllerHome
+    ? readRepositoryAccessPolicy(controllerHome, commandExecutionScopeKey(repository))
+    : undefined;
+  const isGit =
+    command.kind === 'argv'
+      ? command.executable?.split(/[\\/]/).at(-1)?.toLowerCase() === 'git'
+      : /^\s*git\s+/i.test(command.shellCommand!);
   // Command classification is observability/replay metadata, not execution
   // authority. Raw repository commands follow the host AI permission model once
   // repository/cwd/external-path scope has been resolved. Typed catastrophic
   // Forge operations retain their own explicit confirmation contracts.
   const risk = isGit ? 'local_git' : 'local_command';
-  const delegated = input.authorizationDecision ?? (controllerHome ? decideAuthorization({
-    controllerHome,
-    accessMode: permission?.mode ?? 'request',
-    risk,
-    repositoryId: commandExecutionScopeKey(repository),
-    currentRepositoryId: commandExecutionScopeKey(repository),
-    permissionSnapshotVersion: permission?.revision ?? 1,
-    approvalToken: token,
-    command: commandForPersistence,
-    cwd: relativeCwd,
-    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-    ...(input.principalId ? { principalId: input.principalId } : {}),
-  }) : undefined);
-  const resolved = controllerHome && input.approvalRequestId
-    ? assertResolvedAuthorization({ controllerHome, repositoryId: commandExecutionScopeKey(repository), approvalRequestId: input.approvalRequestId, sessionId: input.sessionId, principalId: input.principalId, permissionSnapshotVersion: permission?.revision ?? 1, command: commandForPersistence })
-    : undefined;
+  const delegated =
+    input.authorizationDecision ??
+    (controllerHome
+      ? decideAuthorization({
+          controllerHome,
+          accessMode: permission?.mode ?? 'request',
+          risk,
+          repositoryId: commandExecutionScopeKey(repository),
+          currentRepositoryId: commandExecutionScopeKey(repository),
+          permissionSnapshotVersion: permission?.revision ?? 1,
+          approvalToken: token,
+          command: commandForPersistence,
+          cwd: relativeCwd,
+          ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+          ...(input.principalId ? { principalId: input.principalId } : {}),
+        })
+      : undefined);
+  const resolved =
+    controllerHome && input.approvalRequestId
+      ? assertResolvedAuthorization({
+          controllerHome,
+          repositoryId: commandExecutionScopeKey(repository),
+          approvalRequestId: input.approvalRequestId,
+          sessionId: input.sessionId,
+          principalId: input.principalId,
+          permissionSnapshotVersion: permission?.revision ?? 1,
+          command: commandForPersistence,
+        })
+      : undefined;
   const effectiveDecision: AuthorizationDecision | undefined = resolved
-    ? { decision: 'allow', source: 'user_confirmation', reason: 'Resolved approval request matches the exact command and current permission snapshot.' }
+    ? {
+        decision: 'allow',
+        source: 'user_confirmation',
+        reason: 'Resolved approval request matches the exact command and current permission snapshot.',
+      }
     : delegated;
   const execution: RepositoryCommandExecution = {
     status: input.dryRun === true ? 'preview' : 'approval_required',
@@ -255,11 +429,14 @@ function finalizePreparedExecution(
     approvalToken: token,
     authorization: input.authorization,
     before,
-    policyDecision: input.dryRun === true || !controllerHome || effectiveDecision?.decision === 'allow'
-      ? 'allowed'
-      : 'approval_required',
+    policyDecision:
+      input.dryRun === true || !controllerHome || effectiveDecision?.decision === 'allow'
+        ? 'allowed'
+        : 'approval_required',
     ...(effectiveDecision ? { authorizationDecision: effectiveDecision } : {}),
-    ...(effectiveDecision?.decision === 'user_confirmation_required' ? { approvalRequestId: effectiveDecision.approvalRequestId } : {}),
+    ...(effectiveDecision?.decision === 'user_confirmation_required'
+      ? { approvalRequestId: effectiveDecision.approvalRequestId }
+      : {}),
     externalPathUsages: externalPathUsages.length > 0 ? externalPathUsages : undefined,
   };
   const confirmed = input.authorization === 'confirmed_plan' && input.approvalToken === token;
@@ -307,7 +484,10 @@ function prepareRepositoryCommandExecution(
     repositoryId: commandExecutionScopeKey(repository),
   });
   const classification = classifyRepositoryCommand(command, repository.defaultBranch);
-  const before = input.reuseSnapshot ?? (input.allowNonGitWorkspace ? emptyWorkspaceSnapshot() : repositorySnapshot(root));
+  const fingerprintPaths = boundedSnapshotFingerprintPaths(root, cwd, command, input.mutationPaths);
+  const before =
+    input.reuseSnapshot ??
+    (input.allowNonGitWorkspace ? emptyWorkspaceSnapshot() : repositorySnapshot(root, { fingerprintPaths }));
   return finalizePreparedExecution(
     repository,
     input,
@@ -358,15 +538,18 @@ async function prepareRepositoryCommandExecutionAsync(
   // scope, command input and readonly classification. Mutation snapshots are not
   // authorization authority, so do not launch rev-parse/branch/status/show-ref
   // merely to prove that a command selected for this lane did not mutate state.
-  // Write-capable lanes keep their complete observed snapshot semantics.
-  const before = input.reuseSnapshot ?? (input.allowNonGitWorkspace
-    ? emptyWorkspaceSnapshot()
-    : mode === 'readonly_direct'
-      ? readonlyUnobservedRepositorySnapshot()
-      : await repositorySnapshotAsync(root, input.signal, {
-          fingerprintTimeoutMs: input.snapshotFingerprintTimeoutMs,
-          fingerprintPaths: boundedSnapshotFingerprintPaths(root, cwd, command),
-        }));
+  // Write-capable lanes collect Git status plus opt-in mutation-path fingerprints; incomplete evidence never blocks an authorized command.
+  const fingerprintPaths = boundedSnapshotFingerprintPaths(root, cwd, command, input.mutationPaths);
+  const before =
+    input.reuseSnapshot ??
+    (input.allowNonGitWorkspace
+      ? emptyWorkspaceSnapshot()
+      : mode === 'readonly_direct'
+        ? readonlyUnobservedRepositorySnapshot()
+        : await repositorySnapshotAsync(root, input.signal, {
+            fingerprintTimeoutMs: input.snapshotFingerprintTimeoutMs,
+            fingerprintPaths,
+          }));
   return finalizePreparedExecution(
     repository,
     input,
@@ -415,14 +598,22 @@ function auditCommand(
 ): void {
   // A workspace target has no repository semantics; its command audit belongs to
   // the workspace partition, not a synthetic repository partition.
-  const path = join(scopedOperationRoot(controllerHome, commandExecutionScopeKey(repository)), 'audit', 'commands.jsonl');
+  const path = join(
+    scopedOperationRoot(controllerHome, commandExecutionScopeKey(repository)),
+    'audit',
+    'commands.jsonl',
+  );
   mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, `${JSON.stringify({
-    timestamp: new Date().toISOString(),
-    ...execution,
-    stdout: execution.stdout ? `[${Buffer.byteLength(execution.stdout, 'utf8')} bytes returned]` : undefined,
-    stderr: execution.stderr ? `[${Buffer.byteLength(execution.stderr, 'utf8')} bytes returned]` : undefined,
-  })}\n`, 'utf-8');
+  appendFileSync(
+    path,
+    `${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      ...execution,
+      stdout: execution.stdout ? `[${Buffer.byteLength(execution.stdout, 'utf8')} bytes returned]` : undefined,
+      stderr: execution.stderr ? `[${Buffer.byteLength(execution.stderr, 'utf8')} bytes returned]` : undefined,
+    })}\n`,
+    'utf-8',
+  );
 }
 
 export function executeRepositoryCommand(
@@ -431,7 +622,17 @@ export function executeRepositoryCommand(
   input: ExecuteRepositoryCommandInput,
 ): RepositoryCommandExecution {
   const prepared = prepareRepositoryCommandExecution(repository, input, controllerHome);
-  const { root, cwd, command, timeoutMs, maxOutputBytes, before, execution: base, executable, externalPathUsages } = prepared;
+  const {
+    root,
+    cwd,
+    command,
+    timeoutMs,
+    maxOutputBytes,
+    before,
+    execution: base,
+    executable,
+    externalPathUsages,
+  } = prepared;
 
   if (input.dryRun === true) {
     auditCommand(controllerHome, repository, base);
@@ -454,12 +655,14 @@ export function executeRepositoryCommand(
       /* unbound legacy */
     }
   }
-  const executableName = command.kind === 'argv'
-    ? command.executable!
-    : process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
-  const commandArgs = command.kind === 'argv'
-    ? [...(command.args ?? [])]
-    : process.platform === 'win32' ? ['/d', '/s', '/c', command.shellCommand!] : ['-c', command.shellCommand!];
+  const executableName =
+    command.kind === 'argv' ? command.executable! : process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
+  const commandArgs =
+    command.kind === 'argv'
+      ? [...(command.args ?? [])]
+      : process.platform === 'win32'
+        ? ['/d', '/s', '/c', command.shellCommand!]
+        : ['-c', command.shellCommand!];
   const result = spawnSync(executableName, commandArgs, {
     cwd,
     env: commandEnvironment(),
@@ -470,7 +673,12 @@ export function executeRepositoryCommand(
   });
   const error = result.error instanceof Error ? result.error.message : '';
   const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
-  const after = repositorySnapshot(root);
+  const fingerprintPaths = boundedSnapshotFingerprintPaths(root, cwd, command, input.mutationPaths);
+  const after = input.allowNonGitWorkspace ? before : repositorySnapshot(root, { fingerprintPaths });
+  const evidenceError = input.allowNonGitWorkspace
+    ? undefined
+    : snapshotEvidenceError(before, after, fingerprintPaths, command);
+  const observedRepositoryChanged = !input.allowNonGitWorkspace && snapshotChanged(before, after);
   const execution: RepositoryCommandExecution = {
     ...base,
     status: 'executed',
@@ -481,21 +689,24 @@ export function executeRepositoryCommand(
       redactProcessOutput(typeof result.stdout === 'string' ? result.stdout : ''),
       maxOutputBytes,
     ),
-    stderr: capProcessOutput(redactProcessOutput([
-      typeof result.stderr === 'string' ? result.stderr : '',
-      error,
-    ].filter(Boolean).join('\n')), maxOutputBytes),
+    stderr: capProcessOutput(
+      redactProcessOutput([typeof result.stderr === 'string' ? result.stderr : '', error].filter(Boolean).join('\n')),
+      maxOutputBytes,
+    ),
     after,
-    repositoryChanged: snapshotChanged(before, after),
-    changedPaths: changedSnapshotPaths(before, after),
+    repositoryChanged: evidenceError ? undefined : commandRepositoryChanged(before, after, fingerprintPaths, command),
+    changedPaths: evidenceError ? undefined : changedSnapshotPaths(before, after, fingerprintPaths),
+    evidenceError,
     policyDecision: 'allowed',
     externalPathUsages: externalPathUsages.length > 0 ? externalPathUsages : undefined,
-    infrastructureError: result.error ? {
-      code: timedOut ? 'COMMAND_TIMED_OUT' : 'COMMAND_SPAWN_FAILED',
-      message: error || `repository command failed with exit ${String(result.status ?? 1)}`,
-    } : undefined,
+    infrastructureError: result.error
+      ? {
+          code: timedOut ? 'COMMAND_TIMED_OUT' : 'COMMAND_SPAWN_FAILED',
+          message: error || 'repository command failed with exit ' + String(result.status ?? 1),
+        }
+      : undefined,
   };
-  if (execution.repositoryChanged) invalidateRepositoryReadCaches(root);
+  if (observedRepositoryChanged || evidenceError) invalidateRepositoryReadCaches(root);
   auditCommand(controllerHome, repository, execution);
   return execution;
 }
@@ -581,12 +792,18 @@ export async function executeRepositoryCommandAsync(
   hooks: RepositoryCommandAsyncHooks = {},
 ): Promise<RepositoryCommandExecution> {
   const signal = hooks.signal ?? input.signal;
-  const prepared = await prepareRepositoryCommandExecutionAsync(
-    repository,
-    { ...input, signal },
-    controllerHome,
-  );
-  const { root, cwd, command, timeoutMs, maxOutputBytes, before, execution: base, executable, externalPathUsages } = prepared;
+  const prepared = await prepareRepositoryCommandExecutionAsync(repository, { ...input, signal }, controllerHome);
+  const {
+    root,
+    cwd,
+    command,
+    timeoutMs,
+    maxOutputBytes,
+    before,
+    execution: base,
+    executable,
+    externalPathUsages,
+  } = prepared;
 
   if (input.dryRun === true) {
     auditCommand(controllerHome, repository, base);
@@ -629,18 +846,21 @@ export async function executeRepositoryCommandAsync(
   });
   let after: RepositoryCommandSnapshot | undefined = input.allowNonGitWorkspace ? before : undefined;
   let evidenceError: RepositoryCommandExecution['evidenceError'];
+  const fingerprintPaths = boundedSnapshotFingerprintPaths(root, cwd, command, input.mutationPaths);
   if (!input.allowNonGitWorkspace) {
     try {
       after = await repositorySnapshotAsync(root, signal?.aborted ? undefined : signal, {
         fingerprintTimeoutMs: input.snapshotFingerprintTimeoutMs,
-        fingerprintPaths: boundedSnapshotFingerprintPaths(root, cwd, command),
+        fingerprintPaths,
       });
+      evidenceError = snapshotEvidenceError(before, after, fingerprintPaths, command);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const code = message.includes(':') ? message.slice(0, message.indexOf(':')) : 'POST_EXECUTION_EVIDENCE_FAILED';
       evidenceError = { code, message };
     }
   }
+  const observedRepositoryChanged = after ? snapshotChanged(before, after) : false;
   const execution: RepositoryCommandExecution = {
     ...base,
     status: 'executed',
@@ -651,26 +871,26 @@ export async function executeRepositoryCommandAsync(
     stdout: result.stdout,
     stderr: result.stderr,
     after,
-    repositoryChanged: after ? snapshotChanged(before, after) : undefined,
-    changedPaths: after ? changedSnapshotPaths(before, after) : undefined,
+    repositoryChanged:
+      after && !evidenceError ? commandRepositoryChanged(before, after, fingerprintPaths, command) : undefined,
+    changedPaths: after && !evidenceError ? changedSnapshotPaths(before, after, fingerprintPaths) : undefined,
     evidenceError,
     policyDecision: 'allowed',
     externalPathUsages: externalPathUsages.length > 0 ? externalPathUsages : undefined,
     infrastructureError: result.timedOut
       ? {
-        code: 'COMMAND_TIMED_OUT',
-        message: result.stderr || `repository command timed out after ${timeoutMs}ms`,
-      }
+          code: 'COMMAND_TIMED_OUT',
+          message: result.stderr || 'repository command timed out after ' + timeoutMs + 'ms',
+        }
       : result.cancelled
         ? {
-          code: 'COMMAND_CANCELLED',
-          message: result.stderr || 'repository command cancelled',
-        }
+            code: 'COMMAND_CANCELLED',
+            message: result.stderr || 'repository command cancelled',
+          }
         : undefined,
   };
-  // Unknown post-execution mutation evidence is conservatively cache-invalidating;
-  // later reads must re-observe the repository rather than reuse a false unchanged state.
-  if (execution.repositoryChanged === true || execution.evidenceError) invalidateRepositoryReadCaches(root);
+  // Unknown evidence is cache-invalidating; do not report it as an unchanged repository.
+  if (observedRepositoryChanged || execution.evidenceError) invalidateRepositoryReadCaches(root);
   auditCommand(controllerHome, repository, execution);
   return execution;
 }

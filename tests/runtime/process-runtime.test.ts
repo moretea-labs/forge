@@ -2434,6 +2434,7 @@ describe('run_check Process Runtime facade', () => {
       repository: fx.repository,
       execution: {
         command: [process.execPath, 'write-three.mjs'],
+        mutationPaths: ['terminal-a.txt', 'terminal-b.txt', 'terminal-c.txt'],
         snapshotFingerprintTimeoutMs: 1,
       },
       interactiveWaitMs: 0,
@@ -2459,6 +2460,26 @@ describe('run_check Process Runtime facade', () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     expect(completedEvidence?.evidenceError?.code).toBe('SNAPSHOT_WORKER_TIMEOUT');
+  });
+
+  test('lightweight command id binds the declared mutation scope', async () => {
+    const fx = fixture();
+    const command = ['touch', 'scope-a.txt'];
+    const start = (mutationPaths: string[]) =>
+      startLightweightRepositoryCommand({
+        controllerHome: fx.controllerHome,
+        repository: fx.repository,
+        execution: { command, mutationPaths },
+        interactiveWaitMs: 5_000,
+        timeoutMs: 5_000,
+        commandId: 'lightweight-mutation-scope-binding',
+      });
+
+    const first = await start(['scope-a.txt']);
+    expect(first.handle).toMatchObject({ completed: true, status: 'succeeded', ok: true });
+    await expect(start(['scope-b.txt'])).rejects.toThrow('PROCESS_REQUEST_CONFLICT');
+    expect(readFileSync(join(fx.repoRoot, 'scope-a.txt'), 'utf8')).toBe('');
+    expect(() => readFileSync(join(fx.repoRoot, 'scope-b.txt'))).toThrow();
   });
 
   test('lightweight repository command terminalizes a pre-spawn scope denial without poisoning later commands', async () => {

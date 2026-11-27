@@ -59,7 +59,6 @@ import {
   executeRepositoryCommandViaProcessRuntime,
 } from '../../execution/process-runtime/command-facade';
 import { claimPathWrites } from '../../execution/process-runtime/resource-claims';
-import { classifyRepositoryCommand } from '../../../core/repository-command/classification';
 import { normalizeRepositoryCommand } from '../../../core/repository-command/normalization';
 import { readRepositoryRange } from '../../repositories/inspector';
 import { getToolPolicy } from '../tool-policy';
@@ -883,6 +882,12 @@ export async function callRepositoryTool(
             () =>
               executeRepositoryCommand(controllerHome, commandTarget, {
                 command: args.command as string | string[],
+                mutationPaths: Array.isArray(args.mutation_paths)
+                  ? args.mutation_paths
+                      .map(String)
+                      .map((path) => path.trim())
+                      .filter(Boolean)
+                  : undefined,
                 cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
                 dryRun: true,
                 allowNonGitWorkspace: target.workspace !== undefined,
@@ -921,11 +926,6 @@ export async function callRepositoryTool(
         }
         // Repository mutation safety is decided by Git/Process/Lease and
         // physical-checkout fences, never by a semantic task record.
-        const mutationClassification = classifyRepositoryCommand(
-          args.command as string | string[],
-          commandTarget.defaultBranch,
-        );
-        const hasDeclaredMutationScope = Boolean(mutationPaths?.length);
         // Git integration owns its repository, scope and concurrency checks;
         // semantic task completion never admits or denies this operation.
         const timeoutMs =

@@ -19,7 +19,7 @@ import { repositoryControllerRoot } from '../../../effects/controller-home';
 import { runBoundedGit } from './async-process';
 import {
   computePathFingerprintsAsync,
-  MAX_DIRTY_PATHS_FOR_FINGERPRINT,
+  MAX_FINGERPRINT_PATHS,
   MAX_FINGERPRINT_FILE_BYTES,
   MAX_FINGERPRINT_TOTAL_BYTES,
 } from './fingerprint-worker';
@@ -79,7 +79,9 @@ function proposalPath(controllerHome: string, repoId: string, proposalId: string
 }
 
 function digest(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(value ?? null)).digest('hex');
+  return createHash('sha256')
+    .update(JSON.stringify(value ?? null))
+    .digest('hex');
 }
 
 function normalizePath(path: string): string {
@@ -108,8 +110,8 @@ async function pathFingerprints(
 ): Promise<Record<string, string>> {
   const unique = [...new Set(paths.map(normalizePath).filter(Boolean))].sort();
   if (unique.length === 0) return {};
-  if (unique.length > MAX_DIRTY_PATHS_FOR_FINGERPRINT) {
-    throw new Error(`PROPOSAL_TOO_MANY_PATHS: ${unique.length} exceeds ${MAX_DIRTY_PATHS_FOR_FINGERPRINT}`);
+  if (unique.length > MAX_FINGERPRINT_PATHS) {
+    throw new Error(`PROPOSAL_TOO_MANY_PATHS: ${unique.length} exceeds ${MAX_FINGERPRINT_PATHS}`);
   }
   const statusByPath = Object.fromEntries(unique.map((path) => [path, [`  ${path}`]]));
   const result = await computePathFingerprintsAsync(
@@ -125,7 +127,10 @@ async function pathFingerprints(
   return result.pathFingerprints;
 }
 
-async function workspaceSnapshot(repoRoot: string, signal?: AbortSignal): Promise<{
+async function workspaceSnapshot(
+  repoRoot: string,
+  signal?: AbortSignal,
+): Promise<{
   head: string | null;
   statusHash: string;
   refsHash: string;
@@ -137,13 +142,15 @@ async function workspaceSnapshot(repoRoot: string, signal?: AbortSignal): Promis
       maxOutputBytes: 4_096,
       signal,
     }),
-    runBoundedGit(repoRoot, [
-      'status', '--porcelain=v1', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**',
-    ], {
-      timeoutMs: 8_000,
-      maxOutputBytes: 256 * 1024,
-      signal,
-    }),
+    runBoundedGit(
+      repoRoot,
+      ['status', '--porcelain=v1', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**'],
+      {
+        timeoutMs: 8_000,
+        maxOutputBytes: 256 * 1024,
+        signal,
+      },
+    ),
     runBoundedGit(repoRoot, ['show-ref'], {
       timeoutMs: 5_000,
       maxOutputBytes: 256 * 1024,
@@ -160,8 +167,11 @@ async function workspaceSnapshot(repoRoot: string, signal?: AbortSignal): Promis
   if (headResult.ok) {
     head = headResult.stdout.trim() || null;
   } else {
-    const unborn = headResult.exitCode === 128
-      && /unknown revision|bad revision|Needed a single revision|ambiguous argument|not a valid object name/i.test(headResult.stderr);
+    const unborn =
+      headResult.exitCode === 128 &&
+      /unknown revision|bad revision|Needed a single revision|ambiguous argument|not a valid object name/i.test(
+        headResult.stderr,
+      );
     if (!unborn) {
       throw new Error(`PROPOSAL_SNAPSHOT_FAILED: git rev-parse ${headResult.stderr || headResult.exitCode}`);
     }
@@ -193,9 +203,9 @@ export async function createServerPatchProposal(input: CreateProposalInput): Pro
   ]);
   const afterSnapshot = await workspaceSnapshot(input.repoRoot, input.signal);
   if (
-    beforeSnapshot.head !== afterSnapshot.head
-    || beforeSnapshot.statusHash !== afterSnapshot.statusHash
-    || beforeSnapshot.refsHash !== afterSnapshot.refsHash
+    beforeSnapshot.head !== afterSnapshot.head ||
+    beforeSnapshot.statusHash !== afterSnapshot.statusHash ||
+    beforeSnapshot.refsHash !== afterSnapshot.refsHash
   ) {
     throw new Error('PROPOSAL_WORKSPACE_CHANGED_DURING_CAPTURE: retry against a stable workspace snapshot');
   }
@@ -246,11 +256,7 @@ export function readServerPatchProposal(
   return readProposalFile(proposalPath(controllerHome, repoId, proposalId));
 }
 
-export function listServerPatchProposals(
-  controllerHome: string,
-  repoId: string,
-  limit = 50,
-): ServerPatchProposal[] {
+export function listServerPatchProposals(controllerHome: string, repoId: string, limit = 50): ServerPatchProposal[] {
   const dir = proposalDir(controllerHome, repoId);
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
@@ -274,11 +280,7 @@ export function markServerPatchProposalApplied(
   return next;
 }
 
-export function revokeServerPatchProposal(
-  controllerHome: string,
-  repoId: string,
-  proposalId: string,
-): void {
+export function revokeServerPatchProposal(controllerHome: string, repoId: string, proposalId: string): void {
   const path = proposalPath(controllerHome, repoId, proposalId);
   if (existsSync(path)) rmSync(path, { force: true });
 }
@@ -286,19 +288,19 @@ export function revokeServerPatchProposal(
 export type ProposalValidateFailure =
   | { ok: true; proposal: ServerPatchProposal; currentHead: string | null }
   | {
-    ok: false;
-    code:
-      | 'PROPOSAL_NOT_FOUND'
-      | 'PROPOSAL_EXPIRED'
-      | 'PROPOSAL_CHECKOUT_MISMATCH'
-      | 'PROPOSAL_STALE_WORKSPACE'
-      | 'PROPOSAL_PATH_FINGERPRINT_MISMATCH'
-      | 'PROPOSAL_TAMPERED'
-      | 'PROPOSAL_ANALYSIS_ONLY'
-      | 'PROPOSAL_ALREADY_APPLIED';
-    message: string;
-    proposal?: ServerPatchProposal;
-  };
+      ok: false;
+      code:
+        | 'PROPOSAL_NOT_FOUND'
+        | 'PROPOSAL_EXPIRED'
+        | 'PROPOSAL_CHECKOUT_MISMATCH'
+        | 'PROPOSAL_STALE_WORKSPACE'
+        | 'PROPOSAL_PATH_FINGERPRINT_MISMATCH'
+        | 'PROPOSAL_TAMPERED'
+        | 'PROPOSAL_ANALYSIS_ONLY'
+        | 'PROPOSAL_ALREADY_APPLIED';
+      message: string;
+      proposal?: ServerPatchProposal;
+    };
 
 /**
  * Re-validate a server proposal immediately before apply.
@@ -371,8 +373,7 @@ export async function validateServerPatchProposalForApply(input: {
         proposal,
       };
     }
-    if (proposal.baseSnapshot.statusHash !== snap.statusHash
-      || proposal.baseSnapshot.refsHash !== snap.refsHash) {
+    if (proposal.baseSnapshot.statusHash !== snap.statusHash || proposal.baseSnapshot.refsHash !== snap.refsHash) {
       return {
         ok: false,
         code: 'PROPOSAL_STALE_WORKSPACE',

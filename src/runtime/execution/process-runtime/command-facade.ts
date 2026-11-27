@@ -362,6 +362,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
     });
     const directInput = {
       command: input.command,
+      mutationPaths: input.mutationPaths,
       cwd: input.cwd,
       timeoutMs: input.timeoutMs,
       maxOutputBytes: input.maxOutputBytes,

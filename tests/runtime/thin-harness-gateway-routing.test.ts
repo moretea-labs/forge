@@ -361,6 +361,38 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     }
   });
 
+  test('repository command with declared mutation_paths does not require Git index ownership', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const indexOwner = 'fast:unrelated-command-staging';
+    const indexClaims = [{ resourceKey: 'git-index:' + fx.repository.activeCheckoutId, mode: 'exclusive' as const }];
+    const indexLease = acquireExecutionLeases(fx.controllerHome, fx.repository.repoId, indexOwner, indexClaims, {
+      visibility: 'ephemeral',
+    });
+    expect(indexLease.acquired).toBe(true);
+    try {
+      const result = await callRepositoryTool(fx.controllerHome, 'execute_command', {
+        repo_id: fx.repository.repoId,
+        command: ['touch', 'src/fast-command.txt'],
+        mutation_paths: ['src/fast-command.txt'],
+        interactive_wait_ms: 0,
+        timeout_ms: 5_000,
+        request_id: 'fast-scoped-command-with-index-owner',
+      });
+      expect(result?.isError).not.toBe(true);
+      const payload = result?.structuredContent as Record<string, unknown>;
+      expect(payload.path).toBe('process_managed');
+      const processId = String(payload.processId ?? '');
+      const terminal = await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, processId, {
+        timeoutMs: 5_000,
+      });
+      expect(terminal).toMatchObject({ completed: true, ok: true });
+      expect(readFileSync(join(fx.repoRoot, 'src/fast-command.txt'), 'utf8')).toBe('');
+    } finally {
+      releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, indexOwner);
+    }
+  });
+
   test('source-only batch patch does not claim the Git index held by another Writer (#713)', async () => {
     const fx = fixture();
     roots.push(fx.root);
@@ -1522,7 +1554,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 
   test('controller instructions make bounded dependency attachment explicit instead of normal polling', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toContain('Do not call process_wait while useful independent work remains.');
-    expect(MCP_SERVER_INSTRUCTIONS).toContain('attach with process_wait');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('attach to its exact Process with process_wait');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('transport-bounded');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('never as periodic polling');
     expect(MCP_SERVER_INSTRUCTIONS).toContain('report the running operation and pending acceptance');
@@ -1533,7 +1565,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toContain(
       'Do not mandatorily preflight rh_status/plan_list/context lists/Writer inventory',
     );
-    expect(MCP_SERVER_INSTRUCTIONS).toContain('Known source paths use exact reads or Direct Edit first');
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('Prefer Direct Edit/terminal when the host can write the known path');
   });
 
   test('run_check Process status and persisted failure Artifact agree', async () => {

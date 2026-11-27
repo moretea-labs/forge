@@ -18,10 +18,7 @@ import {
   type RepositoryCommandAsyncHooks,
   type RepositoryCommandExecution,
 } from '../../repositories/command-executor';
-import {
-  releaseControllerCheckSubscription,
-  runControllerCheckAsync,
-} from './check-runner';
+import { releaseControllerCheckSubscription, runControllerCheckAsync } from './check-runner';
 import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../repositories/command-scope';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {
@@ -112,9 +109,7 @@ interface LightweightEntry {
 const entries = new Map<string, LightweightEntry>();
 
 export function hasActiveLightweightProcesses(controllerHome: string): boolean {
-  return [...entries.values()].some((entry) => (
-    entry.controllerHome === controllerHome && entry.result === undefined
-  ));
+  return [...entries.values()].some((entry) => entry.controllerHome === controllerHome && entry.result === undefined);
 }
 
 interface LightweightRunningReceipt {
@@ -216,7 +211,11 @@ function captureProcessIdentity(pid: number): ExpectedProcessIdentity | undefine
 }
 
 function removeRunningReceipt(controllerHome: string, scopeKey: string, processId: string): void {
-  try { rmSync(runningReceiptPath(controllerHome, scopeKey, processId), { force: true }); } catch { /* best effort */ }
+  try {
+    rmSync(runningReceiptPath(controllerHome, scopeKey, processId), { force: true });
+  } catch {
+    /* best effort */
+  }
 }
 
 function persistRunningReceipt(entry: LightweightEntry, force = false): void {
@@ -225,8 +224,12 @@ function persistRunningReceipt(entry: LightweightEntry, force = false): void {
     entry.identity = captureProcessIdentity(entry.pid);
   }
   const now = Date.now();
-  if (!force && entry.runningReceiptUpdatedAtMs !== undefined
-    && now - entry.runningReceiptUpdatedAtMs < RUNNING_RECEIPT_PERSIST_INTERVAL_MS) return;
+  if (
+    !force &&
+    entry.runningReceiptUpdatedAtMs !== undefined &&
+    now - entry.runningReceiptUpdatedAtMs < RUNNING_RECEIPT_PERSIST_INTERVAL_MS
+  )
+    return;
   try {
     const root = runningReceiptRoot(entry.controllerHome, entry.scopeKey);
     mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -244,19 +247,32 @@ function persistRunningReceipt(entry: LightweightEntry, force = false): void {
       ...(entry.exitObservation ? { exitObservation: entry.exitObservation } : {}),
     };
     writeJsonAtomic(path, receipt);
-    try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      /* Windows or restricted filesystem. */
+    }
     entry.runningReceiptUpdatedAtMs = now;
   } catch {
     // Running receipts are recovery hints only; the in-memory handle remains authoritative while this Runtime is alive.
   }
 }
 
-function readRunningReceipt(controllerHome: string, scopeKey: string, processId: string): LightweightRunningReceipt | undefined {
+function readRunningReceipt(
+  controllerHome: string,
+  scopeKey: string,
+  processId: string,
+): LightweightRunningReceipt | undefined {
   const path = existingReceiptPath(controllerHome, scopeKey, processId, runningReceiptPath);
   if (!existsSync(path)) return undefined;
   try {
     const receipt = readJsonFile<LightweightRunningReceipt>(path);
-    if (receipt.schemaVersion !== 1 || (receipt.scopeKey ?? receipt.repoId) !== scopeKey || receipt.processId !== processId) return undefined;
+    if (
+      receipt.schemaVersion !== 1 ||
+      (receipt.scopeKey ?? receipt.repoId) !== scopeKey ||
+      receipt.processId !== processId
+    )
+      return undefined;
     if (receipt.handle?.processId !== processId || receipt.handle.completed) return undefined;
     return receipt;
   } catch {
@@ -328,7 +344,11 @@ function persistTerminalReceipt(controllerHome: string, entry: LightweightEntry)
       handle: terminalHandle(entry),
     };
     writeJsonAtomic(path, receipt);
-    try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      /* Windows or restricted filesystem. */
+    }
     removeRunningReceipt(controllerHome, entry.scopeKey, entry.processId);
     pruneTerminalReceipts(root, path);
   } catch {
@@ -336,12 +356,21 @@ function persistTerminalReceipt(controllerHome: string, entry: LightweightEntry)
   }
 }
 
-function readTerminalReceipt(controllerHome: string, scopeKey: string, processId: string): LightweightTerminalReceipt | undefined {
+function readTerminalReceipt(
+  controllerHome: string,
+  scopeKey: string,
+  processId: string,
+): LightweightTerminalReceipt | undefined {
   const path = existingReceiptPath(controllerHome, scopeKey, processId, terminalReceiptPath);
   if (!existsSync(path)) return undefined;
   try {
     const receipt = readJsonFile<LightweightTerminalReceipt>(path);
-    if (receipt.schemaVersion !== 1 || (receipt.scopeKey ?? receipt.repoId) !== scopeKey || receipt.processId !== processId) return undefined;
+    if (
+      receipt.schemaVersion !== 1 ||
+      (receipt.scopeKey ?? receipt.repoId) !== scopeKey ||
+      receipt.processId !== processId
+    )
+      return undefined;
     if (!receipt.handle?.completed || receipt.handle.processId !== processId) return undefined;
     const finishedAtMs = Date.parse(receipt.finishedAt);
     if (!Number.isFinite(finishedAtMs) || Date.now() - finishedAtMs > TERMINAL_RECEIPT_RETENTION_MS) {
@@ -382,11 +411,14 @@ function findPersistedHandleForCommand(
       if (!file.endsWith('.json')) continue;
       try {
         const receipt = readJsonFile<LightweightRunningReceipt | LightweightTerminalReceipt>(join(root, file));
-        if (receipt.schemaVersion !== 1 || (receipt.scopeKey ?? receipt.repoId) !== scopeKey || !receipt.processId) continue;
+        if (receipt.schemaVersion !== 1 || (receipt.scopeKey ?? receipt.repoId) !== scopeKey || !receipt.processId)
+          continue;
         const persistedCommandId = receipt.commandId ?? receipt.handle?.commandId;
         if (persistedCommandId !== commandId) continue;
         if (!receipt.requestFingerprint || receipt.requestFingerprint !== requestFingerprint) {
-          throw new Error(`PROCESS_REQUEST_CONFLICT: command id ${commandId} cannot be safely replayed after Runtime restart`);
+          throw new Error(
+            `PROCESS_REQUEST_CONFLICT: command id ${commandId} cannot be safely replayed after Runtime restart`,
+          );
         }
         return getLightweightProcessHandle(controllerHome, scopeKey, receipt.processId);
       } catch (error) {
@@ -418,7 +450,10 @@ function recoveredRunningHandle(receipt: LightweightRunningReceipt, note?: strin
   };
 }
 
-function inspectRecoveredRunningReceipt(receipt: LightweightRunningReceipt): { state: 'running' | 'dead' | 'unsafe'; reason?: string } {
+function inspectRecoveredRunningReceipt(receipt: LightweightRunningReceipt): {
+  state: 'running' | 'dead' | 'unsafe';
+  reason?: string;
+} {
   const pid = receipt.handle.pid ?? receipt.identity?.pid;
   if (!pid) return { state: 'unsafe', reason: 'identity_missing' };
   if (!receipt.identity) {
@@ -469,7 +504,11 @@ function persistRecoveredTerminalReceipt(
       handle,
     };
     writeJsonAtomic(path, terminal);
-    try { chmodSync(path, 0o600); } catch { /* Windows or restricted filesystem. */ }
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      /* Windows or restricted filesystem. */
+    }
     removeRunningReceipt(controllerHome, scopeKey, receipt.processId);
     pruneTerminalReceipts(root, path);
   } catch {
@@ -508,7 +547,10 @@ function completedObservedExitHandle(receipt: LightweightRunningReceipt): Proces
 
 function deterministicRecoveryFailureHandle(receipt: LightweightRunningReceipt, reason: string): ProcessHandle {
   const message = `PROCESS_RESULT_UNAVAILABLE_AFTER_RUNTIME_RESTART: ${reason}; command was not replayed`;
-  const stderr = visibleOutput([receipt.handle.stderrTail, message].filter(Boolean).join('\n'), DEFAULT_MAX_OUTPUT_BYTES);
+  const stderr = visibleOutput(
+    [receipt.handle.stderrTail, message].filter(Boolean).join('\n'),
+    DEFAULT_MAX_OUTPUT_BYTES,
+  );
   return {
     ...receipt.handle,
     status: 'failed',
@@ -528,7 +570,10 @@ function deterministicRecoveryFailureHandle(receipt: LightweightRunningReceipt, 
 
 function cancelledRecoveredHandle(receipt: LightweightRunningReceipt): ProcessHandle {
   const message = 'process cancelled after recovering a lightweight handle from persisted PID identity';
-  const stderr = visibleOutput([receipt.handle.stderrTail, message].filter(Boolean).join('\n'), DEFAULT_MAX_OUTPUT_BYTES);
+  const stderr = visibleOutput(
+    [receipt.handle.stderrTail, message].filter(Boolean).join('\n'),
+    DEFAULT_MAX_OUTPUT_BYTES,
+  );
   return {
     ...receipt.handle,
     status: 'cancelled',
@@ -570,21 +615,22 @@ function entryHandle(entry: LightweightEntry): ProcessHandle {
         : execution.ok
           ? 'succeeded'
           : 'failed';
-  const stdout = completed ? execution.stdout ?? '' : visibleOutput(entry.stdout, entry.maxOutputBytes);
-  const stderr = completed ? execution.stderr ?? '' : visibleOutput(entry.stderr, entry.maxOutputBytes);
+  const stdout = completed ? (execution.stdout ?? '') : visibleOutput(entry.stdout, entry.maxOutputBytes);
+  const stderr = completed ? (execution.stderr ?? '') : visibleOutput(entry.stderr, entry.maxOutputBytes);
   const stdoutTail = entry.stdoutTail || visibleOutputTail(stdout);
   const stderrTail = entry.stderrTail || visibleOutputTail(stderr);
   return {
     processId: entry.processId,
     commandId: entry.commandId,
     status,
-    contractStatus: status === 'running'
-      ? 'running'
-      : status === 'succeeded'
-        ? 'succeeded'
-        : status === 'cancelled'
-          ? 'cancelled'
-          : 'failed',
+    contractStatus:
+      status === 'running'
+        ? 'running'
+        : status === 'succeeded'
+          ? 'succeeded'
+          : status === 'cancelled'
+            ? 'cancelled'
+            : 'failed',
     route: completed ? 'direct' : 'managed',
     pid: entry.pid,
     startedAt: entry.startedAt,
@@ -678,28 +724,34 @@ export async function startLightweightRepositoryCommand(
   const requestFingerprint = JSON.stringify({
     repoId: commandExecutionScopeKey(input.repository),
     command: input.execution.command,
+    mutationPaths: [...new Set(input.execution.mutationPaths ?? [])].sort(),
     cwd: input.execution.cwd ?? '.',
     timeoutMs: input.timeoutMs,
     maxOutputBytes: input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
   });
   if (stableCommandId) {
-    const existing = [...entries.values()].find((entry) => (
-      entry.controllerHome === input.controllerHome
-      && entry.scopeKey === scopeKey
-      && entry.commandId === stableCommandId
-    ));
+    const existing = [...entries.values()].find(
+      (entry) =>
+        entry.controllerHome === input.controllerHome &&
+        entry.scopeKey === scopeKey &&
+        entry.commandId === stableCommandId,
+    );
     if (existing) {
       if (existing.requestFingerprint !== requestFingerprint) {
-        throw new Error(`PROCESS_REQUEST_CONFLICT: command id ${stableCommandId} already identifies a different lightweight command`);
+        throw new Error(
+          `PROCESS_REQUEST_CONFLICT: command id ${stableCommandId} already identifies a different lightweight command`,
+        );
       }
       return {
         handle: entryHandle(existing),
         metrics: {
           lane: 'lightweight_managed',
-          preSpawnHarnessMs: existing.spawnedAtMs === undefined ? undefined : Math.max(0, existing.spawnedAtMs - existing.startedAtMs),
-          childDurationMs: existing.finishedAtMs === undefined || existing.spawnedAtMs === undefined
-            ? undefined
-            : Math.max(0, existing.finishedAtMs - existing.spawnedAtMs),
+          preSpawnHarnessMs:
+            existing.spawnedAtMs === undefined ? undefined : Math.max(0, existing.spawnedAtMs - existing.startedAtMs),
+          childDurationMs:
+            existing.finishedAtMs === undefined || existing.spawnedAtMs === undefined
+              ? undefined
+              : Math.max(0, existing.finishedAtMs - existing.spawnedAtMs),
           interactiveReturnMs: 0,
           durableWrites: 0,
           leaseOperations: 0,
@@ -716,17 +768,17 @@ export async function startLightweightRepositoryCommand(
     if (recovered) return { handle: recovered, metrics: recoveredRequestMetrics() };
   }
   if (input.reuseActiveEquivalent) {
-    const existing = [...entries.values()].find((entry) => (
-      entry.scopeKey === scopeKey
-      && entry.requestFingerprint === requestFingerprint
-      && entry.result === undefined
-    ));
+    const existing = [...entries.values()].find(
+      (entry) =>
+        entry.scopeKey === scopeKey && entry.requestFingerprint === requestFingerprint && entry.result === undefined,
+    );
     if (existing) {
       return {
         handle: entryHandle(existing),
         metrics: {
           lane: 'lightweight_managed',
-          preSpawnHarnessMs: existing.spawnedAtMs === undefined ? undefined : Math.max(0, existing.spawnedAtMs - existing.startedAtMs),
+          preSpawnHarnessMs:
+            existing.spawnedAtMs === undefined ? undefined : Math.max(0, existing.spawnedAtMs - existing.startedAtMs),
           childDurationMs: undefined,
           interactiveReturnMs: 0,
           durableWrites: 0,
@@ -802,54 +854,57 @@ export async function startLightweightRepositoryCommand(
       if (publishedHandle) persistTerminalReceipt(input.controllerHome, entry);
     },
   };
-  const startExecution = () => (input.readonlyDirect
-    ? executeRepositoryReadOnlyCommandDirect(input.repository, executionInput, executionHooks)
-    : executeRepositoryCommandAsync(input.controllerHome, input.repository, executionInput, executionHooks)
-  ).then((result) => {
-    // Enriched execution evidence may replace the compact child-exit result in
-    // memory. The already-persisted terminal Process identity remains stable.
-    // Execution evidence settlement belongs here, after repository evidence has
-    // either been proven or explicitly marked unavailable.
-    const observedResult: LightweightExecutionResult = {
-      ...result,
-      ...(input.readonlyDirect ? { execution: result } : {}),
-    };
-    entry.result = observedResult;
-    input.onCompleted?.(observedResult);
-    if (publishedHandle) persistTerminalReceipt(input.controllerHome, entry);
-    return observedResult;
-  }).catch((error) => {
-    // Once child exit has been observed, later bookkeeping failure cannot revoke
-    // the terminal Process fact or trigger command replay. Expected snapshot
-    // degradation is represented by RepositoryCommandExecution.evidenceError;
-    // this catch is the final fail-safe for any later post-processing exception.
-    if (entry.exitObservation && entry.result) return entry.result;
+  const startExecution = () =>
+    (input.readonlyDirect
+      ? executeRepositoryReadOnlyCommandDirect(input.repository, executionInput, executionHooks)
+      : executeRepositoryCommandAsync(input.controllerHome, input.repository, executionInput, executionHooks)
+    )
+      .then((result) => {
+        // Enriched execution evidence may replace the compact child-exit result in
+        // memory. The already-persisted terminal Process identity remains stable.
+        // Execution evidence settlement belongs here, after repository evidence has
+        // either been proven or explicitly marked unavailable.
+        const observedResult: LightweightExecutionResult = {
+          ...result,
+          ...(input.readonlyDirect ? { execution: result } : {}),
+        };
+        entry.result = observedResult;
+        input.onCompleted?.(observedResult);
+        if (publishedHandle) persistTerminalReceipt(input.controllerHome, entry);
+        return observedResult;
+      })
+      .catch((error) => {
+        // Once child exit has been observed, later bookkeeping failure cannot revoke
+        // the terminal Process fact or trigger command replay. Expected snapshot
+        // degradation is represented by RepositoryCommandExecution.evidenceError;
+        // this catch is the final fail-safe for any later post-processing exception.
+        if (entry.exitObservation && entry.result) return entry.result;
 
-    // Command preparation can fail before spawn (for example a repository-scope
-    // or external-filesystem grant denial). In deferred-start mode that rejection
-    // must belong to this lightweight Process; allowing it to escape would become
-    // an unhandled Runtime rejection and could terminate unrelated in-flight work.
-    const message = error instanceof Error ? error.message : String(error);
-    const failed: LightweightExecutionResult = {
-      ok: false,
-      exitCode: 1,
-      timedOut: false,
-      cancelled: false,
-      stdout: visibleOutput(entry.stdout, maxOutputBytes),
-      stderr: visibleOutput([entry.stderr, message].filter(Boolean).join('\n'), maxOutputBytes),
-    };
-    entry.result = failed;
-    entry.finishedAtMs = Date.now();
-    input.execution.signal?.removeEventListener('abort', onCallerAbort);
-    try {
-      input.onCompleted?.(failed);
-    } catch (callbackError) {
-      const callbackMessage = callbackError instanceof Error ? callbackError.message : String(callbackError);
-      failed.stderr = visibleOutput([failed.stderr, callbackMessage].filter(Boolean).join('\n'), maxOutputBytes);
-    }
-    if (publishedHandle) persistTerminalReceipt(input.controllerHome, entry);
-    return failed;
-  });
+        // Command preparation can fail before spawn (for example a repository-scope
+        // or external-filesystem grant denial). In deferred-start mode that rejection
+        // must belong to this lightweight Process; allowing it to escape would become
+        // an unhandled Runtime rejection and could terminate unrelated in-flight work.
+        const message = error instanceof Error ? error.message : String(error);
+        const failed: LightweightExecutionResult = {
+          ok: false,
+          exitCode: 1,
+          timedOut: false,
+          cancelled: false,
+          stdout: visibleOutput(entry.stdout, maxOutputBytes),
+          stderr: visibleOutput([entry.stderr, message].filter(Boolean).join('\n'), maxOutputBytes),
+        };
+        entry.result = failed;
+        entry.finishedAtMs = Date.now();
+        input.execution.signal?.removeEventListener('abort', onCallerAbort);
+        try {
+          input.onCompleted?.(failed);
+        } catch (callbackError) {
+          const callbackMessage = callbackError instanceof Error ? callbackError.message : String(callbackError);
+          failed.stderr = visibleOutput([failed.stderr, callbackMessage].filter(Boolean).join('\n'), maxOutputBytes);
+        }
+        if (publishedHandle) persistTerminalReceipt(input.controllerHome, entry);
+        return failed;
+      });
   entry.promise = input.deferStart
     ? new Promise<LightweightExecutionResult>((resolve, reject) => {
         setTimeout(() => {
@@ -864,8 +919,10 @@ export async function startLightweightRepositoryCommand(
     recordProcessHandleIndexEntry(input.controllerHome, {
       processId,
       lane: 'lightweight',
-      target: processScopeExecutionTarget(input.controllerHome,
-        scope.kind === 'repository' ? { ...scope, checkoutId: input.repository.activeCheckoutId } : scope),
+      target: processScopeExecutionTarget(
+        input.controllerHome,
+        scope.kind === 'repository' ? { ...scope, checkoutId: input.repository.activeCheckoutId } : scope,
+      ),
       principalId: entry.principalId,
       commandId: entry.commandId,
     });
@@ -891,10 +948,12 @@ export async function startLightweightRepositoryCommand(
     handle: entryHandle(entry),
     metrics: {
       lane: 'lightweight_managed',
-      preSpawnHarnessMs: entry.spawnedAtMs === undefined ? undefined : Math.max(0, entry.spawnedAtMs - entry.startedAtMs),
-      childDurationMs: entry.finishedAtMs === undefined || entry.spawnedAtMs === undefined
-        ? undefined
-        : Math.max(0, entry.finishedAtMs - entry.spawnedAtMs),
+      preSpawnHarnessMs:
+        entry.spawnedAtMs === undefined ? undefined : Math.max(0, entry.spawnedAtMs - entry.startedAtMs),
+      childDurationMs:
+        entry.finishedAtMs === undefined || entry.spawnedAtMs === undefined
+          ? undefined
+          : Math.max(0, entry.finishedAtMs - entry.spawnedAtMs),
       interactiveReturnMs: Math.max(0, returnedAtMs - entry.startedAtMs),
       durableWrites: 0,
       leaseOperations: 0,
@@ -929,23 +988,28 @@ export async function startLightweightInternalProcess(
     ...(principalId ? { principalId } : {}),
   });
   if (stableCommandId) {
-    const existing = [...entries.values()].find((entry) => (
-      entry.controllerHome === input.controllerHome
-      && entry.scopeKey === scopeKey
-      && entry.commandId === stableCommandId
-    ));
+    const existing = [...entries.values()].find(
+      (entry) =>
+        entry.controllerHome === input.controllerHome &&
+        entry.scopeKey === scopeKey &&
+        entry.commandId === stableCommandId,
+    );
     if (existing) {
       if (existing.requestFingerprint !== requestFingerprint) {
-        throw new Error(`PROCESS_REQUEST_CONFLICT: command id ${stableCommandId} already identifies a different lightweight process`);
+        throw new Error(
+          `PROCESS_REQUEST_CONFLICT: command id ${stableCommandId} already identifies a different lightweight process`,
+        );
       }
       return {
         handle: entryHandle(existing),
         metrics: {
           lane: 'lightweight_managed',
-          preSpawnHarnessMs: existing.spawnedAtMs === undefined ? undefined : Math.max(0, existing.spawnedAtMs - existing.startedAtMs),
-          childDurationMs: existing.finishedAtMs === undefined || existing.spawnedAtMs === undefined
-            ? undefined
-            : Math.max(0, existing.finishedAtMs - existing.spawnedAtMs),
+          preSpawnHarnessMs:
+            existing.spawnedAtMs === undefined ? undefined : Math.max(0, existing.spawnedAtMs - existing.startedAtMs),
+          childDurationMs:
+            existing.finishedAtMs === undefined || existing.spawnedAtMs === undefined
+              ? undefined
+              : Math.max(0, existing.finishedAtMs - existing.spawnedAtMs),
           interactiveReturnMs: 0,
           durableWrites: 0,
           leaseOperations: 0,
@@ -1039,10 +1103,12 @@ export async function startLightweightInternalProcess(
     handle: entryHandle(entry),
     metrics: {
       lane: 'lightweight_managed',
-      preSpawnHarnessMs: entry.spawnedAtMs === undefined ? undefined : Math.max(0, entry.spawnedAtMs - entry.startedAtMs),
-      childDurationMs: entry.finishedAtMs === undefined || entry.spawnedAtMs === undefined
-        ? undefined
-        : Math.max(0, entry.finishedAtMs - entry.spawnedAtMs),
+      preSpawnHarnessMs:
+        entry.spawnedAtMs === undefined ? undefined : Math.max(0, entry.spawnedAtMs - entry.startedAtMs),
+      childDurationMs:
+        entry.finishedAtMs === undefined || entry.spawnedAtMs === undefined
+          ? undefined
+          : Math.max(0, entry.finishedAtMs - entry.spawnedAtMs),
       interactiveReturnMs: Math.max(0, returnedAtMs - entry.startedAtMs),
       durableWrites: 0,
       leaseOperations: 0,
@@ -1070,9 +1136,7 @@ export interface StartLightweightHostCommandInput {
 export function hostShellInvocation(shellCommand: string): readonly string[] {
   const command = shellCommand.trim();
   if (!command) throw new Error('HOST_COMMAND_SHELL_STRING_REQUIRED');
-  return process.platform === 'win32'
-    ? ['cmd.exe', '/c', command]
-    : ['/bin/bash', '-lc', command];
+  return process.platform === 'win32' ? ['cmd.exe', '/c', command] : ['/bin/bash', '-lc', command];
 }
 
 function hostCommandArgv(input: StartLightweightHostCommandInput): readonly string[] {
@@ -1122,23 +1186,28 @@ export async function startLightweightControllerCheck(
     timeoutMs: input.timeoutMs,
   });
   if (stableCommandId) {
-    const existing = [...entries.values()].find((entry) => (
-      entry.controllerHome === input.controllerHome
-      && entry.scopeKey === input.repoId
-      && entry.commandId === stableCommandId
-    ));
+    const existing = [...entries.values()].find(
+      (entry) =>
+        entry.controllerHome === input.controllerHome &&
+        entry.scopeKey === input.repoId &&
+        entry.commandId === stableCommandId,
+    );
     if (existing) {
       if (existing.requestFingerprint !== requestFingerprint) {
-        throw new Error(`PROCESS_REQUEST_CONFLICT: command id ${stableCommandId} already identifies a different lightweight check`);
+        throw new Error(
+          `PROCESS_REQUEST_CONFLICT: command id ${stableCommandId} already identifies a different lightweight check`,
+        );
       }
       return {
         handle: entryHandle(existing),
         metrics: {
           lane: 'lightweight_managed',
-          preSpawnHarnessMs: existing.spawnedAtMs === undefined ? undefined : Math.max(0, existing.spawnedAtMs - existing.startedAtMs),
-          childDurationMs: existing.finishedAtMs === undefined || existing.spawnedAtMs === undefined
-            ? undefined
-            : Math.max(0, existing.finishedAtMs - existing.spawnedAtMs),
+          preSpawnHarnessMs:
+            existing.spawnedAtMs === undefined ? undefined : Math.max(0, existing.spawnedAtMs - existing.startedAtMs),
+          childDurationMs:
+            existing.finishedAtMs === undefined || existing.spawnedAtMs === undefined
+              ? undefined
+              : Math.max(0, existing.finishedAtMs - existing.spawnedAtMs),
           interactiveReturnMs: 0,
           durableWrites: 0,
           leaseOperations: 0,
@@ -1176,10 +1245,14 @@ export async function startLightweightControllerCheck(
     abort,
     promise: undefined as never,
   };
-  abort.signal.addEventListener('abort', () => {
-    entry.cancelRequested = true;
-    releaseControllerCheckSubscription(processId);
-  }, { once: true });
+  abort.signal.addEventListener(
+    'abort',
+    () => {
+      entry.cancelRequested = true;
+      releaseControllerCheckSubscription(processId);
+    },
+    { once: true },
+  );
   entry.promise = runControllerCheckAsync(input.repoRoot, input.checkId, {
     requestedTimeoutMs: input.timeoutMs,
     storageAuthority: { controllerHome: input.controllerHome, repoId: input.repoId },
@@ -1190,24 +1263,31 @@ export async function startLightweightControllerCheck(
       entry.identity = captureProcessIdentity(pid);
       persistRunningReceipt(entry, true);
     },
-  }).then((result): LightweightExecutionResult => ({
-    ok: result.ok && !entry.cancelRequested,
-    exitCode: result.status,
-    timedOut: result.timedOut,
-    cancelled: entry.cancelRequested,
-    stdout: result.stdout,
-    stderr: result.stderr,
-  })).catch((error): LightweightExecutionResult => ({
-    ok: false,
-    exitCode: 1,
-    cancelled: entry.cancelRequested,
-    stderr: redactProcessOutput(error instanceof Error ? error.message : String(error)),
-  })).then((result) => {
-    entry.result = result;
-    entry.finishedAtMs = Date.now();
-    persistTerminalReceipt(input.controllerHome, entry);
-    return result;
-  });
+  })
+    .then(
+      (result): LightweightExecutionResult => ({
+        ok: result.ok && !entry.cancelRequested,
+        exitCode: result.status,
+        timedOut: result.timedOut,
+        cancelled: entry.cancelRequested,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      }),
+    )
+    .catch(
+      (error): LightweightExecutionResult => ({
+        ok: false,
+        exitCode: 1,
+        cancelled: entry.cancelRequested,
+        stderr: redactProcessOutput(error instanceof Error ? error.message : String(error)),
+      }),
+    )
+    .then((result) => {
+      entry.result = result;
+      entry.finishedAtMs = Date.now();
+      persistTerminalReceipt(input.controllerHome, entry);
+      return result;
+    });
   entries.set(processId, entry);
   recordProcessHandleIndexEntry(entry.controllerHome, {
     processId,
@@ -1232,10 +1312,12 @@ export async function startLightweightControllerCheck(
     handle: entryHandle(entry),
     metrics: {
       lane: 'lightweight_managed',
-      preSpawnHarnessMs: entry.spawnedAtMs === undefined ? undefined : Math.max(0, entry.spawnedAtMs - entry.startedAtMs),
-      childDurationMs: entry.finishedAtMs === undefined || entry.spawnedAtMs === undefined
-        ? undefined
-        : Math.max(0, entry.finishedAtMs - entry.spawnedAtMs),
+      preSpawnHarnessMs:
+        entry.spawnedAtMs === undefined ? undefined : Math.max(0, entry.spawnedAtMs - entry.startedAtMs),
+      childDurationMs:
+        entry.finishedAtMs === undefined || entry.spawnedAtMs === undefined
+          ? undefined
+          : Math.max(0, entry.finishedAtMs - entry.spawnedAtMs),
       interactiveReturnMs: Math.max(0, returnedAtMs - entry.startedAtMs),
       durableWrites: 0,
       leaseOperations: 0,
@@ -1246,7 +1328,8 @@ export async function startLightweightControllerCheck(
 function requireEntry(scopeKey: string, processId: string): LightweightEntry {
   const entry = entries.get(processId);
   if (!entry) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
-  if (entry.scopeKey !== scopeKey) throw new Error(`PROCESS_SCOPE_MISMATCH: process ${processId} belongs to ${entry.scopeKey}, not ${scopeKey}`);
+  if (entry.scopeKey !== scopeKey)
+    throw new Error(`PROCESS_SCOPE_MISMATCH: process ${processId} belongs to ${entry.scopeKey}, not ${scopeKey}`);
   return entry;
 }
 
@@ -1270,7 +1353,11 @@ export function clearLightweightProcessMemoryForTest(processId?: string): void {
   else entries.clear();
 }
 
-export function getLightweightProcessHandle(controllerHome: string, scopeKey: string, processId: string): ProcessHandle | undefined {
+export function getLightweightProcessHandle(
+  controllerHome: string,
+  scopeKey: string,
+  processId: string,
+): ProcessHandle | undefined {
   const entry = entries.get(processId);
   if (entry?.scopeKey === scopeKey) return entryHandle(entry);
   const terminal = readTerminalReceipt(controllerHome, scopeKey, processId);
@@ -1283,7 +1370,11 @@ export function getLightweightProcessHandle(controllerHome: string, scopeKey: st
   const inspection = inspectRecoveredRunningReceipt(running);
   const failureReason = recoveredInspectionFailureReason(inspection);
   if (failureReason) {
-    return persistRecoveredTerminalReceipt(controllerHome, running, deterministicRecoveryFailureHandle(running, failureReason));
+    return persistRecoveredTerminalReceipt(
+      controllerHome,
+      running,
+      deterministicRecoveryFailureHandle(running, failureReason),
+    );
   }
   return recoveredRunningHandle(running);
 }
@@ -1298,11 +1389,9 @@ export function getLightweightProcessHandleByCommandId(
 ): ProcessHandle | undefined {
   const normalized = commandId.trim();
   if (!normalized) return undefined;
-  const active = [...entries.values()].filter((entry) => (
-    entry.controllerHome === controllerHome
-    && entry.scopeKey === scopeKey
-    && entry.commandId === normalized
-  ));
+  const active = [...entries.values()].filter(
+    (entry) => entry.controllerHome === controllerHome && entry.scopeKey === scopeKey && entry.commandId === normalized,
+  );
   if (active.length > 1) {
     throw new Error(`PROCESS_REQUEST_CONFLICT: command id ${normalized} identifies multiple lightweight processes`);
   }
@@ -1312,28 +1401,45 @@ export function getLightweightProcessHandleByCommandId(
   for (const root of [terminalReceiptRoot(controllerHome, scopeKey), runningReceiptRoot(controllerHome, scopeKey)]) {
     if (!existsSync(root)) continue;
     let files: string[];
-    try { files = readdirSync(root); } catch { continue; }
+    try {
+      files = readdirSync(root);
+    } catch {
+      continue;
+    }
     for (const file of files) {
       if (!file.endsWith('.json')) continue;
       let receipt: LightweightRunningReceipt | LightweightTerminalReceipt;
-      try { receipt = readJsonFile<LightweightRunningReceipt | LightweightTerminalReceipt>(join(root, file)); }
-      catch { continue; }
+      try {
+        receipt = readJsonFile<LightweightRunningReceipt | LightweightTerminalReceipt>(join(root, file));
+      } catch {
+        continue;
+      }
       if (receipt.schemaVersion !== 1 || (receipt.scopeKey ?? receipt.repoId) !== scopeKey) continue;
       const persistedCommandId = receipt.commandId ?? receipt.handle?.commandId;
       if (persistedCommandId !== normalized) continue;
-      if (typeof receipt.processId !== 'string' || !receipt.processId.trim()
-          || typeof receipt.requestFingerprint !== 'string' || !receipt.requestFingerprint.trim()) {
-        throw new Error(`PROCESS_REQUEST_IDENTITY_MISSING: lightweight command ${normalized} has no verifiable receipt identity`);
+      if (
+        typeof receipt.processId !== 'string' ||
+        !receipt.processId.trim() ||
+        typeof receipt.requestFingerprint !== 'string' ||
+        !receipt.requestFingerprint.trim()
+      ) {
+        throw new Error(
+          `PROCESS_REQUEST_IDENTITY_MISSING: lightweight command ${normalized} has no verifiable receipt identity`,
+        );
       }
       const priorFingerprint = candidates.get(receipt.processId);
       if (priorFingerprint !== undefined && priorFingerprint !== receipt.requestFingerprint) {
-        throw new Error(`PROCESS_REQUEST_CONFLICT: lightweight process ${receipt.processId} has inconsistent request fingerprints`);
+        throw new Error(
+          `PROCESS_REQUEST_CONFLICT: lightweight process ${receipt.processId} has inconsistent request fingerprints`,
+        );
       }
       candidates.set(receipt.processId, receipt.requestFingerprint);
     }
   }
   if (candidates.size > 1) {
-    throw new Error(`PROCESS_REQUEST_CONFLICT: command id ${normalized} identifies multiple persisted lightweight processes`);
+    throw new Error(
+      `PROCESS_REQUEST_CONFLICT: command id ${normalized} identifies multiple persisted lightweight processes`,
+    );
   }
   const processId = candidates.keys().next().value as string | undefined;
   if (!processId) return undefined;
@@ -1365,7 +1471,11 @@ export async function waitForLightweightProcess(
       const inspection = inspectRecoveredRunningReceipt(running);
       const failureReason = recoveredInspectionFailureReason(inspection);
       if (failureReason) {
-        return persistRecoveredTerminalReceipt(controllerHome, running, deterministicRecoveryFailureHandle(running, failureReason));
+        return persistRecoveredTerminalReceipt(
+          controllerHome,
+          running,
+          deterministicRecoveryFailureHandle(running, failureReason),
+        );
       }
       if (options.signal?.aborted || Date.now() >= deadline) {
         return recoveredRunningHandle(running);
@@ -1377,7 +1487,8 @@ export async function waitForLightweightProcess(
       running = readRunningReceipt(controllerHome, scopeKey, processId) ?? running;
     }
   }
-  if (entry.scopeKey !== scopeKey) throw new Error(`PROCESS_SCOPE_MISMATCH: process ${processId} belongs to ${entry.scopeKey}, not ${scopeKey}`);
+  if (entry.scopeKey !== scopeKey)
+    throw new Error(`PROCESS_SCOPE_MISMATCH: process ${processId} belongs to ${entry.scopeKey}, not ${scopeKey}`);
   if (entry.result) return entryHandle(entry);
   const timeoutMs = Math.max(1, options.timeoutMs ?? 15_000);
   await Promise.race([
@@ -1392,16 +1503,24 @@ export async function waitForLightweightProcess(
 }
 
 export async function cancelAllLightweightProcesses(controllerHome: string): Promise<number> {
-  const active = [...entries.values()].filter((entry) => entry.controllerHome === controllerHome && entry.result === undefined);
-  await Promise.allSettled(active.map(async (entry) => {
-    entry.cancelRequested = true;
-    entry.abort.abort();
-    await entry.promise;
-  }));
+  const active = [...entries.values()].filter(
+    (entry) => entry.controllerHome === controllerHome && entry.result === undefined,
+  );
+  await Promise.allSettled(
+    active.map(async (entry) => {
+      entry.cancelRequested = true;
+      entry.abort.abort();
+      await entry.promise;
+    }),
+  );
   return active.length;
 }
 
-export async function cancelLightweightProcess(controllerHome: string, scopeKey: string, processId: string): Promise<ProcessHandle> {
+export async function cancelLightweightProcess(
+  controllerHome: string,
+  scopeKey: string,
+  processId: string,
+): Promise<ProcessHandle> {
   const entry = entries.get(processId);
   if (!entry) {
     const terminal = readTerminalReceipt(controllerHome, scopeKey, processId);
@@ -1414,14 +1533,19 @@ export async function cancelLightweightProcess(controllerHome: string, scopeKey:
     const inspection = inspectRecoveredRunningReceipt(running);
     const failureReason = recoveredInspectionFailureReason(inspection);
     if (failureReason) {
-      return persistRecoveredTerminalReceipt(controllerHome, running, deterministicRecoveryFailureHandle(running, failureReason));
+      return persistRecoveredTerminalReceipt(
+        controllerHome,
+        running,
+        deterministicRecoveryFailureHandle(running, failureReason),
+      );
     }
     const pid = running.handle.pid ?? running.identity?.pid;
     if (!pid) throw new Error(`PROCESS_IDENTITY_UNTRUSTED: refusing to signal ${processId}: pid missing`);
     await terminateProcessTree(pid, { gracePeriodMs: 200, killAfterMs: 1_000, pollIntervalMs: 25 });
     return persistRecoveredTerminalReceipt(controllerHome, running, cancelledRecoveredHandle(running));
   }
-  if (entry.scopeKey !== scopeKey) throw new Error(`PROCESS_SCOPE_MISMATCH: process ${processId} belongs to ${entry.scopeKey}, not ${scopeKey}`);
+  if (entry.scopeKey !== scopeKey)
+    throw new Error(`PROCESS_SCOPE_MISMATCH: process ${processId} belongs to ${entry.scopeKey}, not ${scopeKey}`);
   if (!entry.result) {
     entry.abort.abort();
     await entry.promise;
@@ -1447,8 +1571,9 @@ export function readLightweightProcessLogs(
         stderr,
         stdoutBytes: Buffer.byteLength(terminal.handle.stdout ?? '', 'utf8'),
         stderrBytes: Buffer.byteLength(terminal.handle.stderr ?? '', 'utf8'),
-        truncated: Buffer.byteLength(terminal.handle.stdout ?? '', 'utf8') > maxBytes
-          || Buffer.byteLength(terminal.handle.stderr ?? '', 'utf8') > maxBytes,
+        truncated:
+          Buffer.byteLength(terminal.handle.stdout ?? '', 'utf8') > maxBytes ||
+          Buffer.byteLength(terminal.handle.stderr ?? '', 'utf8') > maxBytes,
       };
     }
     const running = readRunningReceipt(controllerHome, scopeKey, processId);
@@ -1461,8 +1586,9 @@ export function readLightweightProcessLogs(
       stderr,
       stdoutBytes: Buffer.byteLength(running.handle.stdoutTail ?? '', 'utf8'),
       stderrBytes: Buffer.byteLength(running.handle.stderrTail ?? '', 'utf8'),
-      truncated: Buffer.byteLength(running.handle.stdoutTail ?? '', 'utf8') > maxBytes
-        || Buffer.byteLength(running.handle.stderrTail ?? '', 'utf8') > maxBytes,
+      truncated:
+        Buffer.byteLength(running.handle.stdoutTail ?? '', 'utf8') > maxBytes ||
+        Buffer.byteLength(running.handle.stderrTail ?? '', 'utf8') > maxBytes,
     };
   }
   if (entry.scopeKey !== scopeKey) return undefined;
@@ -1476,7 +1602,7 @@ export function readLightweightProcessLogs(
     stderr: visibleStderr,
     stdoutBytes: Buffer.byteLength(visibleStdout, 'utf8'),
     stderrBytes: Buffer.byteLength(visibleStderr, 'utf8'),
-    truncated: Buffer.byteLength(visibleStdout, 'utf8') > maxBytes
-      || Buffer.byteLength(visibleStderr, 'utf8') > maxBytes,
+    truncated:
+      Buffer.byteLength(visibleStdout, 'utf8') > maxBytes || Buffer.byteLength(visibleStderr, 'utf8') > maxBytes,
   };
 }
