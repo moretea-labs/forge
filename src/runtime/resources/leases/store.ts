@@ -270,7 +270,7 @@ export function listConflictingResourceLeases(controllerHome: string, resourceKe
 // while observing current Process claims. Neither path can pass both checks
 // while the other has a physical writer in flight.
 function repositorySourceResourceKey(resourceKey: string): boolean {
-  return /^(?:path:|git-index:|git-head:|git-ref:|git-refs:|repo-content:)/.test(resourceKey);
+  return /^(?:path:|git-index:|git-head:|git-ref:|git-refs:|git-worktrees:|repo-content:)/.test(resourceKey);
 }
 
 /**

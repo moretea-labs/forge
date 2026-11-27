@@ -190,6 +190,68 @@ describe('structured registered worktree cleanup (#41)', () => {
     expect(existsSync(fx.linked)).toBe(true);
   });
 
+  test('worktree cleanup uses only the shared Git worktree metadata resource (#725)', () => {
+    const fx = fixture();
+    const effects = {
+      visibility: 'ephemeral' as const,
+      notifyScheduler: false,
+      invalidateProjection: false,
+      emitRuntimeEvent: false,
+    };
+    const unrelatedSource = acquireExecutionLeases(
+      fx.controllerHome,
+      fx.repository.repoId,
+      'unrelated-active-checkout-source',
+      [{ resourceKey: 'path:' + fx.repository.activeCheckoutId + ':README.md', mode: 'write' }],
+      effects,
+    );
+    expect(unrelatedSource.acquired).toBe(true);
+    try {
+      const preview = fx.cleanup();
+      expect(preview.status).toBe('preview');
+      const removed = fx.cleanup({
+        confirmCleanup: true,
+        expectedHead: preview.expectedHead,
+        expectedIdentity: preview.physicalIdentity,
+        previewToken: preview.execution?.approvalToken ?? '',
+      });
+      expect(removed.status).toBe('removed');
+    } finally {
+      if (unrelatedSource.acquired) {
+        releaseExecutionLeases(
+          fx.controllerHome,
+          fx.repository.repoId,
+          'unrelated-active-checkout-source',
+          unrelatedSource.leases,
+          effects,
+        );
+      }
+    }
+
+    const blocked = fixture();
+    const metadataOwner = acquireExecutionLeases(
+      blocked.controllerHome,
+      blocked.repository.repoId,
+      'foreign-worktree-metadata-owner',
+      [{ resourceKey: 'git-worktrees:' + blocked.repository.repoId, mode: 'exclusive' }],
+      effects,
+    );
+    expect(metadataOwner.acquired).toBe(true);
+    try {
+      expect(() => blocked.cleanup()).toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+    } finally {
+      if (metadataOwner.acquired) {
+        releaseExecutionLeases(
+          blocked.controllerHome,
+          blocked.repository.repoId,
+          'foreign-worktree-metadata-owner',
+          metadataOwner.leases,
+          effects,
+        );
+      }
+    }
+  });
+
   test('rejects an in-flight external Git HEAD writer without deleting its checkout', () => {
     const fx = fixture();
     const preview = fx.cleanup();

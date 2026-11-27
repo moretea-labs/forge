@@ -4,6 +4,8 @@ import { setHostBuildCpuProbeForTest } from '../../src/runtime/resources/leases/
 import {
   claimsForCheck,
   claimsForRepositoryCommand,
+  claimGitWorktrees,
+  claimGitWorktreesRead,
   claimsRequireHostCapacity,
   scopeResourceClaims,
 } from '../../src/runtime/execution/process-runtime/resource-claims';
@@ -94,6 +96,20 @@ describe('Process Runtime fine-grained resource claims', () => {
       expect(claimsForRepositoryCommand(command, 'repo', 'checkout')).not.toContainEqual(claim);
     }
   });
+  test('Git worktree administration shares one repository-scoped metadata claim (#725)', () => {
+    for (const command of [
+      ['git', 'worktree', 'add', '/tmp/linked', 'HEAD'],
+      ['git', 'worktree', 'remove', '/tmp/linked'],
+      ['git', 'worktree', 'prune'],
+    ]) {
+      expect(claimsForRepositoryCommand(command, 'repo1', 'co1')).toEqual([claimGitWorktrees('repo1')]);
+    }
+    expect(claimsConflict(claimGitWorktrees('repo1'), lease('git-worktrees:repo1', 'exclusive'))).toBe(true);
+    expect(claimsConflict(claimGitWorktrees('repo1'), lease('git-worktrees:repo2', 'exclusive'))).toBe(false);
+    expect(claimsConflict(claimGitWorktreesRead('repo1'), lease('git-worktrees:repo1', 'read'))).toBe(false);
+    expect(claimsConflict(claimGitWorktreesRead('repo1'), lease('git-worktrees:repo1', 'exclusive'))).toBe(true);
+  });
+
   test('MutationGate reuses Process Runtime path, index, and repository-scoped ref claims (#725)', () => {
     const a = buildMutationClaims('repo1', 'co1', { writePaths: ['src/alpha.ts'], mutatesGitIndex: false });
     const b = buildMutationClaims('repo1', 'co1', { writePaths: ['./src/beta.ts'], mutatesGitIndex: false });

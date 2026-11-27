@@ -97,6 +97,14 @@ export function claimGitRefs(repoId: string): ResourceClaimSpec {
   return { resourceKey: `git-refs:${repoId}`, mode: 'exclusive' };
 }
 
+export function claimGitWorktreesRead(repoId: string): ResourceClaimSpec {
+  return { resourceKey: `git-worktrees:${repoId}`, mode: 'read' };
+}
+
+export function claimGitWorktrees(repoId: string): ResourceClaimSpec {
+  return { resourceKey: `git-worktrees:${repoId}`, mode: 'exclusive' };
+}
+
 export function claimIntegration(repoId: string): ResourceClaimSpec {
   return { resourceKey: `integration:${repoId}`, mode: 'exclusive' };
 }
@@ -1008,6 +1016,7 @@ function gitMetadataOnlyClaims(
   if (sub === 'add' || (sub === 'rm' && args.includes('--cached'))) {
     return [claimGitIndex(checkoutId, repoId)];
   }
+  if (sub === 'worktree') return [claimGitWorktrees(repoId)];
   if (sub === 'branch' || sub === 'tag') return [claimGitRefs(repoId)];
   // Fetch updates object storage and remote-tracking refs, not the checked-out
   // worktree. Recursive submodule fetch can touch other Git stores, so those
