@@ -54,6 +54,7 @@ import {
   writeControllerContextProjection,
 } from '../../../src/runtime/projections/controller-context';
 import { loadMcpRuntimeState } from '../auth';
+import { readRecentMcpTimingSummary } from '../../../src/runtime/diagnostics/mcp-timing';
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../../src/runtime/shared/local-bridge-surface';
 import { listAssistantPluginManifests } from '../../../src/runtime/plugins/store';
 import { sessionCacheGlobalDiagnostics } from '../../../src/runtime/repositories/session-cache';
@@ -1413,6 +1414,7 @@ export async function callRuntimeObservationAdapter(
           contextPerformance: controllerContextPerformanceSnapshot(),
           gitPerformance: gitSnapshotPerformanceSnapshot(),
           gitIdentity: gitIdentityPerformanceSnapshot(),
+          mcpTiming: readRecentMcpTimingSummary(ctx.controllerHome),
           runtimeIdentity: runtimeIdentitySnapshot(ctx),
           resourceCost: {
             processRuntime: processRuntimeResourceDiagnostics(),

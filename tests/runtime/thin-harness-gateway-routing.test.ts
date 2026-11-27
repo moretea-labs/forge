@@ -834,6 +834,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const end = source.indexOf("case '", start + 8);
     const block = source.slice(start, end > start ? end : undefined);
     expect(block).toContain('listActiveExecutionJobs(ctx.controllerHome, repository.repoId)');
+    expect(block).toContain('readRecentMcpTimingSummary(ctx.controllerHome)');
     expect(block).not.toContain('listExecutionJobs(ctx.controllerHome, repository.repoId, 100)');
 
     const mobileMonitorSource = readFileSync(join(process.cwd(), 'src/cli/local-bridge/mobile-monitor.ts'), 'utf8');
@@ -887,6 +888,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       expect(JSON.stringify(payload)).not.toContain('EXECUTION_JOB_RETIRED');
       if (tool === 'runtime_performance_diagnostics' && payload.diagnosticExecution) {
         expect((payload.runtimeIdentity as { profile?: string }).profile).toBe('controller');
+        const timing = payload.mcpTiming as { observation?: string };
+        expect(['observed', 'empty']).toContain(timing.observation ?? '');
       }
       if (tool === 'capability_recovery_probe' && payload.diagnosticExecution) {
         const capabilities =
