@@ -22,10 +22,6 @@ const THIN_ROUTED_TOOLS = new Set([
   'repository_git_status',
   'repository_git_diff',
   'repository_git_commit',
-  'git_stage_paths',
-  'git_commit_paths',
-  'git_diff_paths',
-  'apply_patch',
   'read_file_range',
   'read_repository_file',
   // Checks use Process Runtime unless multi-phase/release requires Durable.
@@ -72,7 +68,6 @@ const DIRECT_HOT_READ_TOOLS = new Set([
   'rh_inbox',
   'repository_git_status',
   'repository_git_diff',
-  'git_diff_paths',
 ]);
 
 export function isDirectHotReadTool(name: string): boolean {
@@ -89,9 +84,6 @@ const INTERACTIVE_SYNC_WRITE_TOOLS = new Set([
   'repository_git_remove_worktree',
   'repository_git_commit',
   'repository_git_finish_workflow',
-  'apply_patch',
-  'git_stage_paths',
-  'git_commit_paths',
   // Recovery writes against an existing Run must remain available while legacy
   // Runs are the very thing preventing runtime-storage relocation. These tools
   // do not create new execution ownership or dispatch new work.

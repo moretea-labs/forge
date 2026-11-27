@@ -3,10 +3,6 @@ export type { CallToolResult, McpToolDefinition } from '../../../packages/protoc
 import { createHash } from 'crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
-import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/runtime/editing/edit-operation-contract';
-import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/leases/store';
-import type { ResourceClaimSpec } from '../../../src/runtime/execution/jobs/types';
-import { claimRequiredPathWrites } from '../../../src/runtime/execution/process-runtime/resource-claims';
 import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
 import {
   listCapabilityDescriptors,
@@ -18,7 +14,6 @@ import {
   FORGE_VERSION,
   forgeToolSurfaceFingerprint,
   formatDurationMs,
-  normalizeAgentTimeoutMs,
 } from '../../../src/runtime/shared/runtime-config';
 import { PREFERRED_FACADE_TOOL_NAMES } from '../toolset-names';
 import { buildLocalConnectorStatusForRepo } from '../../../src/cli/local-bridge/connector-freshness';
@@ -36,9 +31,6 @@ import { resolveRepoPreferredControllerHome } from '../../../src/effects/control
 import { resolveRepositoryCheckStorage } from '../../../src/runtime/execution/process-runtime/check-storage';
 import { resolveRepositorySelection } from '../../../src/runtime/repositories/registry';
 import { resolveMcpPath } from '../../../src/runtime/safe-tooling/path-policy';
-import { applySessionlessMutationBatch } from '../../../src/runtime/repositories/safe-patch';
-import { extractPatchPaths } from '../../../src/runtime/execution/thin-harness/execution-router';
-import { leadingErrorCode } from '../../../src/runtime/shared/response-budget';
 import { currentGitBranch, isForgeAdopted } from '../repo';
 import { redactMcpText } from '../redaction';
 import type { ToolPolicy } from '../../../src/runtime/control-plane/tool-policy';
@@ -119,53 +111,6 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function mcpRepositoryIdentity(ctx: McpToolContext): { repoId: string; checkoutId: string } {
-  const local = sha256(ctx.repoRoot).slice(0, 16);
-  return {
-    repoId: ctx.repoId?.trim() || 'repo-local-' + local,
-    checkoutId: ctx.checkoutId?.trim() || 'checkout-local-' + local,
-  };
-}
-
-/**
- * Exact source-path claims for the MCP mutation entrypoint. The canonical
- * Semantic Mutation Planner performs atomic CAS; this wrapper coordinates
- * those paths with other repository mutation owners.
- */
-export function buildMcpSourceClaims(ctx: McpToolContext, paths: Iterable<string>): ResourceClaimSpec[] {
-  const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
-  const checkoutId =
-    ctx.checkoutId?.trim() ||
-    resolveRepositorySelection({
-      explicitPath: ctx.repoRoot,
-      controllerHome,
-      allowSoleRepository: true,
-    }).activeCheckoutId;
-  // Do not fall back to a repository-wide writer lock when exact placement is
-  // unknown. This MCP mutation requires a provable checkout and exact paths.
-  if (!checkoutId) throw new Error('MCP_SOURCE_CHECKOUT_ID_REQUIRED');
-  const claims = claimRequiredPathWrites([...paths], checkoutId, ctx.repoId);
-  if (claims.length === 0) throw new Error('MCP_SOURCE_PATHS_REQUIRED');
-  return claims;
-}
-
-function withMcpRepositoryMutation<T>(
-  ctx: McpToolContext,
-  operation: string,
-  mutate: (leaseOwnerJobId?: string) => T,
-  claims: ResourceClaimSpec[],
-): T {
-  const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
-  const repoId =
-    ctx.repoId?.trim() ||
-    resolveRepositorySelection({
-      explicitPath: ctx.repoRoot,
-      controllerHome,
-      allowSoleRepository: true,
-    }).repoId;
-  return withRepositoryMutationExclusion(controllerHome, repoId, `mcp:${operation}`, mutate, undefined, claims);
-}
-
 function fileSummary(path: string, repoRoot: string): { path: string; size: number; modifiedAt: string } | null {
   try {
     const fileStat = statSync(join(repoRoot, path));
@@ -179,33 +124,6 @@ function fileSummary(path: string, repoRoot: string): { path: string; size: numb
     return null;
   }
 }
-
-function knownRunPathReplacements(
-  repoRoot: string,
-  run: Partial<{
-    executionRoot: string;
-    worktree: string;
-    worktreePath: string;
-  }>,
-): Array<{ from: string; to: string }> {
-  const replacements = new Map<string, string>();
-  const remember = (from: string | undefined, to: string) => {
-    if (!from || !from.startsWith('/')) return;
-    replacements.set(from, to);
-  };
-  remember(repoRoot, '<repo>');
-  remember(run.executionRoot, '<execution-root>');
-  remember(run.worktreePath, '<worktree>');
-  remember(run.worktree, run.worktree === repoRoot ? '<repo>' : '<worktree>');
-  return [...replacements.entries()]
-    .sort((left, right) => right[0].length - left[0].length)
-    .map(([from, to]) => ({ from, to }));
-}
-
-const PROJECT_BOARD_RECENT_ISSUE_LIMIT = 5;
-const PROJECT_BOARD_TASK_LIMIT = 8;
-
-const UPDATE_TASK_SUMMARY_TASK_LIMIT = 12;
 
 function listFilesUnder(repoRoot: string, root: string, maxFiles: number, out: string[]): void {
   if (out.length >= maxFiles) return;
@@ -255,23 +173,9 @@ function workflowFileCandidates(repoRoot: string): string[] {
   return Array.from(new Set(files)).sort();
 }
 
-function runnerTimeoutMs(ctx: McpToolContext, value: unknown): number {
-  return normalizeAgentTimeoutMs(value, {
-    defaultMs: ctx.policy.execution.runnerTimeoutMs,
-    maxMs: ctx.policy.execution.runnerMaxTimeoutMs,
-    label: 'timeout_ms',
-  });
-}
-
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => String(entry).trim()).filter((entry) => entry.length > 0);
-}
-
-interface TaskVerificationLeaseConflict {
-  message: string;
-  resourceKey?: string;
-  blockingProcessId?: string;
 }
 
 function parseThinking(value: unknown): ThinkingLevel | undefined {
@@ -298,11 +202,6 @@ export function buildMcpToolDefinitions(
   opts: { enableChatgptBrowser?: boolean } = {},
 ): McpToolDefinition[] {
   const readOnly = { readOnlyHint: true, openWorldHint: false };
-  const write = {
-    readOnlyHint: false,
-    openWorldHint: false,
-    destructiveHint: false,
-  };
   const stringPathSchema = {
     type: 'object',
     properties: { path: { type: 'string' } },
@@ -380,22 +279,6 @@ export function buildMcpToolDefinitions(
   ];
 
   if (policy.profile === 'controller') {
-    const taskItemSchema = {
-      type: 'object',
-      properties: {
-        title: { type: 'string' },
-        objective: { type: 'string' },
-        depends_on: { type: 'array', items: { type: 'string' } },
-        allowed_paths: { type: 'array', items: { type: 'string' } },
-        forbidden_paths: { type: 'array', items: { type: 'string' } },
-        checks: { type: 'array', items: { type: 'string' } },
-        acceptance_criteria: { type: 'array', items: { type: 'string' } },
-        risk: { type: 'string', enum: ['readonly', 'low', 'medium', 'high', 'destructive'] },
-        agent: { type: 'string', enum: ['codex', 'claude', 'github-copilot'] },
-      },
-      required: ['title', 'objective'],
-      additionalProperties: false,
-    };
     tools.push(
       {
         name: 'controller_capabilities',
@@ -440,16 +323,7 @@ export function buildMcpToolDefinitions(
               uniqueItems: true,
               items: {
                 type: 'string',
-                enum: [
-                  'git',
-                  'focus',
-                  'readiness',
-                  'activeRuns',
-                  'localBridge',
-                  'history',
-                  'checks',
-                  'plugins',
-                ],
+                enum: ['git', 'focus', 'readiness', 'activeRuns', 'localBridge', 'history', 'checks', 'plugins'],
               },
               description:
                 'Omit for the lightweight Context Index. Request only the named sections to read them on demand; multiple sections are batched without loading unrelated sections.',
@@ -483,29 +357,6 @@ export function buildMcpToolDefinitions(
         description: 'List focused repository checks from safe package scripts and .forge/checks.json.',
         inputSchema: EMPTY_SCHEMA,
         annotations: readOnly,
-      },
-      {
-        name: 'apply_patch',
-        description:
-          'Apply a sessionless mutation batch through the canonical Semantic Mutation Planner using operations, optional allowed_paths, and optional refresh_fingerprints.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            operations: {
-              type: 'array',
-              items: EDIT_OPERATION_INPUT_SCHEMA,
-            },
-            allowed_paths: { type: 'array', items: { type: 'string' } },
-            refresh_fingerprints: { type: 'boolean' },
-          },
-          required: ['operations'],
-          additionalProperties: false,
-        },
-        annotations: {
-          readOnlyHint: false,
-          openWorldHint: false,
-          destructiveHint: false,
-        },
       },
     );
   }
@@ -776,63 +627,6 @@ export async function callMcpTool(
         const checks = listControllerChecks(ctx.repoRoot);
         audit(ctx, name, 'ok', args);
         return textResult({ checks });
-      }
-      case 'apply_patch': {
-        if (ctx.policy.profile !== 'controller')
-          return errorResult('TOOL_DISABLED', 'apply_patch requires the controller profile');
-        const supportedArguments = new Set([
-          'operations',
-          'allowed_paths',
-          'refresh_fingerprints',
-          // Multi-repository routing resolves these before the legacy tool
-          // service and deliberately preserves the selected identity.
-          'repo_id',
-          'checkout_id',
-          // Public Gateway execution metadata is transport/routing context,
-          // not part of the Semantic Mutation Planner contract.
-          'request_id',
-          'apply_mode',
-          'wait',
-          'wait_ms',
-          'admission_timeout_ms',
-          'queue_timeout_ms',
-          'execution_timeout_ms',
-          'interactive_wait_ms',
-          'cognition_settlement',
-        ]);
-        const unsupportedArguments = Object.keys(args).filter((key) => !supportedArguments.has(key));
-        if (unsupportedArguments.length > 0) {
-          const message = 'unsupported apply_patch arguments: ' + unsupportedArguments.join(', ');
-          audit(ctx, name, 'blocked', args, undefined, message);
-          return errorResult('SAFE_PATCH_ARGUMENTS_UNSUPPORTED', message, { fields: unsupportedArguments });
-        }
-        const identity = mcpRepositoryIdentity(ctx);
-        const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
-        const repository = resolveRepositorySelection({
-          repoId: identity.repoId,
-          checkoutId: identity.checkoutId,
-          controllerHome,
-        });
-        try {
-          const applied = withMcpRepositoryMutation(
-            ctx,
-            name,
-            () =>
-              applySessionlessMutationBatch(repository, {
-                operations: args.operations,
-                allowedPaths: stringList(args.allowed_paths),
-                refreshFingerprints: args.refresh_fingerprints === true,
-              }),
-            buildMcpSourceClaims(ctx, extractPatchPaths(args.operations)),
-          );
-          audit(ctx, name, applied.status === 'failed' ? 'failed' : 'ok', args);
-          return textResult(applied);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const code = leadingErrorCode(message, 'SAFE_PATCH_APPLY_FAILED');
-          audit(ctx, name, 'failed', args, undefined, message);
-          return errorResult(code, message);
-        }
       }
       case 'list_workflow_files': {
         const files = workflowFileCandidates(ctx.repoRoot)

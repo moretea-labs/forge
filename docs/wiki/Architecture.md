@@ -39,7 +39,7 @@ One Canonical Forge Runtime
 
 ### Client and tool surface
 
-The default ChatGPT-facing surface is bounded rather than exposing every internal handler. The five preferred facades are `rh_status`, `rh_access`, `rh_inbox`, `rh_context`, and `rh_project`; repository, patch, check, Process, plugin-dispatch, and result tools complete the current 19-tool connector schema. The exhaustive compatibility profile remains an implementation detail for explicit diagnostic clients.
+The preferred model-routing order is bounded, but it is not the MCP exposure boundary. The current transport cannot load domain schemas per conversation, so distinct typed repository, Git, Issue/Task, plugin, browser, iOS, artifact, and recovery operations remain statically registered. The five preferred facades are `rh_status`, `rh_access`, `rh_inbox`, `rh_context`, and `rh_project`, alongside `capability_execute`; the 19-tool preferred list controls routing order only. Retire duplicate aliases at their source definitions rather than hiding them through ordering or a compatibility profile.
 
 ### Repository identity
 

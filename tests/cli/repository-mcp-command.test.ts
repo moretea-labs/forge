@@ -21,22 +21,17 @@ import { repositoryToolDefinitions } from '../../adapters/mcp/tool-mapping/repos
 import {
   repositoryGitCommit,
   repositoryGitCreateBranch,
-  repositoryGitMergeBranch,
-  repositoryGitRebaseOnto,
   repositoryGitStatus,
   repositoryGitSwitchBranch,
 } from '../../src/runtime/repositories/structured-git';
 import { callRuntimeTool, runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tools';
-import { callMultiRepositoryTool, createMcpToolContext } from '../../adapters/mcp/multi-repository';
+import { createMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { controllerExposureSnapshot } from '../../adapters/mcp/toolset';
 import { getCoreCapabilityExecutionSchema } from '../../src/runtime/control-plane/facade/capability-registry';
 import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
-import { getLocalBridgeJob } from '../../src/cli/local-bridge/job-store';
 import { readLocalBridgeJobOutputSnapshot } from '../../src/runtime/local-bridge/read-model';
 import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
-import { waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
-import { getExecutionJob, listExecutionJobs } from '../../src/runtime/execution/jobs/store';
-import { startExecutionSession, updateExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { readControllerResult } from '../../src/runtime/evidence/result-store';
 import { boundedRuntimeResult } from '../../adapters/mcp/runtime-gateway/bounded-result-runtime';
 import {
@@ -1525,7 +1520,6 @@ describe('repository MCP command tools', () => {
         }),
       );
 
-      const ctx = createMcpToolContext({ repo: repoRoot, controllerHome, profile: 'controller' });
       // repository_update is a deterministic Kernel metadata operation; ExecutionJobs are retired.
       const restored = await json(
         callRepositoryTool(controllerHome, 'repository_update', {
@@ -1579,116 +1573,6 @@ describe('repository MCP command tools', () => {
         await cleanupWorkspace([workspace, controllerHome, repoRoot]);
         rmSync(workspace, { recursive: true, force: true });
       }
-    }
-  });
-
-  test('multi-repository apply_patch accepts injected repository and gateway metadata (#716)', async () => {
-    const workspace = mkdtempSync(join(tmpdir(), 'forge-multi-repo-apply-patch-metadata-'));
-    const controllerHome = join(workspace, 'controller-home');
-    const repoRoot = join(workspace, 'repo');
-    try {
-      mkdirSync(repoRoot, { recursive: true });
-      git(repoRoot, ['init', '-b', 'main']);
-      git(repoRoot, ['config', 'user.name', 'Forge Test']);
-      git(repoRoot, ['config', 'user.email', 'forge-test@example.com']);
-      writeFileSync(join(repoRoot, 'app.txt'), 'before\n');
-      git(repoRoot, ['add', 'app.txt']);
-      git(repoRoot, ['commit', '-m', 'init']);
-      const registered = registerRepository({ path: repoRoot, controllerHome });
-      const ctx = createMcpToolContext({ controllerHome, profile: 'controller' });
-
-      const applied = await callMultiRepositoryTool(ctx, 'apply_patch', {
-        repo_id: registered.repoId,
-        checkout_id: registered.activeCheckoutId,
-        request_id: 'forge716-metadata-route',
-        apply_mode: 'sync',
-        operations: [
-          {
-            type: 'replace',
-            path: 'app.txt',
-            replacements: [{ old_text: 'before', new_text: 'after' }],
-          },
-        ],
-      });
-
-      expect(applied.isError).not.toBe(true);
-      expect(applied.structuredContent).toMatchObject({
-        status: 'applied',
-        sessionless: true,
-        createdSession: false,
-        repoId: registered.repoId,
-      });
-      expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
-    } finally {
-      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
-      rmSync(workspace, { recursive: true, force: true });
-    }
-  });
-
-  test('legacy MCP apply_patch routes through the sessionless planner and retires EditSession creation', async () => {
-    const workspace = mkdtempSync(join(tmpdir(), 'forge-legacy-mcp-sessionless-patch-'));
-    const controllerHome = join(workspace, 'controller-home');
-    const repoRoot = join(workspace, 'repo');
-    try {
-      mkdirSync(repoRoot, { recursive: true });
-      git(repoRoot, ['init', '-b', 'main']);
-      git(repoRoot, ['config', 'user.name', 'Forge Test']);
-      git(repoRoot, ['config', 'user.email', 'forge-test@example.com']);
-      writeFileSync(join(repoRoot, 'app.txt'), 'before\n');
-      git(repoRoot, ['add', 'app.txt']);
-      git(repoRoot, ['commit', '-m', 'init']);
-      const registered = registerRepository({ path: repoRoot, controllerHome });
-      const baseContext = createMcpToolContext({ repo: repoRoot, controllerHome, profile: 'controller' });
-      const publishedToolNames = controllerExposureSnapshot(baseContext).actualToolNames;
-      const context = {
-        ...baseContext,
-        repoRoot,
-        repoId: registered.repoId,
-        checkoutId: registered.activeCheckoutId,
-        runtimeControllerHome: controllerHome,
-        publishedToolNames,
-      };
-
-      expect(publishedToolNames).toContain('apply_patch');
-      expect(publishedToolNames).not.toEqual(
-        expect.arrayContaining([
-          'begin_edit_session',
-          'get_edit_session',
-          'list_edit_sessions',
-          'get_edit_session_diff',
-          'create_edit_savepoint',
-          'verify_edit_session',
-          'rollback_edit_session',
-          'finalize_edit_session',
-        ]),
-      );
-      const applied = await callMcpTool(context, 'apply_patch', {
-        operations: [
-          { type: 'replace', path: 'app.txt', replacements: [{ old_text: 'before', new_text: 'after' }] },
-          { type: 'create', path: 'new.txt', content: 'new\n' },
-        ],
-        allowed_paths: ['app.txt', 'new.txt'],
-      });
-      const result = applied.structuredContent as Record<string, unknown>;
-      expect(result).toMatchObject({ status: 'applied', sessionless: true, createdSession: false });
-      expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
-      expect(readFileSync(join(repoRoot, 'new.txt'), 'utf8')).toBe('new\n');
-      expect(existsSync(join(repoRoot, '.ai', 'harness', 'edit-sessions'))).toBe(false);
-
-      const rejected = await callMcpTool(context, 'apply_patch', {
-        session_id: 'legacy-session-1',
-        operations: [
-          { type: 'replace', path: 'app.txt', replacements: [{ old_text: 'after', new_text: 'clobbered' }] },
-        ],
-      });
-      expect(rejected.isError).toBe(true);
-      expect(rejected.structuredContent).toMatchObject({
-        error: { code: 'SAFE_PATCH_ARGUMENTS_UNSUPPORTED' },
-      });
-      expect(readFileSync(join(repoRoot, 'app.txt'), 'utf8')).toBe('after\n');
-    } finally {
-      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
-      rmSync(workspace, { recursive: true, force: true });
     }
   });
 
@@ -1852,7 +1736,7 @@ describe('repository MCP command tools', () => {
         }),
       );
       expect(failed.status).toBe('failed');
-      expect(failed.failures[0].code).toBe('REPLACEMENT_TEXT_NOT_FOUND');
+      expect(failed.failures[0].code).toBe('SEMANTIC_CONFLICT');
       expect(failed.failures[0].context.focus).toContain('alpha-1');
       expect(failed.responseMeta?.serverDurationMs).toBeGreaterThanOrEqual(0);
     } finally {

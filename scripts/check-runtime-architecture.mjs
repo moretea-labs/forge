@@ -3065,16 +3065,11 @@ forbid(
   /repeated_infrastructure_failure|activeScheduleFailureHandoff|stableScheduleFailureHandoffId|resolveRecoveredScheduleFailureHandoffs/,
   'mechanical Scheduler failures must remain runtime/backoff facts and must not create human-request authority',
 );
-for (const path of [
+forbid(
   'adapters/mcp/runtime-gateway/rh-project-adapter.ts',
-  'adapters/mcp/runtime-gateway/repository-compat-adapter.ts',
-]) {
-  forbid(
-    path,
-    /lifecycleClosed|finalStatus:\s*['"]completed['"]|directEditWorkCompletion/,
-    'mechanical delivery/finalize responses must not masquerade as semantic Work completion',
-  );
-}
+  /lifecycleClosed|finalStatus:\s*['"]completed['"]|directEditWorkCompletion/,
+  'mechanical delivery/finalize responses must not masquerade as semantic Work completion',
+);
 // Work-keyed ControllerRound/provider dispatch authority is retired. Current
 // provider effects are fenced by Plugin/Computer/Workflow receipts instead.
 requireMissing('packages/kernel/controller/domain/controller-round-transition-policy.ts');

@@ -754,38 +754,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     false,
   ),
   definition(
-    'git_diff_paths',
-    'Return a bounded Git diff and status for explicit repository-relative paths only.',
-    {
-      repo_id: repoId,
-      paths: { type: 'array', items: { type: 'string' } },
-      staged: { type: 'boolean' },
-      max_bytes: { type: 'number' },
-    },
-    ['paths'],
-  ),
-  definition(
-    'git_stage_paths',
-    'Stage explicit repository-relative paths only using git add --all -- <paths>.',
-    {
-      repo_id: repoId,
-      paths: { type: 'array', items: { type: 'string' } },
-    },
-    ['paths'],
-    false,
-  ),
-  definition(
-    'git_commit_paths',
-    'Stage and commit exact paths through explicit repository/checkout identity and Git checkout/resource fences. Work is not an execution or mutation authority.',
-    {
-      repo_id: repoId,
-      paths: { type: 'array', items: { type: 'string' } },
-      message: { type: 'string' },
-    },
-    ['paths', 'message'],
-    false,
-  ),
-  definition(
     'get_job',
     'Read one durable Execution Job. Summary is the default; opt in to full state only when needed.',
     {
@@ -810,22 +778,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       max_bytes: { type: 'number' },
     },
     ['artifact_id'],
-  ),
-  definition(
-    'repository_change_verify',
-    'Composite: verify checkout/SHA, apply bounded patch, run checks, return first failure inline without get_job/get_artifact follow-ups.',
-    {
-      repo_id: repoId,
-      expected_branch: { type: 'string' },
-      expected_head: { type: 'string' },
-      expected_file_shas: { type: 'object', additionalProperties: { type: 'string' } },
-      patch: { type: 'string', description: 'Unified diff applied with git apply.' },
-      allowed_paths: { type: 'array', items: { type: 'string' } },
-      checks: { type: 'array', items: { type: 'string' } },
-      check_timeout_ms: { type: 'number' },
-    },
-    [],
-    false,
   ),
   definition('list_jobs', 'List durable Execution Jobs for one repository. Summary is the default.', {
     repo_id: repoId,

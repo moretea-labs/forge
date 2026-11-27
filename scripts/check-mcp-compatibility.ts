@@ -44,8 +44,11 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // those two names; preferred controller names remain unchanged.
 // 2026-11-26 #483: retire the final controller worklog tools
 // get_worklog_timeline/export_worklog and the inert taskLedger status selector.
-// This is a deliberate contraction; keep the frozen registry assertion exact.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '6c0583ca2ba8fd03';
+// 2026-11-27: retire duplicate top-level mutation aliases apply_patch,
+// git_diff_paths/git_stage_paths/git_commit_paths, and the raw git-apply
+// repository_change_verify composite. Direct Edit and repository.git capability
+// actions remain canonical; validation stays separate through run_check.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'b1d970d76e60be3c';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a

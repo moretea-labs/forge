@@ -9,6 +9,7 @@
 - [Execution Lifecycle](Execution-Lifecycle)
 - [Architecture](Architecture)
 - [Runtime Architecture](Runtime-Architecture)
+- [Workflow Architecture](Workflow-Architecture)
 - [Implementation](Implementation)
 - [Operations](Operations)
 - [Integrations](Integrations)

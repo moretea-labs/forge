@@ -7,7 +7,6 @@ import { callRecoveryAdapter } from './recovery-adapter';
 import { callArtifactAdapter } from './artifact-adapter';
 import { callFilesystemAdapter } from './filesystem-adapter';
 import { callModelAdapter } from './model-adapter';
-import { callRepositoryCompatibilityAdapter } from './repository-compat-adapter';
 import { callSchedulerAdapter } from './scheduler-adapter';
 import { callRuntimeObservationAdapter } from './runtime-observation-adapter';
 import { callExecutionControlAdapter } from './execution-control-adapter';
@@ -48,8 +47,6 @@ async function callRuntimeToolUnchecked(
     if (filesystem) return filesystem;
     const model = callModelAdapter(ctx, name, args);
     if (model) return model;
-    const repositoryCompatibility = await callRepositoryCompatibilityAdapter(ctx, name, args);
-    if (repositoryCompatibility) return repositoryCompatibility;
     const scheduler = await callSchedulerAdapter(ctx, name, args);
     if (scheduler) return scheduler;
     const runtimeObservation = await callRuntimeObservationAdapter(ctx, name, args);

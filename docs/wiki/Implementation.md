@@ -15,7 +15,7 @@ adapters/mcp/transports/session-registry.ts
 adapters/mcp/runtime-gateway/
 ```
 
-`toolset-names.ts` defines the bounded default connector surface. The preferred order starts with `read_repository_file`, `execute_command`, and `capability_execute` (`repository.direct_edit`). The six `rh_*` / `capability_execute` facade tools stay registered after them for frozen connectors and optional Requirement/Plan progress. Repository, check, Process, plugin-dispatch, and result tools keep the preferred list at 20.
+`toolset-names.ts` defines the preferred model-routing order, not the public exposure boundary: the current MCP transport cannot load domain schemas per conversation, so distinct typed repository, Git, Issue/Task, plugin, browser, iOS, artifact, and recovery tools remain exposed as a stable registry. Retire redundant aliases at their source definitions rather than hiding them through preferred ordering. The preferred order starts with `read_repository_file`, `execute_command`, and `capability_execute` (`repository.direct_edit`). The six `rh_*` / `capability_execute` facade tools stay registered for frozen connectors and optional Requirement/Plan progress. Repository, check, Process, plugin-dispatch, and result tools keep the preferred list at 19. Duplicate mutation aliases are retired from the public registry; their canonical actions remain available through `capability_execute`.
 
 The HTTP transport owns authentication and protocol-era routing. MCP 2026-07-28 is the canonical public path: `createMcpHandler` serves each modern request without `Mcp-Session-Id`. `McpSessionRegistry` is retained only for explicit 2025-era compatibility, where it owns session capacity, active-request protection, stream leases, replacement, and close accounting. Durable Work/Process/ControllerRound authority never comes from either transport form. Controller capability rotation and legacy-owner upgrades are Runtime recovery mechanics; ordinary model-facing Work operations neither expose nor require `controller_claim`. Legacy tool-surface mismatches still return a recoverable reinitialize response; modern requests resolve the current Runtime schema per request. The shared `NativeBrowserChannel` contract and native product discovery are owned by `src/runtime/platform/browser-product-discovery.ts`; CLI ChatGPT-browser session/protocol contracts remain in `src/cli/chatgpt-browser/types.ts`.
 
@@ -66,11 +66,13 @@ Structural CodeGraph context is optional augmentation for call/dependency questi
 Primary code:
 
 ```text
-src/runtime/editing/edit-session.ts
-adapters/mcp/tool-mapping/repository-tools.ts
+src/runtime/editing/edit-operation-contract.ts
+src/runtime/repositories/safe-patch.ts
+src/runtime/control-plane/facade/capability-registry.ts
+src/runtime/control-plane/facade/repository-tool-dispatch.ts
 ```
 
-A bounded patch can be applied directly to the selected checkout with file fingerprints, revisions, savepoints, change budgets, and focused verification. Direct Edit is the default for understood small work; a Plan or worktree is not a prerequisite. Anchor occurrence positioning is owned by `src/runtime/editing/edit-session.ts` and reused by `src/runtime/repositories/safe-patch.ts` preflight, so preview and the actual patch executor cannot drift on repeated anchors.
+A bounded source change is planned and applied through `repository.direct_edit` and the shared Mutation Planner. Every operation uses atomic CAS, exact path claims, bounded change budgets, and review evidence; there is no persistent EditSession or savepoint lifecycle. The capability exposes only `plan` and `apply`. Validation is independent and runs through Process `run_check`, rather than being bundled into the mutation API. Anchor occurrence positioning is owned by `edit-operation-contract.ts` and reused by `safe-patch.ts` preflight, so preview and the actual patch executor cannot drift on repeated anchors.
 
 ## 5. Command policy and ephemeral workspaces
 

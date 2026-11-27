@@ -37,7 +37,7 @@ describe('v8.1 repository lock and remote routing', () => {
     const foreign = acquireControllerLock(fixture.controllerHome, key, 'foreign-writer');
     try {
       const ctx = createMcpToolContext({ controllerHome: fixture.controllerHome, profile: 'controller' });
-      for (const name of ['verify_edit_session', 'submit_local_bridge_job', 'execute_local_bridge_job']) {
+      for (const name of ['submit_local_bridge_job', 'execute_local_bridge_job']) {
         const started = Date.now();
         const result = await callMultiRepositoryTool(ctx, name, {
           repo_id: fixture.repoA.repoId,
@@ -165,12 +165,11 @@ describe('v8.1 repository lock and remote routing', () => {
     }
   });
 
-  test('injects repository-specific GitHub and default branch mappings', () => {
+  test('injects repository-specific GitHub publication metadata', () => {
     const fixture = repositoryFixture();
     try {
       const repository = {
         ...fixture.repoA,
-        defaultBranch: 'release/v8.1',
         github: {
           owner: 'example-owner',
           repo: 'repo-a-remote',
@@ -179,20 +178,6 @@ describe('v8.1 repository lock and remote routing', () => {
           projectNumber: 81,
         },
       };
-      const dispatch = repositoryScopedToolArgs(
-        'dispatch_task',
-        {
-          repo_id: repository.repoId,
-          issue_id: 'ISS-1',
-          task_id: 'TASK-1',
-        },
-        repository,
-      );
-      expect(dispatch.repo_id).toBe(repository.repoId);
-      expect(dispatch.checkout_id).toBe(repository.activeCheckoutId);
-      expect(dispatch.github_repo).toBe('example-owner/repo-a-remote');
-      expect(dispatch.base_ref).toBe('release/v8.1');
-
       const publish = repositoryScopedToolArgs(
         'publish_issue_to_github',
         {
@@ -201,6 +186,8 @@ describe('v8.1 repository lock and remote routing', () => {
         },
         repository,
       );
+      expect(publish.repo_id).toBe(repository.repoId);
+      expect(publish.checkout_id).toBe(repository.activeCheckoutId);
       expect(publish.repo).toBe('example-owner/repo-a-remote');
       expect(publish.labels).toEqual(['controller', 'v8.1']);
       expect(publish.project_owner).toBe('example-owner');
@@ -210,25 +197,28 @@ describe('v8.1 repository lock and remote routing', () => {
     }
   });
 
-  test('does not override explicit GitHub routing arguments', () => {
+  test('does not override explicit GitHub publication arguments', () => {
     const fixture = repositoryFixture();
     try {
       const repository = {
         ...fixture.repoA,
-        defaultBranch: 'main',
-        github: { owner: 'registry-owner', repo: 'registry-repo' },
+        github: { owner: 'registry-owner', repo: 'registry-repo', labels: ['registry'] },
       };
       const args = repositoryScopedToolArgs(
-        'dispatch_task',
+        'publish_issue_to_github',
         {
           repo_id: repository.repoId,
-          github_repo: 'explicit-owner/explicit-repo',
-          base_ref: 'hotfix',
+          repo: 'explicit-owner/explicit-repo',
+          labels: ['explicit'],
+          project_owner: 'explicit-project-owner',
+          project_number: 99,
         },
         repository,
       );
-      expect(args.github_repo).toBe('explicit-owner/explicit-repo');
-      expect(args.base_ref).toBe('hotfix');
+      expect(args.repo).toBe('explicit-owner/explicit-repo');
+      expect(args.labels).toEqual(['explicit']);
+      expect(args.project_owner).toBe('explicit-project-owner');
+      expect(args.project_number).toBe(99);
     } finally {
       fixture.cleanup();
     }

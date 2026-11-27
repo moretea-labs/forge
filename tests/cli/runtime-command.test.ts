@@ -216,8 +216,6 @@ describe('runtime command surface', () => {
       join(ROOT, 'src/runtime/projections/controller-context.ts'),
       'utf8',
     );
-    const compositeOperations = readFileSync(join(ROOT, 'src/cli/controller/composite-operations.ts'), 'utf8');
-    const controllerPostcondition = readFileSync(join(ROOT, 'src/cli/controller/postcondition.ts'), 'utf8');
     const localBridgeServer = readFileSync(join(ROOT, 'src/cli/local-bridge/server.ts'), 'utf8');
     const bridgeConnectorFreshness = readFileSync(join(ROOT, 'src/cli/local-bridge/connector-freshness.ts'), 'utf8');
     const bridgeJobStore = readFileSync(join(ROOT, 'src/cli/local-bridge/job-store.ts'), 'utf8');
@@ -465,22 +463,9 @@ describe('runtime command surface', () => {
     ])
       expect(existsSync(join(ROOT, legacyPath))).toBe(false);
     expect(existsSync(join(ROOT, 'src/cli/controller/bluegreen-rollout.ts'))).toBe(false);
-    expect(compositeOperations).not.toContain("from './bluegreen-rollout'");
-    expect(compositeOperations).not.toContain('controllerRollout');
-    expect(compositeOperations).not.toContain('controllerFeatureVerify');
-    expect(compositeOperations).not.toContain('controller-bluegreen-isolated.test.ts');
-    expect(compositeOperations).not.toContain('allowGreenRollout');
-    expect(compositeOperations).not.toContain('controllerRestartVerify');
-    expect(compositeOperations).not.toContain('ControllerRestartVerifyInput');
-    expect(compositeOperations).not.toContain('runtime-slots');
-    expect(compositeOperations).not.toContain('readControllerRestartState');
-    expect(compositeOperations).not.toContain('requestControllerServiceRestart');
-    expect(compositeOperations).not.toContain('runtimeGeneration');
-    expect(controllerPostcondition).not.toContain('validateRestartSuccess');
-    expect(controllerPostcondition).not.toContain('ControllerRestartState');
-    expect(controllerPostcondition).not.toContain('ControllerServiceStatus');
-    expect(controllerPostcondition).not.toContain('runtimeGeneration');
-    expect(controllerPostcondition).not.toContain('isProcessAlive');
+    expect(existsSync(join(ROOT, 'src/cli/controller/composite-operations.ts'))).toBe(false);
+    expect(existsSync(join(ROOT, 'src/cli/controller/composite-result.ts'))).toBe(false);
+    expect(existsSync(join(ROOT, 'src/cli/controller/postcondition.ts'))).toBe(false);
     expect(localBridgeServer).not.toContain('scheduleControllerServiceRestart');
     expect(localBridgeServer).not.toContain('RUNTIME_LIFECYCLE_ACTION_RETIRED');
     expect(localBridgeServer).not.toContain('detached coordinator owns the full stack restart');

@@ -22,7 +22,9 @@ describe('interactive sync routing policy', () => {
     ]) {
       expect(policySource).not.toContain(retiredTool);
     }
-    expect(policySource).toContain('apply_patch');
+    for (const retiredTool of ['apply_patch', 'git_diff_paths', 'git_stage_paths', 'git_commit_paths']) {
+      expect(policySource).not.toContain(retiredTool);
+    }
     expect(policySource).toContain('wantsAsyncExecution');
     expect(routerSource).toContain('EXTERNAL_CONTROLLER_REQUIRED');
     expect(routerSource).not.toContain('EXECUTION_JOB_RETIRED');
@@ -41,6 +43,10 @@ describe('interactive sync routing policy', () => {
       'create_edit_savepoint',
       'verify_edit_session',
       'apply_edit_operations',
+      'apply_patch',
+      'git_diff_paths',
+      'git_stage_paths',
+      'git_commit_paths',
     ]) {
       expect(runsAsInteractiveSyncWrite(retiredTool)).toBe(false);
     }

@@ -38,10 +38,7 @@ assert(
 );
 
 for (const name of EXPECTED_FACADE_TOOLS) {
-  assert(
-    (PREFERRED_CONTROLLER_TOOL_NAMES as readonly string[]).includes(name),
-    `default exposure missing ${name}`,
-  );
+  assert((PREFERRED_CONTROLLER_TOOL_NAMES as readonly string[]).includes(name), `default exposure missing ${name}`);
   assert(expected.includes(name), `expectedTools missing ${name}`);
 }
 
@@ -60,8 +57,19 @@ for (const name of PREFERRED_CONTROLLER_TOOL_NAMES) {
   assert(fullExposed.includes(name), `complete registry missing preferred capability ${name}`);
 }
 assert(fullExposed.includes('repository_bootstrap_local_project'), 'complete registry missing repository bootstrap');
-assert(fullExposed.includes('git_commit_paths'), 'complete registry missing canonical Git operation');
-assert(fullExposed.length > PREFERRED_CONTROLLER_TOOL_NAMES.length, 'complete registry must include every registered operation');
+for (const retired of [
+  'apply_patch',
+  'git_diff_paths',
+  'git_stage_paths',
+  'git_commit_paths',
+  'repository_change_verify',
+]) {
+  assert(!fullExposed.includes(retired), `retired duplicate MCP tool is still exposed: ${retired}`);
+}
+assert(
+  fullExposed.length > PREFERRED_CONTROLLER_TOOL_NAMES.length,
+  'complete registry must include every remaining registered operation',
+);
 
 const unable = evaluateConnectorFreshness({ localToolNames: expected });
 assert(unable.status === 'unable_to_verify_chatgpt_snapshot', `expected unable_to_verify, got ${unable.status}`);
@@ -71,7 +79,10 @@ const missingSnap = evaluateConnectorFreshness({
   localToolNames: expected,
   connectorToolNames: ['controller_capabilities'],
 });
-assert(missingSnap.status === 'chatgpt_snapshot_missing_facade', `expected snapshot missing, got ${missingSnap.status}`);
+assert(
+  missingSnap.status === 'chatgpt_snapshot_missing_facade',
+  `expected snapshot missing, got ${missingSnap.status}`,
+);
 assert(missingSnap.missingConnectorTools.length === EXPECTED_FACADE_TOOLS.length, 'should list all missing rh_*');
 
 const ok = evaluateConnectorFreshness({
@@ -86,18 +97,24 @@ const localMissing = evaluateConnectorFreshness({
 });
 assert(localMissing.status === 'local_mcp_missing_facade', `expected local missing, got ${localMissing.status}`);
 
-console.log(JSON.stringify({
-  ok: true,
-  expectedFacadeTools: EXPECTED_FACADE_TOOLS,
-  preferredTools: PREFERRED_FACADE_TOOL_NAMES,
-  exposedToolCount: fullExposed.length,
-  preferredToolCount: PREFERRED_CONTROLLER_TOOL_NAMES.length,
-  expectedToolsHasFacade: EXPECTED_FACADE_TOOLS.every((name) => expected.includes(name)),
-  fullHasInteractive: OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS.every((name) => fullExposed.includes(name)),
-  states: {
-    unable: unable.status,
-    missingSnap: missingSnap.status,
-    ok: ok.status,
-    localMissing: localMissing.status,
-  },
-}, null, 2));
+console.log(
+  JSON.stringify(
+    {
+      ok: true,
+      expectedFacadeTools: EXPECTED_FACADE_TOOLS,
+      preferredTools: PREFERRED_FACADE_TOOL_NAMES,
+      exposedToolCount: fullExposed.length,
+      preferredToolCount: PREFERRED_CONTROLLER_TOOL_NAMES.length,
+      expectedToolsHasFacade: EXPECTED_FACADE_TOOLS.every((name) => expected.includes(name)),
+      fullHasInteractive: OPTIONAL_INTERACTIVE_DEVELOPMENT_TOOLS.every((name) => fullExposed.includes(name)),
+      states: {
+        unable: unable.status,
+        missingSnap: missingSnap.status,
+        ok: ok.status,
+        localMissing: localMissing.status,
+      },
+    },
+    null,
+    2,
+  ),
+);
