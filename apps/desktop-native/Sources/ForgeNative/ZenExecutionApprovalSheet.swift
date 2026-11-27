@@ -368,7 +368,6 @@ struct ZenExecutionApprovalSheet: View {
         .padding(ForgeClientDesign.Spacing.sheetPadding)
         .frame(width: ForgeClientDesign.Size.approvalSheet)
         .fixedSize(horizontal: false, vertical: true)
-        .accessibilityIdentifier("zen.execution.approval")
     }
 
     private func approve() {

@@ -628,4 +628,62 @@ final class ZenProposalTests: XCTestCase {
             #"{"decision":"CONTINUE","operation":"create_plan","rationale":"尚未接受","requirementId":"REQ-1","objective":"原生适配"}"#
         )))
     }
+
+    func testCompositeZenSurfacesDoNotShadowChildAccessibilityIdentifiers() throws {
+        let packageRoot = URL(fileURLWithPath:#filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let zenSource = try String(
+            contentsOf:packageRoot.appendingPathComponent("Sources/ForgeNative/ZenModeView.swift"),
+            encoding:.utf8
+        )
+        let approvalSource = try String(
+            contentsOf:packageRoot.appendingPathComponent("Sources/ForgeNative/ZenExecutionApprovalSheet.swift"),
+            encoding:.utf8
+        )
+
+        // On macOS a composite SwiftUI view identifier can be inherited by its
+        // AppKit accessibility descendants, erasing the precise child IDs.
+        for parent in [
+            "zen.record.edit",
+            "zen.goal.compose",
+            "zen.execution.summary",
+            "zen.requirement.create",
+            "zen.plan.create",
+        ] {
+            XCTAssertFalse(
+                zenSource.contains(".accessibilityIdentifier(\"\(parent)\")"),
+                "Composite parent must not shadow child AX identifiers: \(parent)"
+            )
+        }
+        XCTAssertEqual(
+            zenSource.components(separatedBy:".accessibilityIdentifier(\"zen.acceptance.confirm\")").count - 1,
+            1,
+            "Only the real acceptance confirm button should own this identifier."
+        )
+        XCTAssertFalse(
+            approvalSource.contains(".accessibilityIdentifier(\"zen.execution.approval\")")
+        )
+
+        for child in [
+            "zen.plan.create.goal",
+            "zen.plan.create.submit",
+            "zen.plan.create.cancel",
+            "zen.requirement.create.title",
+            "zen.goal.input",
+            "zen.goal.analyze",
+            "zen.execution.primary",
+            "zen.execution.refresh",
+        ] {
+            XCTAssertTrue(
+                zenSource.contains(".accessibilityIdentifier(\"\(child)\")"),
+                "Expected stable child AX identifier: \(child)"
+            )
+        }
+        XCTAssertTrue(
+            approvalSource.contains(".accessibilityIdentifier(\"zen.execution.approve\")")
+        )
+    }
+
 }

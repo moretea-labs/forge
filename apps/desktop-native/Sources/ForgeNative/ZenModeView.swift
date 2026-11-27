@@ -1721,7 +1721,6 @@ struct ZenWorkspacePane: View {
         }
         .padding(ForgeClientDesign.Spacing.sheetPadding)
         .frame(width:ForgeClientDesign.Size.taskAcceptanceSheet)
-        .accessibilityIdentifier("zen.acceptance.confirm")
     }
 
     private func beginEdit(_ item:ForgeRecord) {
@@ -1893,7 +1892,6 @@ struct ZenWorkspacePane: View {
         }
         .padding(ForgeClientDesign.Spacing.sheetPadding)
         .frame(width:ForgeClientDesign.Size.taskEditSheet)
-        .accessibilityIdentifier("zen.record.edit")
     }
 
 
@@ -1992,7 +1990,6 @@ struct ZenWorkspacePane: View {
             }
         }
         .padding(22).frame(width:475)
-        .accessibilityIdentifier("zen.goal.compose")
     }
 
     @ViewBuilder
@@ -2110,7 +2107,6 @@ struct ZenWorkspacePane: View {
                 }
             }
         }
-        .accessibilityIdentifier("zen.execution.summary")
     }
 
     private func runExecution(_ requirementId:String,_ operation:String) {
@@ -2329,7 +2325,6 @@ struct ZenWorkspacePane: View {
         }
         .padding(ForgeClientDesign.Spacing.sheetPadding)
         .frame(width:ForgeClientDesign.Size.taskCreateSheet)
-        .accessibilityIdentifier("zen.requirement.create")
     }
 
     private func createRequirement() {
@@ -2466,7 +2461,6 @@ struct ZenWorkspacePane: View {
             }
         }
         .padding(ForgeClientDesign.Spacing.sheetPadding).frame(width:400)
-        .accessibilityIdentifier("zen.plan.create")
     }
 
     private func createPlan() {
