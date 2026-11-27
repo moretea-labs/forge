@@ -43,6 +43,8 @@ import { terminateProcessesByCommand, waitForNoProcessesByCommand } from '../run
 import {
   clearGitIdentityCacheForTest,
   clearGitSnapshotCacheForTest,
+  freshGitIdentity,
+  freshGitIdentityAsync,
   gitSnapshot,
   gitSnapshotAsync,
   gitSnapshotPerformanceSnapshot,
@@ -532,6 +534,32 @@ describe('repository MCP command tools', () => {
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('async Git identity preserves the content fingerprint without synchronous file reads', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-git-identity-async-'));
+    try {
+      git(repoRoot, ['init', '-b', 'main']);
+      git(repoRoot, ['config', 'user.name', 'Test']);
+      git(repoRoot, ['config', 'user.email', 'test@example.com']);
+      writeFileSync(join(repoRoot, 'README.md'), 'base\n');
+      git(repoRoot, ['add', 'README.md']);
+      git(repoRoot, ['commit', '-m', 'init']);
+      writeFileSync(join(repoRoot, 'README.md'), 'modified content\n');
+      writeFileSync(join(repoRoot, 'new file.txt'), 'untracked content\n');
+
+      clearGitIdentityCacheForTest();
+      const syncIdentity = freshGitIdentity(repoRoot);
+      clearGitIdentityCacheForTest();
+      const asyncIdentity = await freshGitIdentityAsync(repoRoot);
+      expect(asyncIdentity.head).toBe(syncIdentity.head);
+      expect(asyncIdentity.branch).toBe(syncIdentity.branch);
+      expect(asyncIdentity.dirty).toBe(true);
+      expect(asyncIdentity.workingTreeFingerprint).toBe(syncIdentity.workingTreeFingerprint);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+      clearGitIdentityCacheForTest();
     }
   });
 

@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
+import { lstat, readFile } from 'fs/promises';
 import { delimiter, join, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { runBoundedChild } from '../shared/bounded-child-supervisor';
@@ -125,6 +126,73 @@ function gitIdentityFromStatus(repoRoot: string, stdout: string): Omit<CachedGit
   };
 }
 
+async function gitIdentityFromStatusAsync(
+  repoRoot: string,
+  stdout: string,
+): Promise<Omit<CachedGitIdentity, 'sampledAt'>> {
+  let head: string | null = null;
+  let branch: string | null = null;
+  const statusLines: string[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.startsWith('# branch.oid ')) {
+      const value = line.slice('# branch.oid '.length).trim();
+      head = value && value !== '(initial)' ? value : null;
+    } else if (line.startsWith('# branch.head ')) {
+      const value = line.slice('# branch.head '.length).trim();
+      branch = value && value !== '(detached)' && value !== '(unknown)' ? value : null;
+    } else if (line && !line.startsWith('# ')) {
+      statusLines.push(line);
+    }
+  }
+
+  const statEntries = await Promise.all(statusLines.slice(0, 500).map(async (line) => {
+    const path = line.startsWith('? ') || line.startsWith('! ')
+      ? line.slice(2)
+      : line.startsWith('1 ')
+        ? line.split(' ').slice(8).join(' ')
+        : line.startsWith('2 ')
+          ? line.split(' ').slice(9).join(' ').split('\t')[0]
+          : line.startsWith('u ')
+            ? line.split(' ').slice(10).join(' ')
+            : '';
+    if (!path) return { line, path, stat: undefined };
+    try {
+      return { line, path, stat: await lstat(join(repoRoot, path)) };
+    } catch {
+      return { line, path, stat: undefined };
+    }
+  }));
+
+  let dirtyBytes = 0;
+  const identityParts = statEntries.map(async ({ line, path, stat }) => {
+    if (!path) return line;
+    if (!stat) return `${path}:missing`;
+    if (!stat.isFile()) return `${path}:${stat.mode}:${stat.size}:${stat.mtimeMs}`;
+    if (stat.size > 256 * 1024 || dirtyBytes + stat.size > 4 * 1024 * 1024) {
+      return `${path}:${stat.size}:${stat.mtimeMs}`;
+    }
+    dirtyBytes += stat.size;
+    try {
+      const content = await readFile(join(repoRoot, path));
+      return `${path}:${createHash('sha256').update(content).digest('hex')}`;
+    } catch {
+      return `${path}:missing`;
+    }
+  });
+  const dirtyContentIdentity = (await Promise.all(identityParts)).join('\n');
+  const status = statusLines.join('\n');
+  const workingTreeFingerprint = createHash('sha256')
+    .update(`${head ?? ''}\n${branch ?? ''}\n${status}\n${dirtyContentIdentity}`)
+    .digest('hex')
+    .slice(0, 24);
+  return {
+    head,
+    branch,
+    dirty: statusLines.length > 0,
+    workingTreeFingerprint: head || status ? workingTreeFingerprint : undefined,
+  };
+}
+
 function sampleGitIdentity(repoRoot: string): Omit<CachedGitIdentity, 'sampledAt'> {
   // Porcelain v2 branch headers carry HEAD and branch identity together with
   // the worktree status. One Git process therefore replaces the previous
@@ -181,7 +249,7 @@ export async function freshGitIdentityAsync(repoRoot: string): Promise<CachedGit
         cwd: root, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024,
       });
       sampled = result.status === 0 && !result.timedOut && !result.failureCode
-        ? gitIdentityFromStatus(root, result.stdout)
+        ? await gitIdentityFromStatusAsync(root, result.stdout)
         : { head: null, branch: null, dirty: false };
     } catch {
       sampled = { head: null, branch: null, dirty: false };
