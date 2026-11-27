@@ -1,8 +1,18 @@
 import { execFile } from 'child_process';
+import { createHash } from 'crypto';
 import { promisify } from 'util';
+import { createSchedule } from '../../../../packages/kernel/scheduler/api/index';
+import type {
+  RepositorySchedule,
+  ScheduleCondition,
+  ScheduleTrigger,
+  ScheduleTriggerType,
+} from '../../../../packages/kernel/scheduler/api/index';
+import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { resolveTrustedExecutable } from '../../shared/trusted-executable';
 
 const execFileAsync = promisify(execFile);
+const GITHUB_ISSUE_WATCH_OPERATION = 'github_issue_watch';
 
 export interface GithubIssueWatchIssue {
   number: number;
@@ -26,6 +36,32 @@ export interface GithubIssueWatchObservation {
   nextState: GithubIssueWatchState;
 }
 
+export interface GithubIssueWatchScheduleInput {
+  githubRepository: string;
+  issueLimit?: number;
+  timeoutMs?: number;
+  wakeOnFirstObservation?: boolean;
+  issueWatchSince?: string;
+  scheduleName?: string;
+  requestId?: string;
+  triggerType?: ScheduleTriggerType;
+  everyMinutes?: number;
+  cronExpression?: string;
+  timezone?: string;
+  catchUpMinutes?: number;
+  calendarAt?: string;
+  condition?: ScheduleCondition;
+  eventName?: string;
+  dependencyJobIds?: string[];
+  maxFailures?: number;
+  cooldownMinutes?: number;
+  dailyBudgetMinutes?: number;
+  shadowMode?: boolean;
+  backoffBaseMinutes?: number;
+  backoffMaxMinutes?: number;
+  stopConditions?: string[];
+}
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -43,7 +79,8 @@ function issueSignature(issue: GithubIssueWatchIssue): string {
 function normalizeIssue(value: unknown): GithubIssueWatchIssue | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
-  const number = typeof record.number === 'number' && Number.isFinite(record.number) ? Math.trunc(record.number) : undefined;
+  const number =
+    typeof record.number === 'number' && Number.isFinite(record.number) ? Math.trunc(record.number) : undefined;
   const title = stringValue(record.title);
   const state = record.state === 'open' || record.state === 'closed' ? record.state : undefined;
   const updatedAt = stringValue(record.updatedAt);
@@ -57,8 +94,11 @@ export function normalizeGithubIssueWatchState(value: unknown): GithubIssueWatch
   const record = value as Record<string, unknown>;
   const signaturesValue = record.signatures;
   if (!signaturesValue || typeof signaturesValue !== 'object' || Array.isArray(signaturesValue)) return undefined;
-  const signatures = Object.fromEntries(Object.entries(signaturesValue as Record<string, unknown>)
-    .filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+  const signatures = Object.fromEntries(
+    Object.entries(signaturesValue as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    ),
+  );
   return {
     schemaVersion: 1,
     observedAt: stringValue(record.observedAt) ?? new Date(0).toISOString(),
@@ -90,11 +130,7 @@ export function classifyGithubIssueWatchObservation(
   };
 }
 
-const DEFAULT_GH_EXECUTABLE_CANDIDATES = [
-  '/opt/homebrew/bin/gh',
-  '/usr/local/bin/gh',
-  '/usr/bin/gh',
-] as const;
+const DEFAULT_GH_EXECUTABLE_CANDIDATES = ['/opt/homebrew/bin/gh', '/usr/local/bin/gh', '/usr/bin/gh'] as const;
 
 export function resolveGithubIssueWatchExecutable(
   args: Record<string, unknown>,
@@ -109,12 +145,88 @@ export function resolveGithubIssueWatchExecutable(
     env,
   });
   if (resolved.configuredInvalid) {
-    throw new Error('SCHEDULE_GITHUB_ISSUE_WATCH_GH_EXECUTABLE_INVALID: gh_executable/FORGE_GH_EXECUTABLE must be an absolute executable path.');
+    throw new Error(
+      'SCHEDULE_GITHUB_ISSUE_WATCH_GH_EXECUTABLE_INVALID: gh_executable/FORGE_GH_EXECUTABLE must be an absolute executable path.',
+    );
   }
   if (!resolved.executable) {
-    throw new Error('SCHEDULE_GITHUB_ISSUE_WATCH_GH_EXECUTABLE_NOT_FOUND: GitHub CLI was not found in trusted Homebrew/system locations or PATH.');
+    throw new Error(
+      'SCHEDULE_GITHUB_ISSUE_WATCH_GH_EXECUTABLE_NOT_FOUND: GitHub CLI was not found in trusted Homebrew/system locations or PATH.',
+    );
   }
   return resolved.executable;
+}
+
+function normalizedGithubIssueWatchTrigger(input: GithubIssueWatchScheduleInput): ScheduleTrigger {
+  const type = input.triggerType ?? (input.everyMinutes !== undefined ? 'interval' : 'manual');
+  return {
+    type,
+    everyMinutes: input.everyMinutes !== undefined ? Math.max(1, Math.trunc(input.everyMinutes)) : undefined,
+    cronExpression: input.cronExpression,
+    timezone: input.timezone,
+    catchUpMinutes: input.catchUpMinutes !== undefined ? Math.max(0, Math.trunc(input.catchUpMinutes)) : undefined,
+    calendarAt: input.calendarAt,
+    condition: input.condition,
+    eventName: input.eventName,
+    dependencyJobIds: input.dependencyJobIds,
+  };
+}
+
+export function createGithubIssueWatchSchedule(
+  controllerHome: string,
+  repoId: string,
+  input: GithubIssueWatchScheduleInput,
+): { schedule: RepositorySchedule } {
+  const githubRepository = input.githubRepository.trim();
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(githubRepository)) {
+    throw new Error('GITHUB_ISSUE_WATCH_REPOSITORY_INVALID');
+  }
+  const issueWatchSince = input.issueWatchSince?.trim();
+  if (issueWatchSince && !Number.isFinite(Date.parse(issueWatchSince))) {
+    throw new Error('GITHUB_ISSUE_WATCH_SINCE_INVALID');
+  }
+  const trigger = normalizedGithubIssueWatchTrigger(input);
+  const actionArguments: Record<string, unknown> = {
+    github_repository: githubRepository,
+    issue_limit: Math.max(1, Math.min(Math.trunc(input.issueLimit ?? 50), 100)),
+    timeout_ms: Math.max(1_000, Math.min(Math.trunc(input.timeoutMs ?? 15_000), 60_000)),
+    ...(input.wakeOnFirstObservation === true ? { wake_on_first_observation: true } : {}),
+    ...(issueWatchSince ? { issue_watch_since: issueWatchSince } : {}),
+  };
+  assertAutomatedOperationAllowed(GITHUB_ISSUE_WATCH_OPERATION, actionArguments);
+  const name = input.scheduleName?.trim() || `Watch GitHub issues in ${githubRepository}`;
+  const policy = {
+    maxActiveOccurrences: 1,
+    maxFailures: input.maxFailures !== undefined ? Math.max(1, Math.trunc(input.maxFailures)) : 3,
+    cooldownMinutes: input.cooldownMinutes !== undefined ? Math.max(0, Math.trunc(input.cooldownMinutes)) : 0,
+    dailyBudgetMinutes:
+      input.dailyBudgetMinutes !== undefined ? Math.max(1, Math.trunc(input.dailyBudgetMinutes)) : 180,
+    shadowMode: input.shadowMode === true,
+    backoffBaseMinutes: input.backoffBaseMinutes !== undefined ? Math.max(1, Math.trunc(input.backoffBaseMinutes)) : 5,
+    backoffMaxMinutes:
+      input.backoffMaxMinutes !== undefined ? Math.max(1, Math.trunc(input.backoffMaxMinutes)) : 24 * 60,
+  };
+  const stopConditions = input.stopConditions ?? ['human_review_required', 'external_blocker'];
+  const semantic = JSON.stringify({ repoId, githubRepository, trigger, name, actionArguments, policy, stopConditions });
+  const requestId =
+    input.requestId?.trim() ||
+    `github-issue-watch:${repoId}:${createHash('sha256').update(semantic).digest('hex').slice(0, 16)}`;
+  const schedule = createSchedule(controllerHome, {
+    requestId,
+    repoId,
+    name,
+    enabled: true,
+    trigger,
+    policy,
+    action: {
+      operation: GITHUB_ISSUE_WATCH_OPERATION,
+      target: 'runtime',
+      arguments: actionArguments,
+      resourceClaims: [],
+    },
+    stopConditions,
+  });
+  return { schedule };
 }
 
 export async function executeScheduledGithubIssueWatch(input: {
@@ -130,17 +242,23 @@ export async function executeScheduledGithubIssueWatch(input: {
   const timeoutMs = boundedNumber(input.args.timeout_ms, 15_000, 1_000, 60_000);
   try {
     const ghExecutable = resolveGithubIssueWatchExecutable(input.args);
-    const result = await execFileAsync(ghExecutable, [
-      'api',
-      '-H', 'Accept: application/vnd.github+json',
-      `repos/${repository}/issues?state=all&sort=updated&direction=desc&per_page=${limit}`,
-      '--jq', 'map(select(.pull_request|not)) | map({number,title,state,updatedAt:.updated_at,url:.html_url})',
-    ], {
-      cwd: input.repoRoot,
-      encoding: 'utf8',
-      timeout: timeoutMs,
-      maxBuffer: 2 * 1024 * 1024,
-    });
+    const result = await execFileAsync(
+      ghExecutable,
+      [
+        'api',
+        '-H',
+        'Accept: application/vnd.github+json',
+        `repos/${repository}/issues?state=all&sort=updated&direction=desc&per_page=${limit}`,
+        '--jq',
+        'map(select(.pull_request|not)) | map({number,title,state,updatedAt:.updated_at,url:.html_url})',
+      ],
+      {
+        cwd: input.repoRoot,
+        encoding: 'utf8',
+        timeout: timeoutMs,
+        maxBuffer: 2 * 1024 * 1024,
+      },
+    );
     const parsed = JSON.parse(String(result.stdout)) as unknown;
     if (!Array.isArray(parsed)) throw new Error('GitHub issue response was not an array.');
     const issues = parsed.map(normalizeIssue).filter((issue): issue is GithubIssueWatchIssue => Boolean(issue));
@@ -156,7 +274,6 @@ export async function executeScheduledGithubIssueWatch(input: {
     throw new Error(`SCHEDULE_GITHUB_ISSUE_WATCH_FAILED: ${message}`);
   }
 }
-
 
 /**
  * A read-only, exactly scoped GitHub PR observation. The original Supervisor
@@ -176,7 +293,10 @@ export interface GithubReviewWatchObservation {
 }
 
 function exactGithubRepositoryFromRemote(remote: string): string | undefined {
-  const match = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(remote.trim());
+  const match =
+    /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(
+      remote.trim(),
+    );
   return match?.[1];
 }
 
@@ -191,46 +311,81 @@ export function classifyGithubReviewNotices(
     const review = value as Record<string, unknown>;
     const id = review.id;
     const commitId = review.commit_id;
-    if (typeof id !== 'number' || !Number.isSafeInteger(id)
-      || typeof commitId !== 'string' || !/^[0-9a-f]{40}$/i.test(commitId)) continue;
-    const outcome = review.state === 'APPROVED' ? 'ACCEPT'
-      : review.state === 'CHANGES_REQUESTED' ? 'REVISE'
-      : review.state === 'DISMISSED' ? 'BLOCK'
-      // COMMENTED is a wake-up signal only; it is never approval or a verdict.
-      : review.state === 'COMMENTED' ? 'COMMENTED'
-      : undefined;
-    if (outcome) notices.push({
-      reviewedHeadSha: commitId.toLowerCase(), currentHeadSha: currentHeadSha.toLowerCase(),
-      reviewId: 'github-review:' + id, source: 'github_review', outcome,
-    });
+    if (
+      typeof id !== 'number' ||
+      !Number.isSafeInteger(id) ||
+      typeof commitId !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(commitId)
+    )
+      continue;
+    const outcome =
+      review.state === 'APPROVED'
+        ? 'ACCEPT'
+        : review.state === 'CHANGES_REQUESTED'
+          ? 'REVISE'
+          : review.state === 'DISMISSED'
+            ? 'BLOCK'
+            : // COMMENTED is a wake-up signal only; it is never approval or a verdict.
+              review.state === 'COMMENTED'
+              ? 'COMMENTED'
+              : undefined;
+    if (outcome)
+      notices.push({
+        reviewedHeadSha: commitId.toLowerCase(),
+        currentHeadSha: currentHeadSha.toLowerCase(),
+        reviewId: 'github-review:' + id,
+        source: 'github_review',
+        outcome,
+      });
   }
   for (const value of checks) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
     const check = value as Record<string, unknown>;
     const id = check.id;
     const headSha = check.head_sha;
-    if (check.status !== 'completed' || typeof id !== 'number' || !Number.isSafeInteger(id)
-      || typeof headSha !== 'string' || !/^[0-9a-f]{40}$/i.test(headSha)) continue;
-    const outcome = check.conclusion === 'success' ? 'CI_PASSED'
-      : ['failure', 'timed_out', 'cancelled', 'startup_failure', 'action_required'].includes(String(check.conclusion))
-        ? 'CI_FAILED' : undefined;
-    if (outcome) notices.push({
-      reviewedHeadSha: headSha.toLowerCase(), currentHeadSha: currentHeadSha.toLowerCase(),
-      reviewId: 'github-check:' + id, source: 'github_ci', outcome,
-    });
+    if (
+      check.status !== 'completed' ||
+      typeof id !== 'number' ||
+      !Number.isSafeInteger(id) ||
+      typeof headSha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(headSha)
+    )
+      continue;
+    const outcome =
+      check.conclusion === 'success'
+        ? 'CI_PASSED'
+        : ['failure', 'timed_out', 'cancelled', 'startup_failure', 'action_required'].includes(String(check.conclusion))
+          ? 'CI_FAILED'
+          : undefined;
+    if (outcome)
+      notices.push({
+        reviewedHeadSha: headSha.toLowerCase(),
+        currentHeadSha: currentHeadSha.toLowerCase(),
+        reviewId: 'github-check:' + id,
+        source: 'github_ci',
+        outcome,
+      });
   }
   return notices;
 }
 
 export async function observeGithubReviewWatch(input: {
-  repoRoot: string; githubRepository: string; prNumber: number;
+  repoRoot: string;
+  githubRepository: string;
+  prNumber: number;
 }): Promise<GithubReviewWatchObservation> {
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.githubRepository)
-    || !Number.isInteger(input.prNumber) || input.prNumber < 1 || input.prNumber > 1_000_000) {
+  if (
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.githubRepository) ||
+    !Number.isInteger(input.prNumber) ||
+    input.prNumber < 1 ||
+    input.prNumber > 1_000_000
+  ) {
     throw new Error('WORKFLOW_SUPERVISOR_GITHUB_REVIEW_TARGET_INVALID');
   }
   const remote = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
-    cwd: input.repoRoot, encoding: 'utf8', timeout: 5_000,
+    cwd: input.repoRoot,
+    encoding: 'utf8',
+    timeout: 5_000,
   });
   if (exactGithubRepositoryFromRemote(remote.stdout)?.toLowerCase() !== input.githubRepository.toLowerCase()) {
     throw new Error('WORKFLOW_SUPERVISOR_GITHUB_REVIEW_REMOTE_MISMATCH');
@@ -238,7 +393,10 @@ export async function observeGithubReviewWatch(input: {
   const gh = resolveGithubIssueWatchExecutable({});
   const read = async (path: string): Promise<any> => {
     const result = await execFileAsync(gh, ['api', '-H', 'Accept: application/vnd.github+json', path], {
-      cwd: input.repoRoot, encoding: 'utf8', timeout: 12_000, maxBuffer: 2 * 1024 * 1024,
+      cwd: input.repoRoot,
+      encoding: 'utf8',
+      timeout: 12_000,
+      maxBuffer: 2 * 1024 * 1024,
     });
     return JSON.parse(String(result.stdout));
   };

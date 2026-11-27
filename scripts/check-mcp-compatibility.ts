@@ -145,7 +145,10 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = '531c8020345c2029';
 // 2026-11-25 #714-H retires rh_context source-search fields and Context Pack; Shell/Read owns source discovery while optional Cognitive/LSP reads remain.
 // 2026-11-26 #483 removes TaskLedger/worklog observation compatibility from the
 // preferred schemas; refresh the exact schema fence so stale Connector snapshots invalidate.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'fef238555a5b1f07';
+// 2026-11-27 #718 adds the existing Schedule Engine's read-only github_issue_watch
+// mode and bounded repository/issue observation arguments; no second Scheduler
+// or model-continuation authority is introduced.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '07d713057df8f268';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

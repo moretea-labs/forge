@@ -637,8 +637,9 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       schedule_request_id: { type: 'string', description: 'Stable idempotency key for schedule_create.' },
       schedule_mode: {
         type: 'string',
-        enum: ['browser_watch', 'browser_keepalive', 'supervisor_healthcheck'],
-        description: 'Browser observation or fixed external Supervisor health patrol; no Work continuation.',
+        enum: ['browser_watch', 'browser_keepalive', 'supervisor_healthcheck', 'github_issue_watch'],
+        description:
+          'Observe-only browser, GitHub issue, or fixed external Supervisor patrol. These modes never dispatch a model continuation.',
       },
       probe_url: {
         type: 'string',
@@ -651,6 +652,22 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       probe_selector: { type: 'string', description: 'Optional selector limiting text extraction for browser_watch.' },
       probe_max_chars: { type: 'number', description: 'Bounded extracted text size for browser_watch.' },
       probe_timeout_ms: { type: 'number', description: 'Bounded browser probe timeout.' },
+      github_repository: {
+        type: 'string',
+        description: 'owner/repository watched by github_issue_watch through the trusted local gh CLI.',
+      },
+      issue_limit: {
+        type: 'number',
+        description: 'Maximum open GitHub issues observed per poll; bounded to 1..100.',
+      },
+      issue_watch_timeout_ms: {
+        type: 'number',
+        description: 'GitHub issue observation timeout; bounded to 1000..60000 ms.',
+      },
+      issue_watch_since: {
+        type: 'string',
+        description: 'Optional RFC3339 lower bound used only for the first GitHub issue observation.',
+      },
       include_terms: {
         type: 'array',
         items: { type: 'string' },
@@ -675,7 +692,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       },
       wake_on_first_observation: {
         type: 'boolean',
-        description: 'Defaults false so the first browser_watch occurrence records a silent baseline.',
+        description:
+          'Defaults false so browser_watch records a silent baseline. For github_issue_watch, true emits currently-open issues on the first live observation.',
       },
       trigger_type: {
         type: 'string',
@@ -696,7 +714,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
       daily_budget_minutes: { type: 'number' },
       shadow_mode: {
         type: 'boolean',
-        description: 'Defaults to true. Set false only after the continuation path has been validated.',
+        description:
+          'Browser/Supervisor observation defaults to true. github_issue_watch defaults false because it performs only bounded read-only observation and evidence recording.',
       },
       backoff_base_minutes: { type: 'number' },
       backoff_max_minutes: { type: 'number' },

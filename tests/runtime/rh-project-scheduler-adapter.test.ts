@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
@@ -162,6 +162,72 @@ describe('Work-free observe-only Schedule', () => {
     );
     expect(triggered.status).toBe('ok');
     expect(triggered.data.occurrence).toMatchObject({ decision: 'would_execute', status: 'shadowed' });
+  });
+});
+
+describe('GitHub Issue Watch Scheduler MCP adapter', () => {
+  test('creates and triggers a live read-only GitHub watcher with canonical Event Envelope evidence', async () => {
+    const { controllerHome, repository, ctx } = fixture();
+    const toolRoot = tempRoot('forge-rh-project-github-watch-gh-');
+    const fakeGh = join(toolRoot, 'gh');
+    writeFileSync(
+      fakeGh,
+      '#!/bin/sh\nprintf \'%s\\n\' \'[{"number":718,"title":"Event automation acceptance","state":"open","updatedAt":"2026-11-26T14:00:00.000Z","url":"https://github.com/moretea-labs/forge/issues/718"}]\'\n',
+    );
+    chmodSync(fakeGh, 0o755);
+    const previousGh = process.env.FORGE_GH_EXECUTABLE;
+    try {
+      const created = structured(
+        await callRuntimeTool(ctx, 'rh_project', {
+          repo_id: repository.repoId,
+          operation: 'schedule_create',
+          schedule_mode: 'github_issue_watch',
+          schedule_name: 'Observe Forge issue changes',
+          schedule_request_id: 'github-watch-observe-only-fixture',
+          trigger_type: 'manual',
+          github_repository: 'moretea-labs/forge',
+          issue_limit: 25,
+          issue_watch_timeout_ms: 5_000,
+          wake_on_first_observation: true,
+        }),
+      );
+      expect(created.status).toBe('ok');
+      const schedule = created.data.schedule;
+      expect(schedule.action.operation).toBe('github_issue_watch');
+      expect(schedule.action.arguments.github_repository).toBe('moretea-labs/forge');
+      expect(schedule.policy.shadowMode).toBe(false);
+      expect(schedule.action.arguments).not.toHaveProperty('gh_executable');
+      process.env.FORGE_GH_EXECUTABLE = fakeGh;
+
+      const triggered = structured(
+        await callRuntimeTool(ctx, 'rh_project', {
+          repo_id: repository.repoId,
+          operation: 'schedule_trigger',
+          schedule_id: schedule.scheduleId,
+          request_id: 'github-watch-live-observation-fixture',
+        }),
+      );
+      expect(triggered.status).toBe('ok');
+      expect(triggered.data.occurrence).toMatchObject({ decision: 'execute', status: 'succeeded' });
+      expect(triggered.data.decision?.evidence).toMatchObject({
+        githubRepository: 'moretea-labs/forge',
+        observationStatus: 'baseline',
+        changedIssueNumbers: [718],
+      });
+      expect(triggered.data.decision.evidence.eventEnvelopes).toHaveLength(1);
+      expect(triggered.data.decision.evidence.eventEnvelopes[0]).toMatchObject({
+        source: 'github.issue_watch',
+        provider: 'github',
+        eventType: 'github.issue.open_changed',
+        eventId: 'github-issue:moretea-labs/forge#718@2026-11-26T14:00:00.000Z',
+      });
+      const stored = getSchedule(controllerHome, repository.repoId, schedule.scheduleId);
+      expect(stored.action.arguments?.issue_watch_state).toBeDefined();
+      expect(stored.lastObservationStatus).toBe('baseline');
+    } finally {
+      if (previousGh === undefined) delete process.env.FORGE_GH_EXECUTABLE;
+      else process.env.FORGE_GH_EXECUTABLE = previousGh;
+    }
   });
 });
 

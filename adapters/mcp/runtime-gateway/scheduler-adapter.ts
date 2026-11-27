@@ -5,6 +5,7 @@ import {
   buildScheduleDedupeReport,
   deleteSchedule,
   getSchedule,
+  getScheduleDecision,
   listOccurrences,
   listSchedules,
   saveSchedule,
@@ -17,6 +18,7 @@ import {
   type BrowserObservationControllerType,
 } from '../../../src/runtime/workflow/schedules/browser-observation';
 import { createSupervisorHealthSchedule } from '../../../src/runtime/workflow/schedules/supervisor-health';
+import { createGithubIssueWatchSchedule } from '../../../src/runtime/workflow/schedules/github-issue-watch';
 import { evaluateSchedule } from '../../../src/runtime/workflow/schedules/engine';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
@@ -39,6 +41,12 @@ const RH_PROJECT_SCHEDULE_OPERATIONS = new Set<RhProjectScheduleOperation>([
   'schedule_delete',
   'schedule_trigger',
 ]);
+
+const OPERATOR_OBSERVATION_OPERATIONS = new Set(['browser_probe', 'supervisor_healthcheck', 'github_issue_watch']);
+
+function assertOperatorObservationSchedule(operation: string): void {
+  if (!OPERATOR_OBSERVATION_OPERATIONS.has(operation)) throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+}
 
 export function isRhProjectScheduleOperation(operation: string): operation is RhProjectScheduleOperation {
   return RH_PROJECT_SCHEDULE_OPERATIONS.has(operation as RhProjectScheduleOperation);
@@ -94,7 +102,11 @@ export async function callRhProjectScheduleAdapter(
             | 'manual')
         : undefined;
       const scheduleModeRaw = String(args.schedule_mode ?? 'browser_watch').trim();
-      if (!['browser_watch', 'browser_keepalive', 'supervisor_healthcheck'].includes(scheduleModeRaw))
+      if (
+        !['browser_watch', 'browser_keepalive', 'supervisor_healthcheck', 'github_issue_watch'].includes(
+          scheduleModeRaw,
+        )
+      )
         throw new Error('SCHEDULE_MODE_INVALID');
       if (scheduleModeRaw === 'supervisor_healthcheck') {
         if (args.trigger_type !== undefined && args.trigger_type !== 'interval')
@@ -116,6 +128,54 @@ export async function callRhProjectScheduleAdapter(
         return result(
           buildFacadeResult({
             summary: `Supervisor rescue schedule ${created.schedule.scheduleId} configured.`,
+            data: { schedule: created.schedule },
+          }) as unknown as Record<string, unknown>,
+        );
+      }
+      if (scheduleModeRaw === 'github_issue_watch') {
+        const forbidden = [
+          'probe_url',
+          'probe_browser_session_id',
+          'probe_selector',
+          'probe_max_chars',
+          'probe_timeout_ms',
+          'include_terms',
+          'ignore_patterns',
+          'login_url_terms',
+          'login_text_terms',
+        ].filter((key) => args[key] !== undefined);
+        if (forbidden.length) throw new Error('GITHUB_ISSUE_WATCH_ARGUMENTS_NOT_ALLOWED: ' + forbidden.join(','));
+        const created = createGithubIssueWatchSchedule(ctx.controllerHome, repository.repoId, {
+          githubRepository: String(args.github_repository ?? ''),
+          issueLimit: typeof args.issue_limit === 'number' ? args.issue_limit : undefined,
+          timeoutMs: typeof args.issue_watch_timeout_ms === 'number' ? args.issue_watch_timeout_ms : undefined,
+          wakeOnFirstObservation: args.wake_on_first_observation === true,
+          issueWatchSince: typeof args.issue_watch_since === 'string' ? args.issue_watch_since : undefined,
+          scheduleName: typeof args.schedule_name === 'string' ? args.schedule_name : undefined,
+          requestId: typeof args.schedule_request_id === 'string' ? args.schedule_request_id : undefined,
+          triggerType,
+          everyMinutes: typeof args.every_minutes === 'number' ? args.every_minutes : undefined,
+          cronExpression: typeof args.cron_expression === 'string' ? args.cron_expression : undefined,
+          timezone: typeof args.schedule_timezone === 'string' ? args.schedule_timezone : undefined,
+          catchUpMinutes: typeof args.catch_up_minutes === 'number' ? args.catch_up_minutes : undefined,
+          calendarAt: typeof args.calendar_at === 'string' ? args.calendar_at : undefined,
+          condition:
+            args.condition && typeof args.condition === 'object' && !Array.isArray(args.condition)
+              ? (args.condition as never)
+              : undefined,
+          eventName: typeof args.event_name === 'string' ? args.event_name : undefined,
+          dependencyJobIds: Array.isArray(args.dependency_job_ids) ? args.dependency_job_ids.map(String) : undefined,
+          maxFailures: typeof args.max_failures === 'number' ? args.max_failures : undefined,
+          cooldownMinutes: typeof args.cooldown_minutes === 'number' ? args.cooldown_minutes : undefined,
+          dailyBudgetMinutes: typeof args.daily_budget_minutes === 'number' ? args.daily_budget_minutes : undefined,
+          shadowMode: typeof args.shadow_mode === 'boolean' ? args.shadow_mode : undefined,
+          backoffBaseMinutes: typeof args.backoff_base_minutes === 'number' ? args.backoff_base_minutes : undefined,
+          backoffMaxMinutes: typeof args.backoff_max_minutes === 'number' ? args.backoff_max_minutes : undefined,
+          stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : undefined,
+        });
+        return result(
+          buildFacadeResult({
+            summary: `GitHub issue observation schedule ${created.schedule.scheduleId} is configured.`,
             data: { schedule: created.schedule },
           }) as unknown as Record<string, unknown>,
         );
@@ -167,8 +227,8 @@ export async function callRhProjectScheduleAdapter(
       );
     }
     if (operation === 'schedule_list') {
-      const scheduled = listSchedules(ctx.controllerHome, repository.repoId).filter(
-        (s) => s.action.operation === 'browser_probe' || s.action.operation === 'supervisor_healthcheck',
+      const scheduled = listSchedules(ctx.controllerHome, repository.repoId).filter((s) =>
+        OPERATOR_OBSERVATION_OPERATIONS.has(s.action.operation),
       );
       const schedules = {
         schedules: scheduled,
@@ -235,8 +295,7 @@ export async function callRhProjectScheduleAdapter(
     if (!scheduleId) throw new Error('SCHEDULE_ID_REQUIRED');
     if (operation === 'schedule_get') {
       const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation))
-        throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+      assertOperatorObservationSchedule(schedule.action.operation);
       const data = {
         schedule,
         ...(args.include_occurrences === true
@@ -249,8 +308,7 @@ export async function callRhProjectScheduleAdapter(
     }
     if (operation === 'schedule_pause') {
       const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation))
-        throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+      assertOperatorObservationSchedule(schedule.action.operation);
       const saved = saveSchedule(ctx.controllerHome, {
         ...schedule,
         enabled: false,
@@ -265,8 +323,7 @@ export async function callRhProjectScheduleAdapter(
     }
     if (operation === 'schedule_resume') {
       const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation))
-        throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+      assertOperatorObservationSchedule(schedule.action.operation);
       const saved =
         schedule.action.operation === 'browser_probe'
           ? resumeBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId)
@@ -285,8 +342,7 @@ export async function callRhProjectScheduleAdapter(
     }
     if (operation === 'schedule_delete') {
       const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation))
-        throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+      assertOperatorObservationSchedule(schedule.action.operation);
       deleteSchedule(ctx.controllerHome, repository.repoId, scheduleId);
       return result(
         buildFacadeResult({
@@ -299,7 +355,7 @@ export async function callRhProjectScheduleAdapter(
     const explicitEventId = typeof args.event_id === 'string' ? args.event_id.trim() : '';
     const manualRequestId = !repositoryEvent && typeof args.request_id === 'string' ? args.request_id.trim() : '';
     const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
-    if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation))
+    if (!OPERATOR_OBSERVATION_OPERATIONS.has(schedule.action.operation))
       throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
     const context = {
       source: (repositoryEvent ? 'repository-event' : 'manual') as 'repository-event' | 'manual',
@@ -319,7 +375,13 @@ export async function callRhProjectScheduleAdapter(
         summary: occurrence
           ? `Schedule ${scheduleId} produced ${occurrence.decision}.`
           : `Schedule ${scheduleId} produced no occurrence.`,
-        data: { occurrence },
+        data: {
+          occurrence,
+          decision:
+            occurrence?.decisionId !== undefined
+              ? getScheduleDecision(ctx.controllerHome, repository.repoId, occurrence.decisionId)
+              : undefined,
+        },
       }) as unknown as Record<string, unknown>,
     );
   } catch (error) {
