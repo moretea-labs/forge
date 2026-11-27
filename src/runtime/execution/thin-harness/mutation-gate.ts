@@ -23,7 +23,7 @@ import type { ExecutionLease, ExecutionLeaseOwnerIdentity } from '../../resource
 import { recordGatewayLatency } from '../../../core/observability/gateway-contention-metrics';
 import type { ResourceClaimSpec } from '../../execution/jobs/types';
 import { normalizeClaims } from '../../resources/claims/conflicts';
-import { claimGitIndex, claimGitRefs, claimPathWrites } from '../process-runtime/resource-claims';
+import { claimGitIndex, claimGitRefs, claimRequiredPathWrites } from '../process-runtime/resource-claims';
 import { runBoundedGit } from './async-process';
 import { terminateProcessTree } from '../../shared/process-tree';
 
@@ -134,7 +134,7 @@ export function buildMutationClaims(
   // Fast and managed writes on one resource vocabulary and scopes Git refs to
   // their owning repository rather than a process-global wildcard.
   return normalizeClaims([
-    ...claimPathWrites(options.writePaths ?? [], checkoutId, repoId),
+    ...claimRequiredPathWrites(options.writePaths ?? [], checkoutId, repoId),
     ...(options.mutatesGitIndex === true ? [claimGitIndex(checkoutId, repoId)] : []),
     ...(options.mutatesGitRefs ? [claimGitRefs(repoId)] : []),
   ]);

@@ -57,7 +57,7 @@ describe('mcp policy and paths', () => {
     expect(buildMcpSourceClaims(context, ['./src/a.ts', 'src/a.ts'])).toEqual([
       { resourceKey: 'path:checkout1:src/a.ts', mode: 'write' },
     ]);
-    expect(() => buildMcpSourceClaims(context, ['../outside.ts'])).toThrow('MCP_SOURCE_PATH_UNPROVABLE');
+    expect(() => buildMcpSourceClaims(context, ['../outside.ts'])).toThrow('RESOURCE_CLAIM_PATH_UNPROVABLE');
     expect(() => buildMcpSourceClaims(context, [])).toThrow('MCP_SOURCE_PATHS_REQUIRED');
   });
 

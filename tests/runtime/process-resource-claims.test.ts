@@ -6,6 +6,7 @@ import {
   claimsForRepositoryCommand,
   claimGitWorktrees,
   claimGitWorktreesRead,
+  claimRequiredPathWrites,
   claimsRequireHostCapacity,
   scopeResourceClaims,
 } from '../../src/runtime/execution/process-runtime/resource-claims';
@@ -142,19 +143,32 @@ describe('Process Runtime fine-grained resource claims', () => {
     );
   });
 
+  test('canonical path claim batches normalize before deduplication and reject unprovable paths (#725)', () => {
+    expect(claimRequiredPathWrites(['./src/a.ts', 'src/a.ts'], 'co1', 'repo1')).toEqual([
+      { resourceKey: 'path:co1:src/a.ts', mode: 'write' },
+    ]);
+    expect(() => claimRequiredPathWrites(['src/a.ts', '../outside'], 'co1', 'repo1')).toThrow(
+      'RESOURCE_CLAIM_PATH_UNPROVABLE',
+    );
+    expect(() => claimRequiredPathWrites(['/outside'], 'co1', 'repo1')).toThrow('RESOURCE_CLAIM_PATH_UNPROVABLE');
+    expect(claimRequiredPathWrites([], 'co1', 'repo1')).toEqual([]);
+  });
+
   test('MutationGate unknown or invalid source scopes do not create checkout-wide or implicit Git claims (#725)', () => {
     for (const options of [
       {},
       { mutatesGitIndex: false },
       { writePaths: [] as string[], mutatesGitIndex: false },
-      { writePaths: ['src/a.ts', '../outside'], mutatesGitIndex: false },
-      { writePaths: ['src/a.ts', '/outside'], mutatesGitIndex: false },
-      { writePaths: ['src/a.ts', '*'], mutatesGitIndex: false },
     ]) {
       const claims = buildMutationClaims('repo1', 'co1', options);
       expect(claims.some((claim) => claim.resourceKey.startsWith('workspace:'))).toBe(false);
       expect(claims.some((claim) => claim.resourceKey.startsWith('git-index:'))).toBe(false);
       expect(claims.some((claim) => claim.resourceKey.startsWith('git-refs:'))).toBe(false);
+    }
+    for (const path of ['../outside', '/outside', '*']) {
+      expect(() => buildMutationClaims('repo1', 'co1', { writePaths: ['src/a.ts', path] })).toThrow(
+        'RESOURCE_CLAIM_PATH_UNPROVABLE',
+      );
     }
     expect(buildMutationClaims('repo1', 'co1')).toEqual([]);
   });
