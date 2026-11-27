@@ -11,11 +11,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'path';
-import type {
-  AgentAuthenticationReadiness,
-  AgentExecutableIdentity,
-  ControllerAgent,
-} from './types';
+import type { AgentAuthenticationReadiness, AgentExecutableIdentity, ControllerAgent } from './types';
 
 export type LocalAgent = Exclude<ControllerAgent, 'github-copilot'>;
 
@@ -40,9 +36,7 @@ function executableName(agent: LocalAgent): string {
 }
 
 function configuredExecutable(agent: LocalAgent, env: NodeJS.ProcessEnv): string | undefined {
-  const key = agent === 'codex'
-    ? 'FORGE_CODEX_EXECUTABLE'
-    : 'FORGE_CLAUDE_EXECUTABLE';
+  const key = agent === 'codex' ? 'FORGE_CODEX_EXECUTABLE' : 'FORGE_CLAUDE_EXECUTABLE';
   const value = env[key]?.trim();
   if (!value) return undefined;
   return isAbsolute(value) ? value : resolve(value);
@@ -109,10 +103,7 @@ function probeVersion(executablePath: string): string {
   return version;
 }
 
-function probeAuthentication(
-  agent: LocalAgent,
-  executablePath: string,
-): AgentAuthenticationReadiness {
+function probeAuthentication(agent: LocalAgent, executablePath: string): AgentAuthenticationReadiness {
   if (agent !== 'codex') return 'unknown';
   const result = boundedProbe(executablePath, ['login', 'status']);
   const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.toLowerCase();
@@ -170,7 +161,9 @@ export function assertAgentExecutableReady(identity: AgentExecutableIdentity): v
   if (identity.authenticationReadiness === 'required') {
     throw new AgentExecutableError(
       'AGENT_AUTHENTICATION_REQUIRED',
-      'Local ' + label + ' authentication is required before dispatch. Complete the provider\'s normal login flow, then retry readiness.',
+      'Local ' +
+        label +
+        " authentication is required before dispatch. Complete the provider's normal login flow, then retry readiness.",
     );
   }
   if (identity.authenticationReadiness !== 'ready') {
@@ -181,9 +174,7 @@ export function assertAgentExecutableReady(identity: AgentExecutableIdentity): v
   }
 }
 
-export function revalidateAgentExecutable(
-  identity: AgentExecutableIdentity,
-): AgentExecutableIdentity {
+export function revalidateAgentExecutable(identity: AgentExecutableIdentity): AgentExecutableIdentity {
   if (!isExecutable(identity.executablePath)) {
     throw new AgentExecutableError(
       'AGENT_EXECUTABLE_NOT_EXECUTABLE',
@@ -192,11 +183,12 @@ export function revalidateAgentExecutable(
   }
   const currentResolvedPath = realpathSync(identity.executablePath);
   const currentFileIdentity = fileIdentity(identity.executablePath);
-  const sameIdentity = currentResolvedPath === identity.resolvedPath
-    && currentFileIdentity.device === identity.fileIdentity.device
-    && currentFileIdentity.inode === identity.fileIdentity.inode
-    && currentFileIdentity.size === identity.fileIdentity.size
-    && currentFileIdentity.mtimeMs === identity.fileIdentity.mtimeMs;
+  const sameIdentity =
+    currentResolvedPath === identity.resolvedPath &&
+    currentFileIdentity.device === identity.fileIdentity.device &&
+    currentFileIdentity.inode === identity.fileIdentity.inode &&
+    currentFileIdentity.size === identity.fileIdentity.size &&
+    currentFileIdentity.mtimeMs === identity.fileIdentity.mtimeMs;
   if (!sameIdentity) {
     throw new AgentExecutableError(
       'AGENT_EXECUTABLE_IDENTITY_CHANGED',
@@ -235,9 +227,7 @@ export function writeAgentExecutableReadinessSnapshot(
   const snapshot: AgentExecutableReadinessSnapshot = {
     schemaVersion: 1,
     updatedAt: new Date().toISOString(),
-    executors: Object.fromEntries(
-      agents.map((agent) => [agent, inspectAgentExecutableReadiness(agent)]),
-    ),
+    executors: Object.fromEntries(agents.map((agent) => [agent, inspectAgentExecutableReadiness(agent)])),
   };
   const path = readinessSnapshotPath(controllerHome);
   mkdirSync(dirname(path), { recursive: true });
