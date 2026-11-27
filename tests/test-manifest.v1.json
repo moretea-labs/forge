@@ -1052,6 +1052,14 @@
       "module": "controller",
       "resource": "pure"
     },
+    "tests/runtime/windows-computer-observation.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
+    "tests/runtime/windows-computer-target.test.ts": {
+      "module": "browser",
+      "resource": "pure"
+    },
     "tests/runtime/windows-host-discovery.test.ts": {
       "module": "process-runtime",
       "resource": "pure"
