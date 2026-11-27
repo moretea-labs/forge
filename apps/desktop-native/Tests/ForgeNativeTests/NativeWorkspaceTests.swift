@@ -433,7 +433,8 @@ final class NativeWorkspaceTests: XCTestCase {
       "正在连接 JoyCode"
     )
     XCTAssertEqual(
-      NativeWorkspace.initialAgentActivityText(provider: "api:openai", requiresKnowledgeRecall: false),
+      NativeWorkspace.initialAgentActivityText(
+        provider: "api:openai", requiresKnowledgeRecall: false),
       "正在连接模型服务"
     )
   }

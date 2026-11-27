@@ -111,9 +111,10 @@ struct ForgeSemanticProjectDetail: Decodable, Equatable {
       var stack: [(ForgeProjectRequirementSummary, Int)] = [(root, 0)]
       while let (task, depth) = stack.popLast() {
         guard visited.insert(task.id).inserted else { continue }
-        rows.append(ForgeProjectTaskTreeRow(
-          task: task, depth: depth, parentUnavailable: depth == 0 && parentUnavailable
-        ))
+        rows.append(
+          ForgeProjectTaskTreeRow(
+            task: task, depth: depth, parentUnavailable: depth == 0 && parentUnavailable
+          ))
         for child in (children[task.id] ?? []).reversed() {
           stack.append((child, depth + 1))
         }
@@ -128,7 +129,6 @@ struct ForgeSemanticProjectDetail: Decodable, Equatable {
     }
     return rows
   }
-
 
   func appending(_ page: ForgeSemanticProjectDetail) -> ForgeSemanticProjectDetail {
     var seen = Set(requirements.map(\.requirementId))
@@ -1386,7 +1386,8 @@ final class NativeWorkspace: ObservableObject {
   }
   var selectedProvider: String {
     let configuredDefault = localApiSettings?.defaultProvider ?? "api"
-    let defaultProvider = configuredDefault == "api"
+    let defaultProvider =
+      configuredDefault == "api"
       ? (localApiSettings?.defaultApiProfile?.providerId ?? "api")
       : configuredDefault
     guard let provider = thread?.provider else { return defaultProvider }
@@ -1527,7 +1528,8 @@ final class NativeWorkspace: ObservableObject {
     return nil
   }
   var selectedApiModel: String {
-    let threadModel = thread?.provider == "codex"
+    let threadModel =
+      thread?.provider == "codex"
       ? ""
       : (thread?.model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
     if Self.matchesExternalProvider(selectedProvider) && !threadModel.isEmpty { return threadModel }
@@ -1583,7 +1585,8 @@ final class NativeWorkspace: ObservableObject {
       return
     }
     let requestedProvider = providerOverride ?? localApiSettings?.defaultProvider ?? "api"
-    let provider = (requestedProvider == "codex" || requestedProvider == "api")
+    let provider =
+      (requestedProvider == "codex" || requestedProvider == "api")
       ? (localApiSettings?.defaultApiProfile?.providerId ?? "api")
       : requestedProvider
     let profile = localApiSettings?.profile(providerId: provider)
@@ -1727,11 +1730,13 @@ final class NativeWorkspace: ObservableObject {
     copy.title = String(source.title.prefix(76)) + "（副本）"
     if copy.provider == "codex" {
       let fallback = localApiSettings?.defaultProvider ?? "api"
-      let migratedProvider = fallback == "api"
+      let migratedProvider =
+        fallback == "api"
         ? (localApiSettings?.defaultApiProfile?.providerId ?? "api")
         : fallback
       copy.provider = migratedProvider
-      copy.model = migratedProvider == "joycode"
+      copy.model =
+        migratedProvider == "joycode"
         ? localApiSettings?.joyCodeModel
         : localApiSettings?.profile(providerId: migratedProvider)?.model
     }
@@ -5158,16 +5163,19 @@ final class NativeWorkspace: ObservableObject {
     do {
       // Read canonical hierarchy immediately before mutation. The store owns
       // the atomic root CAS; a stale Client must not silently create a sibling.
-      let fresh = try Self.decodeSemanticProject(await ForgeBridge.request(
-        "project_get", ["projectId": projectId, "detailLevel": "summary"]
-      ))
+      let fresh = try Self.decodeSemanticProject(
+        await ForgeBridge.request(
+          "project_get", ["projectId": projectId, "detailLevel": "summary"]
+        ))
       guard self.selectedProjectId == projectId, self.projectRepositoryId == targetRepoId,
-        self.projectContextGeneration == targetContextGeneration, self.checkoutId == targetCheckoutId
+        self.projectContextGeneration == targetContextGeneration,
+        self.checkoutId == targetCheckoutId
       else { return nil }
       guard fresh.projectId == projectId,
         Self.projectDetailRequirementScopeIsValid(project: fresh, repositoryId: targetRepoId),
         let hierarchy = Self.requirementCreationHierarchy(
-          project: fresh, parentRequirementId: parentRequirementId, createProjectRoot: createProjectRoot
+          project: fresh, parentRequirementId: parentRequirementId,
+          createProjectRoot: createProjectRoot
         )
       else {
         error = "项目根任务或上级任务状态已变化，请刷新项目后重试。"
@@ -6753,7 +6761,8 @@ final class NativeWorkspace: ObservableObject {
     }
     if threads[index].provider == "codex" {
       threads[index].provider = turnProvider
-      threads[index].model = turnProvider == "joycode"
+      threads[index].model =
+        turnProvider == "joycode"
         ? localApiSettings?.joyCodeModel
         : localApiSettings?.profile(providerId: turnProvider)?.model
       persist()
@@ -6849,7 +6858,8 @@ final class NativeWorkspace: ObservableObject {
       if cancelRequestedBeforeTurn || Task.isCancelled {
         throw ForgeBridgeError.remote("FORGE_DESKTOP_API_TURN_CANCELLED")
       }
-      updateLiveActivityText(Self.initialAgentActivityText(provider: turnProvider, requiresKnowledgeRecall: false))
+      updateLiveActivityText(
+        Self.initialAgentActivityText(provider: turnProvider, requiresKnowledgeRecall: false))
       var apiArguments: [String: Any] = [
         "conversationId": id,
         "provider": turnProvider,
