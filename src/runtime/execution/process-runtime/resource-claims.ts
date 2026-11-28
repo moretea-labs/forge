@@ -89,6 +89,14 @@ export function claimGitIndex(checkoutId?: string, repoId?: string): ResourceCla
   return { resourceKey: `git-index:${checkoutScope(checkoutId, repoId)}`, mode: 'exclusive' };
 }
 
+export function providerStateResourceKey(providerKey: string): string {
+  return `provider-state:${providerKey}`;
+}
+
+export function claimProviderState(providerKey: string, mode: ResourceClaimSpec['mode']): ResourceClaimSpec {
+  return { resourceKey: providerStateResourceKey(providerKey), mode };
+}
+
 export function claimGitRefsWithMode(repoId: string, mode: ResourceClaimSpec['mode']): ResourceClaimSpec {
   return { resourceKey: `git-refs:${repoId}`, mode };
 }

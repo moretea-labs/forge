@@ -11,7 +11,12 @@ import {
 import { listRepositories } from '../repositories/registry';
 import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
-import { claimGitRefsWithMode, claimHostService } from '../execution/process-runtime/resource-claims';
+import {
+  claimGitRefsWithMode,
+  claimHostService,
+  claimProviderState,
+  providerStateResourceKey,
+} from '../execution/process-runtime/resource-claims';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { redactSensitiveText, redactSensitiveValue } from '../evidence/sensitive-output';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
@@ -698,7 +703,7 @@ export function browserRemoteResourceKey(
   // Browser and Computer browser actions share one native BrowserSession
   // authority. Scope their remote claims identically so distinct sessions do
   // not contend globally, while the same session/tab remains mutually fenced.
-  if (pluginId !== 'browser' && pluginId !== 'computer') return `provider-state:${pluginId}`;
+  if (pluginId !== 'browser' && pluginId !== 'computer') return providerStateResourceKey(pluginId);
   const text = (value: unknown): string | undefined =>
     typeof value === 'string' && value.trim() ? value.trim() : undefined;
   const browserProduct = text(args?.native_browser_product);
@@ -715,7 +720,7 @@ export function browserRemoteResourceKey(
         : requestId
           ? `request:${requestId}`
           : undefined;
-  if (!identity) return 'provider-state:browser';
+  if (!identity) return providerStateResourceKey('browser');
   const digest = createHash('sha256').update(identity).digest('hex').slice(0, 24);
   return `provider-resource:browser:${digest}`;
 }
@@ -729,23 +734,22 @@ function claimsForPluginActionScope(
 ): ResourceClaimSpec[] {
   const pluginId = trustedPluginId.trim().replace(/[^a-zA-Z0-9._-]+/g, '-');
   if (!pluginId) throw new Error('PLUGIN_ID_REQUIRED_FOR_RESOURCE_CLAIMS');
-  const providerStateResourceKey =
-    pluginId === 'computer' || pluginId === 'desktop_operator'
-      ? 'provider-state:desktop_operator'
-      : `provider-state:${pluginId}`;
+  const providerStateIdentity =
+    pluginId === 'computer' || pluginId === 'desktop_operator' ? 'desktop_operator' : pluginId;
   const claims = action.resourceClaims.map((claim) => {
     if (claim.resource === 'git-refs' && scope.kind !== 'controller') {
       return claimGitRefsWithMode(scope.scopeKey, claim.mode);
     }
+    if (claim.resource === 'provider-state') {
+      return claimProviderState(providerStateIdentity, claim.mode);
+    }
     return {
       resourceKey:
-        claim.resource === 'provider-state'
-          ? providerStateResourceKey
-          : claim.resource === 'remote'
-            ? browserRemoteResourceKey(pluginId, args, requestId)
-            : scope.kind === 'controller'
-              ? `controller-system:${claim.resource}`
-              : `repo-state:${scope.scopeKey}`,
+        claim.resource === 'remote'
+          ? browserRemoteResourceKey(pluginId, args, requestId)
+          : scope.kind === 'controller'
+            ? `controller-system:${claim.resource}`
+            : `repo-state:${scope.scopeKey}`,
       mode: claim.mode,
     };
   });

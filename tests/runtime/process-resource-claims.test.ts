@@ -6,6 +6,7 @@ import {
   claimsForRepositoryCommand,
   claimGitRefsWithMode,
   claimGitWorktrees,
+  claimProviderState,
   claimHostService,
   claimGitWorktreesRead,
   claimRequiredPathWrites,
@@ -1702,7 +1703,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     const repository = { repoId: 'repo1', activeCheckoutId: 'co1' } as Parameters<
       typeof claimsForAssistantPluginAction
     >[1];
-    const canonicalClaim = [{ resourceKey: 'provider-state:desktop_operator', mode: 'write' as const }];
+    const canonicalClaim = [claimProviderState('desktop_operator', 'write')];
 
     for (const actionId of [
       'desktop_press',
@@ -1771,7 +1772,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(observe!.defaultTimeoutMs).toBe(15_000);
     expect(claimsForAssistantPluginAction(observe!, repository, 'computer')).toEqual([
       ...canonicalClaim,
-      { resourceKey: 'provider-state:browser', mode: 'read' },
+      claimProviderState('browser', 'read'),
     ]);
     for (const actionId of ['chatgpt_target_prepare', 'chatgpt_target_dispatch']) {
       const action = computer.find((candidate) => candidate.actionId === actionId);
@@ -1851,7 +1852,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claimsConflict(sessionA[0]!, lease(sessionB[0]!.resourceKey, 'exclusive'))).toBe(false);
     expect(
       claimsForAssistantPluginAction(providerAction, repository, 'browser', { session_id: 'session-a' }, 'provider-a'),
-    ).toEqual([{ resourceKey: 'provider-state:browser', mode: 'write' }]);
+    ).toEqual([claimProviderState('browser', 'write')]);
   });
 
   test('ephemeral explicit releases retain durable owner and fencing receipts on both release routes', () => {
@@ -2307,11 +2308,11 @@ describe('Process Runtime fine-grained resource claims', () => {
     >[1];
     const providerA = claimsForAssistantPluginAction(action, repository, 'provider_a');
     const providerB = claimsForAssistantPluginAction(action, repository, 'provider_b');
-    expect(providerA).toEqual([{ resourceKey: 'provider-state:provider_a', mode: 'write' }]);
+    expect(providerA).toEqual([claimProviderState('provider_a', 'write')]);
     expect(providerA.some((claim) => claim.resourceKey.startsWith('workspace:'))).toBe(false);
     expect(claimsConflict(providerA[0]!, lease('provider-state:provider_a', 'write'))).toBe(true);
     expect(claimsConflict(providerA[0]!, lease('provider-state:provider_b', 'write'))).toBe(false);
     expect(claimsConflict(providerA[0]!, lease('workspace:co1', 'write'))).toBe(false);
-    expect(providerB).toEqual([{ resourceKey: 'provider-state:provider_b', mode: 'write' }]);
+    expect(providerB).toEqual([claimProviderState('provider_b', 'write')]);
   });
 });
