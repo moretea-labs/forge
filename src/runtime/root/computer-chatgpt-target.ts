@@ -20,6 +20,7 @@ export type RuntimeComputerChatgptActionInput =
       identity: ComputerChatgptTargetIdentity;
       prompt: string;
       mode?: 'send' | 'resume' | 'recover';
+      expectedDraft?: string;
     };
 
 const ports = new Map<string, ComputerChatgptConversationTargetPort>();
@@ -117,7 +118,7 @@ async function executeRuntimeAction(
       state: 'ready',
       targetId: exact.target.targetId,
       identity: action.identity,
-      prepare: await exact.target.prepare(action.prompt, { mode: action.mode }),
+      prepare: await exact.target.prepare(action.prompt, { mode: action.mode, expectedDraft: action.expectedDraft }),
     };
   }
 
@@ -143,6 +144,11 @@ export async function runtimeComputerChatgptAction(
   input: RuntimeComputerChatgptActionInput,
   timeoutMs?: number,
 ): Promise<Record<string, unknown>> {
+  if (process.platform === 'linux' && input.kind === 'prepare' && input.expectedDraft !== undefined)
+    return {
+      state: 'unavailable',
+      failure: { code: 'COMPUTER_CHATGPT_DRAFT_CAS_UNSUPPORTED', retryable: false, phase: 'pre_mutation' },
+    };
   if (process.platform === 'linux')
     return await linuxExtension.runtimeComputerChatgptAction(controllerHome, input, timeoutMs);
   return await executeRuntimeAction(portFor(controllerHome, timeoutMs), input);

@@ -315,6 +315,7 @@ export async function dispatchMacOsChatgptPrompt(
     mode?: 'send' | 'resume' | 'recover';
     reasoning?: 'medium' | 'high' | 'xhigh';
     prepareOnly?: boolean;
+    expectedDraft?: string;
     targetIdentity?: ComputerChatgptTargetIdentity;
   } = {},
 ): Promise<
@@ -326,6 +327,8 @@ export async function dispatchMacOsChatgptPrompt(
   // a Supervisor effect under the unproven maximum-effort claim.
   if (options.reasoning)
     return { mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_REASONING_UNSUPPORTED_BY_PROVIDER' };
+  if (options.expectedDraft !== undefined && !options.prepareOnly)
+    return { mutation: 'not_attempted', reasonCode: 'composer_replace_requires_prepare' };
   const supervisor = /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:fx_[a-zA-Z0-9_-]+>>>/.test(prompt);
   // The Project supplies tool instructions; remove only a legacy text prefix.
   const submittedPrompt = supervisor
@@ -418,6 +421,12 @@ export async function dispatchMacOsChatgptPrompt(
         if (!(composer instanceof HTMLElement) || !composer.isContentEditable) return { prepared: false, reason: 'composer_missing' };
         if (composer.querySelector('[plugin-mention-name], [app-mention-name]')) return { prepared: false, reason: 'composer_has_app_mention' };
         const current = exact(composerValue(composer));
+        const expectedPrevious = ${JSON.stringify(options.expectedDraft ?? null)};
+        if (expectedPrevious !== null && current !== exact(expectedPrevious))
+          return { prepared: false, reason: 'composer_draft_changed' };
+        if (expectedPrevious !== null && Array.from(root.querySelectorAll(
+          '[data-testid="stop-button"], [data-testid*="stop-button"], [data-is-streaming="true"]'
+        )).some(visible)) return { prepared: false, reason: 'provider_busy' };
         // An empty ProseMirror <p><br></p> may expose a layout newline in
         // innerText. It is not a user draft; actual text, including whitespace
         // outside this exact empty placeholder, remains protected.
@@ -434,7 +443,7 @@ export async function dispatchMacOsChatgptPrompt(
         if (hasDraft && (current === expectedNorm || current === draftNorm)) return { prepared: true };
         if (resume) { if (!hasDraft) return { prepared: false, reason: 'composer_resume_empty' }; if (current !== expectedNorm && current !== draftNorm) return { prepared: false, reason: 'composer_resume_mismatch' }; }
         else {
-          if (hasDraft) return { prepared: false, reason: 'composer_not_empty' };
+          if (hasDraft && expectedPrevious === null) return { prepared: false, reason: 'composer_not_empty' };
           composer.focus({ preventScroll: true });
           const selection = window.getSelection(); if (!selection) return { prepared: false, reason: 'composer_selection_unavailable' };
           const range = document.createRange(); range.selectNodeContents(composer); range.deleteContents(); range.collapse(true); selection.removeAllRanges(); selection.addRange(range);

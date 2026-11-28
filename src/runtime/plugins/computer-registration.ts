@@ -473,6 +473,12 @@ function computerChatgptTargetActions(): AssistantPluginActionDescriptor[] {
         properties: {
           ...targetIdentitySchema,
           prompt: { type: 'string', minLength: 1, maxLength: 60000 },
+          expected_draft: {
+            type: 'string',
+            maxLength: 60000,
+            description:
+              'Mac-only exact compare-and-swap for a model-reconciled stale draft. A changed draft is preserved; this action never sends.',
+          },
           mode: modeSchema,
         },
         required: ['prompt'],
@@ -676,9 +682,16 @@ async function executeComputerChatgptTargetAction(
   const prompt = computerChatgptPrompt(input.args);
   const mode = computerChatgptMode(input.args);
   if (input.actionId === COMPUTER_CHATGPT_TARGET_PREPARE_ACTION) {
+    const expectedDraft = input.args.expected_draft;
+    if (expectedDraft !== undefined && (typeof expectedDraft !== 'string' || expectedDraft.length > 60000))
+      throw new AssistantPluginError(
+        'COMPUTER_CHATGPT_EXPECTED_DRAFT_INVALID',
+        'expected_draft must be bounded exact text.',
+        { retryable: false },
+      );
     return await runtimeComputerChatgptAction(
       input.controllerHome,
-      { kind: 'prepare', identity, prompt, mode },
+      { kind: 'prepare', identity, prompt, mode, expectedDraft },
       input.timeoutMs,
     );
   }

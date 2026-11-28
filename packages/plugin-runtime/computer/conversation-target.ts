@@ -70,12 +70,19 @@ export interface ComputerChatgptConversationTarget {
   identity: ComputerChatgptTargetIdentity;
   observe(options?: ComputerChatgptConversationObservationOptions): Promise<ComputerChatgptConversationObservation>;
   /** UI-only preparation. Must never click Send or create a provider turn. */
-  prepare(prompt: string, options?: { mode?: 'send' | 'resume' | 'recover' }): Promise<{ ready: true } | { ready: false; reasonCode: string }>;
+  prepare(
+    prompt: string,
+    options?: { mode?: 'send' | 'resume' | 'recover'; expectedDraft?: string },
+  ): Promise<{ ready: true } | { ready: false; reasonCode: string }>;
   dispatch(
     prompt: string,
     options?: { mode?: 'send' | 'resume' | 'recover' },
   ): Promise<
-    | { mutation: 'not_attempted'; reasonCode: string; prewriteNoMutationReceipt?: ComputerChatgptPrewriteNoMutationReceipt }
+    | {
+        mutation: 'not_attempted';
+        reasonCode: string;
+        prewriteNoMutationReceipt?: ComputerChatgptPrewriteNoMutationReceipt;
+      }
     | { mutation: 'attempted'; confirmed?: boolean }
   >;
 }
