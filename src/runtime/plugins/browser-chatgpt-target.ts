@@ -1232,12 +1232,6 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
     targetId: string,
     identity: ComputerChatgptConversationIdentity,
   ): Promise<ComputerChatgptTargetResult> {
-    const page = this.pages.get(targetId);
-    if (!page)
-      return failure(
-        new Error('COMPUTER_CHATGPT_BOOTSTRAP_PROVIDER_BINDING_MISSING'),
-        'COMPUTER_CHATGPT_BOOTSTRAP_PROVIDER_BINDING_MISSING',
-      );
     const previous = this.authority.getSurface(this.controllerHome, targetId);
     if (!previous)
       return failure(
@@ -1255,7 +1249,43 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
         },
       };
     }
+
+    let page = this.pages.get(targetId);
+    if (!page) {
+      const binding = previous.providerBinding;
+      const product = productForBinding(binding);
+      if (binding?.providerId !== PROVIDER_ID || !product || !binding.windowId || !binding.tabId) {
+        return failure(
+          new Error('COMPUTER_CHATGPT_BOOTSTRAP_PROVIDER_BINDING_MISSING'),
+          'COMPUTER_CHATGPT_BOOTSTRAP_PROVIDER_BINDING_MISSING',
+        );
+      }
+      try {
+        page = await this.reattach({
+          browserProduct: product,
+          windowId: binding.windowId,
+          tabId: binding.tabId,
+        });
+      } catch (error) {
+        return failure(error, 'COMPUTER_CHATGPT_BOOTSTRAP_PROMOTION_REATTACH_FAILED');
+      }
+    }
+
     try {
+      // Runtime restarts clear only the in-memory page cache; the exact physical
+      // binding remains durable. Re-prove that tab is now the canonical
+      // conversation before transferring its binding away from the bootstrap.
+      const before = await observeMacOsChatgptPage(page, {
+        includeUserHistory: false,
+        includePageText: false,
+      });
+      if (!sameConversation(before.url, identity)) {
+        return failure(
+          new Error('COMPUTER_CHATGPT_BOOTSTRAP_PROMOTION_IDENTITY_MISMATCH'),
+          'COMPUTER_CHATGPT_BOOTSTRAP_PROMOTION_IDENTITY_MISMATCH',
+        );
+      }
+
       await this.authority.withSurfaceLease(this.controllerHome, targetId, async (lease) => {
         lease.clearBinding();
       });

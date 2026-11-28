@@ -544,3 +544,86 @@ test('ensureExact preserves an absent user-owned Surface instead of transferring
     rmSync(controllerHome, { recursive: true, force: true });
   }
 });
+
+
+test('promoteBootstrap reattaches a durable native bootstrap binding after Runtime restart', async () => {
+  const controllerHome = mkdtempSync(join(tmpdir(), 'forge-chatgpt-promote-restart-'));
+  const authority = runtimeComputerInteractionTargetAuthority();
+  const bootstrapKey = 'supervisor:restart-promotion';
+  const projectUrl = 'https://chatgpt.com/';
+  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const canonicalUrl = `https://chatgpt.com/c/${conversationId}`;
+  const identity = { namespace: 'chatgpt.conversation' as const, conversationId, canonicalUrl };
+
+  const bootstrapPage = testPage('promote-restart-tab', () => undefined);
+  const first = new MacOsChatgptConversationTargetPort(controllerHome, authority, 1_000);
+  (first as unknown as TestablePort).create = async () => bootstrapPage;
+
+  try {
+    const opened = await first.openBootstrap(projectUrl, bootstrapKey);
+    expect(opened.state).toBe('ready');
+    if (opened.state !== 'ready') throw new Error('bootstrap did not open');
+
+    let reattachCalls = 0;
+    const conversationPage: TestPage = {
+      evaluate: async <T>(expression: string | ((...args: unknown[]) => unknown)) => {
+        const source = String(expression);
+        if (source.includes('window.name =')) return 'forge-chatgpt-owner' as T;
+        return {
+          url: canonicalUrl,
+          title: 'Recovered successor',
+          latestUserText: '',
+          latestAssistantResponse: '',
+          providerActivityText: '',
+          providerFailureText: '',
+          composerText: '',
+          isGenerating: false,
+          latestTurnRole: 'assistant',
+        } as T;
+      },
+      foregroundState: async () => ({ frontmost: true, active: true }),
+      bringToFront: async () => undefined,
+      tabRef: () => ({
+        browserProduct: 'vivaldi',
+        windowId: 'bootstrap-window',
+        tabId: 'promote-restart-tab',
+      }),
+    };
+
+    const restarted = new MacOsChatgptConversationTargetPort(controllerHome, authority, 1_000);
+    (restarted as unknown as TestablePort).reattach = async (ref) => {
+      reattachCalls += 1;
+      expect(ref).toEqual({
+        browserProduct: 'vivaldi',
+        windowId: 'bootstrap-window',
+        tabId: 'promote-restart-tab',
+      });
+      return conversationPage;
+    };
+
+    const promoted = await restarted.promoteBootstrap(opened.target.targetId, identity);
+    expect(promoted.state).toBe('ready');
+    expect(reattachCalls).toBe(1);
+    expect(
+      authority.findSurfaceByStableIdentity(controllerHome, {
+        surfaceType: 'browser-tab',
+        ownership: 'provider_owned',
+        resource: { namespace: 'chatgpt.bootstrap', key: bootstrapKey },
+      }),
+    ).toBeUndefined();
+    expect(
+      authority.findSurfaceByStableIdentity(controllerHome, {
+        surfaceType: 'browser-tab',
+        ownership: 'provider_owned',
+        resource: { namespace: 'chatgpt.conversation', key: conversationId },
+      })?.providerBinding,
+    ).toMatchObject({
+      providerId: 'browser.macos-apple-events',
+      browserProduct: 'vivaldi',
+      windowId: 'bootstrap-window',
+      tabId: 'promote-restart-tab',
+    });
+  } finally {
+    rmSync(controllerHome, { recursive: true, force: true });
+  }
+});
