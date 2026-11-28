@@ -11,7 +11,7 @@ import {
 import { listRepositories } from '../repositories/registry';
 import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
-import { claimGitRefsWithMode } from '../execution/process-runtime/resource-claims';
+import { claimGitRefsWithMode, claimHostService } from '../execution/process-runtime/resource-claims';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { redactSensitiveText, redactSensitiveValue } from '../evidence/sensitive-output';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
@@ -750,7 +750,7 @@ function claimsForPluginActionScope(
     };
   });
   if (pluginId === 'ios' && ['build', 'xcode_test', 'smoke_review', 'agent_device_prepare'].includes(action.actionId)) {
-    claims.push({ resourceKey: 'host-service:ios-build', mode: 'write' });
+    claims.push(claimHostService('ios-build'));
   }
   // The Process Runtime and iOS plugin must arbitrate the same physical
   // Simulator rather than independent provider-local / repository locks.

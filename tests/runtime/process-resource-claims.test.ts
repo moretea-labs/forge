@@ -6,6 +6,7 @@ import {
   claimsForRepositoryCommand,
   claimGitRefsWithMode,
   claimGitWorktrees,
+  claimHostService,
   claimGitWorktreesRead,
   claimRequiredPathWrites,
   claimsRequireHostCapacity,
@@ -1608,7 +1609,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     }
     for (const id of ['build', 'xcode_test', 'smoke_review']) {
       const native = claimsForAssistantPluginAction(action(id), repository, 'ios');
-      expect(native).toContainEqual({ resourceKey: 'host-service:ios-build', mode: 'write' });
+      expect(native).toContainEqual(claimHostService('ios-build'));
     }
     expect(
       claimsForAssistantPluginAction(action('agent_device_status'), repository, 'ios').some(

@@ -143,7 +143,7 @@ export function claimHeavyCheck(repoId: string): ResourceClaimSpec {
   return { resourceKey: `heavy-check:${repoId}`, mode: 'exclusive' };
 }
 
-function claimHostService(serviceKey: string, mode: 'read' | 'write' = 'write'): ResourceClaimSpec {
+export function claimHostService(serviceKey: string, mode: 'read' | 'write' = 'write'): ResourceClaimSpec {
   const normalized = serviceKey.trim().replace(/\s+/g, '-').slice(0, 240) || 'global';
   return { resourceKey: `host-service:${normalized}`, mode };
 }
