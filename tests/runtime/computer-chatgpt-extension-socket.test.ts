@@ -103,18 +103,25 @@ test('Computer heartbeat tolerates bounded Windows-to-WSL clock skew without tru
 
 test('Computer health reports live exact ChatGPT extension separately from unsupported native Browser/Desktop', async () => {
   const controllerHome = home();
-  const manifest = () => computerPluginAdapter.buildManifest(1, undefined, controllerHome, {
-    controllerHome, repoId: 'fixture', repoRoot: controllerHome, controllerScoped: true,
-  });
+  const manifest = () =>
+    computerPluginAdapter.buildManifest(1, undefined, controllerHome, {
+      controllerHome,
+      repoId: 'fixture',
+      repoRoot: controllerHome,
+      controllerScoped: true,
+    });
   expect(runtimeComputerChatgptLiveProviderStatus(controllerHome)).toMatchObject({ observed: false, ready: false });
   const runtime = await ensureRuntimeComputerChatgptExtension(controllerHome);
   expect(manifest().health.details?.chatgpt).toMatchObject({ state: 'unavailable', ready: false, providerCount: 0 });
   await jsonlRpc(runtime.socketPath, 'computer_extension_heartbeat', {
-    providerId: 'browser.chrome-extension', providerInstanceId: 'windows-chrome',
-    observedAt: new Date().toISOString(), conversations: [],
+    providerId: 'browser.chrome-extension',
+    providerInstanceId: 'windows-chrome',
+    observedAt: new Date().toISOString(),
+    conversations: [],
   });
   expect(manifest().health).toMatchObject({
-    state: 'degraded', ready: false,
+    state: 'degraded',
+    ready: false,
     details: {
       partial: true,
       browser: { ready: false },

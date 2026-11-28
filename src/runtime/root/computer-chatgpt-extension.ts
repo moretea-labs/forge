@@ -54,7 +54,9 @@ const runtimes = new Map<string, Promise<RuntimeComputerChatgptExtension>>();
 const liveOwnerPorts = new Map<string, ChromeExtensionChatgptConversationTargetPort>();
 
 export function runtimeComputerChatgptLiveProviderStatus(controllerHome: string): {
-  observed: boolean; ready: boolean; providerCount: number;
+  observed: boolean;
+  ready: boolean;
+  providerCount: number;
 } {
   const port = liveOwnerPorts.get(controllerHome);
   if (!port) return { observed: false, ready: false, providerCount: 0 };
