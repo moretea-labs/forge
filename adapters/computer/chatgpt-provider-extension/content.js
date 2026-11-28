@@ -266,6 +266,14 @@
   const modelLockHighOptions = (menu) =>
     modelLockOptions(menu).filter((option) => /^(?:High|高)$/.test(
       String(option.innerText ?? option.textContent ?? '').trim()));
+  const modelLockPickerConfirmsTarget = (picker = modelLockPicker()) => {
+    const label = String(picker?.innerText ?? picker?.textContent ?? '').trim();
+    return Boolean(picker
+      && picker.getAttribute?.('aria-expanded') !== 'true'
+      && /(?:^|\s)5\.6(?:\s|$)/i.test(label)
+      && /(?:^|\s)(?:高|High)$/i.test(label)
+      && !/(?:Extra\s+High|极高|超高)/i.test(label));
+  };
   const modelLockMenu = () => {
     const menus = Array.from(document.querySelectorAll('[role="menu"]')).filter(visible);
     const matches = menus.filter((menu) =>
@@ -372,9 +380,7 @@
       await closeModelLockMenu();
     }
     const picker = modelLockPicker();
-    const label = String(picker?.innerText ?? picker?.textContent ?? '').trim();
-    if (!picker || picker.getAttribute?.('aria-expanded') === 'true'
-        || !/(?:^|\s)5\.6(?:\s|$)/i.test(label) || !/(?:^|\s)(?:高|High)$/i.test(label) || /(?:Extra\s+High|极高|超高)/i.test(label)) {
+    if (!modelLockPickerConfirmsTarget(picker)) {
       return { ready: false, reason: 'provider_model_lock_picker_confirmation_failed' };
     }
     return {
@@ -383,6 +389,26 @@
       reasoning: 'high',
       capability: CHATGPT_MODEL_LOCK_CAPABILITY,
     };
+  };
+
+  let webModelLockTimer;
+  let webModelLockInFlight = false;
+  const enforceWebModelLock = async () => {
+    if (webModelLockInFlight || hasLiveGenerationSignal()) return;
+    const picker = modelLockPicker();
+    if (!picker || modelLockPickerConfirmsTarget(picker)) return;
+    webModelLockInFlight = true;
+    try {
+      await ensureGpt56High();
+    } finally {
+      webModelLockInFlight = false;
+    }
+  };
+  const scheduleWebModelLock = () => {
+    clearTimeout(webModelLockTimer);
+    webModelLockTimer = setTimeout(() => {
+      void enforceWebModelLock();
+    }, 350);
   };
 
   const writeComposer = (node, prompt) => {
@@ -444,18 +470,16 @@
     } else if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
     const node = composer();
     if (!node) return { dispatched: false, reason: 'composer_missing' };
-    // Lock only unattended Forge effects. Generic/manual Computer dispatch keeps
-    // its existing provider-selection semantics.
+    // Unattended Forge effects are pinned to GPT-5.6 Sol High. If the exact
+    // model/reasoning state cannot be proven, fail closed rather than silently
+    // dispatching through a different provider model.
     const automaticDispatch = /^\[forge-supervisor(?:\s|\])/i.test(actualPrompt)
       || /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>/.test(actualPrompt);
-    let modelLockFallbackReason = '';
     if (!prepareOnly && automaticDispatch) {
       const modelLock = await ensureGpt56High();
       if (!modelLock.ready) {
-        modelLockFallbackReason = String(modelLock.reason ?? 'provider_model_lock_unavailable');
-        // Model selection is an optimization, not a dispatch authority fence.
-        // ChatGPT UI changes must not stall unattended product delivery.
         await closeModelLockMenu();
+        return { dispatched: false, reason: String(modelLock.reason ?? 'provider_model_lock_unavailable') };
       }
       if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
     }
@@ -581,14 +605,12 @@
       return {
         dispatched: true,
         confirmed,
-        ...(modelLockFallbackReason ? { modelLockFallbackReason } : {}),
         ...(mode === 'recover' ? { recoveryCapability: 'recover-no-stop-prewrite-v1' } : {}),
       };
     } catch {
       return {
         dispatched: true,
         confirmed: false,
-        ...(modelLockFallbackReason ? { modelLockFallbackReason } : {}),
       };
     }
   };
@@ -631,6 +653,7 @@
   const observer = new MutationObserver(notify);
   function notify() {
     if (contextInvalidated) return;
+    scheduleWebModelLock();
     clearTimeout(timer);
     timer = setTimeout(() => {
       const current = core.parseConversation(location.href);

@@ -17,6 +17,7 @@ function helperSource(): string {
     'const visible = (node) => Boolean(node?.getClientRects?.().length);',
     content.slice(start, end),
     'globalThis.__ensureGpt56High = ensureGpt56High;',
+    'globalThis.__enforceWebModelLock = enforceWebModelLock;',
   ].join('\n');
 }
 
@@ -146,16 +147,19 @@ function fixture(options: { picker?: boolean; model?: boolean; reasoning?: numbe
     document,
     KeyboardEvent: FakeKeyboardEvent,
     Promise,
+    hasLiveGenerationSignal: () => false,
+    clearTimeout() {},
     setTimeout(callback: () => void) {
       callback();
       return 1;
     },
   };
   runInNewContext(helperSource(), context, { filename: 'model-lock-helpers.js' });
-  const ensure = (context as typeof context & {
+  const helpers = context as typeof context & {
     __ensureGpt56High: () => Promise<Record<string, unknown>>;
-  }).__ensureGpt56High;
-  return { state, ensure };
+    __enforceWebModelLock: () => Promise<void>;
+  };
+  return { state, ensure: helpers.__ensureGpt56High, enforceWeb: helpers.__enforceWebModelLock };
 }
 
 test('automatic ChatGPT lock corrects model and reasoning to GPT-5.6 Sol High', async () => {
@@ -213,11 +217,27 @@ test('model lock does not accept Extra High as High in the collapsed picker', as
   expect(await ensure()).toMatchObject({ ready: false, reason: 'provider_model_lock_picker_confirmation_failed' });
 });
 
-test('unattended Forge prompts attempt model lock without making it a dispatch fence', () => {
+test('unattended Forge prompts fail closed unless GPT-5.6 Sol High is proven', () => {
   expect(content).toContain("const automaticDispatch = /^\\[forge-supervisor(?:\\s|\\])/i.test(actualPrompt)");
   expect(content).toContain("if (!prepareOnly && automaticDispatch) {");
   expect(content).toContain("const modelLock = await ensureGpt56High();");
-  expect(content).toContain("modelLockFallbackReason = String(modelLock.reason ?? 'provider_model_lock_unavailable')");
-  expect(content).toContain("await closeModelLockMenu();");
-  expect(content).not.toContain("if (!modelLock.ready) return { dispatched: false, reason: modelLock.reason };");
+  expect(content).toContain("return { dispatched: false, reason: String(modelLock.reason ?? 'provider_model_lock_unavailable') };");
+  expect(content).not.toContain('modelLockFallbackReason');
+});
+
+test('ordinary ChatGPT Web pages correct a non-5.6 picker back to GPT-5.6 Sol High', async () => {
+  const { state, enforceWeb } = fixture({ model: false, reasoning: 0 });
+  await enforceWeb();
+  expect(state.model).toBe(true);
+  expect(state.reasoning).toBe(2);
+  expect(state.menuOpen).toBe(false);
+});
+
+test('ordinary ChatGPT Web pages leave an already locked picker untouched', async () => {
+  const { state, enforceWeb } = fixture({ model: true, reasoning: 2 });
+  await enforceWeb();
+  expect(state.model).toBe(true);
+  expect(state.reasoning).toBe(2);
+  expect(state.menuOpen).toBe(false);
+  expect(content).toContain('scheduleWebModelLock();');
 });
