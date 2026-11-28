@@ -1017,10 +1017,7 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
       // physically present. Never turn that absence into authority to mint a
       // provider-owned replacement for the same stable conversation identity.
       // The caller may reopen the exact URL as a user-owned surface and retry.
-      return failure(
-        new Error('COMPUTER_CHATGPT_USER_TARGET_MISSING'),
-        'COMPUTER_CHATGPT_USER_TARGET_MISSING',
-      );
+      return failure(new Error('COMPUTER_CHATGPT_USER_TARGET_MISSING'), 'COMPUTER_CHATGPT_USER_TARGET_MISSING');
     }
     let created: ComputerChatgptNativePage | undefined;
     let bound = false;
@@ -1218,6 +1215,25 @@ export class MacOsChatgptConversationTargetPort implements ComputerChatgptConver
             ? { namespace: 'chatgpt.bootstrap', bootstrapKey, projectUrl: observation.url }
             : (undefined as never));
         if (!identity) continue;
+        const ref = page.tabRef();
+        const bound = ref
+          ? this.authority.findSurfaceByProviderBinding(this.controllerHome, {
+              providerId: PROVIDER_ID,
+              ...ref,
+              observedAt: new Date().toISOString(),
+            })
+          : undefined;
+        if (
+          conversation &&
+          bound?.stableIdentity.resource?.namespace === 'chatgpt.bootstrap' &&
+          bound.stableIdentity.resource.key === bootstrapKey
+        ) {
+          // Marker discovery proves the submitted turn; it must not compete
+          // with the bootstrap for ownership of the same physical tab. The
+          // caller explicitly promotes this binding after reading the match.
+          matches.push({ state: 'ready', target: this.target(identity, bound, page), observation });
+          continue;
+        }
         let record = this.upsert(identity, 'user_owned');
         record = await this.bind(identity, record, page, 'user_owned');
         matches.push({ state: 'ready', target: this.target(identity, record, page), observation });
